@@ -348,21 +348,41 @@ public final class WorldExteriorObjects {
     private WorldExteriorObjects() {}
 
     /**
+     * Which WMO interior groups a tile draws. {@link #INSTANCE} (dungeon and raid maps, #280) reads
+     * each root's interior groups with its exterior ones, so a dungeon's own building comes first
+     * by size. {@link #OPEN_WORLD} (every other map, #383) reads a root's MOGI-interior groups only
+     * after every building's exterior groups, from the group reads they leave, so an interior never
+     * caps an exterior root.
+     */
+    public enum Interiors {
+        NONE,
+        INSTANCE,
+        OPEN_WORLD;
+
+        /** The historical flag: true for instance interiors, false for none. */
+        public static Interiors of(boolean interiors) {
+            return interiors ? INSTANCE : NONE;
+        }
+    }
+
+    /**
      * Whether LOD0 group {@code group} is left unread: without interiors, when the root's retained
-     * MOGI flags mark it interior (interior wins over exterior, as for MOGP). A group that is read
-     * still follows its own MOGP flags, whatever its MOGI flags said.
+     * MOGI flags mark it interior (interior wins over exterior, as for MOGP). A group read with its
+     * root's exterior groups still follows its own MOGP flags, whatever its MOGI flags said.
      */
     static boolean skipInterior(WmoFormats.Root root, int group, boolean interiors) {
         return !interiors && mogiInterior(root, group);
     }
 
     /**
-     * Whether LOD0 group {@code group} waits for the tile's interior read pass (#383): with
-     * interiors, when the root's retained MOGI flags mark it interior. Every building's exterior
-     * groups are read first, so interior reads only spend what of the tile's group reads is left.
+     * Whether LOD0 group {@code group} waits for the tile's interior read pass (#383): on
+     * open-world maps ({@code deferred}), when the root's retained MOGI flags mark it interior.
+     * Every building's exterior groups are read first, so interior reads only spend what of the
+     * tile's group reads is left. A deferred group is admitted as an interior, from what every
+     * exterior left, whatever its own MOGP flags say.
      */
-    static boolean deferInterior(WmoFormats.Root root, int group, boolean interiors) {
-        return interiors && mogiInterior(root, group);
+    static boolean deferInterior(WmoFormats.Root root, int group, boolean deferred) {
+        return deferred && mogiInterior(root, group);
     }
 
     private static boolean mogiInterior(WmoFormats.Root root, int group) {
@@ -1203,8 +1223,8 @@ public final class WorldExteriorObjects {
     }
 
     /**
-     * As above; with {@code interiors} (dungeon and raid maps, #280) interior WMO groups are drawn
-     * too, after every building's exterior groups and only within the budgets they leave.
+     * As above; with {@code interiors} (instance interiors, #280) interior WMO groups are drawn
+     * too, only within the budgets every building's exterior groups leave.
      */
     static TileObjects prepare(
             WorldStreamScopes engine,
@@ -1230,7 +1250,7 @@ public final class WorldExteriorObjects {
         return prepare(engine, scope, tile, token, modelReader, detail, retainLimit, false, 0);
     }
 
-    /** As above, with {@code interiors} drawn too (dungeon and raid maps, #280). */
+    /** As above, with {@code interiors} drawn too (instance interiors, #280). */
     static TileObjects prepare(
             WorldStreamScopes engine,
             WorldStreamScopes.Scope scope,
@@ -1258,6 +1278,30 @@ public final class WorldExteriorObjects {
             long retainLimit,
             boolean interiors,
             int compressedFormats) {
+        return prepare(
+                engine,
+                scope,
+                tile,
+                token,
+                modelReader,
+                detail,
+                retainLimit,
+                Interiors.of(interiors),
+                compressedFormats);
+    }
+
+    /** As above, with the map's interior mode (#280, #383). */
+    static TileObjects prepare(
+            WorldStreamScopes engine,
+            WorldStreamScopes.Scope scope,
+            WorldFormats.Tile tile,
+            Cancellation token,
+            ModelReader modelReader,
+            ImageDetail detail,
+            long retainLimit,
+            Interiors interiors,
+            int compressedFormats) {
+        Objects.requireNonNull(interiors);
         if ((compressedFormats & ~0xE) != 0) {
             throw new IllegalArgumentException("Compressed format mask");
         }
@@ -1386,8 +1430,11 @@ public final class WorldExteriorObjects {
         /** Compressed formats the session samples as blocks (bit per format code). */
         private final int compressedFormats;
 
-        /** Draw interior WMO groups too (dungeon and raid maps, #280). */
+        /** Draw interior WMO groups too (#280, #383). */
         private final boolean interiors;
+
+        /** Open-world maps: MOGI-interior groups are read after every exterior (#383). */
+        private final boolean deferInteriors;
 
         /** Interior meshes of drawn roots, held for {@link #placeInteriors}; bounded copies. */
         private final Map<Long, List<PendingMesh>> heldInteriors = new LinkedHashMap<>();
@@ -1407,6 +1454,17 @@ public final class WorldExteriorObjects {
          */
         private boolean interiorPass;
 
+        /** Interior meshes admitted by {@link #placeInteriors}, by identity. */
+        private final java.util.Set<Mesh> interiorMeshes =
+                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+
+        /**
+         * Image slots that only interior meshes draw, from {@link #allocateImages}: they get their
+         * levels after every exterior image, and a second read of one is tolerated as in the
+         * interior pass.
+         */
+        private boolean[] interiorOnlySlots = new boolean[0];
+
         private long heldVertices, heldIndices;
 
         /** Portal table rows the carried sets use so far (#383), against WmoPortalSet bounds. */
@@ -1417,10 +1475,11 @@ public final class WorldExteriorObjects {
                 ModelReader modelReader,
                 ImageDetail detail,
                 long retainLimit,
-                boolean interiors,
+                Interiors interiors,
                 int compressedFormats) {
             this.compressedFormats = compressedFormats;
-            this.interiors = interiors;
+            this.interiors = interiors != Interiors.NONE;
+            this.deferInteriors = interiors == Interiors.OPEN_WORLD;
             this.detail = detail;
             this.retainLimit = retainLimit;
             this.admission = admission;
@@ -1439,9 +1498,11 @@ public final class WorldExteriorObjects {
                 setIds = metadata.setIds();
                 long phase = WorldStageTimings.start();
                 place(metadata.worldObjects());
+                fitMaterialDraws();
+                // After fitMaterialDraws, so a root it removed never spends interior reads,
+                // portal rows or held copies.
                 int exteriorReads = groupsRead;
                 readInteriors();
-                fitMaterialDraws();
                 WorldStageTimings.stop("objects.phase.buildings", phase);
                 // LOD0 group files this tile read (MAX_GROUPS), for the measurement probe; the
                 // interior pass's share separately (#383).
@@ -1451,7 +1512,7 @@ public final class WorldExteriorObjects {
                 // Admission ran largest first; the set keeps obj0 source order.
                 placements.sort(java.util.Comparator.comparingInt(Placement::ordinal));
                 // Buildings first, then MDDF doodads, then the drawn buildings' doodad sets, and
-                // only then instance interiors (#280): every exterior, doodad and set doodad draw
+                // only then interiors (#280, #383): every exterior, doodad and set doodad draw
                 // is spent before an interior group is admitted, so interiors use only what is
                 // left. An interior-only root's own set doodads wait until its interiors decide
                 // whether it draws at all.
@@ -2242,8 +2303,8 @@ public final class WorldExteriorObjects {
         }
 
         /**
-         * Instance interiors (#280), after every building's exterior and every MDDF and set doodad
-         * of the drawn exteriors: drawn buildings in admission order (largest first), each held
+         * Interiors (#280, #383), after every building's exterior and every MDDF and set doodad of
+         * the drawn exteriors: drawn buildings in admission order (largest first), each held
          * interior group only if it still fits the tile budgets, the mesh count and the draw budget
          * left after every placement already drawn, for every placement of its building. A group
          * that does not fit is GROUP_INTERIOR_CAPPED; it never caps or displaces an exterior or a
@@ -2355,6 +2416,7 @@ public final class WorldExteriorObjects {
                     }
                     local[Count.GROUP_DRAWN.ordinal()]++;
                     kept.add(mapped);
+                    interiorMeshes.add(mapped);
                     meshes++;
                 }
                 if (kept.isEmpty()) {
@@ -2413,7 +2475,7 @@ public final class WorldExteriorObjects {
                     continue;
                 }
                 skipped[g] = skipInterior(root, g, this.interiors);
-                deferred[g] = deferInterior(root, g, this.interiors);
+                deferred[g] = deferInterior(root, g, deferInteriors);
                 if (deferred[g]) {
                     deferredCount++;
                 } else if (!skipped[g]) {
@@ -2437,8 +2499,9 @@ public final class WorldExteriorObjects {
             int[] local = new int[counts.length];
             var pending = new ArrayList<PendingMesh>();
             var budget = new RootBudget();
-            // Instance interiors (#280) are held for the tile-level pass after every building's
-            // exterior, so they never cap or displace an exterior.
+            // Interior groups read here (#280, and MOGP-interior groups on open-world maps, #383)
+            // are held for the tile-level pass after every building's exterior, so they never cap
+            // or displace an exterior.
             var interiors = new ArrayList<PendingMesh>();
             // Every LOD0 group's header, for the root's portal set (#383); null when unread.
             var headers = new WmoFormats.GroupHeader[lod0];
@@ -2548,7 +2611,11 @@ public final class WorldExteriorObjects {
                 token.check();
                 long rootId = entry.getKey();
                 var pending = entry.getValue();
-                int m = modelSlots.get(rootId);
+                Integer slot = modelSlots.get(rootId);
+                if (slot == null) {
+                    continue; // removed by fitMaterialDraws, its root and placements counted there
+                }
+                int m = slot;
                 int[] local = new int[counts.length];
                 var held = heldInteriors.get(rootId);
                 int reads = 0;
@@ -3571,18 +3638,45 @@ public final class WorldExteriorObjects {
          */
         private void allocateImages() {
             boolean[] used = new boolean[images.size()];
+            boolean[] exterior = new boolean[images.size()];
             for (var model : models) {
                 for (var mesh : model.meshes()) {
+                    boolean interior = interiorMeshes.contains(mesh);
                     for (var range : mesh.ranges()) {
                         used[range.image()] = true;
+                        exterior[range.image()] |= !interior;
                     }
                 }
             }
+            interiorOnlySlots = new boolean[images.size()];
+            for (int i = 0; i < used.length; i++) {
+                interiorOnlySlots[i] = used[i] && !exterior[i];
+            }
+            // Exterior images first, against the whole pool, exactly as without interiors; then
+            // interior-only images from what they leave (#383), so an interior never lowers an
+            // exterior image's level.
+            var unfitted = new java.util.HashSet<Integer>();
             for (var pool : Pool.values()) {
+                long spent = allocatePool(pool, exterior, 0, null);
+                allocatePool(pool, interiorOnlySlots, spent, unfitted);
+            }
+            dropInteriorRanges(unfitted);
+            // Registered pixels are reused only when the drawn level lies above them; every other
+            // demand lets them go now instead of holding them, unbudgeted, until the chains.
+            releaseRegisteredPixels();
+        }
+
+        /**
+         * Allots levels to the pool's demands whose slots are flagged, from the pool's budget less
+         * {@code spent}; returns {@code spent} plus what they cost.
+         */
+        private long allocatePool(
+                Pool pool, boolean[] slots, long spent, java.util.Set<Integer> unfitted) {
+            {
                 var chosen = new ArrayList<Demand>();
                 var requests = new ArrayList<WorldImageBudget.Request>();
                 for (var demand : demands) {
-                    if (demand != null && demand.pool() == pool && used[demand.slot()]) {
+                    if (demand != null && demand.pool() == pool && slots[demand.slot()]) {
                         chosen.add(demand);
                         boolean blocks = sampled(demand);
                         requests.add(
@@ -3607,20 +3701,109 @@ public final class WorldExteriorObjects {
                 int[] levels =
                         WorldImageBudget.allocate(
                                 requests,
-                                budget,
+                                Math.max(0, budget - spent),
                                 pool == Pool.DOODAD ? MODEL_IMAGE_SIDES : IMAGE_SIDES);
                 for (int i = 0; i < chosen.size(); i++) {
                     token.check();
+                    var demand = chosen.get(i);
+                    if (levels[i] < 0 && unfitted != null) {
+                        // An interior image whose smallest level does not fit beside every
+                        // exterior image: its interior batches are dropped (dropInteriorRanges).
+                        unfitted.add(demand.slot());
+                        continue;
+                    }
                     // Caps keep every pool far above its smallest sides; never drop here.
                     require(levels[i] >= 0, "EXTERIOR_IMAGE_BUDGET");
-                    var demand = chosen.get(i);
+                    spent += requests.get(i).cost(levels[i]);
                     if (levels[i] != demand.registered()) {
                         images.set(demand.slot(), relevel(demand, levels[i]));
                     }
                 }
             }
-            // Registered pixels are reused only when the drawn level lies above them; every other
-            // demand lets them go now instead of holding them, unbudgeted, until the chains.
+            return spent;
+        }
+
+        /**
+         * Drops the interior batches drawing an image the budget could not fit after every exterior
+         * image (BATCH_IMAGE_CAPPED), then interior meshes left without a batch
+         * (GROUP_INTERIOR_CAPPED) and roots left without a mesh (EMPTY). Only interior meshes draw
+         * those images, so no exterior batch is touched.
+         */
+        private void dropInteriorRanges(java.util.Set<Integer> unfitted) {
+            if (unfitted.isEmpty()) {
+                return;
+            }
+            int[] uses = new int[models.size()];
+            for (var placement : placements) {
+                uses[placement.model()]++;
+            }
+            boolean[] removed = new boolean[models.size()];
+            for (int m = 0; m < models.size(); m++) {
+                var model = models.get(m);
+                if (model.doodad()) {
+                    continue;
+                }
+                boolean changed = false;
+                var kept = new ArrayList<Mesh>();
+                for (var mesh : model.meshes()) {
+                    if (!interiorMeshes.contains(mesh)) {
+                        kept.add(mesh);
+                        continue;
+                    }
+                    var ranges = new ArrayList<DrawRange>();
+                    for (var range : mesh.ranges()) {
+                        if (!unfitted.contains(range.image())) {
+                            ranges.add(range);
+                            continue;
+                        }
+                        count(Count.BATCH_IMAGE_CAPPED);
+                        counts[Count.BATCH_DRAWN.ordinal()]--;
+                        if (kind(range.blend()) == CUTOUT) {
+                            counts[Count.BATCH_CUTOUT.ordinal()]--;
+                        } else if (kind(range.blend()) >= BLENDED) {
+                            counts[Count.BATCH_BLENDED.ordinal()]--;
+                        }
+                    }
+                    if (ranges.size() == mesh.ranges().size()) {
+                        kept.add(mesh);
+                        continue;
+                    }
+                    changed = true;
+                    if (ranges.isEmpty()) {
+                        counts[Count.GROUP_DRAWN.ordinal()]--;
+                        count(Count.GROUP_INTERIOR_CAPPED);
+                        continue;
+                    }
+                    var trimmed =
+                            new Mesh(
+                                    mesh.groupOrdinal,
+                                    mesh.groupId,
+                                    mesh.groupFlags,
+                                    mesh.vertices,
+                                    mesh.colours,
+                                    mesh.indices,
+                                    ranges);
+                    interiorMeshes.add(trimmed);
+                    kept.add(trimmed);
+                }
+                if (!changed) {
+                    continue;
+                }
+                if (kept.isEmpty()) {
+                    removed[m] = true;
+                    counts[Count.PLACEMENT_DRAWN.ordinal()] -= uses[m];
+                    counts[Count.PLACEMENT_EMPTY.ordinal()] += uses[m];
+                    counts[Count.ROOT_DRAWN.ordinal()]--;
+                    count(Count.ROOT_EMPTY);
+                    rootStates.put(model.rootId(), RootState.EMPTY);
+                    rootDoodads.remove(model.rootId());
+                }
+                models.set(m, new Model(model.rootId(), false, kept, model.portals()));
+            }
+            removeModels(removed);
+        }
+
+        private void releaseRegisteredPixels() {
             for (int i = 0; i < demands.size(); i++) {
                 var demand = demands.get(i);
                 if (demand == null || demand.registeredRgba() == null) {
@@ -3780,12 +3963,22 @@ public final class WorldExteriorObjects {
                 return kept; // A refused second read is not tried again.
             }
             // A refused second read of a cutout or blended image keeps what the first read gave,
-            // as the first read would have: it never costs the tile its set.
-            var input =
-                    derived(
-                            demand.id(),
-                            imageKind(demand.pool()),
-                            demand.pool() == Pool.MATERIAL ? new boolean[1] : null);
+            // as the first read would have: it never costs the tile its set. Neither does one of
+            // an image only interiors draw (#383).
+            boolean interior =
+                    demand.slot() < interiorOnlySlots.length && interiorOnlySlots[demand.slot()];
+            boolean wasInteriorPass = interiorPass;
+            interiorPass = wasInteriorPass || interior;
+            WorldStreamScopes.Input input;
+            try {
+                input =
+                        derived(
+                                demand.id(),
+                                imageKind(demand.pool()),
+                                demand.pool() == Pool.MATERIAL ? new boolean[1] : null);
+            } finally {
+                interiorPass = wasInteriorPass;
+            }
             if (input == null) {
                 unreadSources.add(demand.id());
                 return null;

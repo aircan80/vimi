@@ -389,8 +389,20 @@ public final class WorldStreamSourceBridgeTest {
         // Budgets are mip-chain texels (#265): the chain of a twice-as-large texture is double
         // within one texel, the 1 x 1 level.
         check(Math.abs(high.totalPixels() - 2 * standard.totalPixels()) <= 3, "High doubles every pool");
-        // #280, #383: every map draws its WMO interiors, open-world maps included.
-        check(WorldView.DRAW_INTERIORS, "Every map draws interiors");
+        // #280: dungeon (InstanceType 1) and raid (2) maps draw instance interiors; #383: every
+        // other map draws interiors read after every exterior.
+        var instance = com.vibeminer.concepts.world.WorldExteriorObjects.Interiors.INSTANCE;
+        var openWorld = com.vibeminer.concepts.world.WorldExteriorObjects.Interiors.OPEN_WORLD;
+        check(WorldView.interiorMode(new com.vibeminer.concepts.world.WorldService.MapInfo(
+                36, "Dungeon", "D", 1, 1L)) == instance, "Dungeon maps draw instance interiors");
+        check(WorldView.interiorMode(new com.vibeminer.concepts.world.WorldService.MapInfo(
+                249, "Raid", "R", 2, 1L)) == instance, "Raid maps draw instance interiors");
+        check(WorldView.interiorMode(new com.vibeminer.concepts.world.WorldService.MapInfo(
+                0, "Continent", "C", 0, 1L)) == openWorld, "Open-world maps draw interiors after exteriors");
+        check(WorldView.interiorMode(new com.vibeminer.concepts.world.WorldService.MapInfo(
+                30, "Battleground", "B", 3, 1L)) == openWorld, "Battlegrounds draw interiors after exteriors");
+        check(WorldView.interiorMode(new com.vibeminer.concepts.world.WorldService.MapInfo(
+                7, "Unknown", "U", null, 1L)) == openWorld, "An unreadable instance type is open-world");
         check(WorldStreamGpuOwner.exteriorsEnabled(null), "Exteriors are on without the property");
         check(WorldStreamGpuOwner.exteriorsEnabled("true"), "true keeps exteriors on");
         check(WorldStreamGpuOwner.exteriorsEnabled(""), "An empty value keeps exteriors on");

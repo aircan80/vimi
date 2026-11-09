@@ -673,7 +673,7 @@ public final class WorldTerrainStreaming {
     }
 
     /**
-     * As above; {@code interiors} also draws interior WMO groups, for dungeon and raid maps (#280),
+     * As above; {@code interiors} also draws interior WMO groups as instance interiors (#280),
      * within the budgets each building's exterior groups leave.
      */
     public WorldExteriorObjects.TileObjects prepareExteriorObjects(
@@ -698,6 +698,27 @@ public final class WorldTerrainStreaming {
             WorldExteriorObjects.ImageDetail detail,
             boolean interiors,
             int compressedFormats) {
+        return prepareExteriorObjects(
+                scope,
+                comparison,
+                cancel,
+                detail,
+                WorldExteriorObjects.Interiors.of(interiors),
+                compressedFormats);
+    }
+
+    /**
+     * As above, with the map's interior mode: instance interiors (#280) or open-world interiors,
+     * read after every building's exterior groups (#383).
+     */
+    public WorldExteriorObjects.TileObjects prepareExteriorObjects(
+            Scope scope,
+            WorldFormats.Tile comparison,
+            Cancellation cancel,
+            WorldExteriorObjects.ImageDetail detail,
+            WorldExteriorObjects.Interiors interiors,
+            int compressedFormats) {
+        Objects.requireNonNull(interiors);
         Objects.requireNonNull(detail);
         Objects.requireNonNull(scope);
         Objects.requireNonNull(comparison);

@@ -58,7 +58,8 @@ import javax.management.openmbean.CompositeData;
  * <p>Other properties: {@code probe.build} (default 70790); {@code probe.scenarios} = name:map:x:y
  * list (vimi tile coordinates; default Elwynn around Goldshire 49,31 and Stormwind City 48,30);
  * {@code probe.size}, {@code probe.passes}, {@code probe.objects} for prep; {@code
- * probe.interiors=false} for exteriors only; {@code probe.root} to list one WMO root's drawn groups; {@code probe.maps} for
+ * probe.interiors=false} for exteriors only; {@code probe.root} to list one WMO root's drawn
+ * groups; {@code probe.maps} for
  * refusals (default 0,1); {@code probe.out} for the report; {@code probe.gcLog} for the -Xlog:gc
  * file the task writes.
  */
@@ -256,7 +257,9 @@ public final class WorldMeasurementProbe {
                             tile.x(),
                             tile.y(),
                             model.meshes().stream()
-                                    .map(com.vibeminer.concepts.world.WorldExteriorObjects.Mesh::groupOrdinal)
+                                    .map(
+                                            com.vibeminer.concepts.world.WorldExteriorObjects.Mesh
+                                                    ::groupOrdinal)
                                     .sorted()
                                     .toList(),
                             model.portals() == null
@@ -269,8 +272,11 @@ public final class WorldMeasurementProbe {
     }
 
     /** As the World view, unless {@code probe.interiors=false} measures exteriors only (#383). */
-    static boolean probeInteriors() {
-        return WorldView.DRAW_INTERIORS && !"false".equals(System.getProperty("probe.interiors"));
+    static com.vibeminer.concepts.world.WorldExteriorObjects.Interiors probeInteriors(
+            WorldService.MapInfo map) {
+        return "false".equals(System.getProperty("probe.interiors"))
+                ? com.vibeminer.concepts.world.WorldExteriorObjects.Interiors.NONE
+                : WorldView.interiorMode(map);
     }
 
     // ---- Tile prep only: the real source path, no helper, GPU or FX (#422) ----------------
@@ -321,7 +327,7 @@ public final class WorldMeasurementProbe {
                         try (var set =
                                 source.prepareExteriorObjects(
                                         scope, tile, Cancellation.NONE, detail,
-                                        probeInteriors())) {
+                                        probeInteriors(map), 0)) {
                             WorldStageTimings.stop("prep.objects", prepared);
                             set.tallyCounts();
                             if (pass == 1) usage.add(set);
@@ -1367,7 +1373,7 @@ public final class WorldMeasurementProbe {
             var detail = WorldStreamGpuOwner.IMAGE_DETAIL;
             // As the World view: every map draws its interiors (#280, #383), and their roots
             // carry portal sets the renderer culls with.
-            boolean interiors = probeInteriors();
+            var interiors = probeInteriors(map);
             WorldStreamSourceBridge.ExteriorPreparer preparer =
                     (source, scope, tile, cancellation, formats) ->
                             WorldStreamSourceBridge.prepareExterior(

@@ -556,6 +556,23 @@ final class WorldPreparedTerrain {
             WorldExteriorObjects.ImageDetail detail,
             boolean interiors,
             int compressedFormats) {
+        return exteriorObjects(
+                scope,
+                tile,
+                cancel,
+                detail,
+                WorldExteriorObjects.Interiors.of(interiors),
+                compressedFormats);
+    }
+
+    /** As above, with the map's interior mode (#280, #383). */
+    WorldExteriorObjects.TileObjects exteriorObjects(
+            WorldStreamScopes.Scope scope,
+            WorldFormats.Tile tile,
+            Cancellation cancel,
+            WorldExteriorObjects.ImageDetail detail,
+            WorldExteriorObjects.Interiors interiors,
+            int compressedFormats) {
         checkOpen();
         return WorldExteriorObjects.prepare(
                 scopes,

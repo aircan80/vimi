@@ -3398,9 +3398,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
         streamingDistance = distance;
         // FAR keeps 512 masks on any tier, as its terrain budget assumes (#173, #174 step 2b-2).
         WorldStreamGpuOwner.splatMasks(detail, distance);
-        // Every map draws its WMO interior groups (#280, #383), after every building's exterior
-        // and only within what the exteriors leave; portal sets hide them from outside.
-        boolean interiors = DRAW_INTERIORS;
+        // Every map draws its WMO interior groups (#280, #383), within what the exteriors leave;
+        // portal sets hide them from outside.
+        var interiors = interiorMode(inventory.map());
         WorldStreamSourceBridge.ExteriorPreparer preparer = creatureSource == null
                 ? (source, scope, tile, cancellation, formats) -> WorldStreamSourceBridge.prepareExterior(
                         source, scope, tile, cancellation, null, detail, interiors, formats)
@@ -4277,11 +4277,22 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     // ---- Instances: recorded entrances and in-place zone-in (#259) ----------------------------
 
+    /** Dungeon (InstanceType 1) and raid (2) maps draw instance interiors (#280). */
+    static boolean instanceInteriors(WorldService.MapInfo map) {
+        return map != null && map.type() != null && (map.type() == 1 || map.type() == 2);
+    }
+
     /**
-     * Streamed tiles draw interior WMO groups on every map: dungeons and raids (#280) and the open
-     * world (#383), where caves and buildings are entered from outside.
+     * Streamed tiles draw interior WMO groups on every map: dungeons and raids as instance
+     * interiors (#280), every other map (continents, battlegrounds, arenas) with interiors read
+     * after every exterior (#383), where caves and buildings are entered from outside.
      */
-    static final boolean DRAW_INTERIORS = true;
+    static com.vibeminer.concepts.world.WorldExteriorObjects.Interiors interiorMode(
+            WorldService.MapInfo map) {
+        return instanceInteriors(map)
+                ? com.vibeminer.concepts.world.WorldExteriorObjects.Interiors.INSTANCE
+                : com.vibeminer.concepts.world.WorldExteriorObjects.Interiors.OPEN_WORLD;
+    }
 
     /** A map that records one global world model and no terrain tiles (an interior map). */
     private static boolean globalOnly(WorldService.Inventory data) {
