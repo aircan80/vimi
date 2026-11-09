@@ -16,13 +16,16 @@ import java.util.concurrent.TimeUnit;
  * Actual GPU proof of portal culling (#383 step 3b) on the production native owner, with authored
  * data only. One placed root with a portal set: room A (interior, local x -5..5) holds the camera,
  * room B (interior, x 5..15) lies behind a small door in A's wall at x = 5, off to the eye's left
- * (y 4.2..4.8, z -0.5..0.5). B's only mesh is an opaque red quad at x = 10 (y -8..8, z -2..2).
+ * (y 4.2..4.8, z -0.5..0.5). B's only mesh is an opaque red quad at x = 10 (y -8..8, z -2..2). A
+ * second placement, a green quad at x = 9 like a set doodad in B, is tied to the root's group B.
  *
  * <ul>
- *   <li>Facing +x the door is in view: the walk reaches B and the quad covers the frame's centre.
- *   <li>Turned 20 degrees right the door leaves the view while the quad still covers the centre:
- *       the walk does not reach B, so its mesh is culled and the centre shows what is behind.
- *   <li>The same view with object culling off draws the quad again (nothing is walked).
+ *   <li>Facing +x the door is in view: the walk reaches B, so the tied green quad draws in front of
+ *       the red one and covers the frame's centre.
+ *   <li>Turned 20 degrees right the door leaves the view while both quads still cover the centre:
+ *       the walk does not reach B, so its mesh and the tied placement are culled and the centre
+ *       shows what is behind.
+ *   <li>The same view with object culling off draws both quads again (nothing is walked).
  * </ul>
  */
 final class WorldStreamPortalCullProof {
@@ -61,12 +64,28 @@ final class WorldStreamPortalCullProof {
         var red =
                 ByteBuffer.allocate(4).put((byte) 255).put((byte) 0).put((byte) 0).put((byte) 255);
         builder.image(1, 1, WorldStreamObjectsFileTest.chain(1, 1, red.flip()));
+        var green =
+                ByteBuffer.allocate(4).put((byte) 0).put((byte) 255).put((byte) 0).put((byte) 255);
+        builder.image(1, 1, WorldStreamObjectsFileTest.chain(1, 1, green.flip()));
         builder.model();
         builder.portals(rooms());
+        quad(builder, 10, 0, 1);
+        // The doodad model: no portal set of its own.
+        builder.model();
+        quad(builder, 9, 1, -1);
+        var identity = new double[] {1, 0, 0, 0, 1, 0, 0, 0, 1};
+        builder.placement(0, X, Y, Z, 1, identity);
+        builder.placement(1, X, Y, Z, 1, identity, 0, 1);
+        return builder.build();
+    }
+
+    /** A double-sided opaque quad at local {@code x} (y -8..8, z -2..2) drawn with one image. */
+    private static void quad(
+            WorldStreamTileWriter.Exterior.Builder builder, float x, int image, int group) {
         var vertices = FloatBuffer.allocate(4 * 8);
         double[][] corners = {{-8, -2}, {8, -2}, {8, 2}, {-8, 2}};
         for (var corner : corners) {
-            vertices.put(10).put((float) corner[0]).put((float) corner[1]);
+            vertices.put(x).put((float) corner[0]).put((float) corner[1]);
             // The fixed light direction as the normal: full light.
             vertices.put(-0.408248290463863f).put(-0.408248290463863f).put(0.816496580927726f);
             vertices.put(.5f).put(.5f);
@@ -74,18 +93,22 @@ final class WorldStreamPortalCullProof {
         builder.mesh(
                 vertices.flip(),
                 IntBuffer.wrap(new int[] {0, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2}),
-                new int[] {0, 12, 0},
+                new int[] {0, 12, image},
                 new int[] {WorldStreamObjectsFile.OPAQUE},
                 IntBuffer.allocate(0),
-                1);
-        builder.placement(0, X, Y, Z, 1, new double[] {1, 0, 0, 0, 1, 0, 0, 0, 1});
-        return builder.build();
+                group);
     }
 
     /** Whether a pixel is the quad's red (either byte order). */
     private static boolean red(int pixel) {
         int a = pixel >>> 16 & 255, g = pixel >>> 8 & 255, b = pixel & 255;
         return Math.max(a, b) > 150 && g < 60 && Math.min(a, b) < 60;
+    }
+
+    /** Whether a pixel is the tied quad's green. */
+    private static boolean green(int pixel) {
+        int a = pixel >>> 16 & 255, g = pixel >>> 8 & 255, b = pixel & 255;
+        return g > 150 && Math.max(a, b) < 60;
     }
 
     @SuppressWarnings("try")
@@ -110,6 +133,9 @@ final class WorldStreamPortalCullProof {
                             .get(20, TimeUnit.SECONDS);
         }
         require(objects.portals(0) != null, "The packed root carries its traversal");
+        require(
+                objects.placementParents[1] == 0 && objects.placementGroups[1] == 1,
+                "The doodad placement is tied to the root's room B");
         Path mapping = directory.resolve("frames-portal");
         try (var frames = WorldFrameFileV2.create(mapping, NONCE, WorldStreamNativeProof.SCOPE);
                 var reader = WorldFrameFileV2.open(mapping, NONCE, WorldStreamNativeProof.SCOPE);
@@ -158,35 +184,52 @@ final class WorldStreamPortalCullProof {
                     aheadSingleCounts.portalWalks() == seenCounts.portalWalks()
                             && aheadSingleCounts.portalMeshesCulled()
                                     == seenCounts.portalMeshesCulled()
+                            && aheadSingleCounts.portalPlacementsCulled()
+                                    == seenCounts.portalPlacementsCulled()
                             && turnedSingleCounts.portalWalks() == hiddenCounts.portalWalks()
                             && turnedSingleCounts.portalMeshesCulled()
-                                    == hiddenCounts.portalMeshesCulled(),
+                                    == hiddenCounts.portalMeshesCulled()
+                            && turnedSingleCounts.portalPlacementsCulled()
+                                    == hiddenCounts.portalPlacementsCulled(),
                     "Instancing changes no walk " + aheadSingleCounts + " " + turnedSingleCounts);
             owner.objectCulling(false);
             int unculled = frame(owner, reader, turned).get(centre);
             var unculledCounts = owner.frameCounts();
             owner.objectCulling(true);
             require(
-                    red(seen)
+                    green(seen)
                             && seenCounts.portalWalks() == 1
-                            && seenCounts.portalMeshesCulled() == 0,
-                    "Door in view: B drawn " + Integer.toHexString(seen) + " " + seenCounts);
+                            && seenCounts.portalMeshesCulled() == 0
+                            && seenCounts.portalPlacementsCulled() == 0,
+                    "Door in view: B and its doodad drawn "
+                            + Integer.toHexString(seen)
+                            + " "
+                            + seenCounts);
             require(
                     !red(hidden)
+                            && !green(hidden)
                             && hiddenCounts.portalWalks() == 1
-                            && hiddenCounts.portalMeshesCulled() == 1,
-                    "Door out of view: B culled "
+                            && hiddenCounts.portalMeshesCulled() == 1
+                            && hiddenCounts.portalPlacementsCulled() == 1,
+                    "Door out of view: B and its doodad culled "
                             + Integer.toHexString(hidden)
                             + " "
                             + hiddenCounts);
             require(
-                    red(unculled)
+                    green(unculled)
                             && unculledCounts.portalWalks() == 0
-                            && unculledCounts.portalMeshesCulled() == 0,
-                    "Culling off: B drawn " + Integer.toHexString(unculled) + " " + unculledCounts);
+                            && unculledCounts.portalMeshesCulled() == 0
+                            && unculledCounts.portalPlacementsCulled() == 0,
+                    "Culling off: B and its doodad drawn "
+                            + Integer.toHexString(unculled)
+                            + " "
+                            + unculledCounts);
             require(
-                    hiddenCounts.objectSubmits() == seenCounts.objectSubmits() - 1,
-                    "The culled mesh's submit is saved " + seenCounts + " " + hiddenCounts);
+                    hiddenCounts.objectSubmits() == seenCounts.objectSubmits() - 2,
+                    "The culled mesh's and doodad's submits are saved "
+                            + seenCounts
+                            + " "
+                            + hiddenCounts);
             return "seen="
                     + Integer.toHexString(seen)
                     + " hidden="
@@ -205,6 +248,12 @@ final class WorldStreamPortalCullProof {
                     + hiddenCounts.portalMeshesCulled()
                     + "/"
                     + unculledCounts.portalMeshesCulled()
+                    + " placementsCulled="
+                    + seenCounts.portalPlacementsCulled()
+                    + "/"
+                    + hiddenCounts.portalPlacementsCulled()
+                    + "/"
+                    + unculledCounts.portalPlacementsCulled()
                     + " objectSubmits="
                     + seenCounts.objectSubmits()
                     + "/"

@@ -451,10 +451,11 @@ final class WorldStreamScopes {
          * Per-tile outdoor exterior set: WDT, OBJ0, the capped derived WMO reads (64 opaque images,
          * 64 opaque images of very large buildings drawn by group, 64 more for their interiors and
          * 32 cutout or blended images) and the capped BASIC doodad reads (M2 models, their first
-         * SKIN and their images).
+         * SKIN and their images), with the interior allowance's 128 more models and 160 more images
+         * for set doodads tied to an interior group.
          */
         BASIC_EXTERIOR(
-                2 + 24 + 256 + 64 + 64 + 64 + 32 + 96 + 96 + 96,
+                2 + 24 + 256 + 64 + 64 + 64 + 32 + 96 + 96 + 96 + 128 + 128 + 160,
                 24,
                 1 << 20,
                 256,
@@ -462,11 +463,11 @@ final class WorldStreamScopes {
                 // Each image may be read twice: once when admitted, once at its allotted level.
                 2 * (64 + 64 + 64 + 32),
                 1 << 20,
-                96,
+                96 + 128,
                 2 << 20,
-                96,
+                96 + 128,
                 1 << 20,
-                2 * 96,
+                2 * 96 + 160,
                 1 << 20);
         private final int bindings, roots, rootLimit, groups, groupLimit, images, imageLimit;
         private final int models, modelLimit, skins, skinLimit, modelImages, modelImageLimit;

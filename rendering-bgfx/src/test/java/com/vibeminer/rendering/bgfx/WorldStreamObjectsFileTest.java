@@ -15,6 +15,7 @@ import com.vibeminer.rendering.world.WmoPortalSet;
 import com.vibeminer.rendering.world.WmoPortalTraversal;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
 import java.nio.channels.FileChannel;
@@ -284,16 +285,16 @@ final class WorldStreamObjectsFileTest {
         assertEquals(
                 WorldStreamObjectsFile.OPAQUE | WorldStreamObjectsFile.UNLIT,
                 unlit.build().data().ranges[3]);
-        // The file carries version 8: the reader accepts no other. A version 3 file (two-int
+        // The file carries version 9: the reader accepts no other. A version 3 file (two-int
         // RGBA8-only image table) or a stale version 4 file (#420, before the additive and unlit
         // classes of #367) fails its header check instead of being misread.
         var clean = Files.readAllBytes(objectsPath());
         assertEquals(WorldStreamObjectsFile.VERSION, clean[8]);
-        assertEquals(8, WorldStreamObjectsFile.VERSION);
+        assertEquals(9, WorldStreamObjectsFile.VERSION);
         // Version 5 (#367, before the vertex colours of #375), version 6 (#375, before the
-        // portal tables and mesh groups of #383) and version 7 (before the INTERIOR_LIGHT range
-        // flag of #383) are stale as well.
-        for (byte stale : new byte[] {3, 4, 5, 6, 7}) {
+        // portal tables and mesh groups of #383), version 7 (before the INTERIOR_LIGHT range
+        // flag of #383) and version 8 (before placement portal ties) are stale as well.
+        for (byte stale : new byte[] {3, 4, 5, 6, 7, 8}) {
             var bytes = clean.clone();
             bytes[8] = stale;
             Files.write(objectsPath(), bytes);
@@ -494,11 +495,13 @@ final class WorldStreamObjectsFileTest {
     /** The tables of a valid set file, copied so one value can be changed and revalidated. */
     private static final class Tables {
         final WorldStreamObjectsFile.Data d;
-        final int[] meshGroups, sets, groups, vertexCounts, refs;
+        final int[] meshGroups, sets, groups, vertexCounts, refs, parents, tiedGroups;
         final float[] boxes, planes, vertices;
 
         Tables(WorldStreamObjectsFile.Data d) {
             this.d = d;
+            parents = d.placementParents.clone();
+            tiedGroups = d.placementGroups.clone();
             meshGroups = d.meshGroups.clone();
             sets = d.portalSets.clone();
             groups = d.portalGroups.clone();
@@ -532,9 +535,130 @@ final class WorldStreamObjectsFileTest {
                                             vertexCounts,
                                             planes,
                                             vertices,
-                                            refs))
+                                            refs,
+                                            parents,
+                                            tiedGroups))
                     .getMessage();
         }
+    }
+
+    /**
+     * {@link #twoSets}'s three placements, then four placements of model 0: one tied to interior
+     * group 1 of placement 1's set (kept), and three ties the builder drops: to a placement whose
+     * model has no set, to a group past the set, and to a placement not yet added.
+     */
+    private static WorldStreamTileWriter.Exterior tiedSets() {
+        var builder = WorldStreamTileWriter.Exterior.builder();
+        builder.image(2, 2, chain(2, 2, rgba(4, 10)));
+        builder.model();
+        triangle(builder, -1);
+        builder.model();
+        builder.portals(twoRooms());
+        triangle(builder, 1);
+        triangle(builder, 0);
+        builder.model();
+        builder.portals(threeRooms());
+        triangle(builder, 2);
+        triangle(builder, 0);
+        triangle(builder, 1);
+        var turn = new double[] {1, 0, 0, 0, 1, 0, 0, 0, 1};
+        for (int m = 0; m < 3; m++) {
+            builder.placement(m, 0, 0, 0, 1, turn);
+        }
+        builder.placement(0, 1, 0, 0, 1, turn, 1, 1);
+        builder.placement(0, 2, 0, 0, 1, turn, 0, 0);
+        builder.placement(0, 3, 0, 0, 1, turn, 2, 3);
+        builder.placement(0, 4, 0, 0, 1, turn, 9, 0);
+        return builder.build();
+    }
+
+    @Test
+    void placementTiesRoundTripInTheFormerlyReservedInt() throws Exception {
+        var exterior = tiedSets();
+        var written = data(exterior);
+        assertArrayEquals(new int[] {-1, -1, -1, 1, -1, -1, -1}, written.placementParents);
+        assertArrayEquals(new int[] {-1, -1, -1, 1, -1, -1, -1}, written.placementGroups);
+        // A tie costs no byte: the length is that of the same tables untied.
+        assertEquals(
+                WorldStreamObjectsFile.length(3, 6, 6, 7, 1, 18, 18, written.imageBytes())
+                        + WorldStreamObjectsFile.portalLength(2, 5, 3, 11, 6),
+                exterior.bytes());
+        var reference = write(exterior);
+        var read = WorldStreamObjectsFile.read(objectsPath(), IDENTITY, reference, () -> false);
+        assertArrayEquals(written.placementParents, read.placementParents);
+        assertArrayEquals(written.placementGroups, read.placementGroups);
+        assertEquals((1 + 1) << 16 | 1, WorldStreamObjectsFile.tie(1, 1));
+        assertEquals(0, WorldStreamObjectsFile.tie(-1, -1));
+        // A stored tie naming a group without a parent is refused while reading.
+        var bytes = Files.readAllBytes(objectsPath());
+        int placements =
+                WorldStreamObjectsFile.HEADER_BYTES
+                        + written.modelCount() * 8
+                        + written.meshCount() * 24
+                        + written.rangeCount() * WorldStreamObjectsFile.RANGE_INTS * 4;
+        int tie = placements + 3 * (8 + WorldStreamObjectsFile.PLACEMENT_DOUBLES * 8) + 4;
+        ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).putInt(tie, 1);
+        Files.write(objectsPath(), bytes);
+        var refused =
+                assertThrows(
+                        IOException.class,
+                        () ->
+                                WorldStreamObjectsFile.read(
+                                        objectsPath(), IDENTITY, reference, () -> false));
+        assertEquals("Placement tie", refused.getCause().getMessage());
+    }
+
+    @Test
+    void placementTiesNameAnotherPlacementsInteriorGroup() throws Exception {
+        var valid = data(tiedSets());
+        var self = new Tables(valid);
+        self.parents[3] = 3;
+        assertEquals("Placement ties", self.refused());
+        var setless = new Tables(valid);
+        setless.parents[3] = 0;
+        assertEquals("Placement ties", setless.refused());
+        var past = new Tables(valid);
+        past.tiedGroups[3] = 2;
+        assertEquals("Placement ties", past.refused());
+        var outside = new Tables(valid);
+        outside.parents[3] = 7;
+        assertEquals("Placement ties", outside.refused());
+        var half = new Tables(valid);
+        half.parents[3] = -1;
+        assertEquals("Placement ties", half.refused());
+        // Group 1 of placement 1's set made exterior: a tie never names an exterior group.
+        var exterior = new Tables(valid);
+        exterior.groups[WorldStreamObjectsFile.PORTAL_GROUP_INTS] = 0x8;
+        assertEquals("Placement ties", exterior.refused());
+        var counts = new Tables(valid);
+        assertEquals(
+                "Placement ties",
+                assertThrows(
+                                IllegalArgumentException.class,
+                                () ->
+                                        new WorldStreamObjectsFile.Data(
+                                                valid.models,
+                                                valid.meshes,
+                                                valid.ranges,
+                                                valid.placementModels,
+                                                valid.placements,
+                                                valid.images,
+                                                valid.vertices,
+                                                valid.colours,
+                                                valid.indices,
+                                                valid.pixels,
+                                                valid.compressedFormats,
+                                                counts.meshGroups,
+                                                counts.sets,
+                                                counts.groups,
+                                                counts.boxes,
+                                                counts.vertexCounts,
+                                                counts.planes,
+                                                counts.vertices,
+                                                counts.refs,
+                                                new int[] {-1},
+                                                new int[] {-1}))
+                        .getMessage());
     }
 
     @Test
@@ -1311,7 +1435,7 @@ final class WorldStreamObjectsFileTest {
         assertEquals(
                 WorldStreamObjectsFile.ADDITIVE | WorldStreamObjectsFile.UNLIT, read.ranges[11]);
         assertEquals(WorldStreamObjectsFile.OPAQUE | WorldStreamObjectsFile.UNLIT, read.ranges[15]);
-        assertEquals(8, WorldStreamObjectsFile.VERSION);
+        assertEquals(9, WorldStreamObjectsFile.VERSION);
         assertEquals(h, read.placements[8], 0);
         // An unknown class, a scaled matrix or a reflection is refused.
         // Modulate (4) and unknown flag bits stay refused: 0x800 alone and beside a known kind

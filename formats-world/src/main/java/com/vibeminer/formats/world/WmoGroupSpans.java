@@ -18,6 +18,10 @@ import java.util.function.Consumer;
  * colors()} are always the first recorded set. Triangle materials come from MOPY (2 bytes per
  * triangle) or, in newer groups, MPY2 (4 bytes per triangle), never both; {@link
  * Borrow#triangleBytes()} tells which.
+ *
+ * <p>MODR, the group's doodad references (indexes into the root's MODD), is exposed when it is one
+ * well-formed chunk of unsigned 16-bit values; a missing, odd-sized or repeated MODR is never a
+ * reason to refuse the group, it only leaves {@link Borrow#doodadRefs()} null.
  */
 public final class WmoGroupSpans {
     /**
@@ -40,6 +44,10 @@ public final class WmoGroupSpans {
     private static final int MOVT = 0x4d4f5654, MONR = 0x4d4f4e52, MOVI = 0x4d4f5649;
     private static final int MOTV = 0x4d4f5456, MOBA = 0x4d4f4241, MOPY = 0x4d4f5059;
     private static final int MOCV = 0x4d4f4356, MLIQ = 0x4d4c4951, MPY2 = 0x4d505932;
+    private static final int MODR = 0x4d4f4452;
+
+    /** MODR references per group: MODD indexes are unsigned 16-bit values. */
+    public static final int MAX_DOODAD_REFS = 65536;
 
     /** MOGP flags declaring a second MOCV, a second MOTV and a third MOTV. */
     private static final long COLORS2 = 0x1000000L, UV2 = 0x2000000L, UV3 = 0x40000000L;
@@ -159,7 +167,7 @@ public final class WmoGroupSpans {
         private List<WmoFormats.Batch> batches;
         private List<WmoFormats.Chunk> chunks;
         private Floats positions, normals, uv;
-        private Indices indices;
+        private Indices indices, doodadRefs;
         private Bytes triangles, colors, liquid;
         private final int triangleBytes;
         private final int metadataBytes;
@@ -176,6 +184,7 @@ public final class WmoGroupSpans {
             triangles = p.triangles;
             colors = p.colors;
             liquid = p.liquid;
+            doodadRefs = p.doodadRefsRefused ? null : p.doodadRefs;
             triangleBytes = p.triangleBytes;
             metadataBytes = p.budget;
         }
@@ -244,6 +253,15 @@ public final class WmoGroupSpans {
             return liquid;
         }
 
+        /**
+         * MODR: the root MODD indexes of the doodads this group lists, in file order; null when the
+         * group has no MODR, or an odd-sized or repeated one.
+         */
+        public Indices doodadRefs() {
+            check();
+            return doodadRefs;
+        }
+
         // Conservative named metadata reservation, not a measurement of JVM/RSS usage.
         int metadataBytes() {
             check();
@@ -262,6 +280,7 @@ public final class WmoGroupSpans {
             triangles = null;
             colors = null;
             liquid = null;
+            doodadRefs = null;
         }
     }
 
@@ -274,7 +293,8 @@ public final class WmoGroupSpans {
         private final ArrayList<WmoFormats.Chunk> chunks = new ArrayList<>();
         private WmoFormats.GroupHeader header;
         private Floats positions, normals, uv;
-        private Indices indices;
+        private Indices indices, doodadRefs;
+        private boolean doodadRefsRefused;
         private Bytes triangles, colors, liquid;
         private int budget = 4096, seen, triangleBytes;
         private int extraUv, extraColors;
@@ -371,6 +391,10 @@ public final class WmoGroupSpans {
         }
 
         private void mesh(int tag, int bytes) {
+            if (tag == MODR) {
+                doodadRefs(bytes);
+                return;
+            }
             int bit = bit(tag);
             if (bit != 0 && (seen & bit) != 0 && extra(tag, bytes)) {
                 return;
@@ -423,6 +447,21 @@ public final class WmoGroupSpans {
                     /* Unparsed source facts only. */
                 }
             }
+        }
+
+        /** MODR: kept when well formed; otherwise only the references are lost, never the group. */
+        private void doodadRefs(int bytes) {
+            if (doodadRefs != null || doodadRefsRefused) {
+                doodadRefsRefused = true;
+                return;
+            }
+            if (bytes % 2 != 0 || bytes / 2 > MAX_DOODAD_REFS) {
+                doodadRefsRefused = true;
+                return;
+            }
+            claim(256);
+            doodadRefs = new Indices(raw, canceled, input.position(), bytes / 2);
+            spans.add(doodadRefs);
         }
 
         /**
@@ -491,6 +530,7 @@ public final class WmoGroupSpans {
             triangles = null;
             colors = null;
             liquid = null;
+            doodadRefs = null;
             batches.clear();
             chunks.clear();
         }

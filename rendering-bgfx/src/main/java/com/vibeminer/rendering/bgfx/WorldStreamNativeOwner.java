@@ -795,7 +795,7 @@ final class WorldStreamNativeOwner implements AutoCloseable {
      * placements tested and culled, object submits and the sorted pass's share of them (blended and
      * additive ranges, one placement per draw), terrain chunk runs tested and culled, terrain
      * submits, object instances drawn and dropped (#382), and portal walks with the interior meshes
-     * they culled (#383).
+     * and the placements tied to an interior group they culled (#383).
      */
     static void cullCounts(BgfxWorldStreamRenderer.FrameCounts counts) {
         WorldStageTimings.value("child.frame.placements", counts.placements());
@@ -809,6 +809,8 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         WorldStageTimings.value("child.frame.instancesDropped", counts.instancesDropped());
         WorldStageTimings.value("child.frame.portalWalks", counts.portalWalks());
         WorldStageTimings.value("child.frame.portalMeshesCulled", counts.portalMeshesCulled());
+        WorldStageTimings.value(
+                "child.frame.portalPlacementsCulled", counts.portalPlacementsCulled());
     }
 
     /** bgfx's statistics of the frame just rendered, after a frame that drew (opt-in only). */

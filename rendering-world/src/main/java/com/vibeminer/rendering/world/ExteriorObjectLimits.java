@@ -82,6 +82,20 @@ public final class ExteriorObjectLimits {
      */
     public static final int DOODAD_IMAGES = 192;
 
+    /**
+     * Doodad models a tile may read beyond {@link #DOODAD_MODELS}, only for set doodads tied to one
+     * drawn interior group of their building's portal set: the group's MODR lists them and no other
+     * group the tile read does, so the renderer culls them with the group. They share the doodad
+     * vertex, index, range and pixel pools, whose images take levels only after every other doodad
+     * image. On build 70862 the 5 x 5 tiles around Stormwind City (0:48:31) capped 1,730 interior
+     * set doodads at the 96-model cap, at most 125 distinct models on one tile (48,30), while no
+     * tile used more than 26,477 of the 65,536 doodad vertices.
+     */
+    public static final int DOODAD_INTERIOR_MODELS = 128;
+
+    /** Doodad image slots of {@link #DOODAD_INTERIOR_MODELS}, about 1.25 per model as measured. */
+    public static final int DOODAD_INTERIOR_IMAGES = 160;
+
     public static final int DOODAD_RANGES = 512;
     public static final int DOODAD_VERTICES = 65_536, DOODAD_INDICES = 196_608;
 
@@ -94,8 +108,8 @@ public final class ExteriorObjectLimits {
 
     // ---- objects file tables: the sum of the pools ----------------------------------------------
 
-    public static final int MODELS = BUILDING_ROOTS + DOODAD_MODELS;
-    public static final int MESHES = BUILDING_MESHES + DOODAD_MODELS;
+    public static final int MODELS = BUILDING_ROOTS + DOODAD_MODELS + DOODAD_INTERIOR_MODELS;
+    public static final int MESHES = BUILDING_MESHES + DOODAD_MODELS + DOODAD_INTERIOR_MODELS;
     public static final int RANGES =
             BUILDING_RANGES
                     + LARGE_RANGES
@@ -108,7 +122,8 @@ public final class ExteriorObjectLimits {
                     + LARGE_IMAGES
                     + LARGE_INTERIOR_IMAGES
                     + MATERIAL_IMAGES
-                    + DOODAD_IMAGES;
+                    + DOODAD_IMAGES
+                    + DOODAD_INTERIOR_IMAGES;
     public static final int VERTICES =
             BUILDING_VERTICES
                     + LARGE_VERTICES

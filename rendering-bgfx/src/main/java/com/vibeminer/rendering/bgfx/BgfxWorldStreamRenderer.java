@@ -197,8 +197,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
      * many of them the CPU cull skipped, object draw submits over both passes, and how many times a
      * camera uniform (eye, projection, rebase, for terrain and objects) was set; terrain chunk runs
      * tested, culled and submitted; object instances drawn over both passes, and placements not
-     * drawn because the frame's transient instance data ran out (#382); and portal walks of placed
-     * roots with a portal set with the interior meshes they culled (#383 step 3b), per placement.
+     * drawn because the frame's transient instance data ran out (#382); portal walks of placed
+     * roots with a portal set with the interior meshes they culled (#383 step 3b), per placement;
+     * and placements tied to an interior group those walks did not reach.
      */
     record FrameCounts(
             int placements,
@@ -212,7 +213,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             int instances,
             int instancesDropped,
             int portalWalks,
-            int portalMeshesCulled) {}
+            int portalMeshesCulled,
+            int portalPlacementsCulled) {}
 
     /**
      * Object instance data of one frame at the caps (#382): every placement of every resident slot
@@ -485,6 +487,12 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
          */
         final java.util.BitSet[] portalVisible;
 
+        /**
+         * Per placement: the placement whose walk it is tied to and its interior group there, or -1
+         * and -1 (set doodads inside a room, culled with it).
+         */
+        final int[] placementParents, placementGroups;
+
         short vertices = INVALID, indices = INVALID;
         long bytes;
 
@@ -554,6 +562,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 portals[m] = source.portals(m);
             }
             meshGroups = source.meshGroups;
+            placementParents = source.placementParents;
+            placementGroups = source.placementGroups;
             portalVisible = new java.util.BitSet[placementModels.length];
             for (int p = 0; p < portalVisible.length; p++) {
                 var traversal = portals[placementModels[p]];
@@ -670,7 +680,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private int peakStepBytes;
     private boolean closed, callbackFreed, objectCulling = true, objectInstancing = true;
     private boolean vertexColours = VERTEX_COLOURS;
-    private FrameCounts lastFrame = new FrameCounts(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    private FrameCounts lastFrame = new FrameCounts(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     private int frameInstances, frameInstancesDropped;
     // Proof seam: at most this many instances per frame (bgfx's own budget still applies).
     private int instanceLimit = Integer.MAX_VALUE;
@@ -678,7 +688,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     /** Portal culling of instance interiors (#383 step 3b); its arrays are reused per frame. */
     private final WorldStreamPortalCulling portalCulling = new WorldStreamPortalCulling();
 
-    private int framePortalWalks, framePortalCulled;
+    private int framePortalWalks, framePortalCulled, framePortalPlacementsCulled;
     private int frameChunks, frameChunksCulled, frameTerrainSubmits;
     private int framePlacements, frameCulled, frameObjectSubmits, frameCameraUniforms;
 
@@ -2131,7 +2141,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             var frame = wmoProgram == INVALID ? null : ObjectFrame.on(stack, targetSamples > 1);
             framePlacements = frameCulled = frameObjectSubmits = frameSortedSubmits = 0;
             frameInstances = frameInstancesDropped = 0;
-            framePortalWalks = framePortalCulled = 0;
+            framePortalWalks = framePortalCulled = framePortalPlacementsCulled = 0;
             portalCulling.frame(view);
             frameMaterial = -1;
             if (wmoProgram != INVALID) {
@@ -2204,7 +2214,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                         frameInstances,
                         frameInstancesDropped,
                         framePortalWalks,
-                        framePortalCulled);
+                        framePortalCulled,
+                        framePortalPlacementsCulled);
         return new Ticket(cameraRevision, content, policy, width, height);
     }
 
@@ -2579,6 +2590,21 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                     drawRanges(frame, objects, m, drawn, groups);
                 }
             }
+            // Placements tied to an interior group (set doodads inside a room) follow their
+            // parent's walk: one it did not reach this frame is skipped by both passes.
+            for (int p = 0; p < placements; p++) {
+                if (objects.visible[p]
+                        && portalCulled(
+                                objects.placementParents,
+                                objects.placementGroups,
+                                objects.visible,
+                                objects.portalVisible,
+                                p)) {
+                    objects.visible[p] = false;
+                    objects.grouped[p] = false;
+                    framePortalPlacementsCulled++;
+                }
+            }
         }
         int models = objects.models.length / 2;
         WorldObjectInstances.groupByModel(
@@ -2886,6 +2912,21 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         return kind == WorldStreamObjectsFile.ADDITIVE
                 ? STEP_ADDITIVE
                 : kind == WorldStreamObjectsFile.BLENDED ? STEP_BLENDED : STEP_UNSORTED;
+    }
+
+    /**
+     * Whether placement {@code p}, tied to an interior group of its parent's portal set, is culled
+     * this frame: its parent was in view, so it walked its portals this frame, and that walk did
+     * not reach the group. A parent out of view did not walk, so its tied placements keep their own
+     * frustum test.
+     */
+    static boolean portalCulled(
+            int[] parents, int[] groups, boolean[] visible, java.util.BitSet[] walked, int p) {
+        int parent = parents[p];
+        return parent >= 0
+                && visible[parent]
+                && walked[parent] != null
+                && !walked[parent].get(groups[p]);
     }
 
     /** Whether a portal root's walk ({@code groups}) leaves out this interior mesh. */

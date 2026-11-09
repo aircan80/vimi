@@ -509,22 +509,41 @@ final class WorldStreamSourceBridge {
                 for (var mesh : set.models().get(m).meshes()) draws[m] += mesh.ranges().size();
             }
             var parents = WorldObjectPicks.Recorder.buildings(set);
+            // A set doodad tied to an interior group follows its building: the placement with its
+            // unique ID, which comes first.
+            var buildingAt = new java.util.HashMap<Long, Integer>();
+            for (int i = 0; i < set.placements().size(); i++) {
+                var p = set.placements().get(i);
+                if (p.kind() == WorldExteriorObjects.Kind.BUILDING) buildingAt.putIfAbsent(p.uniqueId(), i);
+            }
             var placed = new ArrayList<Placed>(set.placements().size());
             for (var p : set.placements()) {
+                int parent = p.portalGroup() < 0 ? -1 : buildingAt.getOrDefault(p.uniqueId(), -1);
                 placed.add(new Placed(p.kind() == WorldExteriorObjects.Kind.BUILDING, p.model(), p.x(), p.y(), p.z(),
-                        p.scale(), p.rotation().rowMajor(), WorldObjectPicks.Recorder.exterior(set, p, parents)));
+                        p.scale(), p.rotation().rowMajor(), WorldObjectPicks.Recorder.exterior(set, p, parents),
+                        parent, parent < 0 ? -1 : p.portalGroup()));
             }
             return new ObjectSet((builder, cancellation) -> copyMeshes(builder, set, cancellation), draws, placed,
                     WorldStreamSourceBridge.buildings(set), set.compressedFormats());
         }
     }
 
-    /** One placement to copy and the source record it was built from. */
+    /**
+     * One placement to copy and the source record it was built from. A set doodad tied to an
+     * interior group names its building ({@code parent}, an index into the set's placements) and the
+     * group; otherwise both are -1.
+     */
     record Placed(boolean building, int model, double x, double y, double z, double scale, double[] rotation,
-            WorldObjectPicks.Source source) {
+            WorldObjectPicks.Source source, int parent, int group) {
         Placed {
             rotation = rotation.clone();
             Objects.requireNonNull(source);
+        }
+
+        /** A placement tied to no group. */
+        Placed(boolean building, int model, double x, double y, double z, double scale, double[] rotation,
+                WorldObjectPicks.Source source) {
+            this(building, model, x, y, z, scale, rotation, source, -1, -1);
         }
     }
 
@@ -937,16 +956,23 @@ final class WorldStreamSourceBridge {
         set.meshes().accept(builder, cancellation);
         // The source already caps placements to the per-tile draw budget; this repeats it in
         // source order so the file profile can never fail the whole tile's set.
-        int draws = 0;
-        for (var placement : set.placements()) {
+        int draws = 0, copied = 0;
+        // Each copied placement's index in the file, so a tie names its building's copy; a tie
+        // to a building not copied, or whose model's portal set was not carried, is dropped.
+        var written = new int[set.placements().size()];
+        for (int i = 0; i < written.length; i++) {
+            var placement = set.placements().get(i);
+            written[i] = -1;
             int cost = set.modelDraws()[placement.model()];
             if (draws + cost > WorldStreamTileWriter.Exterior.MAX_DRAWS) {
                 capped[placement.building() ? 0 : 1]++;
                 continue;
             }
             draws += cost;
+            int parent = placement.parent() >= 0 && placement.parent() < i ? written[placement.parent()] : -1;
             builder.placement(placement.model(), placement.x(), placement.y(), placement.z(),
-                    placement.scale(), placement.rotation());
+                    placement.scale(), placement.rotation(), parent, parent < 0 ? -1 : placement.group());
+            written[i] = copied++;
             recorded.add(placement.source());
         }
     }

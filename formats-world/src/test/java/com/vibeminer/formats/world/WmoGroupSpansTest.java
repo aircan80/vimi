@@ -134,6 +134,48 @@ class WmoGroupSpansTest {
         reject(flagged(0x2a05 | COLORS2, mesh(), colors, chunk("MOCV", new byte[8])));
     }
 
+    private static byte[] refs(int... values) {
+        var out = buffer(values.length * 2);
+        for (int value : values) {
+            out.putShort((short) value);
+        }
+        return chunk("MODR", out.array());
+    }
+
+    @Test
+    void doodadReferencesAreExposedAndABadOneNeverRefusesTheGroup() {
+        WmoGroupSpans.withGroup(
+                group(mesh(), refs(3, 0, 65535)),
+                () -> false,
+                b -> {
+                    assertEquals(3, b.doodadRefs().size());
+                    assertEquals(3, b.doodadRefs().get(0));
+                    assertEquals(0, b.doodadRefs().get(1));
+                    assertEquals(65535, b.doodadRefs().get(2));
+                    assertEquals(3, b.positions().size() / 3);
+                });
+        WmoGroupSpans.withGroup(
+                group(mesh()), () -> false, b -> assertEquals(null, b.doodadRefs()));
+        WmoGroupSpans.withGroup(
+                group(mesh(), refs()), () -> false, b -> assertEquals(0, b.doodadRefs().size()));
+        // An odd-sized or repeated MODR loses only the references; the geometry still reads.
+        WmoGroupSpans.withGroup(
+                group(mesh(), chunk("MODR", new byte[3])),
+                () -> false,
+                b -> {
+                    assertEquals(null, b.doodadRefs());
+                    assertEquals(1, b.batches().size());
+                });
+        WmoGroupSpans.withGroup(
+                group(mesh(), refs(1), refs(2)),
+                () -> false,
+                b -> assertEquals(null, b.doodadRefs()));
+        WmoGroupSpans.withGroup(
+                group(mesh(), chunk("MODR", new byte[3]), refs(2)),
+                () -> false,
+                b -> assertEquals(null, b.doodadRefs()));
+    }
+
     @Test
     void mpy2TriangleRecordsReplaceMopyButNeverJoinIt() {
         var m = mesh();
