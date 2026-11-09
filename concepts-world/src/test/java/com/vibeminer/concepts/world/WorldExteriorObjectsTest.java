@@ -5570,4 +5570,179 @@ class WorldExteriorObjectsTest {
             }
         }
     }
+
+    private static List<Modd> standing(float... localX) {
+        var defs = new ArrayList<Modd>();
+        for (float x : localX) {
+            defs.add(new Modd(0, x, 0, 0, new double[] {0, 0, 0, 1}, 1));
+        }
+        return defs;
+    }
+
+    @Test
+    void aTileDrawingNoGroupStillPlacesTheSetDoodadsStandingInIt() {
+        // Both groups belong to 8,19, so 7,19 draws none of the building, but the doodad at local
+        // x 0 stands in 7,19: only this tile can place it. The same holds where the tile's share
+        // is over the large allowance and the root is capped here.
+        var defs = standing(0, 200);
+        try (var f = new Fixture(List.of(largePlacement()))) {
+            putModel(f, MODEL, model());
+            putBig(
+                    f,
+                    new int[] {EXT, EXT},
+                    new int[] {60_000, 60_000},
+                    new float[] {200, 250},
+                    doodadChunks(new int[][] {{0, 2}}, new long[] {MODEL}, defs));
+            try (var set = f.runOpenWorld()) {
+                assertEquals(List.of(), groupsOf(set, BIG));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_OTHER_TILE));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.SET_DOODAD_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.SET_DOODAD_OTHER_TILE));
+                assertPlacementsAccounted(set, 1);
+            }
+        }
+        try (var f = new Fixture(List.of(largePlacement()))) {
+            putModel(f, MODEL, model());
+            putBig(
+                    f,
+                    new int[] {EXT, EXT, EXT, EXT},
+                    new int[] {50_000, 60_000, 50_000, 50_000},
+                    new float[] {0, 200, 10, 20},
+                    doodadChunks(new int[][] {{0, 2}}, new long[] {MODEL}, defs));
+            try (var set = f.runOpenWorld()) {
+                assertEquals(List.of(), groupsOf(set, BIG));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.SET_DOODAD_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.SET_DOODAD_OTHER_TILE));
+            }
+        }
+    }
+
+    @Test
+    void setDoodadsInsideAnUndrawnInteriorOfASplitRootAreNotPlaced() {
+        // Group 2 is a MOGI interior around local x 5: its doodad would float without walls.
+        try (var f = new Fixture(List.of(largePlacement()))) {
+            putModel(f, MODEL, model());
+            putBig(
+                    f,
+                    new int[] {EXT, EXT, INT},
+                    new int[] {60_000, 60_000, 3},
+                    new float[] {0, 200, 5},
+                    doodadChunks(new int[][] {{0, 2}}, new long[] {MODEL}, standing(5, -50)));
+            try (var set = f.runOpenWorld()) {
+                assertEquals(List.of(0), groupsOf(set, BIG));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.SET_DOODAD_INTERIOR));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.SET_DOODAD_DRAWN));
+            }
+        }
+    }
+
+    @Test
+    void aSplitRootComesAfterEverythingTheTileDrawsOfItsOwn() {
+        // A busy tile: a larger building (admitted first, 90,000 of the 98,304 building
+        // vertices, with a set doodad and an open-world interior) and MDDF doodads. The split
+        // root takes nothing from them, its set doodad follows the tile's own, and the group the
+        // sizing pass read is not read again.
+        var normal = Modf.of(NORMAL, 2, 0x8).sized(5000);
+        var doodads = List.of(Mddf.of(MODEL, 11, 0x40), Mddf.of(MODEL, 12, 0x40));
+        try (var f = new Fixture(List.of(largePlacement(), normal))) {
+            putModel(f, MODEL, model());
+            putBig(
+                    f,
+                    new int[] {EXT, EXT},
+                    new int[] {60_000, 60_000},
+                    new float[] {0, 200},
+                    doodadChunks(new int[][] {{0, 1}}, new long[] {MODEL}, standing(0)));
+            f.files.sources.put(NORMAL + 1, bigGroup(EXT, 45_000));
+            f.files.sources.put(NORMAL + 2, group(INT));
+            f.files.sources.put(
+                    NORMAL,
+                    root(
+                            3,
+                            new long[] {NORMAL + 1, NORMAL + 1, NORMAL + 2},
+                            List.of(new Material(0, IMAGE, 0)),
+                            mogi(EXT, EXT, INT),
+                            doodadChunks(new int[][] {{0, 1}}, new long[] {MODEL}, standing(1))));
+            f.files.sources.put(4L, obj0(List.of(largePlacement(), normal), doodads));
+            try (var set = f.runOpenWorld()) {
+                assertEquals(List.of(0, 1, 2), groupsOf(set, NORMAL));
+                assertEquals(List.of(0), groupsOf(set, BIG));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.DOODAD_DRAWN));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.SET_DOODAD_DRAWN));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                assertEquals(1, f.files.opens.get(BIG + 1).get(), "read once, while sizing");
+                var sets =
+                        set.placements().stream()
+                                .filter(p -> p.kind() == WorldExteriorObjects.Kind.SET_DOODAD)
+                                .map(WorldExteriorObjects.Placement::uniqueId)
+                                .toList();
+                assertEquals(List.of(2L, 77L), sets, "the tile's own set doodads first");
+                // Buildings stay first, in obj0 order.
+                assertEquals(WorldExteriorObjects.Kind.BUILDING, set.placements().get(0).kind());
+                assertEquals(BIG, set.placements().get(0).rootId());
+                assertEquals(NORMAL, set.placements().get(1).rootId());
+            }
+        }
+    }
+
+    @Test
+    void withoutInteriorsASplitRootsInteriorGroupsCountAsInteriors() {
+        try (var f = new Fixture(List.of(largePlacement()))) {
+            putBig(
+                    f,
+                    new int[] {EXT, EXT, INT, EXT},
+                    new int[] {60_000, 60_000, 3, 3},
+                    new float[] {0, 200, 5, 10});
+            f.files.sources.put(BIG + 4, group(INT));
+            try (var set = f.run()) {
+                assertEquals(List.of(0), groupsOf(set, BIG));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_NO_PORTALS));
+            }
+        }
+    }
+
+    @Test
+    void ownersFollowRotatedScaledPlacementsAndSplitBorderPointsOnce() {
+        var record = declared(largePlacement());
+        double x = 51200.0 / 3 - 4200, y = 51200.0 / 3 - 10400;
+        // Heading 90 and scale 2: native x = x + 2 * local y, native y = y - 2 * local x.
+        var heading = WorldExteriorObjects.Rotation.heading(0, 1);
+        var here = WorldExteriorObjects.Owner.of(record, x, y, 2, heading, 7, 19);
+        var there = WorldExteriorObjects.Owner.of(record, x, y, 2, heading, 8, 19);
+        var root =
+                WmoFormats.root(
+                        root(
+                                3,
+                                new long[] {GROUP, GROUP, GROUP},
+                                List.of(new Material(0, IMAGE, 0)),
+                                mogiBoxesAt(new float[][] {{0, 0, 0}, {0, -150, 0}, {0, 0, 150}})),
+                        () -> false);
+        // Local y -150 at scale 2 is native x - 300: tile 8,19.
+        assertArrayEquals(new boolean[] {true, false, true}, here.owned(root));
+        assertArrayEquals(new boolean[] {false, true, false}, there.owned(root));
+        // Pitch 90 turns local up into the heading's forward axis: local z 150 at scale 2 lies
+        // 300 native units off the origin, in 8,19 (heading 0: native x = x - local x').
+        var pitched = WorldExteriorObjects.Rotation.mddf(1, 0, 90, 0);
+        var pitchedHere = WorldExteriorObjects.Owner.of(record, x, y, 2, pitched, 7, 19);
+        var pitchedThere = WorldExteriorObjects.Owner.of(record, x, y, 2, pitched, 8, 19);
+        assertArrayEquals(new boolean[] {true, true, false}, pitchedHere.owned(root));
+        assertArrayEquals(new boolean[] {false, false, true}, pitchedThere.owned(root));
+        // A point exactly on the 7/8 border (native x 12,800) belongs to exactly one tile.
+        double border = 24 * WorldFormats.TILE_SIZE;
+        assertTrue(here.owns(border, y) != there.owns(border, y));
+    }
+
+    /** MOGI exterior groups with a 2-unit box around each local centre. */
+    private static byte[] mogiBoxesAt(float[][] centres) {
+        var b = buffer(32 * centres.length);
+        for (int i = 0; i < centres.length; i++) {
+            b.putInt(i * 32, EXT);
+            for (int axis = 0; axis < 3; axis++) {
+                b.putFloat(i * 32 + 4 + axis * 4, centres[i][axis] - 1);
+                b.putFloat(i * 32 + 16 + axis * 4, centres[i][axis] + 1);
+            }
+        }
+        return chunk("MOGI", b.array());
+    }
 }

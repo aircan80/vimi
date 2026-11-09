@@ -1514,6 +1514,7 @@ final class WorldStreamSourceController {
             // Not a fault: the shared GPU budget was full. Offer it again once a drawn set has
             // been released since this offer was issued (not since the refusal arrived, so a
             // release landing in between still counts), still nearest first.
+            WorldStageTimings.add("parent.objects.budgetRefused", 1);
             exteriorBudget.put(work.entry, work.releaseRevision);
             changed();
             return;
