@@ -2314,9 +2314,10 @@ public final class WorldExteriorObjects {
          * <p>An interior-only root takes building slots for its placements when its first group is
          * admitted, opaque or not, and only if they are free: interiors lose every slot tie, and
          * since material draws were already fitted, they never push an exterior's glass or foliage
-         * out. Interior images share the building pixel pool with exterior images; the budget
-         * shares it by level, so a dense interior can lower exterior texture levels but never drops
-         * an exterior image.
+         * out. Interior images share the building pixel pool with exterior images: exteriors are
+         * allotted first from the pool less each interior-only image's smallest level, so a dense
+         * interior can lower an exterior level only by that reserve and never drops an exterior
+         * image.
          */
         private void placeInteriors() {
             if (heldInteriors.isEmpty()) {
@@ -3653,9 +3654,9 @@ public final class WorldExteriorObjects {
                 interiorOnlySlots[i] = used[i] && !exterior[i];
             }
             // Exterior images first, from the pool less every interior-only image's smallest
-            // level, then interior-only images from what they leave (#383): an interior never
-            // takes a level step an exterior could have had, and every interior image still keeps
-            // at least its smallest level, as when they shared the pool.
+            // level, then interior-only images from what they leave (#383): beyond that reserve an
+            // interior never takes a level step an exterior could have had, and every interior
+            // image still keeps at least its smallest level, as when they shared the pool.
             for (var pool : Pool.values()) {
                 allocatePool(pool, exterior, interiorOnlySlots);
             }
