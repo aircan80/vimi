@@ -47,9 +47,11 @@ import java.util.concurrent.TimeUnit;
 public final class DisplayModelService implements BuildDisplayModels {
     /**
      * Saved-preview policy. v5 (#361): an absent CreatureGeosetDataID column now resolves to 0
-     * rather than null, which changes the recorded reference of those displays.
+     * rather than null, which changes the recorded reference of those displays. v6: a type-2
+     * (object skin) texture of a model with no other replaceable slot takes the display's first
+     * texture variation ({@link #objectSkinFromVariation}).
      */
-    public static final String POLICY = "display-static-materials-env-unlit-bindcards-v5";
+    public static final String POLICY = "display-static-materials-env-unlit-bindcards-v6";
 
     private final TableProjection tables;
     private final BuildTables rawTables;
@@ -637,7 +639,13 @@ public final class DisplayModelService implements BuildDisplayModels {
                     TableProjection.note(issues, "Billboard skin palette facts are unavailable.");
                 }
             }
-            var pool = new TexturePool(reference, receipts, token, issues);
+            var pool =
+                    new TexturePool(
+                            reference,
+                            objectSkinFromVariation(m.textures()),
+                            receipts,
+                            token,
+                            issues);
             var bindings = new ArrayList<MeshAppearance.Surface>();
             boolean worldFactsMissing = false;
             var billboards = new ArrayList<MeshAppearance.RigidBillboard>();
@@ -963,8 +971,11 @@ public final class DisplayModelService implements BuildDisplayModels {
         }
     }
 
-    /** The World binding rule's revision; part of the World binding's saved key only. */
-    public static final String WORLD_POLICY = "display-world-batch-rule-v4";
+    /**
+     * The World binding rule's revision; part of the World binding's saved key only. v5: type-2
+     * object skin slots resolve as in {@link #textureId}.
+     */
+    public static final String WORLD_POLICY = "display-world-batch-rule-v5";
 
     /** The World binding's stated approximation, noted on every World binding. */
     public static final String WORLD_NOTE =
@@ -988,7 +999,9 @@ public final class DisplayModelService implements BuildDisplayModels {
      *   <li>Blend 2 is skipped rather than claiming the section, so a later opaque or alpha-keyed
      *       batch on the section may draw instead; a section with none may draw it in the blended
      *       pass ({@link #worldBlendedBatch}).
-     *   <li>Texture types 11 to 13 resolve to the display's monster skin; objects take type 0 only.
+     *   <li>Texture types 11 to 13 resolve to the display's monster skin, and type 2 to its first
+     *       variation on a model with no other replaceable slot ({@link #objectSkinFromVariation});
+     *       objects take type 0 only.
      *   <li>A section with no such batch may draw an additive one ({@link #worldAdditiveBatch});
      *       World objects draw no M2 additive batch.
      *   <li>A batch whose texture does not resolve or decode leaves the section to a later batch;
@@ -1201,14 +1214,15 @@ public final class DisplayModelService implements BuildDisplayModels {
 
     /**
      * Binds, per section, texture 1 of the first batch {@link #worldBatch} admits whose texture
-     * resolves (file, or the display's monster skin for types 11 to 13); a batch whose texture does
-     * not resolve leaves the section to a later batch, as World objects do. A section left unbound
-     * then takes the first {@link #worldAdditiveBatch} whose texture resolves, as an unlit additive
-     * surface, and a section still unbound its first {@link #worldBlendedBatch} whose texture
-     * resolves, as a blended surface; so an opaque or alpha-keyed batch always claims its section
-     * first, and no additive binding changes. An additive or blended batch whose weight fades is
-     * taken at the Stand sample ({@code stand}, {@link #standAlpha}). False when an additive or
-     * blended candidate's weight could not be decided (no facts): the binding is then not saved.
+     * resolves (file, the display's monster skin for types 11 to 13, or for type 2 its first
+     * variation on a model with no other replaceable slot); a batch whose texture does not resolve
+     * leaves the section to a later batch, as World objects do. A section left unbound then takes
+     * the first {@link #worldAdditiveBatch} whose texture resolves, as an unlit additive surface,
+     * and a section still unbound its first {@link #worldBlendedBatch} whose texture resolves, as a
+     * blended surface; so an opaque or alpha-keyed batch always claims its section first, and no
+     * additive binding changes. An additive or blended batch whose weight fades is taken at the
+     * Stand sample ({@code stand}, {@link #standAlpha}). False when an additive or blended
+     * candidate's weight could not be decided (no facts): the binding is then not saved.
      */
     private static boolean worldSurfaces(
             M2Types.Model model,
@@ -1333,7 +1347,14 @@ public final class DisplayModelService implements BuildDisplayModels {
         return decided;
     }
 
-    static long textureId(M2Types.Texture texture, List<Long> variations) {
+    /**
+     * The file a texture slot binds for a display: the exact TXID for type 0, the display's texture
+     * variation {@code type - 11} for the monster skin types 11 to 13, and variation 0 for the
+     * object skin type 2 when {@code objectSkin} ({@link #objectSkinFromVariation}); 0 (no verified
+     * binding) for every other type, including the character skin type 1, which needs character
+     * composition (#385).
+     */
+    static long textureId(M2Types.Texture texture, List<Long> variations, boolean objectSkin) {
         if (texture.type() == 0) {
             return texture.fileDataId() == null ? 0 : texture.fileDataId();
         }
@@ -1342,7 +1363,32 @@ public final class DisplayModelService implements BuildDisplayModels {
                 && texture.type() - 11 < variations.size()) {
             return variations.get((int) texture.type() - 11);
         }
+        if (texture.type() == 2 && objectSkin && !variations.isEmpty()) {
+            return variations.getFirst();
+        }
         return 0;
+    }
+
+    /**
+     * Whether a creature display's model (its {@code textures}) takes its object skin (texture type
+     * 2) from the display's first texture variation: true when every texture of the model is a file
+     * (type 0) or the object skin. Then the variation has no other slot to fill: there is no
+     * monster skin slot (types 11 to 13), and no character slot (body skin, hair, cape and the
+     * like), whose type 2 is a cape filled from equipment rather than from the display. This is
+     * inferred from the tables, not from client code: on 70862 the three such displays that name a
+     * variation all belong to models whose only replaceable slot is type 2, and two of them name
+     * the texture filed next to the model.
+     */
+    static boolean objectSkinFromVariation(List<M2Types.Texture> textures) {
+        boolean objectSkin = false;
+        for (var texture : textures) {
+            if (texture.type() == 2) {
+                objectSkin = true;
+            } else if (texture.type() != 0) {
+                return false;
+            }
+        }
+        return objectSkin;
     }
 
     static boolean simpleDraw(
@@ -1410,6 +1456,7 @@ public final class DisplayModelService implements BuildDisplayModels {
         final Map<Long, Integer> decoded = new HashMap<>();
         final Map<Long, Integer> scaledCopies = new HashMap<>();
         final DisplayModelTypes.Reference reference;
+        final boolean objectSkin;
         final Map<Long, String> receipts;
         final Cancellation token;
         final List<String> issues;
@@ -1418,17 +1465,19 @@ public final class DisplayModelService implements BuildDisplayModels {
 
         TexturePool(
                 DisplayModelTypes.Reference reference,
+                boolean objectSkin,
                 Map<Long, String> receipts,
                 Cancellation token,
                 List<String> issues) {
             this.reference = reference;
+            this.objectSkin = objectSkin;
             this.receipts = receipts;
             this.token = token;
             this.issues = issues;
         }
 
         Integer texture(M2Types.Texture texture) {
-            long fid = textureId(texture, reference.textureVariations());
+            long fid = textureId(texture, reference.textureVariations(), objectSkin);
             if (fid <= 0 || fid > 0xffffffffL) {
                 return unavailable("Some surface textures have no verified file binding.");
             }
