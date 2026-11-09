@@ -20,6 +20,7 @@ void main()
     v_wmoDepth = -eye.z;
     // Position relative to the model origin, which the hot pass places at the camera.
     v_wmoRelative = relative.xyz;
-    // MOCV vertex colour (0 when the group has none), added to the light in the fragment shader.
+    // MOCV vertex colour (0 when the group has none): added to the light in the fragment shader,
+    // or the whole light of an interior group (#383).
     v_wmoColour = a_color0.rgb;
 }

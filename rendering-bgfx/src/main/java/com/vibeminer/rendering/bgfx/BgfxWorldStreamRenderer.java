@@ -2375,11 +2375,13 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
      * The u_wmoMaterial value of a range class: x the alpha-test reference (cutouts), y 1 to output
      * sampled alpha (blended and additive), z 1 for the alpha-to-coverage ramp (cutouts on a
      * multisampled target), w 1 for unlit plus 2 for additive (its fog fades it out instead of
-     * adding the fog colour).
+     * adding the fog colour) plus 4 for {@link WorldStreamObjectsFile#INTERIOR_LIGHT} (lit by the
+     * vertex colour instead of the World sun, #383).
      */
     static float[] materialUniform(int rangeClass, boolean coverage) {
         int kind = WorldStreamObjectsFile.kind(rangeClass);
         float unlit = (rangeClass & WorldStreamObjectsFile.UNLIT) != 0 ? 1 : 0;
+        float interior = (rangeClass & WorldStreamObjectsFile.INTERIOR_LIGHT) != 0 ? 4 : 0;
         float[] value =
                 switch (kind) {
                     case WorldStreamObjectsFile.OPAQUE -> new float[] {0, 0, 0, 0};
@@ -2388,7 +2390,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                     case WorldStreamObjectsFile.ADDITIVE -> new float[] {0, 1, 0, 2};
                     default -> throw new IllegalArgumentException("Range class");
                 };
-        value[3] += unlit;
+        value[3] += unlit + interior;
         return value;
     }
 
@@ -2648,8 +2650,11 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         /** One placement index, for a one-instance draw. */
         final int[] single = new int[1];
 
-        /** u_wmoMaterial per kind (opaque, cutout, blended, additive) and lit/unlit. */
-        private final java.nio.FloatBuffer[] materials = new java.nio.FloatBuffer[8];
+        /**
+         * u_wmoMaterial per kind (opaque, cutout, blended, additive), lit/unlit and World or
+         * interior light.
+         */
+        private final java.nio.FloatBuffer[] materials = new java.nio.FloatBuffer[16];
 
         final long cutoutState;
 
@@ -2657,9 +2662,16 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             instances = org.lwjgl.bgfx.BGFXInstanceDataBuffer.malloc(stack);
             for (int kind = 0; kind <= WorldStreamObjectsFile.ADDITIVE; kind++) {
                 for (int unlit = 0; unlit < 2; unlit++) {
-                    int rangeClass = kind | (unlit == 1 ? WorldStreamObjectsFile.UNLIT : 0);
-                    materials[kind * 2 + unlit] =
-                            stack.floats(materialUniform(rangeClass, coverage));
+                    for (int interior = 0; interior < 2; interior++) {
+                        int rangeClass =
+                                kind
+                                        | (unlit == 1 ? WorldStreamObjectsFile.UNLIT : 0)
+                                        | (interior == 1
+                                                ? WorldStreamObjectsFile.INTERIOR_LIGHT
+                                                : 0);
+                        materials[materialSlot(rangeClass)] =
+                                stack.floats(materialUniform(rangeClass, coverage));
+                    }
                 }
             }
             cutoutState = cutoutState(coverage);
@@ -2679,8 +2691,14 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
 
         /** The u_wmoMaterial value of one range class. */
         java.nio.FloatBuffer material(int rangeClass) {
+            return materials[materialSlot(rangeClass)];
+        }
+
+        /** The {@link #materials} slot of a range class: its kind, unlit and interior flags. */
+        static int materialSlot(int rangeClass) {
             int unlit = (rangeClass & WorldStreamObjectsFile.UNLIT) != 0 ? 1 : 0;
-            return materials[WorldStreamObjectsFile.kind(rangeClass) * 2 + unlit];
+            int interior = (rangeClass & WorldStreamObjectsFile.INTERIOR_LIGHT) != 0 ? 1 : 0;
+            return WorldStreamObjectsFile.kind(rangeClass) * 4 + unlit * 2 + interior;
         }
     }
 

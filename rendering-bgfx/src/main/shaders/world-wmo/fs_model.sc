@@ -3,7 +3,8 @@ $input v_wmoNormal, v_wmoUv, v_wmoDepth, v_wmoRelative, v_wmoColour
 SAMPLER2D(s_wmoDiffuse, 0);
 // x: alpha-test reference (0 never discards); y: 1 outputs sampled alpha for blending, 0 outputs 1;
 // z: 1 turns the alpha test into an alpha-to-coverage ramp around the reference (multisampled);
-// w: 1 unlit (full intensity, no light) plus 2 additive (fog fades it out, adds no fog colour).
+// w: 1 unlit (full intensity, no light) plus 2 additive (fog fades it out, adds no fog colour)
+// plus 4 interior light (#383: the vertex colour, the raw MOCV, replaces the sun).
 uniform vec4 u_wmoMaterial;
 // rgb: sky and fog colour at and below the horizon, 0..255; w: elevation (radians) of u_wmoSkyTop.
 uniform vec4 u_wmoFog;
@@ -39,13 +40,16 @@ void main()
         vec3 n = v_wmoNormal * inversesqrt(squared);
         diffuse = max(0.0, dot(n, u_worldLight[0].xyz));
     }
-    float additive = step(1.5, u_wmoMaterial.w);
-    float unlit = step(0.5, u_wmoMaterial.w - 2.0 * additive);
-    vec3 lit = u_worldLight[2].rgb + u_worldLight[1].rgb * diffuse;
+    float interior = step(3.5, u_wmoMaterial.w);
+    float mode = u_wmoMaterial.w - 4.0 * interior;
+    float additive = step(1.5, mode);
+    float unlit = step(0.5, mode - 2.0 * additive);
+    // Interior groups (#383) are lit by their vertex colour alone, never by the sun.
+    vec3 lit = mix(u_worldLight[2].rgb + u_worldLight[1].rgb * diffuse, v_wmoColour, interior);
     vec3 intensity = mix(lit, vec3_splat(1.0), unlit);
     // Exterior groups start from the world light and add the texture times the vertex colour
     // (MOCV, #375) when u_wmoSkyTop.w is 1; a vertex without a colour adds nothing.
-    vec3 light = intensity + v_wmoColour * u_wmoSkyTop.w;
+    vec3 light = intensity + v_wmoColour * (u_wmoSkyTop.w * (1.0 - interior));
     float fog = clamp((v_wmoDepth - u_wmoFogRange.x) / (u_wmoFogRange.y - u_wmoFogRange.x), 0.0, u_wmoFogRange.z);
     // Fog toward the sky at this fragment's own elevation above the camera.
     float elevation = atan2(v_wmoRelative.z, max(length(v_wmoRelative.xy), 1e-6));

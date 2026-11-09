@@ -284,15 +284,16 @@ final class WorldStreamObjectsFileTest {
         assertEquals(
                 WorldStreamObjectsFile.OPAQUE | WorldStreamObjectsFile.UNLIT,
                 unlit.build().data().ranges[3]);
-        // The file carries version 7: the reader accepts no other. A version 3 file (two-int
+        // The file carries version 8: the reader accepts no other. A version 3 file (two-int
         // RGBA8-only image table) or a stale version 4 file (#420, before the additive and unlit
         // classes of #367) fails its header check instead of being misread.
         var clean = Files.readAllBytes(objectsPath());
         assertEquals(WorldStreamObjectsFile.VERSION, clean[8]);
-        assertEquals(7, WorldStreamObjectsFile.VERSION);
-        // Version 5 (#367, before the vertex colours of #375) and version 6 (#375, before the
-        // portal tables and mesh groups of #383) are stale as well.
-        for (byte stale : new byte[] {3, 4, 5, 6}) {
+        assertEquals(8, WorldStreamObjectsFile.VERSION);
+        // Version 5 (#367, before the vertex colours of #375), version 6 (#375, before the
+        // portal tables and mesh groups of #383) and version 7 (before the INTERIOR_LIGHT range
+        // flag of #383) are stale as well.
+        for (byte stale : new byte[] {3, 4, 5, 6, 7}) {
             var bytes = clean.clone();
             bytes[8] = stale;
             Files.write(objectsPath(), bytes);
@@ -1287,7 +1288,8 @@ final class WorldStreamObjectsFileTest {
                 new int[] {
                     // Version 6 (#375): the two-sided flag round-trips.
                     WorldStreamObjectsFile.CUTOUT | WorldStreamObjectsFile.TWO_SIDED,
-                    WorldStreamObjectsFile.BLENDED,
+                    // Version 8 (#383): the interior-light flag round-trips.
+                    WorldStreamObjectsFile.BLENDED | WorldStreamObjectsFile.INTERIOR_LIGHT,
                     // Version 5 (#367): additive and the unlit flag round-trip.
                     WorldStreamObjectsFile.ADDITIVE | WorldStreamObjectsFile.UNLIT,
                     WorldStreamObjectsFile.OPAQUE | WorldStreamObjectsFile.UNLIT
@@ -1300,16 +1302,25 @@ final class WorldStreamObjectsFileTest {
         assertEquals(
                 WorldStreamObjectsFile.CUTOUT | WorldStreamObjectsFile.TWO_SIDED, read.ranges[3]);
         assertEquals(WorldStreamObjectsFile.CUTOUT, WorldStreamObjectsFile.kind(read.ranges[3]));
-        assertEquals(WorldStreamObjectsFile.BLENDED, read.ranges[7]);
+        assertEquals(
+                WorldStreamObjectsFile.BLENDED | WorldStreamObjectsFile.INTERIOR_LIGHT,
+                read.ranges[7]);
+        assertTrue(WorldStreamObjectsFile.sorted(read.ranges[7]));
         assertEquals(
                 WorldStreamObjectsFile.ADDITIVE | WorldStreamObjectsFile.UNLIT, read.ranges[11]);
         assertEquals(WorldStreamObjectsFile.OPAQUE | WorldStreamObjectsFile.UNLIT, read.ranges[15]);
-        assertEquals(7, WorldStreamObjectsFile.VERSION);
+        assertEquals(8, WorldStreamObjectsFile.VERSION);
         assertEquals(h, read.placements[8], 0);
         // An unknown class, a scaled matrix or a reflection is refused.
-        // Modulate (4) and unknown flag bits stay refused: 0x400 alone and beside a known kind
-        // (0x200 is TWO_SIDED since version 6).
-        for (int unknown : new int[] {4, 0x400, WorldStreamObjectsFile.OPAQUE | 0x400}) {
+        // Modulate (4) and unknown flag bits stay refused: 0x800 alone and beside a known kind
+        // (0x200 is TWO_SIDED since version 6, 0x400 INTERIOR_LIGHT since version 8).
+        for (int unknown :
+                new int[] {
+                    4,
+                    0x800,
+                    WorldStreamObjectsFile.OPAQUE | 0x800,
+                    4 | WorldStreamObjectsFile.INTERIOR_LIGHT
+                }) {
             var badClass = WorldStreamTileWriter.Exterior.builder();
             badClass.image(1, 1, ByteBuffer.allocate(4));
             badClass.model();

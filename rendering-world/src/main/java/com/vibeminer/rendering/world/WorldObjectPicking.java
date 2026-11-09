@@ -45,6 +45,12 @@ public final class WorldObjectPicking {
      */
     public static final int TWO_SIDED = 0x200;
 
+    /**
+     * Flag for a range of an interior WMO group lit by its vertex colours (its MOCV) instead of the
+     * World sun (#383). Lighting only, never what is hit.
+     */
+    public static final int INTERIOR_LIGHT = 0x400;
+
     /** The kind of a range class, without its flags. */
     public static int kind(int rangeClass) {
         return rangeClass & 0xff;
@@ -52,7 +58,8 @@ public final class WorldObjectPicking {
 
     /** Whether a range class is a known kind with only known flags. */
     public static boolean validClass(int rangeClass) {
-        return (rangeClass & ~(UNLIT | TWO_SIDED | 0xff)) == 0 && kind(rangeClass) <= ADDITIVE;
+        return (rangeClass & ~(UNLIT | TWO_SIDED | INTERIOR_LIGHT | 0xff)) == 0
+                && kind(rangeClass) <= ADDITIVE;
     }
 
     private static final int VERTEX_FLOATS = 8, PLACEMENT_DOUBLES = 13, RANGE_INTS = 4;
