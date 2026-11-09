@@ -49,7 +49,9 @@ reviewed simple diffuse profile accepts one UV0 texture stage, opaque/alpha-key
 materials and proven full opacity, using existing M2 combiner admission. An
 absent coordinate lookup uses the combiner's implicit UV0 convention; a present
 lookup must agree. Texture type 0 uses an exact TXID, while types 11–13 use the
-selected display's first three texture variations. No guessed filename joins.
+selected display's first three texture variations. Type 2 (object skin) uses the
+first variation only when the model has no other replaceable slot; type 1
+(character skin) stays unbound. No guessed filename joins.
 
 Particles, runtime equipment/customization, full game lighting and other shaders
 are not evaluated. A qualified Stand sequence can loop as an optional idle

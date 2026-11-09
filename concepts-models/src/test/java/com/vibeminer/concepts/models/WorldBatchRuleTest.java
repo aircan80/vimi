@@ -8,11 +8,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.formats.AssetFilesFixture;
+import com.vibeminer.formats.db2.Db2Types;
+import com.vibeminer.formats.definitions.TableSchema;
+import com.vibeminer.formats.definitions.WowLocale;
 import com.vibeminer.formats.tables.MemoryTables;
+import com.vibeminer.formats.tables.TableTypes;
 import com.vibeminer.generated.MemoryGeneratedStore;
 import com.vibeminer.rendering.models.MeshAppearance;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 /** The World binding's batch rule (#361), which follows the World objects' rule (#360). */
@@ -156,6 +161,20 @@ class WorldBatchRuleTest {
      */
     static List<DisplayModelTypes.Preview> worldBindings(
             NativeMaterialFixture f, int calls, long... missing) throws Exception {
+        return worldBindings(
+                f,
+                NativeMaterialFailureTest.table(
+                        10, "CreatureDisplayInfo", "ModelID", "CreatureModelData", 1),
+                calls,
+                missing);
+    }
+
+    /**
+     * As {@link #worldBindings(NativeMaterialFixture, int, long...)} over the given display table.
+     */
+    static List<DisplayModelTypes.Preview> worldBindings(
+            NativeMaterialFixture f, MemoryTables.FakeTable displays, int calls, long... missing)
+            throws Exception {
         var files =
                 new AssetFilesFixture()
                         .add(100, "1".repeat(32), f.modelBytes())
@@ -178,12 +197,7 @@ class WorldBatchRuleTest {
                                 files.build(),
                                 "enUS",
                                 List.of(
-                                        NativeMaterialFailureTest.table(
-                                                10,
-                                                "CreatureDisplayInfo",
-                                                "ModelID",
-                                                "CreatureModelData",
-                                                1),
+                                        displays,
                                         NativeMaterialFailureTest.table(
                                                 11,
                                                 "CreatureModelData",
@@ -206,6 +220,110 @@ class WorldBatchRuleTest {
         } finally {
             files.close();
         }
+    }
+
+    /**
+     * A CreatureDisplayInfo table whose display 1 names model 1 and the four texture variations
+     * {@code variations}, in the reviewed array shape.
+     */
+    static MemoryTables.FakeTable displaysWithVariations(long... variations) {
+        var locale = WowLocale.parse("enUS");
+        var model =
+                new TableSchema.SchemaColumn(
+                        "ModelID",
+                        TableSchema.ColumnKind.INT,
+                        32,
+                        true,
+                        1,
+                        new TableSchema.ForeignKey("CreatureModelData", "ID"),
+                        TableSchema.KeyStorage.NONE,
+                        TableSchema.KeyStorage.NONE,
+                        true,
+                        locale,
+                        null,
+                        null);
+        var textures =
+                new TableSchema.SchemaColumn(
+                        "TextureVariationFileDataID",
+                        TableSchema.ColumnKind.INT,
+                        32,
+                        true,
+                        4,
+                        new TableSchema.ForeignKey("FileData", "ID"),
+                        TableSchema.KeyStorage.NONE,
+                        TableSchema.KeyStorage.NONE,
+                        true,
+                        locale,
+                        null,
+                        null);
+        var columns = new java.util.ArrayList<Db2Types.Column>();
+        var values = new java.util.ArrayList<String>();
+        columns.add(new Db2Types.Column("ModelID", "integer", false, null, null));
+        values.add("1");
+        for (int i = 0; i < 4; i++) {
+            columns.add(
+                    new Db2Types.Column(
+                            "TextureVariationFileDataID[" + i + "]", "integer", false, null, null));
+            values.add(Long.toString(variations[i]));
+        }
+        return new MemoryTables.FakeTable(
+                new TableTypes.Entry(
+                        10,
+                        "CreatureDisplayInfo",
+                        TableTypes.State.READY,
+                        true,
+                        null,
+                        new TableTypes.Counts(1, 1, 0, 0, "fixture", "0FC0F0D5"),
+                        "c".repeat(32)),
+                columns,
+                List.of(new Db2Types.Row(1, false, null, values, List.of())),
+                new TableSchema(
+                        List.of(model, textures),
+                        List.of("0FC0F0D5"),
+                        TableSchema.SchemaMatch.BUILD,
+                        locale,
+                        null),
+                Map.of(),
+                true);
+    }
+
+    @Test
+    void anObjectSkinSlotDrawsTheDisplaysFirstVariationWhenTheModelHasNoOtherReplaceableSlot()
+            throws Exception {
+        // Texture 0 (batch 0's only texture) is an object skin slot (type 2); its TXID 9001 is
+        // left out of the files, so only the display's variation can bind it.
+        var f = new NativeMaterialFixture(274, 16, 0, 1, 0, 0);
+        f.body.putInt(f.textures, 2);
+        assertEquals(2, f.parse().model().textures().getFirst().type());
+
+        var world =
+                worldBindings(f, displaysWithVariations(9002, 9002, 9002, 9002), 1, 9001)
+                        .getFirst();
+        assertEquals(1, world.appearance().surfaces().size(), world.issues().toString());
+        assertEquals(1, world.appearance().textures().size(), "texture 9002 only");
+
+        // No first variation: the slot stays unbound and the section is left out.
+        assertUndrawn(worldBindings(f, displaysWithVariations(0, 9002, 0, 0), 1, 9001));
+
+        // Another replaceable slot on the model (a monster skin, which owns variation 0, or a
+        // character slot, whose type 2 is a cape): type 2 stays unbound.
+        for (int other : new int[] {11, 1}) {
+            f.body.putInt(f.textures + 16, other);
+            assertUndrawn(
+                    worldBindings(f, displaysWithVariations(9002, 9002, 9002, 9002), 1, 9001));
+        }
+
+        // The character skin (type 1) is never bound from a variation.
+        f.body.putInt(f.textures + 16, 0);
+        f.body.putInt(f.textures, 1);
+        assertUndrawn(worldBindings(f, displaysWithVariations(9002, 9002, 9002, 9002), 1, 9001));
+    }
+
+    private static void assertUndrawn(List<DisplayModelTypes.Preview> bindings) {
+        var binding = bindings.getFirst();
+        assertTrue(
+                binding.appearance() == null || binding.appearance().surfaces().isEmpty(),
+                binding.issues().toString());
     }
 
     @Test

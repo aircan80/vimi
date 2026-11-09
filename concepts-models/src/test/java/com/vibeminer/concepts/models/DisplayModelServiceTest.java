@@ -292,20 +292,62 @@ class DisplayModelServiceTest {
         var variations = List.of(100L, 200L, 300L, 400L);
         assertEquals(
                 100,
-                DisplayModelService.textureId(new M2Types.Texture(0, 11, 0, "", 999L), variations));
+                DisplayModelService.textureId(
+                        new M2Types.Texture(0, 11, 0, "", 999L), variations, false));
         assertEquals(
                 300,
-                DisplayModelService.textureId(new M2Types.Texture(0, 13, 0, "", 999L), variations));
+                DisplayModelService.textureId(
+                        new M2Types.Texture(0, 13, 0, "", 999L), variations, true));
         assertEquals(
                 999,
-                DisplayModelService.textureId(new M2Types.Texture(0, 0, 0, "", 999L), variations));
-        assertEquals(
-                0,
-                DisplayModelService.textureId(new M2Types.Texture(0, 1, 0, "", 999L), variations));
+                DisplayModelService.textureId(
+                        new M2Types.Texture(0, 0, 0, "", 999L), variations, true));
         assertEquals(
                 0,
                 DisplayModelService.textureId(
-                        new M2Types.Texture(0, 13, 0, "", 999L), List.of(100L)));
+                        new M2Types.Texture(0, 1, 0, "", 999L), variations, true));
+        assertEquals(
+                0,
+                DisplayModelService.textureId(
+                        new M2Types.Texture(0, 13, 0, "", 999L), List.of(100L), false));
+    }
+
+    @Test
+    void objectSkinTakesTheFirstVariationOnlyOnAModelWithNoOtherReplaceableSlot() {
+        var objectSkin = new M2Types.Texture(0, 2, 0, "", 0L);
+        var file = new M2Types.Texture(1, 0, 3, "", 77L);
+        assertTrue(DisplayModelService.objectSkinFromVariation(List.of(objectSkin)));
+        assertTrue(DisplayModelService.objectSkinFromVariation(List.of(objectSkin, file)));
+        // No object skin slot at all: nothing to take.
+        assertFalse(DisplayModelService.objectSkinFromVariation(List.of(file)));
+        // A monster skin slot owns variation 0.
+        for (long type : new long[] {11, 12, 13}) {
+            assertFalse(
+                    DisplayModelService.objectSkinFromVariation(
+                            List.of(objectSkin, new M2Types.Texture(1, type, 0, "", 0L))));
+        }
+        // On a character model (body skin, hair, skin extra) type 2 is a cape from equipment.
+        for (long type : new long[] {1, 6, 8}) {
+            assertFalse(
+                    DisplayModelService.objectSkinFromVariation(
+                            List.of(new M2Types.Texture(0, type, 0, "", 0L), objectSkin, file)));
+        }
+        var variations = List.of(500L, 600L, 0L, 0L);
+        assertEquals(500, DisplayModelService.textureId(objectSkin, variations, true));
+        assertEquals(0, DisplayModelService.textureId(objectSkin, variations, false));
+        // An empty variation (0) or a table without the array leaves the slot unbound.
+        assertEquals(0, DisplayModelService.textureId(objectSkin, List.of(0L, 600L), true));
+        assertEquals(0, DisplayModelService.textureId(objectSkin, List.of(), true));
+        // The character skin stays unbound whatever the model: it needs character composition.
+        assertEquals(
+                0,
+                DisplayModelService.textureId(
+                        new M2Types.Texture(0, 1, 0, "", 0L), variations, true));
+        // Weapon blade and handle slots are not admitted by this rule.
+        assertEquals(
+                0,
+                DisplayModelService.textureId(
+                        new M2Types.Texture(0, 3, 0, "", 0L), variations, true));
     }
 
     @Test

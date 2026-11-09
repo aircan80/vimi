@@ -568,12 +568,17 @@ public final class WorldMeasurementProbe {
                 } else if (blend > 1) set.add("blend " + blend);
                 var texture = m.textures().get(m.textureCombos().get(batch.textureComboIndex()));
                 long type = texture.type();
-                if (type != 0 && (type < 11 || type > 13)) set.add("texture type " + type);
+                boolean objectSkin = type == 2 && objectSkinFromVariation(m);
+                if (type != 0 && (type < 11 || type > 13) && !objectSkin)
+                    set.add("texture type " + type);
                 else {
                     long fid = type == 0 ? (texture.fileDataId() == null ? 0 : texture.fileDataId())
+                            : objectSkin ? (reference.textureVariations().isEmpty() ? 0
+                                    : reference.textureVariations().getFirst())
                             : type - 11 < reference.textureVariations().size()
                                     ? reference.textureVariations().get((int) type - 11) : 0;
-                    if (fid <= 0) set.add(type == 0 ? "no texture file" : "empty monster skin slot");
+                    if (fid <= 0) set.add(type == 0 ? "no texture file"
+                            : objectSkin ? "empty object skin slot" : "empty monster skin slot");
                     else {
                         var stat = files.stat(com.vibeminer.files.FileTypes.FileRef.id(fid), token).join();
                         if (stat.state() != com.vibeminer.files.FileTypes.FileLookupState.FOUND)
@@ -587,6 +592,11 @@ public final class WorldMeasurementProbe {
             }
             if (best == null) return "no layer-0 batch";
             return best.isEmpty() ? "no blocker (geosets or hidden sections)" : String.join(" + ", best);
+        }
+
+        /** Whether every texture is a file or the object skin (DisplayModelService's rule). */
+        static boolean objectSkinFromVariation(com.vibeminer.formats.models.M2Types.Model m) {
+            return m.textures().stream().allMatch(t -> t.type() == 0 || t.type() == 2);
         }
 
         /**
