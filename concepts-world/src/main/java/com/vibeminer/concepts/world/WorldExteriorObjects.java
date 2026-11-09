@@ -408,12 +408,13 @@ public final class WorldExteriorObjects {
      * Mutually exclusive outcome buckets. Placements: every obj0 MODF record lands in exactly one
      * PLACEMENT bucket. Roots: every distinct root that was read lands in one ROOT bucket (roots
      * never read because of the root cap only cap their placements). Groups and batches count LOD0
-     * groups and their batches for roots that were not failed or capped; BATCH_CUTOUT and
-     * BATCH_BLENDED are the subsets of BATCH_DRAWN with those material classes. Root caps and the
-     * opaque image budget are decided by opaque batches alone, exactly as the opaque-only profile
-     * did; cutout and blended batches are then added from their own budget. Images: every distinct
-     * texture1 (per alpha treatment) that an otherwise drawable batch needed lands in one IMAGE
-     * bucket.
+     * groups and their batches for roots that were not failed or capped, except that every LOD0
+     * group of a root drawn by group lands in one group bucket on each tile listing it, capped
+     * there or not (GROUP_CAPPED, {@link #GROUP_OUTCOMES}); BATCH_CUTOUT and BATCH_BLENDED are the
+     * subsets of BATCH_DRAWN with those material classes. Root caps and the opaque image budget are
+     * decided by opaque batches alone, exactly as the opaque-only profile did; cutout and blended
+     * batches are then added from their own budget. Images: every distinct texture1 (per alpha
+     * treatment) that an otherwise drawable batch needed lands in one IMAGE bucket.
      *
      * <p>Doodads: every MDDF record lands in exactly one DOODAD bucket. Every MODD entry of a drawn
      * building's selected sets (set 0 and its MODF doodad set) lands in one SET_DOODAD bucket;
@@ -634,8 +635,26 @@ public final class WorldExteriorObjects {
          * boxes, on the tile owning that group, which does not draw it: not placed, so it never
          * floats without walls or spends a cap. A set doodad bucket.
          */
-        SET_DOODAD_INTERIOR
+        SET_DOODAD_INTERIOR,
+        /**
+         * An exterior group this tile owns of a root drawn by group whose share here is capped
+         * (ROOT_CAPPED); its owned interiors are GROUP_INTERIOR_CAPPED. A group bucket.
+         */
+        GROUP_CAPPED
     }
+
+    /** The group buckets ({@link Count}). */
+    static final List<Count> GROUP_OUTCOMES =
+            List.of(
+                    Count.GROUP_DRAWN,
+                    Count.GROUP_INTERIOR,
+                    Count.GROUP_INTERIOR_CAPPED,
+                    Count.GROUP_UNSUPPORTED,
+                    Count.GROUP_UNAVAILABLE,
+                    Count.GROUP_EMPTY,
+                    Count.GROUP_OTHER_TILE,
+                    Count.GROUP_INTERIOR_NO_PORTALS,
+                    Count.GROUP_CAPPED);
 
     /** What a placement draws: an outdoor WMO, an MDDF doodad or a WMO doodad-set entry. */
     public enum Kind {
@@ -2284,7 +2303,7 @@ public final class WorldExteriorObjects {
                 if (opaquePlacements >= MAX_PLACEMENTS
                         || buildings >= MAX_PLACEMENTS
                         || unread > MAX_GROUPS - groupsRead) {
-                    capByGroup(rootId, queued);
+                    capByGroup(rootId, queued, read, local);
                     continue;
                 }
                 var root = read.root();
@@ -2340,7 +2359,7 @@ public final class WorldExteriorObjects {
                 if (over
                         || pending.size() > MAX_MESHES - meshes
                         || opaqueCandidates > MAX_DRAWS - drawn) {
-                    capByGroup(rootId, queued);
+                    capByGroup(rootId, queued, read, local);
                     continue;
                 }
                 // Only opaque ranges when every candidate range would not fit the draws left.
@@ -2481,8 +2500,24 @@ public final class WorldExteriorObjects {
             return model;
         }
 
-        /** A root drawn by group that does not fit here: capped, its local set doodads kept. */
-        private void capByGroup(long rootId, Queued queued) {
+        /**
+         * A root drawn by group that does not fit here: capped, its local set doodads kept. Its
+         * LOD0 groups were already classified for this tile ({@link #readByGroup}), so each still
+         * lands in one group bucket, as on the tiles drawing the others: a group settled by then
+         * keeps its bucket (another tile's, an interior or unsupported group, a failed or empty
+         * read), an owned interior still to be drawn is GROUP_INTERIOR_CAPPED and an owned exterior
+         * GROUP_CAPPED. Nothing else it read or admitted is counted, as for a capped root.
+         */
+        private void capByGroup(long rootId, Queued queued, ByGroup read, int[] local) {
+            int settled = 0;
+            for (var bucket : GROUP_OUTCOMES) {
+                counts[bucket.ordinal()] += local[bucket.ordinal()];
+                settled += local[bucket.ordinal()];
+            }
+            int interiors = interiorCandidates(read);
+            counts[Count.GROUP_INTERIOR_CAPPED.ordinal()] += interiors;
+            counts[Count.GROUP_CAPPED.ordinal()] +=
+                    Math.max(0, read.ready().length - settled - interiors);
             rootStates.put(rootId, RootState.CAPPED);
             count(Count.ROOT_CAPPED);
             count(Count.PLACEMENT_CAPPED);
