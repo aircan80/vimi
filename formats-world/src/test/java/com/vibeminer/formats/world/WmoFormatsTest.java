@@ -295,6 +295,107 @@ class WmoFormatsTest {
                 () -> WmoFormats.root(root(), WmoFormats.Limits.basicPreview(), () -> false));
     }
 
+    /** A root declaring {@code groups} groups, each with one GFID entry, plus extras. */
+    private static byte[] rootWithGroups(int groups, byte[]... extras) {
+        var h = buffer(64);
+        h.putInt(1).putInt(groups);
+        h.position(36);
+        h.put(floats(-1, -1, -1, 1, 1, 1));
+        var gfid = buffer(4 * groups);
+        for (int g = 0; g < groups; g++) {
+            gfid.putInt(1000 + g);
+        }
+        return join(
+                version(),
+                chunk("MOHD", h.array()),
+                chunk("MOMT", material()),
+                chunk("GFID", gfid.array()),
+                join(extras));
+    }
+
+    /** MOGI: one 32-byte SMOGroupInfo per group, flags first, then bounds and name offset. */
+    private static byte[] mogi(int... flags) {
+        var b = buffer(32 * flags.length);
+        for (int i = 0; i < flags.length; i++) {
+            b.putInt(i * 32, flags[i]).putFloat(i * 32 + 4, -1).putInt(i * 32 + 28, -1);
+        }
+        return chunk("MOGI", b.array());
+    }
+
+    @Test
+    void rootsUpToFiveHundredTwelveGroupsParse() {
+        assertEquals(512, WmoFormats.MAX_GROUPS);
+        assertEquals(512, WmoFormats.Limits.standard().groups());
+        var root = WmoFormats.root(rootWithGroups(512), () -> false);
+        assertEquals(512, root.header().groupCount());
+        assertEquals(512, root.gfidCount());
+        var over =
+                assertThrows(
+                        IllegalArgumentException.class,
+                        () -> WmoFormats.root(rootWithGroups(513), () -> false));
+        assertTrue(over.getMessage().contains("Root counts exceed limit"));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new WmoFormats.Limits(1024, 1024, 513, 1, 1, 1, 1, 1, 1, 1024));
+    }
+
+    @Test
+    void groupInfoFlagsAreRetainedInGroupOrder() {
+        var flags = new int[300];
+        for (int g = 0; g < flags.length; g++) {
+            flags[g] = g % 3 == 0 ? 0x8 : 0x2000 | 0x8;
+        }
+        flags[299] = 0x80002000; // all 32 bits are kept unsigned
+        var root = WmoFormats.root(rootWithGroups(300, mogi(flags)), () -> false);
+        assertTrue(root.groupInfoRetained());
+        assertEquals(0x8, root.groupInfoFlags(0));
+        assertEquals(0x2008, root.groupInfoFlags(1));
+        assertEquals(0x80002000L, root.groupInfoFlags(299));
+        assertTrue(
+                root.chunks().stream().anyMatch(c -> c.tag() == tag("MOGI") && c.payloadParsed()));
+    }
+
+    @Test
+    void absentMismatchedPartialDuplicateOrOverBudgetGroupInfoIsNotRetained() {
+        var absent = WmoFormats.root(root(), () -> false);
+        assertFalse(absent.groupInfoRetained());
+        assertThrows(IllegalStateException.class, () -> absent.groupInfoFlags(0));
+        // The fixture root declares one group.
+        assertTrue(WmoFormats.root(join(root(), mogi(0x2000)), () -> false).groupInfoRetained());
+        assertFalse(
+                WmoFormats.root(join(root(), mogi(0x2000, 0x8)), () -> false).groupInfoRetained(),
+                "record count differs from MOHD");
+        assertFalse(
+                WmoFormats.root(join(root(), chunk("MOGI", new byte[31])), () -> false)
+                        .groupInfoRetained(),
+                "partial record");
+        assertFalse(
+                WmoFormats.root(join(root(), mogi(0x2000), mogi(0x2000)), () -> false)
+                        .groupInfoRetained(),
+                "duplicate");
+        // A budget that holds the root but not its group info leaves only the info absent: the
+        // smallest budget that parses the root with a mismatched (unclaimed) MOGI is too small
+        // for 300 retained flags.
+        int needed = 0;
+        for (int budget = 1024; budget < 64 << 10 && needed == 0; budget += 8) {
+            var limits =
+                    new WmoFormats.Limits(
+                            1 << 20, 1 << 20, 512, 24, 4096, 16384, 16384, 64, 1, budget);
+            try {
+                WmoFormats.root(rootWithGroups(300, mogi(new int[299])), limits, () -> false);
+                needed = budget;
+            } catch (IllegalArgumentException overBudget) {
+                // keep looking for the smallest budget that holds the root alone
+            }
+        }
+        assertTrue(needed > 0);
+        var squeezed =
+                new WmoFormats.Limits(1 << 20, 1 << 20, 512, 24, 4096, 16384, 16384, 64, 1, needed);
+        var root = WmoFormats.root(rootWithGroups(300, mogi(new int[300])), squeezed, () -> false);
+        assertFalse(root.groupInfoRetained());
+        assertEquals(300, root.gfidCount());
+    }
+
     @Test
     void recordedGroupNamesAreReadOnlyAtTerminatedPrintableOffsets() {
         byte[] block = {0, 0, 'H', 'a', 'l', 'l', 0, 'b', 1, 0, 'o', 'p', 'e', 'n'};
@@ -447,7 +548,7 @@ class WmoFormatsTest {
                 IllegalArgumentException.class,
                 () ->
                         new WmoFormats.Limits(
-                                8 << 20, 8 << 20, 257, 256, 4096, 65536, 131072, 256, 4,
+                                8 << 20, 8 << 20, 513, 256, 4096, 65536, 131072, 256, 4,
                                 12L << 20));
     }
 

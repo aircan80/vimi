@@ -2,6 +2,7 @@ package com.vibeminer.concepts.world;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -9,6 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.formats.tables.AuthoredNativeMap;
+import com.vibeminer.formats.world.WmoFormats;
 import com.vibeminer.formats.world.WorldFormats;
 import com.vibeminer.formats.world.WorldPlacements;
 import com.vibeminer.formats.world.WorldStageTimings;
@@ -933,6 +935,128 @@ class WorldExteriorObjectsTest {
                 assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
             }
         }
+    }
+
+    /** MOGI: one 32-byte group-info record per group, flags first (wowdev SMOGroupInfo). */
+    private static byte[] mogi(int... flags) {
+        var b = buffer(32 * flags.length);
+        for (int i = 0; i < flags.length; i++) {
+            b.putInt(i * 32, flags[i]);
+        }
+        return chunk("MOGI", b.array());
+    }
+
+    private static int[] repeatFlags(int flags, int count) {
+        var out = new int[count];
+        Arrays.fill(out, flags);
+        return out;
+    }
+
+    private static byte[] mogiRoot(long[] gfid, int[] flags) {
+        return root(gfid.length, gfid, List.of(new Material(0, IMAGE, 0)), mogi(flags));
+    }
+
+    @Test
+    void mogiInteriorGroupsAreNeverReadOutsideInstances() {
+        // MOGI marks the first group interior: on an open-world map it is counted GROUP_INTERIOR
+        // exactly as a read interior group was, but never opened or read ahead. An instance map
+        // still reads and draws it.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(ROOT, mogiRoot(new long[] {INTERIOR, GROUP}, new int[] {INT, EXT}));
+            try (var set = f.run()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertEquals(null, f.files.opens.get(INTERIOR), "skipped before reading");
+            }
+            try (var set = f.runInstance()) {
+                assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertTrue(f.files.opens.get(INTERIOR).get() > 0);
+            }
+        }
+    }
+
+    @Test
+    void aReadGroupFollowsItsOwnMogpFlagsOverMogi() {
+        // MOGI says exterior for a group whose MOGP says interior: it is read, and its MOGP flags
+        // drop it as GROUP_INTERIOR. Interior wins when MOGI records both flags.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(GROUP + 50, group(EXT));
+            f.files.sources.put(
+                    ROOT,
+                    mogiRoot(
+                            new long[] {INTERIOR, GROUP, GROUP + 50},
+                            new int[] {EXT, EXT, EXT | INT}));
+            try (var set = f.run()) {
+                assertEquals(2, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertTrue(f.files.opens.get(INTERIOR).get() > 0, "MOGI exterior is read");
+                assertEquals(null, f.files.opens.get(GROUP + 50), "MOGI interior wins");
+            }
+        }
+    }
+
+    @Test
+    void mogiThatDoesNotCoverEveryGroupSkipsNothing() {
+        // One MOGI record for two groups is not retained: every group is read, as without MOGI.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(
+                    ROOT,
+                    root(
+                            2,
+                            new long[] {INTERIOR, GROUP},
+                            List.of(new Material(0, IMAGE, 0)),
+                            mogi(INT)));
+            try (var set = f.run()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertTrue(f.files.opens.get(INTERIOR).get() > 0);
+            }
+        }
+    }
+
+    @Test
+    void mogiInteriorsDoNotSpendTheTileGroupReads() {
+        // A 300-group city root (over the old 256 ceiling) with 280 MOGI-interior groups reads only
+        // its 20 exterior groups, so it is not capped by MAX_GROUPS, and a later 200-group root
+        // still fits the tile's reads. Every skipped interior is counted GROUP_INTERIOR.
+        long city = 800, later = 801;
+        var cityGroups = new long[300];
+        var cityFlags = new int[300];
+        for (int g = 0; g < 300; g++) {
+            boolean interior = g % 15 != 0; // 20 exterior groups spread through the root
+            cityGroups[g] = interior ? INTERIOR : GROUP;
+            cityFlags[g] = interior ? INT : EXT;
+        }
+        try (var f = new Fixture(List.of(Modf.of(city, 1, 0x8), Modf.of(later, 2, 0x8)))) {
+            f.files.sources.put(city, mogiRoot(cityGroups, cityFlags));
+            f.files.sources.put(GROUP + 50, group(EXT));
+            f.files.sources.put(later, mogiRoot(repeat(GROUP + 50, 200), repeatFlags(EXT, 200)));
+            try (var set = f.run()) {
+                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+                assertEquals(280, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR));
+                assertEquals(220, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertEquals(null, f.files.opens.get(INTERIOR));
+            }
+            // An instance map reads every group, so the same city root is over the tile's reads.
+            try (var set = f.runInstance()) {
+                assertTrue(set.count(WorldExteriorObjects.Count.ROOT_CAPPED) >= 1);
+            }
+        }
+    }
+
+    @Test
+    void skipInteriorNeedsRetainedMogiAndAnOpenWorldMap() {
+        var flagged =
+                WmoFormats.root(
+                        mogiRoot(new long[] {GROUP, GROUP}, new int[] {INT, EXT}), () -> false);
+        assertTrue(WorldExteriorObjects.skipInterior(flagged, 0, false));
+        assertFalse(WorldExteriorObjects.skipInterior(flagged, 1, false));
+        assertFalse(WorldExteriorObjects.skipInterior(flagged, 0, true), "instances read all");
+        var bare = WmoFormats.root(root(GROUP, GROUP), () -> false);
+        assertFalse(bare.groupInfoRetained());
+        assertFalse(WorldExteriorObjects.skipInterior(bare, 0, false));
     }
 
     @Test
