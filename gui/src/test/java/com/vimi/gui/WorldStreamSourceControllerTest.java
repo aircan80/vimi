@@ -521,8 +521,11 @@ public final class WorldStreamSourceControllerTest {
     /**
      * #366 with #424: a tile the helper rejected is retried after its back-off from the FX tick
      * alone. The back-off arms the controller's own deadline at exactly the retry time, so one
-     * tick past it retries the tile with no other event (the wall-clock fallback timer of the
-     * back-off is far longer than this test waits).
+     * tick past it retries the tile with no other event. The back-off also arms a wall-clock
+     * fallback kick; the test waits until that has come and gone, on a controller clock still
+     * before the retry time, so it cannot be what retries the tile. The retry itself (producing
+     * the tile, offering it, the helper rejecting it again) is then awaited with no further tick,
+     * under a bound only a missed retry reaches, not a loaded runner.
      */
     private static void aHelperRejectedTileRetriesOnItsBackoffDeadline() throws Exception {
         var fixture = new Fixture(new AuthoredTerrainSource.Files(), 2);
@@ -538,6 +541,7 @@ public final class WorldStreamSourceControllerTest {
             fixture.controller.neighborhood(fixture.tiles);
             int key = fixture.tiles.get(1).x() * 64 + fixture.tiles.get(1).y();
             fixture.until(() -> fixture.controller.helperRejections(key) == 1);
+            long rejected = System.nanoTime();
             var armed = WorldStreamSourceController.class.getDeclaredField("pulseArmed");
             var at = WorldStreamSourceController.class.getDeclaredField("pulseAt");
             var retries = WorldStreamSourceController.class.getDeclaredField("helperRetryAt");
@@ -556,10 +560,17 @@ public final class WorldStreamSourceControllerTest {
                     throw new AssertionError(failure);
                 }
             });
+            // The first back-off's wall-clock fallback fires RETRY_NANOS after the rejection; let
+            // it pass while the controller clock is still before the retry time.
+            var retry = WorldStreamSourceController.class.getDeclaredField("RETRY_NANOS");
+            retry.setAccessible(true);
+            long fallback = rejected + retry.getLong(null) + TimeUnit.MILLISECONDS.toNanos(200);
+            while (System.nanoTime() < fallback) Thread.sleep(5);
             check(lines(log) == 1, "Not retried before its back-off");
             fixture.clock.set(retryAt);
             fixture.controller.pulse(); // one FX tick past the deadline, and nothing else
-            long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(400);
+            // No further tick or FX task: bounded only so a missed retry fails, not hangs.
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
             while (lines(log) < 2 && System.nanoTime() < deadline) Thread.sleep(2);
             check(lines(log) == 2, "The tick past the back-off retried the rejected tile");
         } finally {
