@@ -49,7 +49,7 @@ final class WorldBasicWmo {
                     mapId >= 0
                             && mapId <= 0xffffffffL
                             && ordinal >= 0
-                            && ordinal < 4096
+                            && ordinal < WorldPlacements.MAX_RECORDS_PER_KIND
                             && uniqueId >= 0
                             && uniqueId <= 0xffffffffL,
                     "SELECTION_BOUNDS");

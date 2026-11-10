@@ -3572,6 +3572,38 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
+    @org.junit.jupiter.api.Timeout(30)
+    void aLargeGroupOfOneUniqueIdIsDecidedOnce() {
+        // 16,000 MDDF records of one unique ID, then one other doodad. Identical: the first
+        // draws and every other is a shared duplicate. With one record of the group differing,
+        // the whole group conflicts and the other doodad still draws. Each group is compared with
+        // its first record once, not once per record.
+        int size = 16_000;
+        var identical = new ArrayList<Mddf>();
+        for (int i = 0; i < size; i++) {
+            identical.add(Mddf.of(MODEL, 5, 0x40));
+        }
+        identical.add(Mddf.of(MODEL, 6, 0x40));
+        var conflicting = new ArrayList<>(identical);
+        conflicting.set(size / 2, new Mddf(MODEL, 5, 0x40, 1, 1, 1, 0, 0, 0, 1024));
+        try (var f = new Fixture(List.of())) {
+            putModel(f, MODEL, model());
+            try (var set = run(f, obj0(List.of(), identical))) {
+                assertEquals(2, set.count(WorldExteriorObjects.Count.DOODAD_DRAWN));
+                assertEquals(
+                        size - 1, set.count(WorldExteriorObjects.Count.DOODAD_SHARED_DUPLICATE));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.DOODAD_CONFLICTING));
+                assertEquals(5, set.placements().getFirst().uniqueId());
+            }
+            try (var set = run(f, obj0(List.of(), conflicting))) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.DOODAD_DRAWN));
+                assertEquals(size, set.count(WorldExteriorObjects.Count.DOODAD_CONFLICTING));
+                assertEquals(6, set.placements().getFirst().uniqueId());
+            }
+        }
+    }
+
+    @Test
     void mddfDoodadsShareOneStaticModelUnderTheReviewedHeadingRule() {
         // Pitched and rolled records now draw too; their transforms are checked against the
         // wowdev placement-matrix oracle in mddfPitchRollAndHeadingFollowThePinnedPlacementMatrix.

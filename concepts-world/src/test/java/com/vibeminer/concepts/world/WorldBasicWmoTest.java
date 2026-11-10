@@ -179,6 +179,20 @@ class WorldBasicWmoTest {
     }
 
     @Test
+    void aSelectionMayNameAnyRecordAnObj0Holds() {
+        // The MODF ordinal bound is the obj0 record bound, in both the selection and the annex.
+        assertEquals(
+                com.vibeminer.formats.world.WorldPlacements.MAX_RECORDS_PER_KIND,
+                com.vibeminer.rendering.world.ExteriorObjectLimits.OBJ0_RECORDS_PER_KIND);
+        int last = com.vibeminer.formats.world.WorldPlacements.MAX_RECORDS_PER_KIND - 1;
+        assertEquals(last, new WorldBasicWmo.Selection(7, TILE, last, 77).ordinal());
+        assertEquals(4096, new WorldBasicWmo.Selection(7, TILE, 4096, 77).ordinal());
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new WorldBasicWmo.Selection(7, TILE, last + 1, 77));
+    }
+
+    @Test
     void actualNativeMapAndRecordedChainQualifyWithExpiringReadonlyBorrow() throws Exception {
         try (var f = new Fixture()) {
             var captured = new WorldBasicWmo.Borrow[1];

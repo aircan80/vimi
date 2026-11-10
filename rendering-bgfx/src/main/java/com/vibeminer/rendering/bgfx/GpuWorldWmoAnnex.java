@@ -619,7 +619,9 @@ public final class GpuWorldWmoAnnex {
                         && m.owner() != 0
                         && m.generation() > 0
                         && m.modfOrdinal() >= 0
-                        && m.modfOrdinal() < 4096
+                        && m.modfOrdinal()
+                                < com.vibeminer.rendering.world.ExteriorObjectLimits
+                                        .OBJ0_RECORDS_PER_KIND
                         && m.tileOrdinal() >= 0
                         && m.tileOrdinal() < scene.tiles().size(),
                 "Metadata scope");

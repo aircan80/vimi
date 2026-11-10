@@ -263,7 +263,10 @@ class GpuWorldWmoAnnexTest {
             byte[] bytes = original.clone();
             var h = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
             if (field == 180) {
-                h.putInt(field, 4096);
+                // The MODF ordinal at the obj0 record bound, one past the last valid one.
+                h.putInt(
+                        field,
+                        com.vibeminer.rendering.world.ExteriorObjectLimits.OBJ0_RECORDS_PER_KIND);
             } else if (field == 192 || field == 200) {
                 h.putLong(field, 0);
             } else if (field == 276) {
