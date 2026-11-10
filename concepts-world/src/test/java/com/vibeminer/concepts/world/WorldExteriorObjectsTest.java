@@ -2682,30 +2682,39 @@ class WorldExteriorObjectsTest {
 
     @Test
     void imageReadCapCountsCappedImagesDeterministically() {
-        // WmoGroupSpans admits at most 64 batches per group, so two groups carry 66 materials.
+        // WmoGroupSpans admits at most 64 batches per group, so the MAX_IMAGES + 2 materials are
+        // spread over groups of 64, one image each.
+        int images = WorldExteriorObjects.MAX_IMAGES + 2;
         var materials = new ArrayList<Material>();
-        var first = new ArrayList<Batch>();
-        var second = new ArrayList<Batch>();
-        for (int i = 0; i < 66; i++) {
+        int groups = (images + 63) / 64;
+        var batches = new ArrayList<List<Batch>>();
+        for (int g = 0; g < groups; g++) {
+            batches.add(new ArrayList<>());
+        }
+        for (int i = 0; i < images; i++) {
             materials.add(new Material(0, 3000 + i, 0));
-            (i < 33 ? first : second).add(new Batch(i % 33 * 3, 3, 0, i));
+            batches.get(i / 64).add(new Batch(i % 64 * 3, 3, 0, i));
         }
         try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
-            f.files.sources.put(ROOT, root(2, new long[] {GROUP, GROUP + 1}, materials));
-            f.files.sources.put(GROUP, group(EXT, 3, 33, first));
-            f.files.sources.put(GROUP + 1, group(EXT, 3, 33, second));
-            for (int i = 0; i < 66; i++) {
+            long[] gfid = new long[groups];
+            for (int g = 0; g < groups; g++) {
+                gfid[g] = GROUP + 10 + g;
+                f.files.sources.put(gfid[g], group(EXT, 3, batches.get(g).size(), batches.get(g)));
+            }
+            f.files.sources.put(ROOT, root(groups, gfid, materials));
+            for (int i = 0; i < images; i++) {
                 f.files.sources.put(3000L + i, blp(4, 4, 1, i));
             }
             try (var set = f.run()) {
-                assertEquals(64, set.images().size());
-                assertEquals(64, set.count(WorldExteriorObjects.Count.BATCH_DRAWN));
+                int cap = WorldExteriorObjects.MAX_IMAGES;
+                assertEquals(cap, set.images().size());
+                assertEquals(cap, set.count(WorldExteriorObjects.Count.BATCH_DRAWN));
                 // Over the image count cap: a budget, reported as such (#280 review).
                 assertEquals(2, set.count(WorldExteriorObjects.Count.BATCH_IMAGE_CAPPED));
                 assertEquals(0, set.count(WorldExteriorObjects.Count.BATCH_MISSING_IMAGE));
                 assertEquals(2, set.count(WorldExteriorObjects.Count.IMAGE_CAPPED));
-                assertEquals(null, f.files.opens.get(3064L));
-                assertEquals(3063L, set.images().getLast().id());
+                assertEquals(null, f.files.opens.get(3000L + cap));
+                assertEquals(3000L + cap - 1, set.images().getLast().id());
             }
         }
     }
@@ -3165,6 +3174,85 @@ class WorldExteriorObjectsTest {
                 WorldExteriorObjects.ModelReader.STANDARD,
                 WorldExteriorObjects.ImageDetail.STANDARD,
                 limit);
+    }
+
+    @Test
+    void imagesReadAgainForEveryUseStayWithinTheReadProfile() {
+        // With nothing retained, every later use of an image reads its file again: here the
+        // registration decode and the file's blocks for its chain, at the building image cap.
+        // Every read stays within the profile (IMAGE_READS_PER_SLOT per slot), none is left
+        // unread for the profile, and the tile draws every image.
+        int images = WorldExteriorObjects.MAX_IMAGES;
+        var materials = new ArrayList<Material>();
+        int groups = images / 64;
+        long[] gfid = new long[groups];
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            for (int g = 0; g < groups; g++) {
+                var batches = new ArrayList<Batch>();
+                for (int b = 0; b < 64; b++) {
+                    int i = g * 64 + b;
+                    materials.add(new Material(0, 5000 + i, 0));
+                    batches.add(new Batch(3 * b, 3, 0, i));
+                    f.files.sources.put(5000L + i, blp(256, 256, 9, 0x0841 * (i % 30 + 1)));
+                }
+                gfid[g] = GROUP + 10 + g;
+                f.files.sources.put(gfid[g], group(EXT, 3, 64, batches));
+            }
+            f.files.sources.put(ROOT, root(groups, gfid, materials));
+            // A session sampling BC1 blocks also reads each file's blocks for its chain.
+            int bc1 = 1 << com.vibeminer.rendering.world.ObjectTextureFormats.BC1;
+            try (var set = prepareWith(f, WorldExteriorObjects.Interiors.NONE, 0, bc1)) {
+                assertEquals(images, set.images().size());
+                assertEquals(0, set.count(WorldExteriorObjects.Count.SOURCE_READ_CAPPED));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.BATCH_MISSING_IMAGE));
+            }
+            int reads = 0;
+            for (int i = 0; i < images; i++) {
+                reads += f.files.opens(5000L + i);
+            }
+            assertEquals(2 * images, reads, "each image read for each of its two uses");
+            assertTrue(
+                    reads
+                            <= WorldStreamScopes.IMAGE_READS_PER_SLOT
+                                    * WorldStreamScopes.WMO_IMAGE_SLOTS);
+        }
+    }
+
+    @Test
+    void aSpentImageReadProfileLeavesOnlyThoseImagesUnread() {
+        // Building image reads lowered to two: the first two images are read and drawn, the
+        // other two are left unread (SOURCE_READ_CAPPED), counted unavailable and not drawn, and
+        // never read again; the building and its other surfaces still draw.
+        var materials = new ArrayList<Material>();
+        var batches = new ArrayList<Batch>();
+        for (int i = 0; i < 4; i++) {
+            materials.add(new Material(0, 6000 + i, 0));
+            batches.add(new Batch(3 * i, 3, 0, i));
+            // A second surface of the same image: a capped source is not read again for it.
+            batches.add(new Batch(3 * (4 + i), 3, 0, i));
+        }
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            for (int i = 0; i < 4; i++) {
+                f.files.sources.put(6000L + i, blp(4, 4, 1, 0x0841 * (i + 1)));
+            }
+            f.files.sources.put(ROOT, root(1, new long[] {GROUP}, materials));
+            f.files.sources.put(GROUP, group(EXT, 3, 8, batches));
+            f.engine.lowerDerivedReadsForTest(WorldStreamScopes.DerivedKind.WMO_IMAGE, 2);
+            try (var set = f.run()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertEquals(2, set.images().size());
+                assertEquals(2, set.count(WorldExteriorObjects.Count.SOURCE_READ_CAPPED));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.IMAGE_UNAVAILABLE));
+                assertEquals(4, set.count(WorldExteriorObjects.Count.BATCH_DRAWN));
+                assertEquals(4, set.count(WorldExteriorObjects.Count.BATCH_MISSING_IMAGE));
+                assertEquals(1, set.placements().size());
+            }
+            assertEquals(1, f.files.opens(6000L));
+            assertEquals(1, f.files.opens(6001L));
+            assertEquals(0, f.files.opens(6002L), "a capped source is never read");
+            assertEquals(0, f.files.opens(6003L));
+        }
     }
 
     @Test
@@ -6571,23 +6659,31 @@ class WorldExteriorObjectsTest {
     void aByGroupRootTakesItsOpaqueImagesFromItsOwnSlots() {
         // The tile's building registers all 64 building images; the large placement's image
         // still draws, from the slots kept for roots drawn by group.
+        // A group holds at most 64 batches, so the images are spread over groups of 64.
         var normal = Modf.of(NORMAL, 2, 0x8);
         var materials = new ArrayList<Material>();
-        var batches = new ArrayList<Batch>();
-        for (int i = 0; i < WorldExteriorObjects.MAX_IMAGES; i++) {
-            materials.add(new Material(0, 1000 + i, 0));
-            batches.add(new Batch(3 * i, 3, 0, i));
-        }
+        int groups = WorldExteriorObjects.MAX_IMAGES / 64;
+        long[] gfid = new long[groups];
         try (var f = new Fixture(List.of(largePlacement(), normal))) {
             putBig(f, new int[] {EXT, EXT}, new int[] {60_000, 60_000}, new float[] {0, 200});
-            for (int i = 0; i < WorldExteriorObjects.MAX_IMAGES; i++) {
-                f.files.sources.put(1000L + i, blp(4, 4, 1, 0x0841 * (i + 1)));
+            for (int g = 0; g < groups; g++) {
+                var batches = new ArrayList<Batch>();
+                for (int b = 0; b < 64; b++) {
+                    int i = g * 64 + b;
+                    materials.add(new Material(0, 1000 + i, 0));
+                    batches.add(new Batch(3 * b, 3, 0, i));
+                    f.files.sources.put(1000L + i, blp(4, 4, 1, 0x0841 * (i % 30 + 1)));
+                }
+                gfid[g] = NORMAL + 1 + g;
+                f.files.sources.put(gfid[g], group(EXT, 3, 64, batches));
             }
-            f.files.sources.put(
-                    NORMAL + 1, group(EXT, 3, WorldExteriorObjects.MAX_IMAGES, batches));
-            f.files.sources.put(NORMAL, root(1, new long[] {NORMAL + 1}, materials));
+            f.files.sources.put(NORMAL, root(groups, gfid, materials));
+            var expected = new ArrayList<Integer>();
+            for (int g = 0; g < groups; g++) {
+                expected.add(g);
+            }
             try (var set = f.runOpenWorld()) {
-                assertEquals(List.of(0), groupsOf(set, NORMAL));
+                assertEquals(expected, groupsOf(set, NORMAL));
                 assertEquals(List.of(0), groupsOf(set, BIG));
                 assertEquals(0, set.count(WorldExteriorObjects.Count.BATCH_IMAGE_CAPPED));
                 assertEquals(0, set.count(WorldExteriorObjects.Count.IMAGE_CAPPED));
@@ -7790,16 +7886,31 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
-    void theDoodadReadProfileCoversEverySlotReadTwice() {
+    void theReadProfileCoversEveryImageSlotReadTwice() {
         var profile = WorldStreamScopes.UseProfile.BASIC_EXTERIOR;
+        // Building images: the tile's, the split roots' shared large and interior slots, and the
+        // cutout and blended ones, each read at most twice.
+        int wmoSlots =
+                WorldExteriorObjects.MAX_IMAGES
+                        + WorldExteriorObjects.MAX_LARGE_IMAGES
+                        + WorldExteriorObjects.MAX_LARGE_INTERIOR_IMAGES
+                        + WorldExteriorObjects.MAX_MATERIAL_IMAGES;
+        assertEquals(128 + 64 + 96 + 32, wmoSlots);
+        assertEquals(wmoSlots, WorldStreamScopes.WMO_IMAGE_SLOTS);
+        assertEquals(4, WorldStreamScopes.IMAGE_READS_PER_SLOT);
+        assertEquals(
+                WorldStreamScopes.IMAGE_READS_PER_SLOT * wmoSlots,
+                profile.derivedReads(WorldStreamScopes.DerivedKind.WMO_IMAGE));
         int slots =
                 com.vibeminer.rendering.world.ExteriorObjectLimits.DOODAD_IMAGES
                         + com.vibeminer.rendering.world.ExteriorObjectLimits.DOODAD_INTERIOR_IMAGES;
         int models = WorldExteriorObjects.MAX_MODELS + WorldExteriorObjects.MAX_INTERIOR_MODELS;
-        // An image may be read when admitted and again at its allotted level (source(Demand)).
-        assertEquals(2 * slots, profile.derivedReads(WorldStreamScopes.DerivedKind.M2_IMAGE));
-        assertEquals(2 * (800 + 80), slots * 2);
-        assertEquals(640 + 64, models);
+        // An image may be read at registration and again for each later use (source(Demand)).
+        assertEquals(
+                WorldStreamScopes.IMAGE_READS_PER_SLOT * slots,
+                profile.derivedReads(WorldStreamScopes.DerivedKind.M2_IMAGE));
+        assertEquals(840 + 80, slots);
+        assertEquals(672 + 64, models);
         // The read-ahead queue holds every model hint of a placement pass and each one's skin.
         assertEquals(2 * models, WorldStreamScopes.Prefetcher.QUEUE);
         assertEquals(models, profile.derivedReads(WorldStreamScopes.DerivedKind.M2_MODEL));
@@ -7811,8 +7922,7 @@ class WorldExteriorObjectsTest {
         assertEquals(
                 WorldExteriorObjects.MAX_ROOTS * WorldExteriorObjects.MAX_SIZING_READS, sizing);
         assertEquals(
-                2 + 24 + 256 + sizing + 64 + 64 + 64 + 32 + models + models + slots,
-                profile.bindingLimit());
+                2 + 24 + 256 + sizing + wmoSlots + models + models + slots, profile.bindingLimit());
         // The tile's group reads, and the worst case of sizing border-crossing roots.
         assertEquals(
                 WorldExteriorObjects.MAX_GROUPS + sizing,

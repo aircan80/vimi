@@ -256,8 +256,19 @@ public final class WorldExteriorObjects {
      */
     static final int[] IMAGE_SIDES = {512, 256, 128, 64, 32};
 
-    /** Doodad image sides. */
-    static final int[] MODEL_IMAGE_SIDES = {256, 128, 64, 32};
+    /**
+     * Doodad image sides. The smallest is 16 so that every doodad image slot at the caps ({@link
+     * #MAX_MODEL_IMAGES} and {@link #MAX_INTERIOR_MODEL_IMAGES}) keeps a level within the STANDARD
+     * doodad budget: 920 chains of 32 x 32 would need about 1.26 Mi texels of its 699 Ki, 920 of 16
+     * x 16 about 314 Ki. Images reach 16 only when the budget is that tight.
+     */
+    static final int[] MODEL_IMAGE_SIDES = {256, 128, 64, 32, 16};
+
+    /**
+     * The side the interior-only images' reserve is held at, in every pool: 32, as before the
+     * doodad sides reached 16, so exterior doodads never take the interiors' share below it.
+     */
+    static final int INTERIOR_RESERVE_SIDE = 32;
 
     /**
      * Largest side of a chain uploaded as RGBA8: 256 for buildings and their surfaces, 128 for
@@ -724,7 +735,15 @@ public final class WorldExteriorObjects {
          * outcome bucket (they are also PLACEMENT_DRAWN). A share adds no group counts; a capped
          * one is PLACEMENT_CAPPED only.
          */
-        PLACEMENT_SPLIT_SHARE
+        PLACEMENT_SPLIT_SHARE,
+        /**
+         * Derived source reads left unread because the operation's read profile for their kind was
+         * spent (WorldStreamScopes.UseProfile); each is treated as unavailable and only it is
+         * omitted, so it also lands in its kind's outcome bucket for an unavailable source
+         * (IMAGE_UNAVAILABLE, GROUP_UNAVAILABLE, MODEL_UNAVAILABLE or MODEL_IMAGE_UNAVAILABLE) and
+         * every bucket sum still holds. Not an outcome bucket itself.
+         */
+        SOURCE_READ_CAPPED
     }
 
     /** The group buckets ({@link Count}). */
@@ -5740,7 +5759,8 @@ public final class WorldExteriorObjects {
                             first,
                             second,
                             budget,
-                            pool == Pool.DOODAD ? MODEL_IMAGE_SIDES : IMAGE_SIDES);
+                            pool == Pool.DOODAD ? MODEL_IMAGE_SIDES : IMAGE_SIDES,
+                            INTERIOR_RESERVE_SIDE);
             relevelAll(firstDemands, levels[0]);
             relevelAll(secondDemands, levels[1]);
         }
@@ -6107,6 +6127,12 @@ public final class WorldExteriorObjects {
         private WorldStreamScopes.Input derived(
                 long id, WorldStreamScopes.DerivedKind kind, boolean[] unreadable) {
             if (id <= 0 || id > 0xffff_ffffL) {
+                return null;
+            }
+            if (admission.derivedReadsLeft(kind) <= 0) {
+                // The profile's reads of this kind are spent: this one source is left unread, as
+                // an unavailable one, and the tile keeps everything else.
+                count(Count.SOURCE_READ_CAPPED);
                 return null;
             }
             try {

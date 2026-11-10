@@ -120,6 +120,21 @@ final class WorldStreamScopes {
     private final long owner;
     private final AtomicBoolean working = new AtomicBoolean();
 
+    /**
+     * Lowered derived read limits by kind, for tests only: a value below the operation's profile
+     * replaces it, so the profile's limit paths can be reached without exhausting it.
+     */
+    private final int[] loweredDerivedReads = new int[DerivedKind.values().length];
+
+    {
+        java.util.Arrays.fill(loweredDerivedReads, Integer.MAX_VALUE);
+    }
+
+    /** Lowers the derived read limit of {@code kind} for later operations (tests only). */
+    void lowerDerivedReadsForTest(DerivedKind kind, int reads) {
+        loweredDerivedReads[kind.ordinal()] = Math.max(0, reads);
+    }
+
     /** Largest read-ahead bytes any operation held unconsumed (#371); diagnostics and tests. */
     final java.util.concurrent.atomic.AtomicLong prefetchPeakHeldBytes =
             new java.util.concurrent.atomic.AtomicLong();
@@ -448,6 +463,25 @@ final class WorldStreamScopes {
             com.vibeminer.rendering.world.ExteriorObjectLimits.DOODAD_MODELS
                     + com.vibeminer.rendering.world.ExteriorObjectLimits.DOODAD_INTERIOR_MODELS;
 
+    /**
+     * Building image slots: the tile's opaque images, those of very large buildings drawn by group
+     * and their interiors (one shared allowance), and the cutout and blended images.
+     */
+    static final int WMO_IMAGE_SLOTS =
+            com.vibeminer.rendering.world.ExteriorObjectLimits.BUILDING_IMAGES
+                    + com.vibeminer.rendering.world.ExteriorObjectLimits.LARGE_IMAGES
+                    + com.vibeminer.rendering.world.ExteriorObjectLimits.LARGE_INTERIOR_IMAGES
+                    + com.vibeminer.rendering.world.ExteriorObjectLimits.MATERIAL_IMAGES;
+
+    /**
+     * Reads of one image slot's source file at most, when the retained-source bound keeps none of
+     * them (WorldExteriorObjects): the registration decode, the level the budget allots
+     * (relevelRgba from allocateImages), the file's own mip levels for its chain (the level fetch
+     * in the mip chain), and for a chain sampled as blocks the file's blocks (blockChain in
+     * chainImages), whose RGBA8 fallback reuses the level fetch.
+     */
+    static final int IMAGE_READS_PER_SLOT = 4;
+
     /** Doodad image slots, the interior allowance's included. */
     static final int DOODAD_IMAGE_SLOTS =
             com.vibeminer.rendering.world.ExteriorObjectLimits.DOODAD_IMAGES
@@ -468,21 +502,21 @@ final class WorldStreamScopes {
         /**
          * Per-tile outdoor exterior set: WDT, OBJ0, the capped derived WMO reads (256 groups, up to
          * 256 more for each of the 24 roots, read only to size border-crossing buildings with their
-         * interiors, 64 opaque images, 64 opaque images of very large buildings drawn by group, 64
-         * more for their interiors and 32 cutout or blended images) and the capped BASIC doodad
-         * reads (256 M2 models, their first SKIN and 320 images), with the interior allowance's 64
-         * more models and 80 more images for set doodads tied to an interior group. Every doodad
-         * image slot is a distinct source and may be read twice, like the WMO images.
+         * interiors, and every building image slot, {@link #WMO_IMAGE_SLOTS}) and the capped BASIC
+         * doodad reads (the doodad models, their first SKIN and their image slots, the interior
+         * allowance's included, {@link #DOODAD_MODEL_READS} and {@link #DOODAD_IMAGE_SLOTS}). Every
+         * image slot is a distinct source, read again for each later use whose bytes were not
+         * retained (WorldExteriorObjects.RETAINED_SOURCE_BYTES): {@link #IMAGE_READS_PER_SLOT}
+         * times at most. The image counts derive from the caps. The exterior set never calls {@link
+         * TileAdmission#readDerivedCandidate} past a limit: it checks {@link
+         * TileAdmission#derivedReadsLeft} first and leaves that one source unread instead.
          */
         BASIC_EXTERIOR(
                 2
                         + 24
                         + 256
                         + SIZING_GROUP_READS
-                        + 64
-                        + 64
-                        + 64
-                        + 32
+                        + WMO_IMAGE_SLOTS
                         + DOODAD_MODEL_READS
                         + DOODAD_MODEL_READS
                         + DOODAD_IMAGE_SLOTS,
@@ -490,15 +524,14 @@ final class WorldStreamScopes {
                 1 << 20,
                 256 + SIZING_GROUP_READS,
                 com.vibeminer.formats.world.WmoGroupSpans.MAX_BYTES,
-                // Each image may be read twice: once when admitted, once at its allotted level.
-                2 * (64 + 64 + 64 + 32),
+                IMAGE_READS_PER_SLOT * WMO_IMAGE_SLOTS,
                 1 << 20,
                 DOODAD_MODEL_READS,
                 2 << 20,
                 DOODAD_MODEL_READS,
                 1 << 20,
-                // Doodad images too: every slot, the interior allowance's included, read twice.
-                2 * DOODAD_IMAGE_SLOTS,
+                // Doodad images too: every slot, the interior allowance's included.
+                IMAGE_READS_PER_SLOT * DOODAD_IMAGE_SLOTS,
                 1 << 20);
         private final int bindings, roots, rootLimit, groups, groupLimit, images, imageLimit;
         private final int models, modelLimit, skins, skinLimit, modelImages, modelImageLimit;
@@ -949,6 +982,16 @@ final class WorldStreamScopes {
                             : 8 << 20);
         }
 
+        /** Reads of {@code kind} this operation may still make under its profile. */
+        int derivedReadsLeft(DerivedKind kind) {
+            return readLimit(kind) - derivedReads[Objects.requireNonNull(kind).ordinal()];
+        }
+
+        /** The profile's derived read limit of {@code kind}, or a lower one a test set. */
+        private int readLimit(DerivedKind kind) {
+            return Math.min(profile.derivedReads(kind), engine.loweredDerivedReads[kind.ordinal()]);
+        }
+
         /** Actual bytes only: private WMO factory must independently prove parent ancestry. */
         Input readDerivedCandidate(long id, DerivedKind kind) {
             check();
@@ -959,7 +1002,7 @@ final class WorldStreamScopes {
                 throw new IllegalStateException("Input credit busy");
             }
             int ordinal = Objects.requireNonNull(kind).ordinal();
-            if (derivedReads[ordinal] >= profile.derivedReads(kind)) {
+            if (derivedReads[ordinal] >= readLimit(kind)) {
                 throw new IllegalStateException(
                         switch (kind) {
                             case WMO_ROOT -> "WMO root read limit";
@@ -1009,12 +1052,12 @@ final class WorldStreamScopes {
                                     Objects.requireNonNull(next),
                                     follow,
                                     profile.derivedLimit(next),
-                                    profile.derivedReads(next) - derivedReads[next.ordinal()]);
+                                    readLimit(next) - derivedReads[next.ordinal()]);
             prefetcher.hint(
                     id,
                     kind,
                     profile.derivedLimit(kind),
-                    profile.derivedReads(kind) - derivedReads[kind.ordinal()],
+                    readLimit(kind) - derivedReads[kind.ordinal()],
                     then);
         }
 
