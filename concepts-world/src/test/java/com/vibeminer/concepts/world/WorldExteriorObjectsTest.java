@@ -8517,6 +8517,105 @@ class WorldExteriorObjectsTest {
 
     @Test
     @SuppressWarnings("try")
+    void anImageTwoModelsNameIsReadOnceWhenTheEarlierModelSkipsIt() throws Exception {
+        // Models a and b both name image x. a's SKIN is slow, so b names x first; x is read in
+        // a's place. a then skips x (as a model capped after its read would), and taking b passes
+        // a's place: x moves to b's place instead of being dropped, and b takes it alone.
+        long a = 20_000, b = 20_001, skinA = 30_000, skinB = 30_001, x = 40_000;
+        byte[] serial = null;
+        for (boolean ahead : new boolean[] {false, true}) {
+            var files = new SlowGroups();
+            files.slow = id -> id == skinA;
+            files.delay = 60;
+            try (var f = new Fixture(List.of(), files)) {
+                f.files.sources.put(a, model(skinA));
+                f.files.sources.put(b, model(skinB));
+                f.files.sources.put(skinA, skin());
+                f.files.sources.put(skinB, skin());
+                f.files.sources.put(x, blp(4, 4, 1, 0x07e0));
+                WorldStreamScopes.Prefetcher.enabled = ahead;
+                WorldStageTimings.reset();
+                WorldStageTimings.enable(true);
+                var image = new byte[1][];
+                try (var ignored =
+                        f.engine.withRecordedTile(
+                                f.scope,
+                                TILE,
+                                WorldStreamScopes.UseProfile.BASIC_EXTERIOR,
+                                Cancellation.NONE,
+                                admission -> {
+                                    for (long[] chain : new long[][] {{a, skinA}, {b, skinB}}) {
+                                        admission.prefetch(
+                                                chain[0],
+                                                WorldStreamScopes.DerivedKind.M2_MODEL,
+                                                WorldStreamScopes.DerivedKind.M2_SKIN,
+                                                (bytes, cancel) -> chain[1],
+                                                WorldStreamScopes.DerivedKind.M2_IMAGE,
+                                                (bytes, cancel) -> new long[] {x},
+                                                10);
+                                    }
+                                    // Read ahead, x starts only once a's chain has named it,
+                                    // and b's, named first, has been released after it.
+                                    long deadline = System.nanoTime() + 5_000_000_000L;
+                                    while (ahead
+                                            && f.files.opens(x) == 0
+                                            && System.nanoTime() < deadline) {
+                                        Thread.onSpinWait();
+                                    }
+                                    for (var read :
+                                            List.of(
+                                                    new Object[] {
+                                                        a, WorldStreamScopes.DerivedKind.M2_MODEL
+                                                    },
+                                                    new Object[] {
+                                                        skinA, WorldStreamScopes.DerivedKind.M2_SKIN
+                                                    },
+                                                    new Object[] {
+                                                        b, WorldStreamScopes.DerivedKind.M2_MODEL
+                                                    },
+                                                    new Object[] {
+                                                        skinB, WorldStreamScopes.DerivedKind.M2_SKIN
+                                                    })) {
+                                        admission
+                                                .readDerivedCandidate(
+                                                        (long) read[0],
+                                                        (WorldStreamScopes.DerivedKind) read[1])
+                                                .close();
+                                    }
+                                    try (var input =
+                                            admission.readDerivedCandidate(
+                                                    x, WorldStreamScopes.DerivedKind.M2_IMAGE)) {
+                                        image[0] = input.bytes().clone();
+                                    }
+                                    return () -> {};
+                                })) {
+                    var snapshot = WorldStageTimings.snapshot();
+                    var waits = snapshot.get("source.prefetchWait.BASIC_EXTERIOR");
+                    if (ahead) {
+                        assertEquals(
+                                5, waits.count(), "every read, x too, came from the read-ahead");
+                        assertNull(
+                                snapshot.get("source.read.BASIC_EXTERIOR"), "no read of its own");
+                    }
+                } finally {
+                    WorldStreamScopes.Prefetcher.enabled = true;
+                    WorldStageTimings.enable(false);
+                    WorldStageTimings.reset();
+                }
+                assertEquals(1, f.files.opens(x), "x is read once");
+                assertEquals(1, f.files.opens(b), "b's model is not dropped and read again");
+                assertEquals(1, f.files.opens(skinB));
+                if (!ahead) {
+                    serial = image[0];
+                } else {
+                    assertArrayEquals(serial, image[0], "the same bytes as a serial read");
+                }
+            }
+        }
+    }
+
+    @Test
+    @SuppressWarnings("try")
     void aFollowUpReadIsTakenFromTheReadAheadAndNeverFetchedForAWithdrawnRead() throws Exception {
         long model = 20_000, skin = 30_000;
         var files = new SlowGroups();

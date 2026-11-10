@@ -1310,9 +1310,20 @@ final class WorldStreamScopes {
          * orders just after them, so they are consumed, and dropped by {@link #take}, exactly as if
          * they had been hinted in their place. {@code once}: a read named with others, never queued
          * again once consumed. {@code ceiling}: the most reads of its kind the operation may have
-         * consumed when this one is read ahead.
+         * consumed when this one is read ahead. {@code keep}: for a once read, the latest order
+         * that also names it, where it moves instead of being dropped when the consumer passes its
+         * own place without taking it (an earlier model that skipped an image a later one reads).
          */
-        private record Hint(Key key, int limit, int ceiling, long order, Next next, boolean once) {}
+        private record Hint(
+                Key key, int limit, int ceiling, long order, Next next, boolean once, long keep) {
+            Hint(Key key, int limit, int ceiling, long order, Next next, boolean once) {
+                this(key, limit, ceiling, order, next, once, order);
+            }
+
+            Hint at(long place, long wanted) {
+                return new Hint(key, limit, ceiling, place, next, once, wanted);
+            }
+        }
 
         private static final class Started {
             final Key key;
@@ -1327,10 +1338,14 @@ final class WorldStreamScopes {
             /** A read named with others ({@link Hint#once}). */
             final boolean once;
 
-            Started(Key key, long order, boolean once) {
+            /** {@link Hint#keep}. */
+            long keep;
+
+            Started(Key key, long order, boolean once, long keep) {
                 this.key = key;
                 this.order = order;
                 this.once = once;
+                this.keep = keep;
             }
         }
 
@@ -1479,22 +1494,24 @@ final class WorldStreamScopes {
                 if (consumed.contains(key)) {
                     return false;
                 }
-                Hint later = null;
+                Hint same = null;
                 for (var hint : queue) {
                     if (hint.key().equals(key)) {
-                        if (hint.order() < order) {
-                            return false;
-                        }
-                        later = hint;
+                        same = hint;
                     }
                 }
-                if (later != null) {
-                    queue.remove(later);
-                    queue.add(new Hint(key, limit, ceiling, order, null, true));
-                    return true;
+                if (same != null) {
+                    // One read, at the earlier place, kept until the later one is passed too.
+                    queue.remove(same);
+                    queue.add(
+                            same.at(
+                                    Math.min(same.order(), order),
+                                    Math.max(same.keep(), Math.max(same.order(), order))));
+                    return same.order() > order;
                 }
                 for (var read : started.values()) {
                     if (read.key.equals(key)) {
+                        read.keep = Math.max(read.keep, Math.max(read.order, order));
                         if (read.order > order) {
                             started.remove(read.order);
                             read.order = order;
@@ -1587,7 +1604,19 @@ final class WorldStreamScopes {
                     return mine;
                 }
                 long passed = order;
-                queue.removeIf(hint -> hint.order() <= passed);
+                // A once read a later place also names moves there instead of being dropped.
+                var moved = new ArrayList<Hint>();
+                queue.removeIf(
+                        hint -> {
+                            if (hint.order() > passed) {
+                                return false;
+                            }
+                            if (hint.once() && hint.keep() > passed) {
+                                moved.add(hint.at(hint.keep(), hint.keep()));
+                            }
+                            return true;
+                        });
+                queue.addAll(moved);
                 followUps.headMap(base(passed)).clear();
                 // Hints the consumer passed name nothing it still reads.
                 named.headMap(base(passed)).clear();
@@ -1595,12 +1624,21 @@ final class WorldStreamScopes {
                     unresolved.headSet(base(passed)).clear();
                     release();
                 }
+                var kept = new ArrayList<Started>();
                 for (var entry = started.headMap(passed).entrySet().iterator(); entry.hasNext(); ) {
                     var next = entry.next().getValue();
+                    entry.remove();
+                    if (next.once && next.keep > passed) {
+                        next.order = next.keep;
+                        kept.add(next);
+                        continue;
+                    }
                     next.dropped = true;
                     dropped.add(next);
                     heldBytes -= next.held;
-                    entry.remove();
+                }
+                for (var read : kept) {
+                    started.put(read.order, read);
                 }
                 if (mine != null) {
                     started.remove(passed);
@@ -1657,7 +1695,7 @@ final class WorldStreamScopes {
                     continue;
                 }
                 running++;
-                var read = new Started(hint.key(), hint.order(), hint.once());
+                var read = new Started(hint.key(), hint.order(), hint.once(), hint.keep());
                 started.put(hint.order(), read);
                 Thread.ofVirtual()
                         .name("world-source-prefetch")
