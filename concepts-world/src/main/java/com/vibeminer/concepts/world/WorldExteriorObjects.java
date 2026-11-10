@@ -1799,6 +1799,10 @@ public final class WorldExteriorObjects {
         LARGE
     }
 
+    /** What exteriors placed after an interior step need of the tile's budgets. */
+    private record LaterExteriors(
+            int meshes, long draws, int slots, long vertices, long indices, long ranges) {}
+
     /** A drawn root's MOGI-interior groups (flagged) waiting for the interior read pass (#383). */
     private record DeferredInteriors(
             WmoFormats.Root root, WmoFormats.GroupHeader[] headers, boolean[] deferred) {}
@@ -1981,6 +1985,8 @@ public final class WorldExteriorObjects {
          * (another tile's, empty or capped here): each places the set doodads standing in this
          * tile, after the tile's own.
          */
+        // Kept as placed: removeModels renumbers the set's placements but not these copies, so
+        // their model() is only a drawn (>= 0) or doodads-only (-1) flag, never an index.
         private final List<Placement> byGroupBuildings = new ArrayList<>();
 
         /** The one placement each root drawn by group is placed for, in admission order. */
@@ -2772,8 +2778,10 @@ public final class WorldExteriorObjects {
                 int model = (Integer) entry[3] < 0 ? -1 : modelSlots.get(rootId);
                 int[] local = new int[counts.length];
                 long buildings = placements.stream().filter(p -> p.kind() == Kind.BUILDING).count();
+                var reserve = laterExteriors();
                 if (model < 0
-                        && (opaquePlacements >= MAX_PLACEMENTS || buildings >= MAX_PLACEMENTS)) {
+                        && (opaquePlacements >= MAX_PLACEMENTS - reserve.slots()
+                                || buildings >= MAX_PLACEMENTS - reserve.slots())) {
                     // An interior-only share needs a free building slot, as the tile's own.
                     local[Count.GROUP_INTERIOR_CAPPED.ordinal()] += interiorCandidates(read);
                     for (int i = 0; i < counts.length; i++) {
@@ -2791,7 +2799,26 @@ public final class WorldExteriorObjects {
                     drawn += modelDraws(placement.model());
                 }
                 var interiors = new ArrayList<Mesh>();
-                var portals = byGroupInteriors(read, interiors, meshes, drawn, local);
+                // The shares' and further placements' exteriors placed after these interiors are
+                // held back from them: draws, mesh rows and the large allowance's geometry.
+                largeVertices += reserve.vertices();
+                largeIndices += reserve.indices();
+                largeRanges += reserve.ranges();
+                WmoPortalSet portals;
+                try {
+                    portals =
+                            byGroupInteriors(
+                                    read,
+                                    interiors,
+                                    meshes + reserve.meshes(),
+                                    drawn + reserve.draws(),
+                                    1 + extrasOf(rootId),
+                                    local);
+                } finally {
+                    largeVertices -= reserve.vertices();
+                    largeIndices -= reserve.indices();
+                    largeRanges -= reserve.ranges();
+                }
                 for (int i = 0; i < counts.length; i++) {
                     counts[i] += local[i];
                 }
@@ -2907,7 +2934,6 @@ public final class WorldExteriorObjects {
                     portals = null;
                 }
                 var share = new ArrayList<Mesh>();
-                long vertices = 0, indices = 0, ranges = 0;
                 for (var mesh : whole == null ? List.<Mesh>of() : whole.meshes()) {
                     int g = mesh.groupOrdinal();
                     if (g < 0 || g >= owned.length || !owned[g]) {
@@ -2917,27 +2943,20 @@ public final class WorldExteriorObjects {
                         continue; // unculled interiors would cost every frame (as split roots)
                     }
                     share.add(mesh);
+                }
+                // Its exteriors were held for it before the interiors were admitted; its
+                // interiors were not, so a share that does not fit with them is placed with its
+                // exteriors only, rather than leave its exteriors undrawn.
+                if (!shareFits(share)) {
+                    share.removeIf(mesh -> mogiInterior(root, mesh.groupOrdinal()));
+                }
+                long vertices = 0, indices = 0, ranges = 0;
+                for (var mesh : share) {
                     vertices += mesh.vertexCount();
                     indices += mesh.indices().remaining();
                     ranges += mesh.ranges().size();
                 }
-                int meshes = 0, buildingModels = 0;
-                for (var m : models) {
-                    meshes += m.doodad() ? 0 : m.meshes().size();
-                    buildingModels += m.doodad() ? 0 : 1;
-                }
-                long buildings = placements.stream().filter(p -> p.kind() == Kind.BUILDING).count();
-                // The share is a model of its own, within the tile's building model rows.
-                if (share.isEmpty()
-                        || buildingModels >= MAX_ROOTS
-                        || opaquePlacements >= MAX_PLACEMENTS
-                        || buildings >= MAX_PLACEMENTS
-                        || share.size() > MAX_MESHES - meshes
-                        || ranges > MAX_DRAWS - draws
-                        || vertices
-                                > MAX_LARGE_VERTICES + MAX_LARGE_INTERIOR_VERTICES - largeVertices
-                        || indices > MAX_LARGE_INDICES + MAX_LARGE_INTERIOR_INDICES - largeIndices
-                        || ranges > MAX_LARGE_RANGES + MAX_LARGE_INTERIOR_RANGES - largeRanges) {
+                if (!shareFits(share)) {
                     // PLACEMENT_CAPPED alone records it (its groups are the root's, counted once
                     // with it), and the set doodads standing here are still placed, as for a
                     // capped split root.
@@ -2972,6 +2991,35 @@ public final class WorldExteriorObjects {
                 interiorsDrawn.put(placement.uniqueId(), drawnGroups(share, 0));
             }
             splitShares.clear();
+        }
+
+        /**
+         * Whether a share of {@code share} meshes fits what the tile has left: a building model
+         * row, a placement slot, mesh rows, draws and the large allowance's geometry.
+         */
+        private boolean shareFits(List<Mesh> share) {
+            long vertices = 0, indices = 0, ranges = 0;
+            for (var mesh : share) {
+                vertices += mesh.vertexCount();
+                indices += mesh.indices().remaining();
+                ranges += mesh.ranges().size();
+            }
+            int meshes = 0, buildingModels = 0;
+            for (var m : models) {
+                meshes += m.doodad() ? 0 : m.meshes().size();
+                buildingModels += m.doodad() ? 0 : 1;
+            }
+            long buildings = placements.stream().filter(p -> p.kind() == Kind.BUILDING).count();
+            // The share is a model of its own, within the tile's building model rows.
+            return !share.isEmpty()
+                    && buildingModels < MAX_ROOTS
+                    && opaquePlacements < MAX_PLACEMENTS
+                    && buildings < MAX_PLACEMENTS
+                    && share.size() <= MAX_MESHES - meshes
+                    && ranges <= MAX_DRAWS - draws
+                    && vertices <= MAX_LARGE_VERTICES + MAX_LARGE_INTERIOR_VERTICES - largeVertices
+                    && indices <= MAX_LARGE_INDICES + MAX_LARGE_INTERIOR_INDICES - largeIndices
+                    && ranges <= MAX_LARGE_RANGES + MAX_LARGE_INTERIOR_RANGES - largeRanges;
         }
 
         /** A root drawn by group that draws nothing here: its local set doodads are kept. */
@@ -3065,7 +3113,12 @@ public final class WorldExteriorObjects {
          * when an interior was admitted (its tables charged), else null.
          */
         private WmoPortalSet byGroupInteriors(
-                ByGroup read, List<Mesh> built, int meshes, long drawn, int[] local) {
+                ByGroup read,
+                List<Mesh> built,
+                int meshes,
+                long drawn,
+                int placementsDrawing,
+                int[] local) {
             var root = read.root();
             int candidates = interiorCandidates(read);
             if (candidates == 0) {
@@ -3117,7 +3170,7 @@ public final class WorldExteriorObjects {
                     // Whatever its own MOGP flags say, a MOGI-interior group is an interior here,
                     // as the set says.
                     if (meshes + built.size() >= MAX_MESHES
-                            || mesh.ranges().size() > MAX_DRAWS - used) {
+                            || (long) placementsDrawing * mesh.ranges().size() > MAX_DRAWS - used) {
                         local[Count.GROUP_INTERIOR_CAPPED.ordinal()]++;
                         continue;
                     }
@@ -3136,7 +3189,7 @@ public final class WorldExteriorObjects {
                     }
                     countMaterials(mapped, local);
                     local[Count.GROUP_DRAWN.ordinal()]++;
-                    used += mapped.ranges().size();
+                    used += (long) placementsDrawing * mapped.ranges().size();
                     built.add(mapped);
                 }
             } finally {
@@ -3979,6 +4032,75 @@ public final class WorldExteriorObjects {
             }
         }
 
+        /**
+         * What the exteriors placed after an interior step need: the further placements of roots
+         * drawn whole (each draws its root's model as it stands) and each split share that owns an
+         * exterior group of a drawn model here and could be placed (a free building model row, its
+         * geometry within what the large allowance has left), with a mesh row per owned exterior
+         * group, its draws and its geometry. A share's interiors are not held for it: a share that
+         * does not fit with them is placed with its exteriors only ({@link #placeSplitShares}).
+         */
+        private LaterExteriors laterExteriors() {
+            int meshes = 0, slots = 0;
+            long draws = 0, vertices = 0, indices = 0, ranges = 0;
+            for (var entry : wholeExtras.entrySet()) {
+                Integer slot = modelSlots.get(entry.getKey());
+                if (slot != null && byGroupRoots.contains(entry.getKey())) {
+                    draws += (long) entry.getValue().size() * modelDraws(slot);
+                    slots += entry.getValue().size();
+                }
+            }
+            int buildingModels = 0;
+            for (var m : models) {
+                buildingModels += m.doodad() ? 0 : 1;
+            }
+            for (var queued : splitShares) {
+                long rootId = queued.record().reference().value();
+                var root = byGroupRootFacts.get(rootId);
+                Integer slot =
+                        rootStates.get(rootId) == RootState.DRAWN ? modelSlots.get(rootId) : null;
+                if (root == null || slot == null) {
+                    continue;
+                }
+                var owned = queued.owner().owned(root);
+                int shareMeshes = 0;
+                long shareDraws = 0, shareVertices = 0, shareIndices = 0;
+                for (var mesh : models.get(slot).meshes()) {
+                    int g = mesh.groupOrdinal();
+                    if (g >= 0 && g < owned.length && owned[g] && !mogiInterior(root, g)) {
+                        shareMeshes++;
+                        shareDraws += mesh.ranges().size();
+                        shareVertices += mesh.vertexCount();
+                        shareIndices += mesh.indices().remaining();
+                    }
+                }
+                if (shareMeshes == 0
+                        || buildingModels + 1 > MAX_ROOTS
+                        || largeVertices + vertices + shareVertices
+                                > MAX_LARGE_VERTICES + MAX_LARGE_INTERIOR_VERTICES
+                        || largeIndices + indices + shareIndices
+                                > MAX_LARGE_INDICES + MAX_LARGE_INTERIOR_INDICES
+                        || largeRanges + ranges + shareDraws
+                                > MAX_LARGE_RANGES + MAX_LARGE_INTERIOR_RANGES) {
+                    continue; // nothing to hold here, or it could not be placed anyway
+                }
+                buildingModels++;
+                meshes += shareMeshes;
+                draws += shareDraws;
+                vertices += shareVertices;
+                indices += shareIndices;
+                ranges += shareDraws;
+                slots++;
+            }
+            return new LaterExteriors(meshes, draws, slots, vertices, indices, ranges);
+        }
+
+        /** Further placements of root {@code rootId} drawn whole, each drawing its whole model. */
+        private int extrasOf(long rootId) {
+            var extras = wholeExtras.get(rootId);
+            return extras == null || !byGroupRoots.contains(rootId) ? 0 : extras.size();
+        }
+
         private void admitInteriors() {
             int[] uses = new int[models.size()];
             for (var placement : placements) {
@@ -3993,35 +4115,11 @@ public final class WorldExteriorObjects {
                 meshes += models.get(m).doodad() ? 0 : models.get(m).meshes().size();
                 reserved += (long) uses[m] * modelDraws(m);
             }
-            // Exteriors placed after the interiors keep what they need too: the further
-            // placements of roots drawn whole draw their model's exteriors, and each split share
-            // its owned exterior groups of a drawn model, with a mesh row each and a slot.
-            int reservedSlots = 0;
-            for (var entry : wholeExtras.entrySet()) {
-                Integer slot = modelSlots.get(entry.getKey());
-                if (slot != null && byGroupRoots.contains(entry.getKey())) {
-                    reserved += (long) entry.getValue().size() * modelDraws(slot);
-                    reservedSlots += entry.getValue().size();
-                }
-            }
-            for (var queued : splitShares) {
-                long rootId = queued.record().reference().value();
-                var root = byGroupRootFacts.get(rootId);
-                Integer slot =
-                        rootStates.get(rootId) == RootState.DRAWN ? modelSlots.get(rootId) : null;
-                if (root == null || slot == null) {
-                    continue;
-                }
-                var owned = queued.owner().owned(root);
-                for (var mesh : models.get(slot).meshes()) {
-                    int g = mesh.groupOrdinal();
-                    if (g >= 0 && g < owned.length && owned[g]) {
-                        meshes++;
-                        reserved += mesh.ranges().size();
-                    }
-                }
-                reservedSlots++;
-            }
+            // Exteriors placed after the interiors keep what they need too (laterExteriors).
+            var later = laterExteriors();
+            meshes += later.meshes();
+            reserved += later.draws();
+            int reservedSlots = later.slots();
             int[] local = new int[counts.length];
             boolean[] removed = new boolean[models.size()];
             for (int m = 0; m < models.size(); m++) {
@@ -4062,7 +4160,8 @@ public final class WorldExteriorObjects {
                     token.check();
                     int candidateRanges = mesh.ranges().size();
                     if (meshes >= MAX_MESHES
-                            || (long) uses[m] * candidateRanges > MAX_DRAWS - reserved) {
+                            || (long) (uses[m] + extrasOf(model.rootId())) * candidateRanges
+                                    > MAX_DRAWS - reserved) {
                         local[Count.GROUP_INTERIOR_CAPPED.ordinal()]++;
                         continue;
                     }
@@ -4090,7 +4189,8 @@ public final class WorldExteriorObjects {
                         }
                     }
                     draws += uses[m] * opaque;
-                    reserved += (long) uses[m] * mapped.ranges().size();
+                    reserved +=
+                            (long) (uses[m] + extrasOf(model.rootId())) * mapped.ranges().size();
                     if (needsSlots && !slotsTaken) {
                         opaquePlacements += uses[m];
                         slotsTaken = true;
