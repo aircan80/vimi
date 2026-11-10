@@ -470,8 +470,8 @@ final class WorldStreamScopes {
          * 256 more for each of the 24 roots, read only to size border-crossing buildings with their
          * interiors, 64 opaque images, 64 opaque images of very large buildings drawn by group, 64
          * more for their interiors and 32 cutout or blended images) and the capped BASIC doodad
-         * reads (M2 models, their first SKIN and their images), with the interior allowance's 128
-         * more models and 160 more images for set doodads tied to an interior group. Every doodad
+         * reads (256 M2 models, their first SKIN and 320 images), with the interior allowance's 64
+         * more models and 80 more images for set doodads tied to an interior group. Every doodad
          * image slot is a distinct source and may be read twice, like the WMO images.
          */
         BASIC_EXTERIOR(
@@ -1142,7 +1142,14 @@ final class WorldStreamScopes {
      * #close} cancels, joins and drops everything before the operation ends.
      */
     static final class Prefetcher {
-        static final int READS = 4, WINDOW = 8, QUEUE = 256, HELD_BYTES = 8 << 20;
+        static final int READS = 4, WINDOW = 8, HELD_BYTES = 8 << 20;
+
+        /**
+         * Hints waiting to start: every doodad model a tile may read and its first SKIN, so the
+         * read-ahead of one placement pass is never cut short by the queue. A hint is a few words;
+         * memory stays bounded by {@link #WINDOW} and {@link #HELD_BYTES}.
+         */
+        static final int QUEUE = 2 * DOODAD_MODEL_READS;
 
         /** Read-ahead on or off for new hints; off reads serially as before. Tests compare both. */
         static volatile boolean enabled = true;

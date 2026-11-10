@@ -72,15 +72,26 @@ public final class ExteriorObjectLimits {
      */
     public static final int DOODAD_PLACEMENTS = 4096;
 
-    /** Distinct doodad models read per tile; Zephras Isle needed 48, Elwynn about 36. */
-    public static final int DOODAD_MODELS = 96;
+    /**
+     * Distinct doodad models read per tile. Zephras Isle needed 48 and Elwynn about 36, but city
+     * tiles want far more: on build 70862, read without a model cap, the 5 x 5 tiles around
+     * Stormwind City, Orgrimmar, Ironforge and Undercity read at most 270 distinct doodad models on
+     * one tile (Orgrimmar's 28,40), 257 on Ironforge's 41,33 and 233 on Stormwind's 50,31; the MDDF
+     * doodads of the tile north of Orgrimmar (28,38) alone read 170. The old 96 left 425 MDDF
+     * doodads and 259 set doodads undrawn around Orgrimmar and 714 set doodads around Stormwind. At
+     * 256 no MDDF doodad is capped there and one set doodad is (on 28,40), while no tile uses more
+     * than 33,000 of the {@link #DOODAD_VERTICES}.
+     */
+    public static final int DOODAD_MODELS = 256;
 
     /**
-     * Distinct doodad images per tile (#308). With billboard-bearing models admitted (#390) Elwynn
-     * tiles reached the old 96. The doodad pixel budget is separate and unchanged, so more images
-     * share the same texels at lower levels: the cap costs file table rows, not GPU memory.
+     * Distinct doodad images per tile (#308), 1.25 per model. With billboard-bearing models
+     * admitted (#390) Elwynn tiles reached the old 96; read without a model cap, the city tiles
+     * above need at most 240 doodad images (Ironforge's 39,33). The doodad pixel budget is separate
+     * and unchanged, so more images share the same texels at lower levels: the cap costs file table
+     * rows, not GPU memory.
      */
-    public static final int DOODAD_IMAGES = 192;
+    public static final int DOODAD_IMAGES = 320;
 
     /**
      * Doodad models a tile may read beyond {@link #DOODAD_MODELS}, only for set doodads tied to one
@@ -88,13 +99,15 @@ public final class ExteriorObjectLimits {
      * group the tile read does, so the renderer culls them with the group. They share the doodad
      * vertex, index, range and pixel pools, whose images take levels only after every other doodad
      * image. On build 70862 the 5 x 5 tiles around Stormwind City (0:48:31) capped 1,730 interior
-     * set doodads at the 96-model cap, at most 125 distinct models on one tile (48,30), while no
-     * tile used more than 26,477 of the 65,536 doodad vertices.
+     * set doodads when {@link #DOODAD_MODELS} was 96, at most 125 distinct models on one tile
+     * (48,30). With 256 models the city tiles above (Stormwind, Orgrimmar, Ironforge, Undercity)
+     * read at most 13 models from this allowance (Orgrimmar's 28,40), so it keeps a margin of about
+     * five times that.
      */
-    public static final int DOODAD_INTERIOR_MODELS = 128;
+    public static final int DOODAD_INTERIOR_MODELS = 64;
 
-    /** Doodad image slots of {@link #DOODAD_INTERIOR_MODELS}, about 1.25 per model as measured. */
-    public static final int DOODAD_INTERIOR_IMAGES = 160;
+    /** Doodad image slots of {@link #DOODAD_INTERIOR_MODELS}, 1.25 per model as above. */
+    public static final int DOODAD_INTERIOR_IMAGES = 80;
 
     public static final int DOODAD_RANGES = 512;
     public static final int DOODAD_VERTICES = 65_536, DOODAD_INDICES = 196_608;

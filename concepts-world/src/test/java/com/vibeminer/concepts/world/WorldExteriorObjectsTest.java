@@ -3873,13 +3873,15 @@ class WorldExteriorObjectsTest {
                 assertEquals(WorldExteriorObjects.MAX_DOODADS - 1, last.ordinal());
             }
         }
+        // Model IDs clear of every other fixture ID (MODEL_IMAGE, SKIN), whatever the cap.
+        long first = 10_000;
         var distinct = new ArrayList<Mddf>();
         for (int i = 0; i < WorldExteriorObjects.MAX_MODELS + 2; i++) {
-            distinct.add(Mddf.of(MODEL + i, i + 1, 0x40));
+            distinct.add(Mddf.of(first + i, i + 1, 0x40));
         }
         try (var f = new Fixture(List.of())) {
             for (int i = 0; i < WorldExteriorObjects.MAX_MODELS + 2; i++) {
-                putModel(f, MODEL + i, model());
+                putModel(f, first + i, model());
             }
             try (var set = run(f, obj0(List.of(), distinct))) {
                 assertEquals(
@@ -3890,8 +3892,8 @@ class WorldExteriorObjectsTest {
                 assertEquals(2, set.count(WorldExteriorObjects.Count.DOODAD_CAP_MODELS));
             }
             // Nor does the read-ahead ever fetch a model past the cap.
-            assertEquals(0, f.files.opens(MODEL + WorldExteriorObjects.MAX_MODELS));
-            assertEquals(0, f.files.opens(MODEL + WorldExteriorObjects.MAX_MODELS + 1));
+            assertEquals(0, f.files.opens(first + WorldExteriorObjects.MAX_MODELS));
+            assertEquals(0, f.files.opens(first + WorldExteriorObjects.MAX_MODELS + 1));
         }
     }
 
@@ -6905,7 +6907,10 @@ class WorldExteriorObjectsTest {
         int models = WorldExteriorObjects.MAX_MODELS + WorldExteriorObjects.MAX_INTERIOR_MODELS;
         // An image may be read when admitted and again at its allotted level (source(Demand)).
         assertEquals(2 * slots, profile.derivedReads(WorldStreamScopes.DerivedKind.M2_IMAGE));
-        assertEquals(2 * (192 + 160), slots * 2);
+        assertEquals(2 * (320 + 80), slots * 2);
+        assertEquals(256 + 64, models);
+        // The read-ahead queue holds every model hint of a placement pass and each one's skin.
+        assertEquals(2 * models, WorldStreamScopes.Prefetcher.QUEUE);
         assertEquals(models, profile.derivedReads(WorldStreamScopes.DerivedKind.M2_MODEL));
         assertEquals(models, profile.derivedReads(WorldStreamScopes.DerivedKind.M2_SKIN));
         // Every distinct source a tile may bind: WDT, OBJ0, 24 roots, 256 groups, 256 groups read
