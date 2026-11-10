@@ -716,6 +716,8 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                 frameStats();
                 WorldStageTimings.value(
                         "child.objects.textureHandles", renderer.objectTexturesHeld());
+                WorldStageTimings.value(
+                        "child.objects.textureReferences", renderer.objectTextureReferences());
             }
         }
         renderedThisFrame = false;

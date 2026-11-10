@@ -54,11 +54,18 @@ final class WorldStreamPackedObjects implements AutoCloseable {
 
     private final int portalSets;
 
+    /**
+     * Per image: its identity for sharing one texture across object sets ({@link
+     * WorldStreamObjectTextures.Key}), computed here on the decoder worker.
+     */
+    private final WorldStreamObjectTextures.Key[] keys;
+
     ByteBuffer vertices, indices, pixels;
 
     private WorldStreamPackedObjects(
             WorldStreamObjectsFile.Data data,
             int[] images,
+            WorldStreamObjectTextures.Key[] keys,
             ByteBuffer vertices,
             ByteBuffer indices,
             ByteBuffer pixels,
@@ -70,6 +77,7 @@ final class WorldStreamPackedObjects implements AutoCloseable {
         ranges = data.ranges.clone();
         placementModels = data.placementModels.clone();
         this.images = images;
+        this.keys = keys;
         this.decodedImages = decodedImages;
         this.compressedImages = compressedImages;
         placements = data.placements.clone();
@@ -151,11 +159,14 @@ final class WorldStreamPackedObjects implements AutoCloseable {
             }
             pixels = MemoryUtil.memAlloc(Math.toIntExact(total));
             var source = java.nio.ByteBuffer.wrap(data.pixels);
+            var keys = new WorldStreamObjectTextures.Key[count];
+            var digest = sha256();
             int from = 0;
             for (int i = 0; i < count; i++) {
                 check(canceled);
                 int width = images[i * 3], height = images[i * 3 + 1], format = images[i * 3 + 2];
                 int stored = ObjectTextureFormats.chainBytes(format, width, height);
+                var id = identity(digest, format, width, height, data.pixels, from, stored);
                 if (ObjectTextureFormats.compressed(format)
                         && (sampledFormats & (1 << format)) == 0) {
                     pixels.put(
@@ -168,12 +179,23 @@ final class WorldStreamPackedObjects implements AutoCloseable {
                     }
                     compressed += ObjectTextureFormats.compressed(format) ? 1 : 0;
                 }
+                keys[i] =
+                        new WorldStreamObjectTextures.Key(
+                                images[i * 3 + 2], width, height, id[0], id[1]);
                 from += stored;
             }
             pixels.flip();
             var result =
                     new WorldStreamPackedObjects(
-                            data, images, vertices, indices, pixels, decoded, compressed, canceled);
+                            data,
+                            images,
+                            keys,
+                            vertices,
+                            indices,
+                            pixels,
+                            decoded,
+                            compressed,
+                            canceled);
             vertices = indices = pixels = null;
             return result;
         } finally {
@@ -181,6 +203,36 @@ final class WorldStreamPackedObjects implements AutoCloseable {
             free(indices);
             free(pixels);
         }
+    }
+
+    private static java.security.MessageDigest sha256() {
+        try {
+            return java.security.MessageDigest.getInstance("SHA-256");
+        } catch (java.security.NoSuchAlgorithmException missing) {
+            throw new IllegalStateException("SHA-256 unavailable", missing);
+        }
+    }
+
+    /**
+     * The first 128 bits of the SHA-256 of one stored chain: its stored format, size and bytes. The
+     * upload format beside it in the key is a function of these (a decode is deterministic), so
+     * equal keys upload equal texels.
+     */
+    static long[] identity(
+            java.security.MessageDigest digest,
+            int format,
+            int width,
+            int height,
+            byte[] pixels,
+            int from,
+            int length) {
+        digest.reset();
+        var head = ByteBuffer.allocate(12).order(ByteOrder.LITTLE_ENDIAN);
+        head.putInt(format).putInt(width).putInt(height);
+        digest.update(head.array());
+        digest.update(pixels, from, length);
+        var sum = ByteBuffer.wrap(digest.digest());
+        return new long[] {sum.getLong(), sum.getLong()};
     }
 
     /**
@@ -245,6 +297,22 @@ final class WorldStreamPackedObjects implements AutoCloseable {
         return (vertices == null ? 0 : vertices.capacity())
                 + (long) (indices == null ? 0 : indices.capacity())
                 + (pixels == null ? 0 : pixels.capacity());
+    }
+
+    /** Image {@code image}'s identity, shared by every set that uploads the same chain. */
+    WorldStreamObjectTextures.Key key(int image) {
+        return keys[image];
+    }
+
+    /** Full GPU bytes of image {@code image}'s chain as uploaded. */
+    long imageBytes(int image) {
+        return ObjectTextureFormats.chainBytes(format(image), width(image), height(image));
+    }
+
+    /** Native vertex and index bytes: the set's own GPU buffers. */
+    long bufferBytes() {
+        return (vertices == null ? 0 : vertices.capacity())
+                + (long) (indices == null ? 0 : indices.capacity());
     }
 
     /** Byte offset of image i in pixels. */
