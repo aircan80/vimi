@@ -5424,6 +5424,75 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
+    void aRootsImagesAreReadAheadOnceEachAfterItsGroupsAndDrawTheSame() {
+        int count = 12;
+        long images = 50_000;
+        List<Object> serial = null;
+        long serialReads = -1;
+        for (boolean ahead : new boolean[] {false, true}) {
+            var files = new SlowGroups();
+            files.slow =
+                    id ->
+                            id >= GROUP + 10 && id < GROUP + 100
+                                    || id >= images && id < images + count;
+            WorldStageTimings.reset();
+            WorldStageTimings.enable(true);
+            try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), files)) {
+                // Group i draws material i, whose image is its own; the last two groups repeat
+                // the first image, which is read once.
+                var gfid = new long[count];
+                var materials = new ArrayList<Material>();
+                for (int i = 0; i < count; i++) {
+                    gfid[i] = GROUP + 10 + i;
+                    int material = i < count - 2 ? i : 0;
+                    files.sources.put(
+                            gfid[i], group(EXT, 3, 1, List.of(new Batch(0, 3, 0, material))));
+                    materials.add(new Material(0, images + i, 0));
+                    files.sources.put(images + i, blp(4, 4, 1, 0x07e0 + i));
+                }
+                f.files.sources.put(ROOT, root(count, gfid, materials));
+                WorldStreamScopes.Prefetcher.enabled = ahead;
+                var summary = new ArrayList<Object>();
+                try (var set = f.run()) {
+                    assertEquals(count - 2, set.count(WorldExteriorObjects.Count.IMAGE_DECODED));
+                    summary.add(counts(set));
+                    summary.add(set.vertices());
+                    summary.add(set.placements());
+                    summary.add(set.models().getFirst().meshes().size());
+                } finally {
+                    WorldStreamScopes.Prefetcher.enabled = true;
+                }
+                for (int i = 0; i < count - 2; i++) {
+                    assertEquals(1, f.files.opens(images + i), "each image is read once");
+                }
+                assertEquals(0, f.files.opens(images + count - 1), "an unused image is not read");
+                assertEquals(0, files.open.get(), "every read is closed");
+                var snapshot = WorldStageTimings.snapshot();
+                var reads = snapshot.get("source.read.BASIC_EXTERIOR");
+                var waits = snapshot.get("source.prefetchWait.BASIC_EXTERIOR");
+                if (!ahead) {
+                    assertEquals(1, files.peak.get(), "serial reads never overlap");
+                    serial = summary;
+                    serialReads = reads.count();
+                } else {
+                    assertTrue(
+                            files.peak.get() <= WorldStreamScopes.Prefetcher.READS + 1,
+                            "peak " + files.peak.get());
+                    assertEquals(serial, summary, "read-ahead changes no output");
+                    long hits = waits == null ? 0 : waits.count();
+                    long misses = reads == null ? 0 : reads.count();
+                    assertEquals(serialReads, misses + hits, "the same inputs are consumed");
+                    // Groups and images: the images follow the groups that name them.
+                    assertTrue(hits > count, "read-ahead hits " + hits);
+                }
+            } finally {
+                WorldStageTimings.enable(false);
+                WorldStageTimings.reset();
+            }
+        }
+    }
+
+    @Test
     void aPrefetchedReadIsTimedAsAWaitAndNotAsAFullSourceRead() {
         long serialReads = -1;
         for (boolean ahead : new boolean[] {false, true}) {
@@ -8152,8 +8221,9 @@ class WorldExteriorObjectsTest {
                 profile.derivedReads(WorldStreamScopes.DerivedKind.M2_IMAGE));
         assertEquals(840 + 80, slots);
         assertEquals(672 + 64, models);
-        // The read-ahead queue holds every model hint of a placement pass and each one's skin.
-        assertEquals(2 * models, WorldStreamScopes.Prefetcher.QUEUE);
+        // The read-ahead queue holds every model hint of a placement pass, each one's skin and
+        // every doodad image slot.
+        assertEquals(2 * models + slots, WorldStreamScopes.Prefetcher.QUEUE);
         assertEquals(models, profile.derivedReads(WorldStreamScopes.DerivedKind.M2_MODEL));
         assertEquals(models, profile.derivedReads(WorldStreamScopes.DerivedKind.M2_SKIN));
         // Every distinct source a tile may bind: WDT, OBJ0, 24 roots, 256 groups, 256 groups read
@@ -8236,17 +8306,23 @@ class WorldExteriorObjectsTest {
         return bytes;
     }
 
-    /** {@code count} MDDF doodads, each with its own model and SKIN; the models are slow. */
+    /**
+     * {@code count} MDDF doodads, each with its own model (20,000 on), SKIN (30,000 on) and image
+     * (40,000 on); the models and images are slow.
+     */
     private static List<Mddf> distinctModels(Fixture f, SlowGroups files, int count) {
-        long first = 20_000, skins = 30_000; // clear of every other fixture ID
-        files.slow = id -> id >= first && id < first + count;
+        long first = 20_000, skins = 30_000, images = 40_000; // clear of every other fixture ID
+        files.slow = id -> id >= first && id < first + count || id >= images && id < images + count;
         var doodads = new ArrayList<Mddf>();
         for (int i = 0; i < count; i++) {
-            f.files.sources.put(first + i, model(skins + i));
+            var model = model(skins + i);
+            // The fixture's TXID chunk holds its one texture's FileDataID at byte 24.
+            ByteBuffer.wrap(model).order(ByteOrder.LITTLE_ENDIAN).putInt(24, (int) (images + i));
+            f.files.sources.put(first + i, model);
             f.files.sources.put(skins + i, skin());
+            f.files.sources.put(images + i, blp(4, 4, 1, 0x07e0 + i));
             doodads.add(Mddf.of(first + i, i + 1, 0x40));
         }
-        f.files.sources.put(MODEL_IMAGE, blp(4, 4, 1, 0x07e0));
         return doodads;
     }
 
@@ -8275,7 +8351,7 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
-    void doodadModelsAndTheirSkinsAreReadAheadAndPlaceTheSame() {
+    void doodadModelsTheirSkinsAndImagesAreReadAheadAndPlaceTheSame() {
         int count = 12;
         List<Object> serial = null;
         long serialReads = -1;
@@ -8297,6 +8373,7 @@ class WorldExteriorObjectsTest {
                 for (int i = 0; i < count; i++) {
                     assertEquals(1, f.files.opens(20_000 + i), "each model is read once");
                     assertEquals(1, f.files.opens(30_000 + i), "each skin is read once");
+                    assertEquals(1, f.files.opens(40_000 + i), "each image is read once");
                 }
                 assertEquals(0, files.open.get(), "every read is closed");
                 var snapshot = WorldStageTimings.snapshot();
@@ -8316,8 +8393,9 @@ class WorldExteriorObjectsTest {
                     long hits = waits == null ? 0 : waits.count();
                     long misses = reads == null ? 0 : reads.count();
                     assertEquals(serialReads, misses + hits, "the same inputs are consumed");
-                    // Every model, and skins too: a skin is named by its model's bytes.
-                    assertTrue(hits > count, "read-ahead hits " + hits);
+                    // Every model, skins and images too: a skin is named by its model's bytes and
+                    // an image by its model's and skin's.
+                    assertTrue(hits > 2 * count, "read-ahead hits " + hits);
                 }
             } finally {
                 WorldStageTimings.enable(false);
@@ -8327,10 +8405,31 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
+    void theReadAheadNeverFetchesADoodadImageTheReadProfileLeavesUnread() {
+        int count = 6;
+        var files = new SlowGroups();
+        files.delay = 5;
+        try (var f = new Fixture(List.of(), files)) {
+            var doodads = distinctModels(f, files, count);
+            f.files.sources.put(4L, obj0(List.of(), doodads));
+            f.engine.lowerDerivedReadsForTest(WorldStreamScopes.DerivedKind.M2_IMAGE, 2);
+            try (var set = f.run()) {
+                assertEquals(2, set.count(WorldExteriorObjects.Count.MODEL_IMAGE_DECODED));
+                assertEquals(count - 2, set.count(WorldExteriorObjects.Count.SOURCE_READ_CAPPED));
+            }
+            assertEquals(1, f.files.opens(40_000));
+            assertEquals(1, f.files.opens(40_001));
+            for (int i = 2; i < count; i++) {
+                assertEquals(0, f.files.opens(40_000 + i), "a capped source is never read");
+            }
+        }
+    }
+
+    @Test
     void modelsSharingOneSkinAreEachReadOnceWhateverOrderTheirReadsFinishIn() {
-        // Every model names the same SKIN: a later model's read can finish first and name it
-        // before an earlier one does. Taking it for the earlier model must not drop the reads
-        // of the models in between.
+        // Every model names the same SKIN, and every skin the same image: a later model's read
+        // can finish first and name them before an earlier one does. Taking them for the earlier
+        // model must not drop the reads of the models in between.
         for (int run = 0; run < 5; run++) {
             var files = new SlowGroups();
             files.delay = 0;
@@ -8349,6 +8448,8 @@ class WorldExteriorObjectsTest {
                     assertEquals(1, f.files.opens(20_000L + i), "model " + (20_000 + i));
                 }
                 assertEquals(40, f.files.opens(SKIN), "each model reads its skin once");
+                // Every skin names the same image: read once, wherever a skin named it first.
+                assertEquals(1, f.files.opens(MODEL_IMAGE), "the shared image is read once");
             }
         }
     }

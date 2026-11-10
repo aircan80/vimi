@@ -16,6 +16,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.BitSet;
 import java.util.EnumSet;
 import java.util.HexFormat;
@@ -632,6 +633,16 @@ final class WorldStreamScopes {
         long next(byte[] bytes, Cancellation cancel);
     }
 
+    /**
+     * Names, from a read-ahead read's bytes, every read its consumer makes right after consuming
+     * it, in the order it makes them; runs on the read-ahead thread under that read's own
+     * cancellation. May name reads the consumer then skips: those are only read for nothing.
+     */
+    @FunctionalInterface
+    interface FollowAll {
+        long[] next(byte[] bytes, Cancellation cancel);
+    }
+
     enum DerivedKind {
         WMO_ROOT,
         WMO_GROUP,
@@ -1031,13 +1042,14 @@ final class WorldStreamScopes {
         }
 
         /**
-         * As {@link #prefetch(long, DerivedKind)}, and once that read has its bytes, {@code follow}
-         * names on the read-ahead thread the {@code next} read the consumer will make right after
-         * consuming this one (0 for none). That read is hinted in its place, ahead of every later
-         * hint. {@code follow} must name only a read the consumer will make for these bytes, and
-         * must not change them; any failure of it only leaves the next read to the consumer.
+         * As {@link #prefetch(long, DerivedKind)} for a read the operation makes at most once (an
+         * image it registers): not read ahead when already consumed, and kept in the earlier place
+         * when an earlier hint names it too. Taking it passes no other hint, so a hint the consumer
+         * then skips (an image the tile could not register after all) is only read for nothing. At
+         * most {@code room} reads of {@code kind}, less every one the operation consumes from now
+         * on, are read ahead: the caller's own cap on them.
          */
-        void prefetch(long id, DerivedKind kind, DerivedKind next, Follow follow) {
+        void prefetchOnce(long id, DerivedKind kind, int room) {
             check();
             Objects.requireNonNull(kind);
             if (!Prefetcher.enabled || !profile.derivedWmo() || id <= 0 || id > 0xffff_ffffL) {
@@ -1046,20 +1058,82 @@ final class WorldStreamScopes {
             if (prefetcher == null) {
                 prefetcher = new Prefetcher(engine, token, profile == UseProfile.BASIC_EXTERIOR);
             }
+            prefetcher.hint(
+                    id,
+                    kind,
+                    profile.derivedLimit(kind),
+                    Math.min(room, readLimit(kind) - derivedReads[kind.ordinal()]),
+                    null,
+                    true);
+        }
+
+        /**
+         * As {@link #prefetch(long, DerivedKind)}, and once that read has its bytes, {@code follow}
+         * names on the read-ahead thread the {@code next} read the consumer will make right after
+         * consuming this one (0 for none). That read is hinted in its place, ahead of every later
+         * hint. {@code follow} must name only a read the consumer will make for these bytes, and
+         * must not change them; any failure of it only leaves the next read to the consumer.
+         */
+        void prefetch(long id, DerivedKind kind, DerivedKind next, Follow follow) {
+            prefetch(id, kind, next, follow, null, null, 0);
+        }
+
+        /**
+         * As {@link #prefetch(long, DerivedKind, DerivedKind, Follow)}, and once that follow-up
+         * read has its bytes, {@code followAll} names on the read-ahead thread the {@code last}
+         * reads the consumer makes right after consuming it, in order (a doodad model's images
+         * after its SKIN). Each is read ahead at most once per operation: one the operation has
+         * already consumed is not read again, and one an earlier hint also names is read in the
+         * earlier place. {@code followAll} may name reads the consumer then skips (an image the
+         * tile registered meanwhile); those are read for nothing and dropped when passed. At most
+         * {@code lastRoom} of them, less every {@code last} read the operation consumes from now
+         * on, are read ahead: the caller's own cap on them (its images left to register).
+         */
+        void prefetch(
+                long id,
+                DerivedKind kind,
+                DerivedKind next,
+                Follow follow,
+                DerivedKind last,
+                FollowAll followAll,
+                int lastRoom) {
+            check();
+            Objects.requireNonNull(kind);
+            if (!Prefetcher.enabled || !profile.derivedWmo() || id <= 0 || id > 0xffff_ffffL) {
+                return;
+            }
+            if (prefetcher == null) {
+                prefetcher = new Prefetcher(engine, token, profile == UseProfile.BASIC_EXTERIOR);
+            }
+            Prefetcher.Next after =
+                    followAll == null
+                            ? null
+                            : new Prefetcher.Next(
+                                    Objects.requireNonNull(last),
+                                    null,
+                                    followAll,
+                                    profile.derivedLimit(last),
+                                    Math.min(
+                                            lastRoom,
+                                            readLimit(last) - derivedReads[last.ordinal()]),
+                                    null);
             Prefetcher.Next then =
                     follow == null
                             ? null
                             : new Prefetcher.Next(
                                     Objects.requireNonNull(next),
                                     follow,
+                                    null,
                                     profile.derivedLimit(next),
-                                    readLimit(next) - derivedReads[next.ordinal()]);
+                                    readLimit(next) - derivedReads[next.ordinal()],
+                                    after);
             prefetcher.hint(
                     id,
                     kind,
                     profile.derivedLimit(kind),
                     readLimit(kind) - derivedReads[kind.ordinal()],
-                    then);
+                    then,
+                    false);
         }
 
         /**
@@ -1129,6 +1203,10 @@ final class WorldStreamScopes {
                                 "source.readBytes." + profile.name(), source.bytes().length);
                     }
                 }
+                if (kind != null && prefetcher != null && prefetched == null) {
+                    // A taken read was counted consumed when taken.
+                    prefetcher.consumed(id, kind);
+                }
                 var binding = new Binding(id, source.key(), source.bytes().length);
                 for (var prior : bindings) {
                     if (prior.id() == id && !prior.equals(binding)) {
@@ -1181,19 +1259,30 @@ final class WorldStreamScopes {
      * read the consumer needs next is never evicted. A hint may name a follow-up read that its
      * bytes decide (a doodad model's SKIN), consumed right after it: it is queued in that place,
      * and may repeat a read another hint's follow-up names, since the consumer reads it once for
-     * each. {@link #cancelAll} withdraws every hint and cancels every started read, for a root that
-     * stops early. Each read has its own cancellation, also canceled with the operation's; {@link
-     * #close} cancels, joins and drops everything before the operation ends.
+     * each. That follow-up may in turn name every read its consumer makes next (the model's
+     * images), queued in order right after it. Those are read once per operation: a read already
+     * consumed is not queued, and one another hint also names is kept in the earlier of the two
+     * places, moving it there if it was queued or started later, so a take never passes the reads
+     * between. {@link #cancelAll} withdraws every hint and cancels every started read, for a root
+     * that stops early. Each read has its own cancellation, also canceled with the operation's;
+     * {@link #close} cancels, joins and drops everything before the operation ends.
      */
     static final class Prefetcher {
         static final int READS = 4, WINDOW = 8, HELD_BYTES = 8 << 20;
 
         /**
-         * Hints waiting to start: every doodad model a tile may read and its first SKIN, so the
-         * read-ahead of one placement pass is never cut short by the queue. A hint is a few words;
-         * memory stays bounded by {@link #WINDOW} and {@link #HELD_BYTES}.
+         * Hints waiting to start: every doodad model a tile may read, its first SKIN and every
+         * doodad image slot, so the read-ahead of one placement pass is never cut short by the
+         * queue. A hint is a few words; memory stays bounded by {@link #WINDOW} and {@link
+         * #HELD_BYTES}.
          */
-        static final int QUEUE = 2 * DOODAD_MODEL_READS;
+        static final int QUEUE = 2 * DOODAD_MODEL_READS + DOODAD_IMAGE_SLOTS;
+
+        /**
+         * Orders of hints given by the caller are this far apart; the follow-ups a hint's reads
+         * name take the orders in between, in the order they are named.
+         */
+        static final long STRIDE = 1L << 16;
 
         /** Read-ahead on or off for new hints; off reads serially as before. Tests compare both. */
         static volatile boolean enabled = true;
@@ -1201,21 +1290,33 @@ final class WorldStreamScopes {
         private record Key(long id, DerivedKind kind) {}
 
         /**
-         * The read a hint's bytes name next: its kind, how to find it, its kind's size limit and
-         * how many reads of its kind the operation could still consume when hinted (an upper bound,
-         * since consumption only grows).
+         * The reads a hint's bytes name next: their kind, how to find them (one read, or every read
+         * in order), their kind's size limit, how many reads of their kind the operation may still
+         * consume when hinted, and what each of their bytes names in turn. Reads named all at once
+         * are read once per operation. The read-ahead keeps {@code remaining} as a ceiling on the
+         * kind's consumed reads ({@link #ceilings}), so each consumption since the hint lowers what
+         * may still be read ahead.
          */
-        record Next(DerivedKind kind, Follow follow, int limit, int remaining) {}
+        record Next(
+                DerivedKind kind,
+                Follow follow,
+                FollowAll all,
+                int limit,
+                int remaining,
+                Next then) {}
 
         /**
-         * Orders are spaced by two: a hint's follow-up takes the order just after it, so it is
-         * consumed, and dropped by {@link #take}, exactly as if it had been hinted in its place.
+         * Caller hints are spaced by {@link #STRIDE}: the follow-ups their reads name take the
+         * orders just after them, so they are consumed, and dropped by {@link #take}, exactly as if
+         * they had been hinted in their place. {@code once}: a read named with others, never queued
+         * again once consumed. {@code ceiling}: the most reads of its kind the operation may have
+         * consumed when this one is read ahead.
          */
-        private record Hint(Key key, int limit, long order, Next next) {}
+        private record Hint(Key key, int limit, int ceiling, long order, Next next, boolean once) {}
 
         private static final class Started {
             final Key key;
-            final long order;
+            long order;
             final CompletableFuture<Source> future = new CompletableFuture<>();
             final Cancellation cancel = new Cancellation();
             long held;
@@ -1223,9 +1324,13 @@ final class WorldStreamScopes {
             /** Set under the lock when the read leaves the set without a consumer taking it. */
             boolean dropped;
 
-            Started(Key key, long order) {
+            /** A read named with others ({@link Hint#once}). */
+            final boolean once;
+
+            Started(Key key, long order, boolean once) {
                 this.key = key;
                 this.order = order;
+                this.once = once;
             }
         }
 
@@ -1238,6 +1343,26 @@ final class WorldStreamScopes {
         /** Started and not yet taken or dropped, by order. */
         private final java.util.TreeMap<Long, Started> started = new java.util.TreeMap<>();
 
+        /** Per caller hint's order, the follow-up orders after it already given. */
+        private final java.util.TreeMap<Long, Long> followUps = new java.util.TreeMap<>();
+
+        /** Every read the operation consumed, read ahead or not. */
+        private final java.util.Set<Key> consumed = new java.util.HashSet<>();
+
+        /** Reads consumed per kind, read ahead or not. */
+        private final int[] consumedKinds = new int[DerivedKind.values().length];
+
+        /**
+         * Caller hints, by order, whose reads may still name once reads (a model whose images its
+         * SKIN names): once reads named after them wait until they have named theirs or can no
+         * longer, so once reads are queued in the order they are consumed and each kind's room is
+         * spent on the earliest.
+         */
+        private final java.util.TreeSet<Long> unresolved = new java.util.TreeSet<>();
+
+        /** Once reads named and waiting for every earlier caller hint to resolve, by its order. */
+        private final java.util.TreeMap<Long, List<Hint>> named = new java.util.TreeMap<>();
+
         private long nextOrder, heldBytes, peakHeldBytes;
         private int running;
         private boolean closed;
@@ -1249,7 +1374,8 @@ final class WorldStreamScopes {
             this.link = operation.onCancel(this::cancelReads);
         }
 
-        synchronized void hint(long id, DerivedKind kind, int limit, int remaining, Next next) {
+        synchronized void hint(
+                long id, DerivedKind kind, int limit, int remaining, Next next, boolean once) {
             var key = new Key(id, kind);
             if (closed || queue.size() >= QUEUE) {
                 return;
@@ -1264,16 +1390,119 @@ final class WorldStreamScopes {
                     return;
                 }
             }
-            if (enqueue(key, limit, remaining, nextOrder, next)) {
-                nextOrder += 2;
+            if (enqueue(key, limit, ceiling(kind, remaining), nextOrder, ceilings(next), once)) {
+                if (namesOnce(next)) {
+                    unresolved.add(nextOrder);
+                }
+                nextOrder += STRIDE;
                 pump();
             }
         }
 
-        /** Queues one hint unless the queue is full or its kind has no reads left to consume. */
-        private boolean enqueue(Key key, int limit, int remaining, long order, Next next) {
+        /** Whether the reads {@code next} names, or theirs in turn, include once reads. */
+        private static boolean namesOnce(Next next) {
+            return next != null && (next.all() != null || namesOnce(next.then()));
+        }
+
+        /** The caller hint's order at or before {@code order}. */
+        private static long base(long order) {
+            return order - Math.floorMod(order, STRIDE);
+        }
+
+        /**
+         * The caller hint at {@code base} names no more once reads: queues, in order, every named
+         * list no earlier unresolved hint still holds back.
+         */
+        private void resolved(long base) {
+            unresolved.remove(base);
+            release();
+        }
+
+        /** Queues, in order, every named list no earlier unresolved caller hint holds back. */
+        private void release() {
+            while (!named.isEmpty()
+                    && (unresolved.isEmpty() || unresolved.first() > named.firstKey())) {
+                for (var hint : named.pollFirstEntry().getValue()) {
+                    enqueue(hint.key(), hint.limit(), hint.ceiling(), hint.order(), null, true);
+                }
+            }
+        }
+
+        /** The consumed reads of {@code kind} at which {@code remaining} more are spent. */
+        private int ceiling(DerivedKind kind, int remaining) {
+            return (int)
+                    Math.min(Integer.MAX_VALUE, (long) consumedKinds[kind.ordinal()] + remaining);
+        }
+
+        /** {@code next} with each remaining count turned into its kind's ceiling as of now. */
+        private Next ceilings(Next next) {
+            return next == null
+                    ? null
+                    : new Next(
+                            next.kind(),
+                            next.follow(),
+                            next.all(),
+                            next.limit(),
+                            ceiling(next.kind(), next.remaining()),
+                            ceilings(next.then()));
+        }
+
+        /** How many more reads of {@code kind} may be read ahead under {@code ceiling}. */
+        private int room(DerivedKind kind, int ceiling) {
+            return ceiling - consumedKinds[kind.ordinal()];
+        }
+
+        /**
+         * Records a read the operation consumed without taking it from the read-ahead: a once read
+         * is never queued after it, and it spends one of its kind's room.
+         */
+        synchronized void consumed(long id, DerivedKind kind) {
+            consumedLocked(new Key(id, kind));
+        }
+
+        private void consumedLocked(Key key) {
+            consumed.add(key);
+            consumedKinds[key.kind().ordinal()]++;
+        }
+
+        /**
+         * Queues one hint unless the queue is full or its kind has no reads left to consume. A once
+         * hint is not queued when consumed already, or when the same read is queued or started at
+         * an earlier order; queued or started at a later one, it moves to this order instead.
+         */
+        private boolean enqueue(
+                Key key, int limit, int ceiling, long order, Next next, boolean once) {
             if (closed || queue.size() >= QUEUE) {
                 return false;
+            }
+            if (once) {
+                if (consumed.contains(key)) {
+                    return false;
+                }
+                Hint later = null;
+                for (var hint : queue) {
+                    if (hint.key().equals(key)) {
+                        if (hint.order() < order) {
+                            return false;
+                        }
+                        later = hint;
+                    }
+                }
+                if (later != null) {
+                    queue.remove(later);
+                    queue.add(new Hint(key, limit, ceiling, order, null, true));
+                    return true;
+                }
+                for (var read : started.values()) {
+                    if (read.key.equals(key)) {
+                        if (read.order > order) {
+                            started.remove(read.order);
+                            read.order = order;
+                            started.put(order, read);
+                        }
+                        return false;
+                    }
+                }
             }
             int pending = 0;
             for (var hint : queue) {
@@ -1287,19 +1516,27 @@ final class WorldStreamScopes {
                 }
             }
             // Never read ahead more of a kind than the operation may still consume.
-            if (pending >= remaining) {
+            if (pending >= room(key.kind(), ceiling)) {
                 return false;
             }
-            queue.add(new Hint(key, limit, order, next));
+            queue.add(new Hint(key, limit, ceiling, order, next, once));
             return true;
+        }
+
+        /** The next follow-up order after the caller hint at or before {@code order}, or -1. */
+        private long followUp(long order) {
+            long base = order - Math.floorMod(order, STRIDE);
+            long given = followUps.merge(base, 1L, Long::sum);
+            return given < STRIDE ? base + given : -1;
         }
 
         /**
          * The started read of the earliest hint of exactly this read, now owned by the caller, or
          * null when the caller reads it itself (never hinted, or hinted and not yet started). Every
-         * earlier hint is dropped: the consumer has passed it. The operation's cancel hook no
-         * longer reaches the returned read, so the caller links its cancellation for as long as it
-         * waits.
+         * earlier hint is dropped: the consumer has passed it. A read named with others is taken
+         * alone and passes nothing, since it may sit later than where it is consumed. The
+         * operation's cancel hook no longer reaches the returned read, so the caller links its
+         * cancellation for as long as it waits.
          */
         Started take(long id, DerivedKind kind) {
             var key = new Key(id, kind);
@@ -1308,6 +1545,7 @@ final class WorldStreamScopes {
             synchronized (this) {
                 long order = Long.MAX_VALUE;
                 Started mine = null;
+                Hint queued = null;
                 for (var read : started.values()) {
                     if (read.key.equals(key)) {
                         mine = read;
@@ -1318,14 +1556,45 @@ final class WorldStreamScopes {
                 for (var hint : queue) {
                     if (hint.key().equals(key) && hint.order() < order) {
                         mine = null;
+                        queued = hint;
                         order = hint.order();
                     }
                 }
                 if (order == Long.MAX_VALUE) {
                     return null;
                 }
+                if (mine != null) {
+                    // Consumed from here on, whatever the wait gives: a read the consumer then
+                    // makes itself is this same consumption.
+                    consumedLocked(key);
+                }
+                if (mine == null && namesOnce(queued.next())) {
+                    // Read by the consumer itself: its follow-ups are never named here.
+                    resolved(base(queued.order()));
+                }
+                if (mine != null ? mine.once : queued.once()) {
+                    // A read named with others may sit later than where it is consumed, when the
+                    // read that should have named it in place was not read ahead: take it alone
+                    // and pass nothing, since the consumer still comes back for every hint before
+                    // it.
+                    if (mine != null) {
+                        started.remove(order);
+                        heldBytes -= mine.held;
+                    } else {
+                        queue.remove(queued);
+                    }
+                    pump();
+                    return mine;
+                }
                 long passed = order;
                 queue.removeIf(hint -> hint.order() <= passed);
+                followUps.headMap(base(passed)).clear();
+                // Hints the consumer passed name nothing it still reads.
+                named.headMap(base(passed)).clear();
+                if (!unresolved.isEmpty() && unresolved.first() < base(passed)) {
+                    unresolved.headSet(base(passed)).clear();
+                    release();
+                }
                 for (var entry = started.headMap(passed).entrySet().iterator(); entry.hasNext(); ) {
                     var next = entry.next().getValue();
                     next.dropped = true;
@@ -1349,6 +1618,8 @@ final class WorldStreamScopes {
             List<Started> dropped;
             synchronized (this) {
                 queue.clear();
+                unresolved.clear();
+                named.clear();
                 dropped = new ArrayList<>(started.values());
                 dropped.forEach(read -> read.dropped = true);
                 started.clear();
@@ -1368,8 +1639,25 @@ final class WorldStreamScopes {
                     && heldBytes < HELD_BYTES
                     && !queue.isEmpty()) {
                 var hint = queue.poll();
+                if (hint.once() && consumed.contains(hint.key())) {
+                    continue; // consumed since it was queued: never read again
+                }
+                int reading = 0;
+                for (var read : started.values()) {
+                    if (read.key.kind() == hint.key().kind()) {
+                        reading++;
+                    }
+                }
+                if (reading >= room(hint.key().kind(), hint.ceiling())) {
+                    // Consumption since it was queued spent its room: started now, it might be
+                    // a read the operation can no longer make.
+                    if (namesOnce(hint.next())) {
+                        resolved(base(hint.order()));
+                    }
+                    continue;
+                }
                 running++;
-                var read = new Started(hint.key(), hint.order());
+                var read = new Started(hint.key(), hint.order(), hint.once());
                 started.put(hint.order(), read);
                 Thread.ofVirtual()
                         .name("world-source-prefetch")
@@ -1377,7 +1665,7 @@ final class WorldStreamScopes {
                                 () -> {
                                     Source source = null;
                                     Throwable failure = null;
-                                    long next = 0;
+                                    long[] next = NONE;
                                     try {
                                         source =
                                                 engine.read(
@@ -1399,38 +1687,85 @@ final class WorldStreamScopes {
             }
         }
 
+        private static final long[] NONE = new long[0];
+
         /**
-         * The read the hint's bytes name next, or 0. Runs before the read completes, so the
-         * follow-up is queued before the consumer can take these bytes and come back for it.
+         * The reads the hint's bytes name next, in order, or none. Runs before the read completes,
+         * so the follow-ups are queued before the consumer can take these bytes and come back for
+         * them.
          */
-        private static long follow(Hint hint, Source source, Cancellation cancel) {
-            if (hint.next() == null) {
-                return 0;
+        private static long[] follow(Hint hint, Source source, Cancellation cancel) {
+            var next = hint.next();
+            if (next == null) {
+                return NONE;
             }
             try {
-                long id = hint.next().follow().next(source.bytes(), cancel);
-                return id > 0 && id <= 0xffff_ffffL ? id : 0;
+                long[] ids =
+                        next.follow() != null
+                                ? new long[] {next.follow().next(source.bytes(), cancel)}
+                                : next.all().next(source.bytes(), cancel);
+                return Arrays.stream(ids).filter(id -> id > 0 && id <= 0xffff_ffffL).toArray();
             } catch (RuntimeException ignored) {
-                return 0; // The consumer reads it itself, or decides not to.
+                return NONE; // The consumer reads them itself, or decides not to.
             }
         }
 
-        private synchronized void finished(Hint hint, Started read, Source source, long next) {
+        private synchronized void finished(Hint hint, Started read, Source source, long[] next) {
             running--;
             if (source != null && started.get(read.order) == read) {
                 read.held = source.bytes().length;
                 heldBytes += read.held;
                 peakHeldBytes = Math.max(peakHeldBytes, heldBytes);
             }
-            // A taken read is still consumed, so its follow-up is too; a dropped one is not.
-            if (next != 0 && !read.dropped && !read.cancel.isCanceled()) {
-                var then = hint.next();
-                enqueue(
-                        new Key(next, then.kind()),
-                        then.limit(),
-                        then.remaining(),
-                        hint.order() + 1,
-                        null);
+            // A taken read is still consumed, so its follow-ups are too; a dropped one's are not.
+            var then = hint.next();
+            boolean live = !read.dropped && !read.cancel.isCanceled();
+            if (then != null && then.all() != null) {
+                // Once reads wait in their place until every earlier caller hint resolves.
+                var list = new ArrayList<Hint>();
+                for (long id : live ? next : NONE) {
+                    long order = followUp(read.order);
+                    if (order < 0) {
+                        break;
+                    }
+                    list.add(
+                            new Hint(
+                                    new Key(id, then.kind()),
+                                    then.limit(),
+                                    then.remaining(), // a ceiling since hint()
+                                    order,
+                                    null,
+                                    true));
+                }
+                if (!list.isEmpty()) {
+                    named.merge(
+                            base(read.order),
+                            list,
+                            (a, b) -> {
+                                a.addAll(b);
+                                return a;
+                            });
+                }
+                resolved(base(read.order));
+            } else if (then != null) {
+                boolean queued = false;
+                for (long id : live ? next : NONE) {
+                    long order = followUp(read.order);
+                    if (order < 0) {
+                        break;
+                    }
+                    queued |=
+                            enqueue(
+                                    new Key(id, then.kind()),
+                                    then.limit(),
+                                    then.remaining(), // a ceiling since hint()
+                                    order,
+                                    then.then(),
+                                    false);
+                }
+                if (!queued && namesOnce(then)) {
+                    resolved(base(read.order)); // nothing left to name its once reads
+                }
             }
             pump();
         }
@@ -1467,6 +1802,8 @@ final class WorldStreamScopes {
             synchronized (this) {
                 closed = true;
                 queue.clear();
+                unresolved.clear();
+                named.clear();
                 dropped = new ArrayList<>(started.values());
                 dropped.forEach(read -> read.dropped = true);
                 started.clear();
