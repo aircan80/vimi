@@ -740,8 +740,9 @@ public final class WorldExteriorObjects {
          * Derived source reads left unread because the operation's read profile for their kind was
          * spent (WorldStreamScopes.UseProfile); each is treated as unavailable and only it is
          * omitted, so it also lands in its kind's outcome bucket for an unavailable source
-         * (IMAGE_UNAVAILABLE, GROUP_UNAVAILABLE, MODEL_UNAVAILABLE or MODEL_IMAGE_UNAVAILABLE) and
-         * every bucket sum still holds. Not an outcome bucket itself.
+         * (ROOT_UNAVAILABLE for a WMO root, GROUP_UNAVAILABLE for a group, IMAGE_UNAVAILABLE for a
+         * building image, MODEL_UNAVAILABLE for a doodad model or its SKIN, MODEL_IMAGE_UNAVAILABLE
+         * for a doodad image) and every bucket sum still holds. Not an outcome bucket itself.
          */
         SOURCE_READ_CAPPED
     }
@@ -3272,14 +3273,21 @@ public final class WorldExteriorObjects {
                 token.check();
                 byUid.computeIfAbsent(record.uniqueId(), ignored -> new ArrayList<>()).add(record);
             }
+            // Each unique ID's group is compared with its first record once, not once per record.
+            var conflicting = new HashMap<Long, Boolean>();
+            for (var entry : byUid.entrySet()) {
+                token.check();
+                var first = entry.getValue().getFirst();
+                boolean conflict = false;
+                for (var other : entry.getValue()) {
+                    conflict |= !sameDoodad(first, other);
+                }
+                conflicting.put(entry.getKey(), conflict);
+            }
             for (var record : records) {
                 token.check();
                 var group = byUid.get(record.uniqueId());
-                boolean conflict = false;
-                for (var other : group) {
-                    conflict |= !sameDoodad(group.getFirst(), other);
-                }
-                if (conflict) {
+                if (conflicting.get(record.uniqueId())) {
                     count(Count.DOODAD_CONFLICTING);
                     continue;
                 }

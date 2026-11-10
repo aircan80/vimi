@@ -97,6 +97,13 @@ public final class ExteriorObjectLimits {
     public static final int DOODAD_PLACEMENTS = 5120;
 
     /**
+     * Records of one kind an obj0 may hold, so the bound of a placement's MODF ordinal (the
+     * selected building of the World WMO annex): the same as formats-world's {@code
+     * WorldPlacements.MAX_RECORDS_PER_KIND}, which modules without that dependency cannot name.
+     */
+    public static final int OBJ0_RECORDS_PER_KIND = 16_384;
+
+    /**
      * Distinct doodad models read per tile. Zephras Isle needed 48 and Elwynn about 36, but city
      * tiles want far more: on build 70862, read without a model cap, the 5 x 5 tiles around
      * Stormwind City, Orgrimmar, Ironforge and Undercity read at most 270 distinct doodad models on

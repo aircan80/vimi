@@ -475,10 +475,11 @@ final class WorldStreamScopes {
 
     /**
      * Reads of one image slot's source file at most, when the retained-source bound keeps none of
-     * them (WorldExteriorObjects): the registration decode, the level the budget allots
-     * (relevelRgba from allocateImages), the file's own mip levels for its chain (the level fetch
-     * in the mip chain), and for a chain sampled as blocks the file's blocks (blockChain in
-     * chainImages), whose RGBA8 fallback reuses the level fetch.
+     * them (WorldExteriorObjects). An RGBA8 chain: the registration decode, the level the budget
+     * allots (relevelRgba from allocateImages) and the file's own mip levels for its chain (the
+     * level fetch in the mip chain). A chain sampled as blocks: the registration decode, the file's
+     * blocks (blockChain in chainImages), and, when those no longer match, the RGBA8 fallback's own
+     * relevelRgba read and its level fetch. The worst case is four.
      */
     static final int IMAGE_READS_PER_SLOT = 4;
 
