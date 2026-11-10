@@ -4677,13 +4677,17 @@ public final class WorldExteriorObjects {
          * On instance maps, whether a border-crossing root's interior groups take its sizing
          * ({@code budget}, its exteriors already admitted against an empty tile's building pool)
          * over that pool with an empty tile's interior allowance added ({@link
-         * Allowance#ALONE_INTERIOR}), from which a tile drawing the root whole draws its interiors:
-         * each interior group the sizing pass read ({@code sized}: MOGP interior, as it holds them,
-         * and MOGI interior, as a root drawn by group draws them), then the later ones ({@code
-         * later}), charged in group order as an exterior would be. Sized from the sizes the pass
-         * kept for every interior group, whether or not this tile holds its copy, so every tile
-         * listing the placement agrees. No group is read here. False on other maps. {@code budget}
-         * is left as it was.
+         * Allowance#ALONE_INTERIOR}), from which a tile drawing the root whole draws its interiors.
+         * It charges exactly the groups whose MOGP flags and MOGI flags both say interior: those
+         * the sizing pass read ({@code sized}), then the later ones ({@code later}), in group
+         * order, as an exterior would be charged. A group MOGI calls interior but MOGP does not was
+         * already admitted as an exterior. A group MOGP calls interior but MOGI does not is not
+         * charged: a root drawn whole holds and draws it from the tile interior allowance, but a
+         * root drawn by group never draws it (GROUP_INTERIOR_NO_PORTALS, the portal set would call
+         * it exterior and never cull it), so charging it could only split a root and lose that
+         * group. Sized from the sizes the pass kept for every such group, whether or not this tile
+         * holds its copy, so every tile listing the placement agrees. No group is read here. False
+         * on other maps. {@code budget} is left as it was.
          */
         private boolean instanceInteriorsOverAlone(
                 RootBudget budget, Sized[] sized, List<Size> later) {
