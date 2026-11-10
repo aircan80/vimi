@@ -1453,8 +1453,9 @@ public final class WorldStreamTransport {
 
         /**
          * Revision of objects budget releases: it moves when a resident whose objects were drawn is
-         * replaced in its slot. A set refused with {@link ObjectsOutcome#BUDGET} is worth offering
-         * again only after it moves.
+         * replaced in its slot, or a tile offered with inline objects resolves, whose build held
+         * room while filling. A set refused with {@link ObjectsOutcome#BUDGET} is worth offering
+         * again only after it moves; a refusal never moves it.
          */
         public long objectsReleaseRevision() {
             return state.objectsReleases();

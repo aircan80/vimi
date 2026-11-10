@@ -1,5 +1,6 @@
 package com.vibeminer.rendering.bgfx;
 
+import java.util.ArrayDeque;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -24,6 +25,11 @@ import java.util.Objects;
  * filled belongs to the one set filling it, so a failed or cancelled build destroys only its own
  * partly filled textures. Each reference is released exactly once ({@link #release}); the last
  * release destroys the texture, created or not.
+ *
+ * <p>Two sets may fill the same identity at once, since neither texture is shared while filling.
+ * The first to complete is shared; the other stays a spare that only its own set draws. When the
+ * shared one is destroyed while a spare lives, the oldest spare is shared in its place, so later
+ * sets reuse it instead of uploading the chain again.
  */
 final class WorldStreamObjectTextures {
     private static final short INVALID = -1;
@@ -87,6 +93,10 @@ final class WorldStreamObjectTextures {
 
     private final Destroyer destroyer;
     private final Map<Key, Entry> completed = new HashMap<>();
+
+    /** Complete entries of an identity another entry already shares, oldest first. */
+    private final Map<Key, ArrayDeque<Entry>> spares = new HashMap<>();
+
     private int entries, uncreated, references;
     private long reservedBytes, issuedBytes, sharedReferences;
 
@@ -179,7 +189,8 @@ final class WorldStreamObjectTextures {
 
     /**
      * Marks {@code entry}'s chain fully issued; later sets share it. If another set completed a
-     * texture of the same identity meanwhile, this one stays private to its holders.
+     * texture of the same identity meanwhile, this one is a spare, private to its holders until
+     * that one is destroyed.
      */
     void complete(Entry entry) {
         if (entry.handle == INVALID || entry.complete) {
@@ -188,6 +199,8 @@ final class WorldStreamObjectTextures {
         entry.complete = true;
         if (completed.putIfAbsent(entry.key, entry) == null) {
             entry.mapped = true;
+        } else {
+            spares.computeIfAbsent(entry.key, key -> new ArrayDeque<>()).add(entry);
         }
     }
 
@@ -208,6 +221,22 @@ final class WorldStreamObjectTextures {
         if (entry.mapped) {
             completed.remove(entry.key);
             entry.mapped = false;
+            // A spare of the same identity is shared in its place.
+            var waiting = spares.get(entry.key);
+            if (waiting != null) {
+                var spare = waiting.removeFirst();
+                if (waiting.isEmpty()) {
+                    spares.remove(entry.key);
+                }
+                spare.mapped = true;
+                completed.put(spare.key, spare);
+            }
+        } else if (entry.complete) {
+            var waiting = spares.get(entry.key);
+            waiting.remove(entry);
+            if (waiting.isEmpty()) {
+                spares.remove(entry.key);
+            }
         }
         if (entry.handle == INVALID) {
             uncreated--;

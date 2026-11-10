@@ -326,8 +326,14 @@ final class WorldStreamParentState {
     }
 
     /**
-     * Changes whenever a slot whose generation held objects is replaced: the child destroyed those
-     * objects before staging, so budget refused earlier may now fit.
+     * Changes whenever the child may have freed objects room or made a texture shareable, so a set
+     * refused for budget or texture handles earlier may now fit: a slot whose generation held
+     * objects is replaced (the child destroyed them before staging), or a tile offered with inline
+     * objects resolves (staged, rejected or canceled), since that set's build reserved handles and
+     * bytes while filling and either completed its textures, which later sets share, or freed them.
+     * A late objects outcome never moves it: late sets build one at a time, so one that started
+     * after a refusal frees at most what it took since, and a refusal moving it would re-offer
+     * itself at once.
      */
     synchronized long objectsReleases() {
         return objectsReleases;
@@ -500,7 +506,7 @@ final class WorldStreamParentState {
                     "Unmatched staged payload");
             ticket.resident = new Resident(ticket, value.objects());
             int slot = value.lease().slot();
-            if (slotObjects[slot]) {
+            if (slotObjects[slot] || ticket.objectsOffered) {
                 objectsReleases++;
             }
             slotObjects[slot] = value.objects() == 1;
@@ -543,6 +549,7 @@ final class WorldStreamParentState {
                     && ticket.resident == null
                     && value.reason() == WorldStreamStatus.Rejection.INVALID_PACKET) {
                 ticket.rejected = true;
+                inlineObjectsResolved(ticket);
                 return Change.REJECTED;
             }
             require(
@@ -571,6 +578,7 @@ final class WorldStreamParentState {
                     "Unmatched cancellation");
             ticket.canceled = true;
             ticket.cancelResolved = true;
+            inlineObjectsResolved(ticket);
             return Change.CANCELED;
         }
         if (message instanceof WorldStreamStatus.HorizonDone) {
@@ -597,6 +605,13 @@ final class WorldStreamParentState {
         require(message instanceof WorldStreamStatus.Closed, "Unknown status");
         closed = true;
         return Change.CLOSED;
+    }
+
+    /** A tile the child read with inline objects ended unstaged: its build freed what it held. */
+    private void inlineObjectsResolved(Ticket value) {
+        if (value.offered && value.objectsOffered) {
+            objectsReleases++;
+        }
     }
 
     enum Cancellation {
