@@ -702,6 +702,8 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                     framing);
             if (rendering) {
                 frameStats();
+                WorldStageTimings.value(
+                        "child.objects.textureHandles", renderer.objectTexturesHeld());
             }
         }
         renderedThisFrame = false;
@@ -841,6 +843,7 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                     (stats.gpuTimeEnd() - stats.gpuTimeBegin()) * 1_000_000_000L / gpuFrequency);
         }
         WorldStageTimings.value("child.gpu.textureMemoryMiB", stats.textureMemoryUsed() >> 20);
+        WorldStageTimings.value("child.gpu.textures", Short.toUnsignedInt(stats.numTextures()));
         if (stats.gpuMemoryUsed() > 0) {
             WorldStageTimings.value("child.gpu.memoryUsedMiB", stats.gpuMemoryUsed() >> 20);
         }

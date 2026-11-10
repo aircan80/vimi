@@ -103,6 +103,33 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     static final long OBJECT_BUDGET_BYTES = WorldStreamEnvelope.Session.STANDARD_OBJECT_BUDGET;
 
     /**
+     * Texture handles the session may still create after the renderer opens, outside object sets:
+     * each slot's splat mask and table (two per slot, created with its first splat tile) and the
+     * shared splat layer array.
+     */
+    static final int LAZY_SLOT_TEXTURES = 2, LAZY_SHARED_TEXTURES = 1;
+
+    /**
+     * Texture handles kept for the native owner after the renderer opens: its colour and depth
+     * target and three readbacks (five), twice over for a resize whose old target bgfx has not
+     * returned yet, plus spare.
+     */
+    static final int OWNER_TEXTURE_RESERVE = 16;
+
+    /**
+     * The live check's share of that reserve: the owner's own live handles are already counted
+     * live, so it keeps room only for a resize's second target (five) and spare.
+     */
+    static final int LIVE_TEXTURE_SPARE = 8;
+
+    /**
+     * A build whose handles fit the session's accounting but not bgfx's live count (handles of a
+     * set destroyed this frame return only after a bgfx frame or two) waits at most this many
+     * steps, then is refused as BUDGET like any other set that does not fit.
+     */
+    static final int TEXTURE_WAIT_STEPS = 2_000;
+
+    /**
      * Per-slot mesh capacity: one tile's terrain (145 vertices per chunk, up to 256 chunks) plus
      * its optional static water, as WorldStreamPackedTile lays them out (issue #373).
      */
@@ -159,6 +186,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
 
     /**
      * objectBytes: issued GPU bytes of all resident and building exterior object sets;
+     * objectTextures: texture handles those sets hold or will create, at most objectTextureLimit;
      * compressedImages and decodedImages: object textures uploaded as their own BC blocks, and
      * compressed ones decoded to RGBA8 because this backend does not sample their format.
      */
@@ -171,7 +199,12 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             long maximumStepNanos,
             long objectBytes,
             long compressedImages,
-            long decodedImages) {}
+            long decodedImages,
+            // Texture handles held by resident and building object sets, the most they may hold
+            // (bgfx's limit less every other texture of the session) and refusals for handles.
+            int objectTextures,
+            int objectTextureLimit,
+            long textureRefusals) {}
 
     /**
      * Diagnostic override: when this system property is {@code true}, every compressed object
@@ -364,6 +397,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         private int imageStep;
         private boolean failed, budget;
 
+        /** Steps spent waiting for bgfx to return released texture handles. */
+        private int textureWaits;
+
         ObjectsBuild(WorldStreamPackedObjects source) {
             this.source = java.util.Objects.requireNonNull(source);
         }
@@ -378,6 +414,20 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
 
         long builtBytes() {
             return building == null ? 0 : building.bytes;
+        }
+
+        /** Texture handles this build has reserved but not created yet. */
+        int uncreatedTextures() {
+            if (building == null) {
+                return 0;
+            }
+            int missing = 0;
+            for (short texture : building.textures) {
+                if (texture == INVALID) {
+                    missing++;
+                }
+            }
+            return missing;
         }
 
         void closeSource() {
@@ -499,6 +549,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         /** Full GPU size reserved against OBJECT_BUDGET_BYTES until destroyed. */
         long reserved;
 
+        /** Texture handles reserved against the object texture limit until destroyed. */
+        int reservedTextures;
+
         SlotObjects(WorldStreamPackedObjects source) {
             models = source.models;
             meshes = source.meshes;
@@ -605,6 +658,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             }
             bytes = 0;
             reserved = 0;
+            reservedTextures = 0;
         }
     }
 
@@ -619,6 +673,11 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private final Slot[] slots;
     // The session tier's shared objects budget; only a native proof lowers it.
     private long objectBudget;
+
+    // bgfx's texture handle limit (BGFX_CONFIG_MAX_TEXTURES, fixed when bgfx is compiled) and
+    // the share of it object sets may hold; see objectTextureLimit(int, int, int).
+    private int maxTextures, objectTextureLimit;
+    private long textureRefusals;
     private final AtomicReference<Upload> uploading = new AtomicReference<>();
     private final AtomicLong callbackCount = new AtomicLong();
     private final AtomicReference<String> callbackFailure = new AtomicReference<>();
@@ -790,6 +849,20 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             skyView = valid(bgfx_create_uniform("u_skyView", BGFX_UNIFORM_TYPE_VEC4, 1));
             if (session.exteriorObjects()) {
                 objectPass(profile);
+            }
+            maxTextures = caps.limits().maxTextures();
+            objectTextureLimit =
+                    objectTextureLimit(
+                            maxTextures,
+                            Short.toUnsignedInt(org.lwjgl.bgfx.BGFX.bgfx_get_stats().numTextures()),
+                            slots.length);
+            if (session.exteriorObjects()) {
+                System.err.println(
+                        "World object texture handles: "
+                                + objectTextureLimit
+                                + " of bgfx's "
+                                + maxTextures);
+                System.err.flush();
             }
         } catch (IOException | RuntimeException | Error failure) {
             close();
@@ -1294,8 +1367,24 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                     build.fail();
                     return 0;
                 }
+                int images = source.imageCount();
+                int held = reservedObjectTextures();
+                if (!objectTexturesFit(objectTextureLimit, held, images)) {
+                    refuseForTextures(build, images, held);
+                    return 0;
+                }
+                if (!objectTexturesFit(liveTextureRoom(), 0, images)) {
+                    // Handles of a set released this frame are not back yet: wait a frame or two
+                    // rather than fail at the textures step.
+                    if (++build.textureWaits <= TEXTURE_WAIT_STEPS) {
+                        return 0;
+                    }
+                    refuseForTextures(build, images, held);
+                    return 0;
+                }
                 var built = new SlotObjects(source);
                 built.reserved = need;
+                built.reservedTextures = images;
                 build.building = built;
                 try (var layout = objectLayout()) {
                     built.vertices =
@@ -3064,7 +3153,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 maximumStepNanos,
                 objectBytes(upload),
                 compressedImages,
-                decodedImages);
+                decodedImages,
+                reservedObjectTextures(),
+                objectTextureLimit,
+                textureRefusals);
     }
 
     /**
@@ -3143,6 +3235,104 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             throw new IllegalArgumentException("Proof budget above the session budget");
         }
         objectBudget = bytes;
+    }
+
+    /**
+     * The texture handles object sets may hold together: bgfx's limit less the handles live when
+     * the renderer opened (the owner's context and this renderer's fixed textures), the ones it may
+     * still create outside object sets, and the owner's reserve; never negative.
+     */
+    static int objectTextureLimit(int maxTextures, int liveAtOpen, int slots) {
+        if (maxTextures < 0 || liveAtOpen < 0 || slots < 0) {
+            throw new IllegalArgumentException("Texture handle counts");
+        }
+        long room =
+                (long) maxTextures
+                        - liveAtOpen
+                        - (long) slots * LAZY_SLOT_TEXTURES
+                        - LAZY_SHARED_TEXTURES
+                        - OWNER_TEXTURE_RESERVE;
+        return (int) Math.max(0, room);
+    }
+
+    /**
+     * Whether a set of {@code need} images fits beside {@code held} handles under {@code limit}.
+     */
+    static boolean objectTexturesFit(int limit, int held, int need) {
+        return need >= 0 && held >= 0 && need <= (long) limit - held;
+    }
+
+    /** The stderr line of a set refused for texture handles; never the protocol. */
+    static String textureRefusal(int need, int held, int limit, int bgfxLimit, long refusals) {
+        return "World objects set refused for texture handles: needs "
+                + need
+                + ", "
+                + held
+                + " of "
+                + limit
+                + " object handles held (bgfx limit "
+                + bgfxLimit
+                + "); offered again when a set is released ("
+                + refusals
+                + (refusals == 1 ? " refusal" : " refusals")
+                + " this session)";
+    }
+
+    private void refuseForTextures(ObjectsBuild build, int need, int held) {
+        build.budget = true;
+        build.fail();
+        textureRefusals++;
+        System.err.println(
+                textureRefusal(need, held, objectTextureLimit, maxTextures, textureRefusals));
+        System.err.flush();
+    }
+
+    /**
+     * Handles bgfx can still create for object sets right now: its limit less every live handle
+     * (released ones count until bgfx returns them at a frame), the images building sets have yet
+     * to create, the textures this session may still create outside object sets and {@link
+     * #LIVE_TEXTURE_SPARE}.
+     */
+    private int liveTextureRoom() {
+        int live = Short.toUnsignedInt(org.lwjgl.bgfx.BGFX.bgfx_get_stats().numTextures());
+        int pending = 0;
+        var upload = uploading.get();
+        if (upload != null && upload.objects != null && upload.objects.building != null) {
+            pending += upload.objects.uncreatedTextures();
+        }
+        if (late != null && late.build.building != null) {
+            pending += late.build.uncreatedTextures();
+        }
+        int lazy = splatArray == INVALID ? LAZY_SHARED_TEXTURES : 0;
+        for (var slot : slots) {
+            if (slot != null && slot.splatAlpha == INVALID) {
+                lazy += LAZY_SLOT_TEXTURES;
+            }
+        }
+        return Math.max(0, maxTextures - live - pending - lazy - LIVE_TEXTURE_SPARE);
+    }
+
+    /** Texture handles resident and building object sets hold; owner thread only. */
+    int objectTexturesHeld() {
+        requireOwner();
+        return reservedObjectTextures();
+    }
+
+    private int reservedObjectTextures() {
+        var upload = uploading.get();
+        int total =
+                upload == null || upload.objects == null || upload.objects.building == null
+                        ? 0
+                        : upload.objects.building.reservedTextures;
+        if (late != null && late.build.building != null) {
+            total += late.build.building.reservedTextures;
+        }
+        for (var slot : slots) {
+            if (slot != null && slot.objects != null) {
+                total += slot.objects.reservedTextures;
+            }
+        }
+        return total;
     }
 
     private long reservedObjectBytes() {
