@@ -3889,6 +3889,9 @@ class WorldExteriorObjectsTest {
                 assertEquals(WorldExteriorObjects.MAX_MODELS, set.models().size());
                 assertEquals(2, set.count(WorldExteriorObjects.Count.DOODAD_CAP_MODELS));
             }
+            // Nor does the read-ahead ever fetch a model past the cap.
+            assertEquals(0, f.files.opens(MODEL + WorldExteriorObjects.MAX_MODELS));
+            assertEquals(0, f.files.opens(MODEL + WorldExteriorObjects.MAX_MODELS + 1));
         }
     }
 
@@ -4967,11 +4970,13 @@ class WorldExteriorObjectsTest {
         volatile java.util.function.BiConsumer<Integer, Cancellation> onGroupOpenWith =
                 (opened, cancel) -> {};
         volatile long delay = 20;
+        // Which files are slow and counted; the group files unless a test says otherwise.
+        volatile java.util.function.LongPredicate slow = id -> id >= GROUP + 10 && id < GROUP + 100;
 
         @Override
         com.vibeminer.files.FileReadStream open(long id, Cancellation cancel) {
             var actual = super.open(id, cancel);
-            if (id < GROUP + 10 || id >= GROUP + 100) {
+            if (!slow.test(id)) {
                 return actual;
             }
             int opened = groupOpens.incrementAndGet();
@@ -6757,6 +6762,308 @@ class WorldExteriorObjectsTest {
                 var groups = portalGroups(set);
                 assertEquals(allowance, groups.size());
                 assertTrue(groups.values().stream().allMatch(g -> g == 1));
+            }
+            // The read-ahead fetches neither capped model, the tied one past the allowance or
+            // the untied one; every model read is read once.
+            assertEquals(0, f.files.opens(ids[tied - 1]));
+            assertEquals(0, f.files.opens(ids[tied]));
+            for (int i = 0; i < base + allowance; i++) {
+                assertEquals(1, f.files.opens(first + i), "model " + (first + i));
+            }
+        }
+    }
+
+    /** The authored model naming {@code skin} as its first SKIN (SFID's first entry). */
+    private static byte[] model(long skin) {
+        var bytes = model();
+        ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).putInt(8, (int) skin);
+        return bytes;
+    }
+
+    /** {@code count} MDDF doodads, each with its own model and SKIN; the models are slow. */
+    private static List<Mddf> distinctModels(Fixture f, SlowGroups files, int count) {
+        long first = 20_000, skins = 30_000; // clear of every other fixture ID
+        files.slow = id -> id >= first && id < first + count;
+        var doodads = new ArrayList<Mddf>();
+        for (int i = 0; i < count; i++) {
+            f.files.sources.put(first + i, model(skins + i));
+            f.files.sources.put(skins + i, skin());
+            doodads.add(Mddf.of(first + i, i + 1, 0x40));
+        }
+        f.files.sources.put(MODEL_IMAGE, blp(4, 4, 1, 0x07e0));
+        return doodads;
+    }
+
+    /** What a set places and draws, comparable across runs. */
+    private static List<Object> placed(WorldExteriorObjects.TileObjects set) {
+        var summary = new ArrayList<Object>();
+        summary.add(counts(set));
+        summary.add(set.vertices());
+        for (var p : set.placements()) {
+            summary.add(
+                    List.of(
+                            p.kind(),
+                            p.ordinal(),
+                            p.uniqueId(),
+                            p.rootId(),
+                            p.model(),
+                            p.x(),
+                            p.y(),
+                            p.z(),
+                            p.portalGroup()));
+        }
+        for (var m : set.models()) {
+            summary.add(List.of(m.rootId(), m.doodad(), m.meshes().size()));
+        }
+        return summary;
+    }
+
+    @Test
+    void doodadModelsAndTheirSkinsAreReadAheadAndPlaceTheSame() {
+        int count = 12;
+        List<Object> serial = null;
+        long serialReads = -1;
+        for (boolean ahead : new boolean[] {false, true}) {
+            var files = new SlowGroups();
+            WorldStageTimings.reset();
+            WorldStageTimings.enable(true);
+            try (var f = new Fixture(List.of(), files)) {
+                var doodads = distinctModels(f, files, count);
+                f.files.sources.put(4L, obj0(List.of(), doodads));
+                WorldStreamScopes.Prefetcher.enabled = ahead;
+                List<Object> summary;
+                try (var set = f.run()) {
+                    assertEquals(count, set.count(WorldExteriorObjects.Count.DOODAD_DRAWN));
+                    summary = placed(set);
+                } finally {
+                    WorldStreamScopes.Prefetcher.enabled = true;
+                }
+                for (int i = 0; i < count; i++) {
+                    assertEquals(1, f.files.opens(20_000 + i), "each model is read once");
+                    assertEquals(1, f.files.opens(30_000 + i), "each skin is read once");
+                }
+                assertEquals(0, files.open.get(), "every read is closed");
+                var snapshot = WorldStageTimings.snapshot();
+                var reads = snapshot.get("source.read.BASIC_EXTERIOR");
+                var waits = snapshot.get("source.prefetchWait.BASIC_EXTERIOR");
+                if (!ahead) {
+                    assertEquals(1, files.peak.get(), "serial reads never overlap");
+                    assertNull(waits);
+                    serial = summary;
+                    serialReads = reads.count();
+                } else {
+                    assertTrue(files.peak.get() >= 2, "models were read concurrently");
+                    assertTrue(
+                            files.peak.get() <= WorldStreamScopes.Prefetcher.READS + 1,
+                            "peak " + files.peak.get());
+                    assertEquals(serial, summary, "read-ahead changes no output");
+                    long hits = waits == null ? 0 : waits.count();
+                    long misses = reads == null ? 0 : reads.count();
+                    assertEquals(serialReads, misses + hits, "the same inputs are consumed");
+                    // Every model, and skins too: a skin is named by its model's bytes.
+                    assertTrue(hits > count, "read-ahead hits " + hits);
+                }
+            } finally {
+                WorldStageTimings.enable(false);
+                WorldStageTimings.reset();
+            }
+        }
+    }
+
+    @Test
+    void modelsSharingOneSkinAreEachReadOnceWhateverOrderTheirReadsFinishIn() {
+        // Every model names the same SKIN: a later model's read can finish first and name it
+        // before an earlier one does. Taking it for the earlier model must not drop the reads
+        // of the models in between.
+        for (int run = 0; run < 5; run++) {
+            var files = new SlowGroups();
+            files.delay = 0;
+            try (var f = new Fixture(List.of(), files)) {
+                var doodads = new ArrayList<Mddf>();
+                for (int i = 0; i < 40; i++) {
+                    f.files.sources.put(20_000L + i, model());
+                    doodads.add(Mddf.of(20_000L + i, i + 1, 0x40));
+                }
+                putModel(f, MODEL, model());
+                f.files.sources.put(4L, obj0(List.of(), doodads));
+                try (var set = f.run()) {
+                    assertEquals(40, set.count(WorldExteriorObjects.Count.DOODAD_DRAWN));
+                }
+                for (int i = 0; i < 40; i++) {
+                    assertEquals(1, f.files.opens(20_000L + i), "model " + (20_000 + i));
+                }
+                assertEquals(40, f.files.opens(SKIN), "each model reads its skin once");
+            }
+        }
+    }
+
+    @Test
+    void theReadAheadNeverFetchesAModelThePlacementCapLeavesUnread() {
+        // MDDF doodads fill the placement cap; the building's set doodads name a model of their
+        // own, which is never read, neither by the walk nor ahead of it.
+        var doodads = new ArrayList<Mddf>();
+        for (int i = 0; i < WorldExteriorObjects.MAX_DOODADS; i++) {
+            doodads.add(Mddf.of(MODEL, i + 1, 0x40));
+        }
+        long other = MODEL + 1;
+        var three = new ArrayList<Modd>();
+        for (int i = 0; i < 3; i++) {
+            three.add(new Modd(0, i, 0, 0, new double[] {0, 0, 0, 1}, 1));
+        }
+        try (var f = new Fixture(List.of())) {
+            putModel(f, MODEL, model());
+            putModel(f, other, model());
+            f.files.sources.put(
+                    ROOT,
+                    root(
+                            1,
+                            new long[] {GROUP},
+                            List.of(new Material(0, IMAGE, 0)),
+                            doodadChunks(new int[][] {{0, 3}}, new long[] {other}, three)));
+            try (var set = run(f, obj0(List.of(Modf.of(ROOT, 1, 0x8)), doodads, 0))) {
+                assertEquals(3, set.count(WorldExteriorObjects.Count.DOODAD_CAP_PLACEMENTS));
+            }
+            assertEquals(1, f.files.opens(MODEL));
+            assertEquals(0, f.files.opens(other));
+        }
+    }
+
+    @Test
+    void cancellationDrainsAndClosesEveryDoodadReadAheadBeforeThePreparationReturns() {
+        var files = new SlowGroups();
+        var token = new Cancellation();
+        files.onGroupOpen =
+                opened -> {
+                    if (opened == 2) {
+                        token.cancel();
+                    }
+                };
+        try (var f = new Fixture(List.of(), files)) {
+            var doodads = distinctModels(f, files, 12);
+            f.files.sources.put(4L, obj0(List.of(), doodads));
+            assertThrows(
+                    CancellationException.class,
+                    () -> WorldExteriorObjects.prepare(f.engine, f.scope, TILE, token));
+            int opened = files.groupOpens.get();
+            assertEquals(0, files.open.get(), "no read-ahead stream is left open");
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException interrupted) {
+                throw new AssertionError(interrupted);
+            }
+            assertEquals(opened, files.groupOpens.get(), "no read starts after the return");
+            try (var set = f.run()) {
+                assertEquals(12, set.count(WorldExteriorObjects.Count.DOODAD_DRAWN));
+            }
+        }
+    }
+
+    @Test
+    @SuppressWarnings("try")
+    void aFollowUpReadIsTakenFromTheReadAheadAndNeverFetchedForAWithdrawnRead() throws Exception {
+        long model = 20_000, skin = 30_000;
+        var files = new SlowGroups();
+        files.slow = id -> id == model || id == skin;
+        files.delay = 0;
+        try (var f = new Fixture(List.of(), files)) {
+            f.files.sources.put(model, model(skin));
+            f.files.sources.put(skin, skin());
+            // Consumed: the model's follow-up is read ahead and taken, never read again.
+            WorldStageTimings.reset();
+            WorldStageTimings.enable(true);
+            try (var ignored =
+                    f.engine.withRecordedTile(
+                            f.scope,
+                            TILE,
+                            WorldStreamScopes.UseProfile.BASIC_EXTERIOR,
+                            Cancellation.NONE,
+                            admission -> {
+                                admission.prefetch(
+                                        model,
+                                        WorldStreamScopes.DerivedKind.M2_MODEL,
+                                        WorldStreamScopes.DerivedKind.M2_SKIN,
+                                        (bytes, cancel) -> skin);
+                                admission
+                                        .readDerivedCandidate(
+                                                model, WorldStreamScopes.DerivedKind.M2_MODEL)
+                                        .close();
+                                admission
+                                        .readDerivedCandidate(
+                                                skin, WorldStreamScopes.DerivedKind.M2_SKIN)
+                                        .close();
+                                return () -> {};
+                            })) {
+                var snapshot = WorldStageTimings.snapshot();
+                assertEquals(2, snapshot.get("source.prefetchWait.BASIC_EXTERIOR").count());
+                assertNull(snapshot.get("source.read.BASIC_EXTERIOR"), "no read of its own");
+            } finally {
+                WorldStageTimings.enable(false);
+                WorldStageTimings.reset();
+            }
+            assertEquals(1, f.files.opens(skin));
+            // Withdrawn while its follow-up is being named: the follow-up is never fetched.
+            try (var ignored =
+                    f.engine.withRecordedTile(
+                            f.scope,
+                            TILE,
+                            WorldStreamScopes.UseProfile.BASIC_EXTERIOR,
+                            Cancellation.NONE,
+                            admission -> {
+                                var naming = new java.util.concurrent.CountDownLatch(1);
+                                admission.prefetch(
+                                        model,
+                                        WorldStreamScopes.DerivedKind.M2_MODEL,
+                                        WorldStreamScopes.DerivedKind.M2_SKIN,
+                                        (bytes, cancel) -> {
+                                            naming.countDown();
+                                            long cap = System.nanoTime() + 3_000_000_000L;
+                                            while (!cancel.isCanceled()
+                                                    && System.nanoTime() < cap) {
+                                                Thread.onSpinWait();
+                                            }
+                                            return skin;
+                                        });
+                                try {
+                                    naming.await();
+                                } catch (InterruptedException interrupted) {
+                                    throw new AssertionError(interrupted);
+                                }
+                                admission.cancelPrefetch();
+                                try {
+                                    Thread.sleep(100);
+                                } catch (InterruptedException interrupted) {
+                                    throw new AssertionError(interrupted);
+                                }
+                                return () -> {};
+                            })) {
+                assertEquals(1, f.files.opens(skin), "the withdrawn read's follow-up is not read");
+            }
+            // A follow that fails leaves the next read to the consumer.
+            try (var ignored =
+                    f.engine.withRecordedTile(
+                            f.scope,
+                            TILE,
+                            WorldStreamScopes.UseProfile.BASIC_EXTERIOR,
+                            Cancellation.NONE,
+                            admission -> {
+                                admission.prefetch(
+                                        model,
+                                        WorldStreamScopes.DerivedKind.M2_MODEL,
+                                        WorldStreamScopes.DerivedKind.M2_SKIN,
+                                        (bytes, cancel) -> {
+                                            throw new IllegalStateException("authored");
+                                        });
+                                admission
+                                        .readDerivedCandidate(
+                                                model, WorldStreamScopes.DerivedKind.M2_MODEL)
+                                        .close();
+                                admission
+                                        .readDerivedCandidate(
+                                                skin, WorldStreamScopes.DerivedKind.M2_SKIN)
+                                        .close();
+                                return () -> {};
+                            })) {
+                assertEquals(2, f.files.opens(skin), "read once, by the consumer");
             }
         }
     }

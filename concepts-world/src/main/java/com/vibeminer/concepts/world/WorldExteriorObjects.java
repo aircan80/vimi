@@ -1728,6 +1728,10 @@ public final class WorldExteriorObjects {
         private final Map<Long, Integer> modelSlots = new HashMap<>();
         private final Map<Long, WmoFormats.Doodads> rootDoodads = new HashMap<>();
         private final Map<Long, RootState> doodadStates = new HashMap<>();
+
+        /** The current placement pass's qualified doodads, in order ({@link #placeQueued}). */
+        private final List<QueuedDoodad> queued = new ArrayList<>();
+
         private final Map<Long, Integer> doodadSlots = new HashMap<>();
 
         /** obj0 MWDR ranges and MWDS set indexes, for MODF flag 0x80 placements. */
@@ -2804,6 +2808,7 @@ public final class WorldExteriorObjects {
                     setDoodad(building, declared, entry[0], entry[1], filter);
                 }
             }
+            placeQueued();
             byGroupBuildings.clear();
         }
 
@@ -2944,8 +2949,8 @@ public final class WorldExteriorObjects {
                     count(Count.DOODAD_UNSUPPORTED);
                     continue;
                 }
-                var outcome =
-                        doodad(
+                queued.add(
+                        new QueuedDoodad(
                                 Kind.DOODAD,
                                 record.reference().value(),
                                 record.ordinal(),
@@ -2959,17 +2964,9 @@ public final class WorldExteriorObjects {
                                 transform.cos(),
                                 transform.sin(),
                                 rotation,
-                                -1);
-                count(
-                        switch (outcome) {
-                            case DRAWN -> Count.DOODAD_DRAWN;
-                            case FAILED -> Count.DOODAD_FAILED_MODEL;
-                            case CAPPED -> Count.DOODAD_CAPPED;
-                            case EMPTY -> Count.DOODAD_EMPTY;
-                            case BY_GROUP, OTHER_TILE ->
-                                    throw new IllegalStateException("Doodad state");
-                        });
+                                -1));
             }
+            placeQueued();
         }
 
         /**
@@ -2999,6 +2996,7 @@ public final class WorldExteriorObjects {
                 }
                 placeSetsOf(building, rootDoodads.get(building.rootId()), null);
             }
+            placeQueued();
         }
 
         /**
@@ -3128,8 +3126,8 @@ public final class WorldExteriorObjects {
             if (filter != null && group != filter.insideGroup) {
                 group = -1;
             }
-            var outcome =
-                    doodad(
+            queued.add(
+                    new QueuedDoodad(
                             Kind.SET_DOODAD,
                             id,
                             ordinal,
@@ -3143,19 +3141,135 @@ public final class WorldExteriorObjects {
                             building.cos(),
                             building.sin(),
                             rotation,
-                            group);
-            if (outcome == RootState.DRAWN && group >= 0) {
-                count(Count.SET_DOODAD_IN_GROUP);
+                            group));
+        }
+
+        /**
+         * One qualified doodad, queued by a placement pass in its placement order. Qualifying a
+         * doodad never depends on how an earlier one was placed, so a pass queues them all and
+         * {@link #placeQueued} places them afterwards, in the same order.
+         */
+        private record QueuedDoodad(
+                Kind kind,
+                long modelId,
+                int ordinal,
+                long uniqueId,
+                int flags,
+                int doodadSet,
+                double x,
+                double y,
+                double z,
+                double scale,
+                double cos,
+                double sin,
+                Rotation rotation,
+                int portalGroup) {}
+
+        /**
+         * Places the doodads the pass queued, in order, after hinting their model reads (and each
+         * model's skin) to the read-ahead ({@link #prefetchModels}).
+         */
+        private void placeQueued() {
+            try {
+                prefetchModels();
+                for (var q : queued) {
+                    token.check();
+                    var outcome =
+                            doodad(
+                                    q.kind(),
+                                    q.modelId(),
+                                    q.ordinal(),
+                                    q.uniqueId(),
+                                    q.flags(),
+                                    q.doodadSet(),
+                                    q.x(),
+                                    q.y(),
+                                    q.z(),
+                                    q.scale(),
+                                    q.cos(),
+                                    q.sin(),
+                                    q.rotation(),
+                                    q.portalGroup());
+                    if (q.kind() == Kind.DOODAD) {
+                        count(
+                                switch (outcome) {
+                                    case DRAWN -> Count.DOODAD_DRAWN;
+                                    case FAILED -> Count.DOODAD_FAILED_MODEL;
+                                    case CAPPED -> Count.DOODAD_CAPPED;
+                                    case EMPTY -> Count.DOODAD_EMPTY;
+                                    case BY_GROUP, OTHER_TILE ->
+                                            throw new IllegalStateException("Doodad state");
+                                });
+                        continue;
+                    }
+                    if (outcome == RootState.DRAWN && q.portalGroup() >= 0) {
+                        count(Count.SET_DOODAD_IN_GROUP);
+                    }
+                    count(
+                            switch (outcome) {
+                                case DRAWN -> Count.SET_DOODAD_DRAWN;
+                                case FAILED -> Count.SET_DOODAD_FAILED_MODEL;
+                                case CAPPED -> Count.SET_DOODAD_CAPPED;
+                                case EMPTY -> Count.SET_DOODAD_EMPTY;
+                                case BY_GROUP, OTHER_TILE ->
+                                        throw new IllegalStateException("Doodad state");
+                            });
+                }
+            } finally {
+                queued.clear();
+                // Every hint is consumed above; withdraw any left by a failure all the same.
+                admission.cancelPrefetch();
             }
-            count(
-                    switch (outcome) {
-                        case DRAWN -> Count.SET_DOODAD_DRAWN;
-                        case FAILED -> Count.SET_DOODAD_FAILED_MODEL;
-                        case CAPPED -> Count.SET_DOODAD_CAPPED;
-                        case EMPTY -> Count.SET_DOODAD_EMPTY;
-                        case BY_GROUP, OTHER_TILE ->
-                                throw new IllegalStateException("Doodad state");
-                    });
+        }
+
+        /**
+         * Hints, in placement order, exactly the model reads {@link #doodad} will make for the
+         * queued doodads (#371), each followed by its model's first SKIN once the model's bytes
+         * parse as {@link #readModel} parses them. A model is hinted only where its read is
+         * certain: the first use of a model not yet read, within the model cap (the interior
+         * allowance only for a tied doodad), while even every queued doodad before it drawing would
+         * leave the placement cap unreached. Images are not hinted: which a model reads depends on
+         * what the tile registered and charged before it.
+         */
+        private void prefetchModels() {
+            int reads = modelsRead;
+            int placed = doodads;
+            var hinted = new java.util.HashSet<Long>();
+            for (var q : queued) {
+                if (placed >= MAX_DOODADS) {
+                    break; // later reads hang on how many of these draw
+                }
+                placed++;
+                long id = q.modelId();
+                if (doodadStates.containsKey(id) || hinted.contains(id)) {
+                    continue;
+                }
+                if (reads >= MAX_MODELS + (q.portalGroup() >= 0 ? MAX_INTERIOR_MODELS : 0)) {
+                    continue; // capped here, so not read; a later tied use may still read it
+                }
+                reads++;
+                hinted.add(id);
+                admission.prefetch(
+                        id,
+                        WorldStreamScopes.DerivedKind.M2_MODEL,
+                        WorldStreamScopes.DerivedKind.M2_SKIN,
+                        (bytes, cancel) -> firstSkin(id, bytes, cancel));
+            }
+        }
+
+        /**
+         * The SKIN {@link #readModel} reads after these model bytes, or 0 when it reads none: the
+         * same reader over the same bytes, on the read-ahead thread.
+         */
+        private long firstSkin(long id, byte[] bytes, Cancellation cancel) {
+            M2Types.Model model;
+            try {
+                model = modelReader.read(id, bytes, cancel).join();
+            } catch (RuntimeException failed) {
+                return 0;
+            }
+            var skins = model.skinFileDataIds();
+            return skins.isEmpty() || skins.getFirst() <= 0 ? 0 : skins.getFirst();
         }
 
         /**
