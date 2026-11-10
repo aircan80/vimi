@@ -3177,6 +3177,48 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
+    void imagesReadAgainForEveryUseStayWithinTheReadProfile() {
+        // With nothing retained, every later use of an image reads its file again: here the
+        // registration decode and the file's blocks for its chain, at the building image cap.
+        // Every read stays within the profile (IMAGE_READS_PER_SLOT per slot), none is left
+        // unread for the profile, and the tile draws every image.
+        int images = WorldExteriorObjects.MAX_IMAGES;
+        var materials = new ArrayList<Material>();
+        int groups = images / 64;
+        long[] gfid = new long[groups];
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            for (int g = 0; g < groups; g++) {
+                var batches = new ArrayList<Batch>();
+                for (int b = 0; b < 64; b++) {
+                    int i = g * 64 + b;
+                    materials.add(new Material(0, 5000 + i, 0));
+                    batches.add(new Batch(3 * b, 3, 0, i));
+                    f.files.sources.put(5000L + i, blp(256, 256, 9, 0x0841 * (i % 30 + 1)));
+                }
+                gfid[g] = GROUP + 10 + g;
+                f.files.sources.put(gfid[g], group(EXT, 3, 64, batches));
+            }
+            f.files.sources.put(ROOT, root(groups, gfid, materials));
+            // A session sampling BC1 blocks also reads each file's blocks for its chain.
+            int bc1 = 1 << com.vibeminer.rendering.world.ObjectTextureFormats.BC1;
+            try (var set = prepareWith(f, WorldExteriorObjects.Interiors.NONE, 0, bc1)) {
+                assertEquals(images, set.images().size());
+                assertEquals(0, set.count(WorldExteriorObjects.Count.SOURCE_READ_CAPPED));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.BATCH_MISSING_IMAGE));
+            }
+            int reads = 0;
+            for (int i = 0; i < images; i++) {
+                reads += f.files.opens(5000L + i);
+            }
+            assertEquals(2 * images, reads, "each image read for each of its two uses");
+            assertTrue(
+                    reads
+                            <= WorldStreamScopes.IMAGE_READS_PER_SLOT
+                                    * WorldStreamScopes.WMO_IMAGE_SLOTS);
+        }
+    }
+
+    @Test
     void retainedImageSourcesStayWithinTheirBoundAndCountEachFileOnce() {
         // One 256^2 file with three recorded levels, drawn opaque and cutout: two images (one per
         // material class) from one source file.
@@ -7818,14 +7860,19 @@ class WorldExteriorObjectsTest {
                         + WorldExteriorObjects.MAX_MATERIAL_IMAGES;
         assertEquals(128 + 64 + 96 + 32, wmoSlots);
         assertEquals(wmoSlots, WorldStreamScopes.WMO_IMAGE_SLOTS);
-        assertEquals(2 * wmoSlots, profile.derivedReads(WorldStreamScopes.DerivedKind.WMO_IMAGE));
+        assertEquals(4, WorldStreamScopes.IMAGE_READS_PER_SLOT);
+        assertEquals(
+                WorldStreamScopes.IMAGE_READS_PER_SLOT * wmoSlots,
+                profile.derivedReads(WorldStreamScopes.DerivedKind.WMO_IMAGE));
         int slots =
                 com.vibeminer.rendering.world.ExteriorObjectLimits.DOODAD_IMAGES
                         + com.vibeminer.rendering.world.ExteriorObjectLimits.DOODAD_INTERIOR_IMAGES;
         int models = WorldExteriorObjects.MAX_MODELS + WorldExteriorObjects.MAX_INTERIOR_MODELS;
-        // An image may be read when admitted and again at its allotted level (source(Demand)).
-        assertEquals(2 * slots, profile.derivedReads(WorldStreamScopes.DerivedKind.M2_IMAGE));
-        assertEquals(2 * (840 + 80), slots * 2);
+        // An image may be read at registration and again for each later use (source(Demand)).
+        assertEquals(
+                WorldStreamScopes.IMAGE_READS_PER_SLOT * slots,
+                profile.derivedReads(WorldStreamScopes.DerivedKind.M2_IMAGE));
+        assertEquals(840 + 80, slots);
         assertEquals(672 + 64, models);
         // The read-ahead queue holds every model hint of a placement pass and each one's skin.
         assertEquals(2 * models, WorldStreamScopes.Prefetcher.QUEUE);

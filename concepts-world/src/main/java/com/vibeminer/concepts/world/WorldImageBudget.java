@@ -123,15 +123,24 @@ public final class WorldImageBudget {
      */
     public static int[][] allocateFirst(
             List<Request> first, List<Request> second, long budget, int[] sides) {
+        return allocateFirst(first, second, budget, sides, sides[sides.length - 1]);
+    }
+
+    /**
+     * As above, with the {@code second} requests' reserve taken at {@code reserveSide} (one of
+     * {@code sides}) rather than at the smallest side, so a smaller last side for {@code first}
+     * never shrinks what is held for {@code second}.
+     */
+    public static int[][] allocateFirst(
+            List<Request> first, List<Request> second, long budget, int[] sides, int reserveSide) {
         Objects.requireNonNull(first);
         Objects.requireNonNull(second);
         if (budget < 0 || sides.length == 0) {
             throw new IllegalArgumentException("Invalid image budget");
         }
-        int smallest = sides[sides.length - 1];
         long reserve = 0;
         for (var r : second) {
-            reserve += r.cost(r.level(smallest));
+            reserve += r.cost(r.level(reserveSide));
         }
         int[] firstLevels = allocate(first, Math.max(0, budget - reserve), sides);
         long spent = 0;

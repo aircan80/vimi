@@ -100,7 +100,8 @@ class WorldImageBudgetTest {
                         first,
                         second,
                         WorldExteriorObjects.ImageDetail.STANDARD.doodadPixels(),
-                        WorldExteriorObjects.MODEL_IMAGE_SIDES);
+                        WorldExteriorObjects.MODEL_IMAGE_SIDES,
+                        WorldExteriorObjects.INTERIOR_RESERVE_SIDE);
         for (int[] pool : levels) {
             for (int level : pool) {
                 assertTrue(level >= 0, "every slot keeps a level");

@@ -265,6 +265,12 @@ public final class WorldExteriorObjects {
     static final int[] MODEL_IMAGE_SIDES = {256, 128, 64, 32, 16};
 
     /**
+     * The side the interior-only images' reserve is held at, in every pool: 32, as before the
+     * doodad sides reached 16, so exterior doodads never take the interiors' share below it.
+     */
+    static final int INTERIOR_RESERVE_SIDE = 32;
+
+    /**
      * Largest side of a chain uploaded as RGBA8: 256 for buildings and their surfaces, 128 for
      * doodads. The larger sides above are only for chains the session samples as blocks (#374),
      * which cost a quarter (BC2, BC3) or an eighth (BC1) of the GPU bytes.
@@ -729,7 +735,13 @@ public final class WorldExteriorObjects {
          * outcome bucket (they are also PLACEMENT_DRAWN). A share adds no group counts; a capped
          * one is PLACEMENT_CAPPED only.
          */
-        PLACEMENT_SPLIT_SHARE
+        PLACEMENT_SPLIT_SHARE,
+        /**
+         * Derived source reads left unread because the operation's read profile for their kind was
+         * spent (WorldStreamScopes.UseProfile); each is treated as unavailable and only it is
+         * omitted. Not an outcome bucket.
+         */
+        SOURCE_READ_CAPPED
     }
 
     /** The group buckets ({@link Count}). */
@@ -5745,7 +5757,8 @@ public final class WorldExteriorObjects {
                             first,
                             second,
                             budget,
-                            pool == Pool.DOODAD ? MODEL_IMAGE_SIDES : IMAGE_SIDES);
+                            pool == Pool.DOODAD ? MODEL_IMAGE_SIDES : IMAGE_SIDES,
+                            INTERIOR_RESERVE_SIDE);
             relevelAll(firstDemands, levels[0]);
             relevelAll(secondDemands, levels[1]);
         }
@@ -6112,6 +6125,12 @@ public final class WorldExteriorObjects {
         private WorldStreamScopes.Input derived(
                 long id, WorldStreamScopes.DerivedKind kind, boolean[] unreadable) {
             if (id <= 0 || id > 0xffff_ffffL) {
+                return null;
+            }
+            if (admission.derivedReadsLeft(kind) <= 0) {
+                // The profile's reads of this kind are spent: this one source is left unread, as
+                // an unavailable one, and the tile keeps everything else.
+                count(Count.SOURCE_READ_CAPPED);
                 return null;
             }
             try {

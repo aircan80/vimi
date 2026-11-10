@@ -458,6 +458,15 @@ final class WorldStreamScopes {
                     + com.vibeminer.rendering.world.ExteriorObjectLimits.LARGE_INTERIOR_IMAGES
                     + com.vibeminer.rendering.world.ExteriorObjectLimits.MATERIAL_IMAGES;
 
+    /**
+     * Reads of one image slot's source file at most, when the retained-source bound keeps none of
+     * them (WorldExteriorObjects): the registration decode, the level the budget allots
+     * (relevelRgba from allocateImages), the file's own mip levels for its chain (the level fetch
+     * in the mip chain), and for a chain sampled as blocks the file's blocks (blockChain in
+     * chainImages), whose RGBA8 fallback reuses the level fetch.
+     */
+    static final int IMAGE_READS_PER_SLOT = 4;
+
     /** Doodad image slots, the interior allowance's included. */
     static final int DOODAD_IMAGE_SLOTS =
             com.vibeminer.rendering.world.ExteriorObjectLimits.DOODAD_IMAGES
@@ -481,9 +490,11 @@ final class WorldStreamScopes {
          * interiors, and every building image slot, {@link #WMO_IMAGE_SLOTS}) and the capped BASIC
          * doodad reads (the doodad models, their first SKIN and their image slots, the interior
          * allowance's included, {@link #DOODAD_MODEL_READS} and {@link #DOODAD_IMAGE_SLOTS}). Every
-         * image slot is a distinct source and may be read twice: once when admitted, once at its
-         * allotted level. The counts derive from the caps, so a tile within them never reaches a
-         * read limit; reaching one is a bug, not a data outcome.
+         * image slot is a distinct source, read again for each later use whose bytes were not
+         * retained (WorldExteriorObjects.RETAINED_SOURCE_BYTES): {@link #IMAGE_READS_PER_SLOT}
+         * times at most. The image counts derive from the caps. The exterior set never calls {@link
+         * TileAdmission#readDerivedCandidate} past a limit: it checks {@link
+         * TileAdmission#derivedReadsLeft} first and leaves that one source unread instead.
          */
         BASIC_EXTERIOR(
                 2
@@ -498,15 +509,14 @@ final class WorldStreamScopes {
                 1 << 20,
                 256 + SIZING_GROUP_READS,
                 com.vibeminer.formats.world.WmoGroupSpans.MAX_BYTES,
-                // Each image may be read twice: once when admitted, once at its allotted level.
-                2 * WMO_IMAGE_SLOTS,
+                IMAGE_READS_PER_SLOT * WMO_IMAGE_SLOTS,
                 1 << 20,
                 DOODAD_MODEL_READS,
                 2 << 20,
                 DOODAD_MODEL_READS,
                 1 << 20,
-                // Doodad images too: every slot, the interior allowance's included, read twice.
-                2 * DOODAD_IMAGE_SLOTS,
+                // Doodad images too: every slot, the interior allowance's included.
+                IMAGE_READS_PER_SLOT * DOODAD_IMAGE_SLOTS,
                 1 << 20);
         private final int bindings, roots, rootLimit, groups, groupLimit, images, imageLimit;
         private final int models, modelLimit, skins, skinLimit, modelImages, modelImageLimit;
@@ -955,6 +965,12 @@ final class WorldStreamScopes {
                     profile == UseProfile.BASIC_WMO && kind == RecordedInput.ROOT
                             ? 2 << 20
                             : 8 << 20);
+        }
+
+        /** Reads of {@code kind} this operation may still make under its profile. */
+        int derivedReadsLeft(DerivedKind kind) {
+            return profile.derivedReads(kind)
+                    - derivedReads[Objects.requireNonNull(kind).ordinal()];
         }
 
         /** Actual bytes only: private WMO factory must independently prove parent ancestry. */
