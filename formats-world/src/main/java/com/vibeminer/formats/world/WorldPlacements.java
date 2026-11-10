@@ -11,7 +11,15 @@ import java.util.function.BooleanSupplier;
 /** Raw ADT18 object declarations only; no resolution, placement matrix or appearance policy. */
 public final class WorldPlacements {
     public static final int MAX_SOURCE_BYTES = 8 << 20;
-    public static final int MAX_RECORDS_PER_KIND = 4096;
+
+    /**
+     * MDDF, MODF, MWDR and MWDS records one obj0 may declare, each. On build 1.60.1.70862 Gilneas
+     * City's tile 34,29 records 4,165 MDDF doodads, past the former 4,096, and is the densest obj0
+     * measured (the next records 3,014); this keeps about four times that. Records past what a tile
+     * can draw are capped by the object pools, not refused here.
+     */
+    public static final int MAX_RECORDS_PER_KIND = 16_384;
+
     public static final int MAX_CHUNKS = 4096;
     public static final String REVISION = "adt18-obj0-placement-facts-v1";
 

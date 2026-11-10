@@ -3842,9 +3842,37 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
+    void doodadsPastThePlacementCapAreCappedAndTheTileIsStillDrawn() {
+        // An obj0 may record more MDDF doodads than a tile draws (Gilneas City's 34,29 records
+        // 4,165 on build 70862): the excess is capped in source order and the building and the
+        // doodads before the cap are still drawn.
+        int over = 69;
+        var doodads = new ArrayList<Mddf>();
+        for (int i = 0; i < WorldExteriorObjects.MAX_DOODADS + over; i++) {
+            doodads.add(Mddf.of(MODEL, i + 1, 0x40));
+        }
+        try (var f = new Fixture(List.of())) {
+            putModel(f, MODEL, model());
+            f.files.sources.put(
+                    ROOT, root(1, new long[] {GROUP}, List.of(new Material(0, IMAGE, 0))));
+            try (var set = run(f, obj0(List.of(Modf.of(ROOT, 1, 0x8)), doodads, 0))) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+                assertEquals(
+                        WorldExteriorObjects.MAX_DOODADS,
+                        set.count(WorldExteriorObjects.Count.DOODAD_DRAWN));
+                assertEquals(over, set.count(WorldExteriorObjects.Count.DOODAD_CAPPED));
+                assertEquals(over, set.count(WorldExteriorObjects.Count.DOODAD_CAP_PLACEMENTS));
+                var last = set.placements().getLast();
+                assertEquals(WorldExteriorObjects.Kind.DOODAD, last.kind());
+                assertEquals(WorldExteriorObjects.MAX_DOODADS - 1, last.ordinal());
+            }
+        }
+    }
+
+    @Test
     void doodadPlacementAndModelCapsKeepSourceOrder() {
-        // MDDF doodads fill the placement cap first (an obj0 records at most 4,096 of them, the
-        // cap itself); the drawn building's three set doodads come after and are capped.
+        // MDDF doodads fill the placement cap first; the drawn building's three set doodads come
+        // after and are capped.
         var doodads = new ArrayList<Mddf>();
         for (int i = 0; i < WorldExteriorObjects.MAX_DOODADS; i++) {
             doodads.add(Mddf.of(MODEL, i + 1, 0x40));

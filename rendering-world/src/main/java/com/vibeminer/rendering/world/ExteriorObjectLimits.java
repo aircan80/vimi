@@ -67,8 +67,10 @@ public final class ExteriorObjectLimits {
     /**
      * Doodad placements per tile (#308). On Elwynn Forest's 3 x 3 tiles around Goldshire the old
      * 512 was the only doodad cap that bound (every one of 8,253 capped doodads and set doodads),
-     * with about 1,350 candidates per tile against 36 distinct models. One obj0 records at most
-     * 4,096 MDDF entries ({@code WorldPlacements.MAX_RECORDS_PER_KIND}).
+     * with about 1,350 candidates per tile against 36 distinct models. An obj0 may record more MDDF
+     * entries than this ({@code WorldPlacements.MAX_RECORDS_PER_KIND}, 16,384; Gilneas City's 34,29
+     * records 4,165 on build 70862): those past it are capped (DOODAD_CAPPED), and the tile's other
+     * objects are still drawn.
      */
     public static final int DOODAD_PLACEMENTS = 4096;
 
