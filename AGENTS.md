@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-This workspace currently contains no application source, tests, assets, or build manifests. The visible hidden directories are `.agents/`, `.codex/`, `.aws/`, and `.git/`; do not treat these as application modules or modify them as part of routine feature work.
+See `README.md` for what vimi is, how to run it and how the modules are laid out. Hidden directories such as `.git/` are not application modules; don't modify them as part of routine feature work.
 
 When introducing code, organize related functionality together and document the resulting layout. Use clearly named directories such as `src/`, `tests/`, and `assets/` where appropriate to the chosen stack. Avoid creating empty scaffolding without an immediate purpose.
 
