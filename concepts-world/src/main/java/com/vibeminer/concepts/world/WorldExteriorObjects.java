@@ -3736,8 +3736,9 @@ public final class WorldExteriorObjects {
                         (bytes, cancel) -> firstSkin(id, bytes, cancel, parsed),
                         WorldStreamScopes.DerivedKind.M2_IMAGE,
                         (bytes, cancel) -> modelImages(id, parsed.get(), bytes, cancel),
-                        // Within the doodad image cap (the interior allowance aside), so an
-                        // image the cap leaves unread is never fetched.
+                        // At most the images the doodad image cap still leaves (the interior
+                        // allowance aside), so reads past that count are never fetched; an image
+                        // of a model later capped, or of a batch later dropped, may still be.
                         MAX_MODEL_IMAGES - modelImagesRead);
             }
         }
@@ -3769,7 +3770,8 @@ public final class WorldExteriorObjects {
         /**
          * The images {@link #resolve} reads for this model's mesh after these SKIN bytes, in its
          * order and once each, before the tile's registered images and caps rule some out: the same
-         * reader and the same {@link #copyModel} over the same bytes, on the read-ahead thread.
+         * reader and the same {@link #copyModel} over the same bytes, on the read-ahead thread,
+         * stopping as soon as that read is canceled (withdrawn, or the tile canceled).
          */
         private long[] modelImages(
                 long id, M2Types.Model model, byte[] bytes, Cancellation cancel) {
@@ -3790,7 +3792,8 @@ public final class WorldExteriorObjects {
                             model.skinFileDataIds().getFirst(),
                             model,
                             skin,
-                            new int[counts.length]);
+                            new int[counts.length],
+                            cancel);
             if (pending == null || pending == ALL_BILLBOARD) {
                 return new long[0];
             }
@@ -5399,7 +5402,7 @@ public final class WorldExteriorObjects {
             int[] local = new int[counts.length];
             PendingMesh pending;
             try {
-                pending = copyModel(id, skinId, model, skin, local);
+                pending = copyModel(id, skinId, model, skin, local, token);
             } catch (RuntimeException failure) {
                 return readerFailed(failure);
             }
@@ -5473,9 +5476,16 @@ public final class WorldExteriorObjects {
          * 16-bit index domain; {@link #ALL_BILLBOARD} when billboard bones leave no admitted
          * triangle. Triangles with a vertex weighted to a billboard bone are left out; a batch left
          * with none is counted as MODEL_BATCH_BILLBOARD, one left with some as MODEL_BATCH_TRIMMED.
+         * Checks {@code cancel}: the tile's own, or on the read-ahead thread the read's, which the
+         * tile's cancels too.
          */
         private PendingMesh copyModel(
-                long id, long skinId, M2Types.Model model, M2Types.Skin skin, int[] local) {
+                long id,
+                long skinId,
+                M2Types.Model model,
+                M2Types.Skin skin,
+                int[] local,
+                Cancellation cancel) {
             var lookup = skin.vertexLookup();
             var triangles = skin.triangleLookup();
             var sections = skin.sections();
@@ -5486,7 +5496,7 @@ public final class WorldExteriorObjects {
             var seen = new boolean[sections.size()];
             int candidateIndices = 0;
             for (var batch : skin.batches()) {
-                token.check();
+                cancel.check();
                 int section = batch.sectionIndex();
                 if (batch.materialLayer() != 0
                         || batch.textureCount() < 1
@@ -5552,7 +5562,7 @@ public final class WorldExteriorObjects {
             var rebased = new ArrayList<Candidate>(candidates.size());
             int used = 0, billboarded = 0, trimmed = 0, dropped = 0;
             for (var candidate : candidates) {
-                token.check();
+                cancel.check();
                 int kept = 0;
                 for (int i = 0; i < candidate.indexCount(); i += 3) {
                     boolean faces = false;
@@ -5600,7 +5610,7 @@ public final class WorldExteriorObjects {
             }
             for (int v = 0; v < lookup.size(); v++) {
                 if ((v & 1023) == 0) {
-                    token.check();
+                    cancel.check();
                 }
                 int global = lookup.get(v);
                 if (global < 0 || global >= source.size()) {
