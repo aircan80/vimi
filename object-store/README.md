@@ -139,7 +139,7 @@ power cut.
 ```
 
 The component's JAR, source JAR and reusable test-fixtures JAR are written under
-`object-store/build/libs/`. There is no application entry point yet. The Bash
+`object-store/build/libs/`. The Bash
 scripts in `scripts/` delegate to these Gradle tasks; `scripts/check.sh` runs only
 fast tests, and `scripts/interop.sh` runs only interoperability checks.
 
@@ -256,13 +256,9 @@ rejection of unclean immutable indexes and inaccessible WAL commits, and live se
 reader visibility. POSIX permission cases skip when the filesystem lacks POSIX permissions
 or the process can bypass them. Native macOS ARM64 validation passed all 361 unit,
 integration, crash and Java/C# interoperability cases with zero skips, including
-all read-only permission checks. Native Windows validation is deferred by the
-maintainer and does not block further component development; hosted Windows checks
-continue. Clean-machine SQLite startup and final release-readiness review remain
+all read-only permission checks. Native Windows hardware validation is still open;
+hosted Windows checks run. Clean-machine SQLite startup and final release-readiness review remain
 open. Recovery tests simulate durable unindexed tails and torn bytes;
 append, rebuild and compaction process-kill boundaries and deterministic I/O
-failures are tested. Real power-cut testing has not been performed. The generated-store wrapper and compressed record files are implemented in
-[`generated-store/`](../generated-store/README.md). Layer 1 network primitives are
-implemented in [`network-clients/`](../network-clients/README.md). Layers 2 and 3
-are implemented separately; Files and asset formats are implemented below. Table formats, layers 6–7 and application packaging remain active/future work.
+failures are tested. Real power-cut testing has not been performed.
 
