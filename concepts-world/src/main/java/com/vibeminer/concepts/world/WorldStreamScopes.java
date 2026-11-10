@@ -1287,6 +1287,12 @@ final class WorldStreamScopes {
         /** Read-ahead on or off for new hints; off reads serially as before. Tests compare both. */
         static volatile boolean enabled = true;
 
+        /**
+         * Test seam: told, under the read-ahead's lock, each once read named while an earlier
+         * caller hint still holds it back in {@link #named}.
+         */
+        static volatile java.util.function.LongConsumer heldBackForTest;
+
         private record Key(long id, DerivedKind kind) {}
 
         /**
@@ -1540,6 +1546,27 @@ final class WorldStreamScopes {
             return true;
         }
 
+        /**
+         * The place a passed once read moves to instead of being dropped: {@code keep} when a later
+         * place already names it, else a later place whose names still wait in {@link #named}
+         * (claimed: that place reads it from here); -1 when none does.
+         */
+        private long laterPlace(Key key, long keep, long passed) {
+            if (keep > passed) {
+                return keep;
+            }
+            for (var list : named.tailMap(base(passed), false).values()) {
+                for (var it = list.iterator(); it.hasNext(); ) {
+                    var hint = it.next();
+                    if (hint.key().equals(key) && hint.order() > passed) {
+                        it.remove();
+                        return hint.order();
+                    }
+                }
+            }
+            return -1;
+        }
+
         /** The next follow-up order after the caller hint at or before {@code order}, or -1. */
         private long followUp(long order) {
             long base = order - Math.floorMod(order, STRIDE);
@@ -1611,8 +1638,10 @@ final class WorldStreamScopes {
                             if (hint.order() > passed) {
                                 return false;
                             }
-                            if (hint.once() && hint.keep() > passed) {
-                                moved.add(hint.at(hint.keep(), hint.keep()));
+                            long later =
+                                    hint.once() ? laterPlace(hint.key(), hint.keep(), passed) : -1;
+                            if (later > 0) {
+                                moved.add(hint.at(later, later));
                             }
                             return true;
                         });
@@ -1628,8 +1657,10 @@ final class WorldStreamScopes {
                 for (var entry = started.headMap(passed).entrySet().iterator(); entry.hasNext(); ) {
                     var next = entry.next().getValue();
                     entry.remove();
-                    if (next.once && next.keep > passed) {
-                        next.order = next.keep;
+                    long later = next.once ? laterPlace(next.key, next.keep, passed) : -1;
+                    if (later > 0) {
+                        next.order = later;
+                        next.keep = later;
                         kept.add(next);
                         continue;
                     }
@@ -1776,6 +1807,12 @@ final class WorldStreamScopes {
                                     true));
                 }
                 if (!list.isEmpty()) {
+                    var held = heldBackForTest;
+                    if (held != null
+                            && !unresolved.isEmpty()
+                            && unresolved.first() < base(read.order)) {
+                        list.forEach(once -> held.accept(once.key().id()));
+                    }
                     named.merge(
                             base(read.order),
                             list,

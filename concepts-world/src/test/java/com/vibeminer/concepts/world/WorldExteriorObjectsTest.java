@@ -8525,8 +8525,16 @@ class WorldExteriorObjectsTest {
         byte[] serial = null;
         for (boolean ahead : new boolean[] {false, true}) {
             var files = new SlowGroups();
-            files.slow = id -> id == skinA;
+            files.slow = id -> id == skinA || id == x;
             files.delay = 60;
+            // skinA opens first; x, second, only once both chains have named it.
+            var xOpened = new java.util.concurrent.CountDownLatch(1);
+            files.onGroupOpen =
+                    opened -> {
+                        if (opened == 2) {
+                            xOpened.countDown();
+                        }
+                    };
             try (var f = new Fixture(List.of(), files)) {
                 f.files.sources.put(a, model(skinA));
                 f.files.sources.put(b, model(skinB));
@@ -8556,11 +8564,8 @@ class WorldExteriorObjectsTest {
                                     }
                                     // Read ahead, x starts only once a's chain has named it,
                                     // and b's, named first, has been released after it.
-                                    long deadline = System.nanoTime() + 5_000_000_000L;
-                                    while (ahead
-                                            && f.files.opens(x) == 0
-                                            && System.nanoTime() < deadline) {
-                                        Thread.onSpinWait();
+                                    if (ahead) {
+                                        await(xOpened);
                                     }
                                     for (var read :
                                             List.of(
@@ -8612,6 +8617,120 @@ class WorldExteriorObjectsTest {
                 }
             }
         }
+    }
+
+    private static void await(java.util.concurrent.CountDownLatch latch) {
+        try {
+            // Bounded only so a broken read-ahead fails the test instead of hanging it.
+            assertTrue(
+                    latch.await(60, java.util.concurrent.TimeUnit.SECONDS),
+                    "the awaited read never happened");
+        } catch (InterruptedException interrupted) {
+            throw new AssertionError(interrupted);
+        }
+    }
+
+    @Test
+    @SuppressWarnings("try")
+    void anImageALaterModelNamesBehindAnUnresolvedOneIsKeptWhenTheEarlierModelSkipsIt()
+            throws Exception {
+        // Models a, c and b in that order; a and b name image x, c names none. c's SKIN is slow,
+        // so b's names wait behind it while x is read in a's place. a skips x and taking c passes
+        // a's place: x moves to b's waiting place instead of being dropped, and b takes it.
+        long a = 20_000, c = 20_002, b = 20_001;
+        long skinA = 30_000, skinC = 30_002, skinB = 30_001, x = 40_000;
+        byte[] serial = null;
+        for (boolean ahead : new boolean[] {false, true}) {
+            var files = new SlowGroups();
+            files.slow = id -> id == skinC;
+            files.delay = 0;
+            var release = new java.util.concurrent.CountDownLatch(1);
+            var xHeld = new java.util.concurrent.CountDownLatch(1);
+            // c's SKIN is held until the test has seen b's names held back behind it.
+            files.onGroupOpen = opened -> await(release);
+            WorldStreamScopes.Prefetcher.heldBackForTest =
+                    id -> {
+                        if (id == x) {
+                            xHeld.countDown();
+                        }
+                    };
+            try (var f = new Fixture(List.of(), files)) {
+                f.files.sources.put(a, model(skinA));
+                f.files.sources.put(c, model(skinC));
+                f.files.sources.put(b, model(skinB));
+                f.files.sources.put(skinA, skin());
+                f.files.sources.put(skinC, skin());
+                f.files.sources.put(skinB, skin());
+                f.files.sources.put(x, blp(4, 4, 1, 0x07e0));
+                WorldStreamScopes.Prefetcher.enabled = ahead;
+                if (!ahead) {
+                    release.countDown();
+                }
+                var image = new byte[1][];
+                try (var ignored =
+                        f.engine.withRecordedTile(
+                                f.scope,
+                                TILE,
+                                WorldStreamScopes.UseProfile.BASIC_EXTERIOR,
+                                Cancellation.NONE,
+                                admission -> {
+                                    for (long[] chain :
+                                            new long[][] {
+                                                {a, skinA, x}, {c, skinC, 0}, {b, skinB, x}
+                                            }) {
+                                        admission.prefetch(
+                                                chain[0],
+                                                WorldStreamScopes.DerivedKind.M2_MODEL,
+                                                WorldStreamScopes.DerivedKind.M2_SKIN,
+                                                (bytes, cancel) -> chain[1],
+                                                WorldStreamScopes.DerivedKind.M2_IMAGE,
+                                                (bytes, cancel) ->
+                                                        chain[2] == 0
+                                                                ? new long[0]
+                                                                : new long[] {chain[2]},
+                                                10);
+                                    }
+                                    if (ahead) {
+                                        await(xHeld);
+                                    }
+                                    read(admission, a, WorldStreamScopes.DerivedKind.M2_MODEL);
+                                    read(admission, skinA, WorldStreamScopes.DerivedKind.M2_SKIN);
+                                    // a skips x; taking c passes a's place.
+                                    read(admission, c, WorldStreamScopes.DerivedKind.M2_MODEL);
+                                    release.countDown();
+                                    read(admission, skinC, WorldStreamScopes.DerivedKind.M2_SKIN);
+                                    read(admission, b, WorldStreamScopes.DerivedKind.M2_MODEL);
+                                    read(admission, skinB, WorldStreamScopes.DerivedKind.M2_SKIN);
+                                    try (var input =
+                                            admission.readDerivedCandidate(
+                                                    x, WorldStreamScopes.DerivedKind.M2_IMAGE)) {
+                                        image[0] = input.bytes().clone();
+                                    }
+                                    return () -> {};
+                                })) {
+                    // Every read made; nothing further to check inside the tile.
+                } finally {
+                    WorldStreamScopes.Prefetcher.enabled = true;
+                    WorldStreamScopes.Prefetcher.heldBackForTest = null;
+                    release.countDown();
+                }
+                assertEquals(1, f.files.opens(x), "x is read once");
+                assertEquals(1, f.files.opens(b), "b's model is read once");
+                assertEquals(1, f.files.opens(skinB));
+                if (!ahead) {
+                    serial = image[0];
+                } else {
+                    assertArrayEquals(serial, image[0], "the same bytes as a serial read");
+                }
+            }
+        }
+    }
+
+    private static void read(
+            WorldStreamScopes.TileAdmission admission,
+            long id,
+            WorldStreamScopes.DerivedKind kind) {
+        admission.readDerivedCandidate(id, kind).close();
     }
 
     @Test
