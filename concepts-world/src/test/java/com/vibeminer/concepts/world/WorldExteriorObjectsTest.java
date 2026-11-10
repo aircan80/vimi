@@ -6599,24 +6599,27 @@ class WorldExteriorObjectsTest {
     void setDoodadsOfASplitRootAreTiedToTheOneDrawnInteriorListingThem() {
         // In interior 2 (x 4..6, drawn here): doodad 0 is listed by interior 2's MODR alone,
         // doodad 1 by interior 2 and exterior 0, doodad 2 by no group; doodad 3 stands outdoors
-        // and exterior 0 lists it. Only doodad 0 is tied, to group 2.
+        // and exterior 0 lists it. Doodad 4 stands outdoors too, but only interior 2 lists it:
+        // another tile's group, unread here, might list it as well, so a split root ties a
+        // doodad only to the interior whose box placed it. Only doodad 0 is tied, to group 2.
         var files = new WorldTerrainTextureSourceTest.Files();
         try (var f = new Fixture(List.of(largePlacement()), files)) {
             putModel(f, MODEL, model());
             putSplitWithPortals(
                     f,
                     doodadChunks(
-                            new int[][] {{0, 4}},
+                            new int[][] {{0, 5}},
                             new long[] {MODEL},
-                            standing(5, 5.5f, 5.2f, -50)));
+                            standing(5, 5.5f, 5.2f, -50, -40)));
             f.files.sources.put(BIG + 1, withDoodadRefs(bigGroup(EXT, 60_000), 1, 3));
-            f.files.sources.put(BIG + 3, withDoodadRefs(bigGroup(ROOM, 3), 0, 1));
+            // References past the root's five MODD entries are dropped.
+            f.files.sources.put(BIG + 3, withDoodadRefs(bigGroup(ROOM, 3), 0, 1, 4, 5, 65535));
             try (var here = f.runOpenWorld()) {
                 assertEquals(List.of(0, 2), groupsOf(here, BIG));
-                assertEquals(Map.of(0, 2, 1, -1, 2, -1, 3, -1), portalGroups(here));
+                assertEquals(Map.of(0, 2, 1, -1, 2, -1, 3, -1, 4, -1), portalGroups(here));
                 assertEquals(1, here.count(WorldExteriorObjects.Count.SET_DOODAD_IN_GROUP));
                 assertEquals(1, here.count(WorldExteriorObjects.Count.SET_DOODAD_GROUPS_SHARED));
-                assertEquals(4, here.count(WorldExteriorObjects.Count.SET_DOODAD_DRAWN));
+                assertEquals(5, here.count(WorldExteriorObjects.Count.SET_DOODAD_DRAWN));
                 // The tied doodad's building is the placement with its unique ID.
                 var tied =
                         here.placements().stream()
@@ -6686,6 +6689,24 @@ class WorldExteriorObjectsTest {
                 assertEquals(Map.of(0, -1, 1, -1, 2, -1, 3, -1), portalGroups(set));
             }
         }
+    }
+
+    @Test
+    void theDoodadReadProfileCoversEverySlotReadTwice() {
+        var profile = WorldStreamScopes.UseProfile.BASIC_EXTERIOR;
+        int slots =
+                com.vibeminer.rendering.world.ExteriorObjectLimits.DOODAD_IMAGES
+                        + com.vibeminer.rendering.world.ExteriorObjectLimits.DOODAD_INTERIOR_IMAGES;
+        int models = WorldExteriorObjects.MAX_MODELS + WorldExteriorObjects.MAX_INTERIOR_MODELS;
+        // An image may be read when admitted and again at its allotted level (source(Demand)).
+        assertEquals(2 * slots, profile.derivedReads(WorldStreamScopes.DerivedKind.M2_IMAGE));
+        assertEquals(2 * (192 + 160), slots * 2);
+        assertEquals(models, profile.derivedReads(WorldStreamScopes.DerivedKind.M2_MODEL));
+        assertEquals(models, profile.derivedReads(WorldStreamScopes.DerivedKind.M2_SKIN));
+        // Every distinct source a tile may bind: WDT, OBJ0, 24 roots, 256 groups, the WMO image
+        // slots, and each doodad model, skin and image slot.
+        assertEquals(
+                2 + 24 + 256 + 64 + 64 + 64 + 32 + models + models + slots, profile.bindingLimit());
     }
 
     @Test

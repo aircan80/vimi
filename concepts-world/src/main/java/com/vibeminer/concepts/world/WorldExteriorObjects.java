@@ -686,7 +686,8 @@ public final class WorldExteriorObjects {
         SET_DOODAD_GROUPS_SHARED,
         /**
          * Doodad models read beyond the {@link #MAX_MODELS} cap from the interior allowance ({@link
-         * #MAX_INTERIOR_MODELS}), for set doodads tied to an interior group. Not an outcome bucket.
+         * #MAX_INTERIOR_MODELS}), for set doodads tied to an interior group: every read, whatever
+         * its outcome, as each spends a slot. Not an outcome bucket.
          */
         MODEL_INTERIOR_ALLOWANCE,
         /**
@@ -1767,17 +1768,11 @@ public final class WorldExteriorObjects {
         private final java.util.Set<Long> interiorModels = new java.util.HashSet<>();
 
         /**
-         * Per root's doodad declarations (by identity, as each root holds one): the MODR of each
-         * group this tile read, null for a group not read or without a usable MODR.
+         * Per root's doodad declarations (by identity, as each root holds one), each MODD entry's
+         * only listing group among the groups this tile read (their MODR): -1 for none, -2 for more
+         * than one. One short per declared doodad, so a malformed MODR costs no more.
          */
-        private final Map<WmoFormats.Doodads, int[][]> groupDoodadRefs =
-                new java.util.IdentityHashMap<>();
-
-        /**
-         * Per root's doodad declarations, each MODD entry's only listing group among those read
-         * ({@link #groupDoodadRefs}): -1 for none, -2 for more than one. Rebuilt after a read.
-         */
-        private final Map<WmoFormats.Doodads, int[]> doodadGroups =
+        private final Map<WmoFormats.Doodads, short[]> doodadGroups =
                 new java.util.IdentityHashMap<>();
 
         private int doodads, draws;
@@ -2832,6 +2827,9 @@ public final class WorldExteriorObjects {
             /** Whether the last doodad placed stands inside a drawn interior. */
             boolean inside;
 
+            /** That interior's group, the one whose box assigned the doodad; else -1. */
+            int insideGroup = -1;
+
             /** Set and MODD ordinal of each doodad waiting for the interiors' turn. */
             final List<int[]> deferred = new ArrayList<>();
 
@@ -2866,6 +2864,7 @@ public final class WorldExteriorObjects {
             /** Null to place the doodad, else the bucket it is left out under. */
             Count refuse(double nativeX, double nativeY, double a, double b, double c) {
                 inside = false;
+                insideGroup = -1;
                 for (int i = 0; i < interiorGroups.length; i++) {
                     int at = i * 6;
                     if (a >= interiorBoxes[at]
@@ -2879,6 +2878,7 @@ public final class WorldExteriorObjects {
                             return Count.SET_DOODAD_OTHER_TILE;
                         }
                         inside = drawn.get(g);
+                        insideGroup = inside ? g : -1;
                         return inside ? null : Count.SET_DOODAD_INTERIOR;
                     }
                 }
@@ -3123,6 +3123,11 @@ public final class WorldExteriorObjects {
             // 37115 MODD placement matrix; wow.export 4474fa4 WMORenderer.js:400-466).
             var rotation = building.rotation().times(Rotation.quaternion(qx, qy, qz, qw));
             int group = portalGroup(building, declared, ordinal);
+            // A root drawn by group: this tile reads only its own groups, so another tile's group
+            // might also list the doodad. Tie it only to the interior whose box placed it here.
+            if (filter != null && group != filter.insideGroup) {
+                group = -1;
+            }
             var outcome =
                     doodad(
                             Kind.SET_DOODAD,
@@ -4142,15 +4147,25 @@ public final class WorldExteriorObjects {
             if (declared == null || ordinal >= groups) {
                 return;
             }
-            int[] copy = null;
-            if (refs != null) {
-                copy = new int[refs.size()];
-                for (int i = 0; i < copy.length; i++) {
-                    copy[i] = refs.get(i);
+            int defs = declared.definitions().size();
+            if (refs == null || defs == 0) {
+                return;
+            }
+            var only =
+                    doodadGroups.computeIfAbsent(
+                            declared,
+                            ignored -> {
+                                var fresh = new short[defs];
+                                Arrays.fill(fresh, (short) -1);
+                                return fresh;
+                            });
+            for (int i = 0; i < refs.size(); i++) {
+                int d = refs.get(i);
+                // References past the root's MODD name no doodad and are dropped.
+                if (d < defs && only[d] != ordinal) {
+                    only[d] = (short) (only[d] == -1 ? ordinal : -2);
                 }
             }
-            groupDoodadRefs.computeIfAbsent(declared, ignored -> new int[groups][])[ordinal] = copy;
-            doodadGroups.remove(declared);
         }
 
         /**
@@ -4166,27 +4181,10 @@ public final class WorldExteriorObjects {
             if (building.model() < 0) {
                 return -1;
             }
-            var model = models.get(building.model());
-            var set = model.portals();
-            var refs = groupDoodadRefs.get(declared);
-            if (set == null || refs == null) {
+            var set = models.get(building.model()).portals();
+            var groups = doodadGroups.get(declared);
+            if (set == null || groups == null) {
                 return -1;
-            }
-            int[] groups = doodadGroups.get(declared);
-            if (groups == null) {
-                groups = new int[declared.definitions().size()];
-                Arrays.fill(groups, -1);
-                for (int g = 0; g < refs.length; g++) {
-                    if (refs[g] == null) {
-                        continue;
-                    }
-                    for (int d : refs[g]) {
-                        if (d < groups.length && groups[d] != g) {
-                            groups[d] = groups[d] == -1 ? g : -2;
-                        }
-                    }
-                }
-                doodadGroups.put(declared, groups);
             }
             int g = ordinal < groups.length ? groups[ordinal] : -1;
             if (g == -2) {
