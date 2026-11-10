@@ -83,7 +83,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
      * holds one terrain and water mesh of at most {@link WorldStreamPackedTile#MAX_GEOMETRY_BYTES}
      * (#373) and one mipmapped 512 x 512 RGBA8 atlas (1.40 MB). Exterior objects add at most one
      * validated objects file per slot: up to {@link WorldStreamObjectsFile#MAX_BYTES} of GPU
-     * vertices, indices and RGBA8 textures with their full mip chains (46 MiB with every table at
+     * vertices, indices and RGBA8 textures with their full mip chains (50 MiB with every table at
      * its cap, the large and interior allowances of buildings drawn by group included). Real tiles
      * stay far below that, so instead of a per-slot worst case the objects share {@link
      * #OBJECT_BUDGET_BYTES}, charged in Stats.objectBytes. The owner's x4 multisampled colour and
@@ -2559,8 +2559,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
 
     /**
      * Bits of a blend key holding its entry: the tile's position in the active (producer) order
-     * above the placement's bits: 13 placement bits for the #308 tile ceiling of 4,160 placements
-     * and 5 position bits for the 26 slots of a far session (#276).
+     * above the placement's bits: 13 placement bits for the tile ceiling of 5,184 placements (64
+     * buildings and 5,120 doodads) and 5 position bits for the 26 slots of a far session (#276).
      */
     static final int BLEND_ENTRY_BITS = 18, BLEND_PLACEMENT_BITS = 13;
 

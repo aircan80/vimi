@@ -3746,7 +3746,8 @@ public final class WorldExteriorObjects {
             // an interior never makes fitMaterialDraws trim an exterior's glass or foliage.
             long reserved = 0;
             for (int m = 0; m < models.size(); m++) {
-                meshes += models.get(m).meshes().size();
+                // Building meshes only: doodad models have their own rows (MAX_MODELS).
+                meshes += models.get(m).doodad() ? 0 : models.get(m).meshes().size();
                 reserved += (long) uses[m] * modelDraws(m);
             }
             int[] local = new int[counts.length];
