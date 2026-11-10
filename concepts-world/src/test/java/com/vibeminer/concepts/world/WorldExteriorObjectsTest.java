@@ -2629,9 +2629,11 @@ class WorldExteriorObjectsTest {
 
     @Test
     void geometryCapOmitsWholeRootAndKeepsLaterSmallerRoot() {
-        // Seven 16384-vertex groups exceed 98,304 vertices; the root is omitted whole.
+        // Twenty-nine 16384-vertex groups exceed the 98,304 building vertices and the large
+        // allowance it falls back to (458,752 with the interior allowance); the root is omitted
+        // whole.
         try (var f = new Fixture(List.of(Modf.of(700, 1, 0x8), Modf.of(ROOT, 2, 0x8)))) {
-            f.files.sources.put(700L, root(repeat(701, 7)));
+            f.files.sources.put(700L, root(repeat(701, 29)));
             f.files.sources.put(701L, group(EXT, 16384, 1, List.of(new Batch(0, 3, 0, 0))));
             try (var set = f.run()) {
                 assertEquals(1, set.models().size());
@@ -2788,9 +2790,10 @@ class WorldExteriorObjectsTest {
 
     @Test
     void indexAndRangeCapsOmitWholeRootsBeforeImagesAreRead() {
-        // Seven groups of 16,384 triangles (49,152 indices each) exceed 294,912 indices.
+        // Twenty-nine groups of 16,384 triangles (49,152 indices each) exceed the 294,912
+        // building indices and the 1,376,256 of the large allowance with the interior one.
         try (var f = new Fixture(List.of(Modf.of(710, 1, 0x8), Modf.of(ROOT, 2, 0x8)))) {
-            f.files.sources.put(710L, root(7, repeat(711, 7), List.of(new Material(0, 712, 0))));
+            f.files.sources.put(710L, root(29, repeat(711, 29), List.of(new Material(0, 712, 0))));
             f.files.sources.put(711L, group(EXT, 3, 16384, List.of(new Batch(0, 49152, 0, 0))));
             f.files.sources.put(712L, blp(4, 4, 1, 0));
             try (var set = f.run()) {
@@ -2801,13 +2804,14 @@ class WorldExteriorObjectsTest {
                 assertEquals(null, f.files.opens.get(712L), "capped root reads no image");
             }
         }
-        // Seventeen groups of 64 batches exceed 1,024 draw ranges.
+        // Twenty-five groups of 64 batches exceed the 1,024 building draw ranges and the 1,536 of
+        // the large allowance with the interior one.
         var batches = new ArrayList<Batch>();
         for (int i = 0; i < 64; i++) {
             batches.add(new Batch(i * 3, 3, 0, 0));
         }
         try (var f = new Fixture(List.of(Modf.of(720, 1, 0x8)))) {
-            f.files.sources.put(720L, root(repeat(721, 17)));
+            f.files.sources.put(720L, root(repeat(721, 25)));
             f.files.sources.put(721L, group(EXT, 3, 64, batches));
             try (var set = f.run()) {
                 assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
@@ -4076,17 +4080,20 @@ class WorldExteriorObjectsTest {
                 assertNull(f.files.opens.get(IMAGE2), "the capped cutout image is never read");
             }
         }
-        // Hostile input: three groups each with one opaque triangle and 65,535 cutout triangles,
-        // hold more candidate indices than both index budgets together; the root is capped whole
-        // instead of keeping every copy.
+        // Hostile input: eight groups each with one opaque triangle and 65,535 cutout triangles
+        // hold more candidate indices than the large allowance (with the interior one) and the
+        // cutout budget together; the root is capped whole instead of keeping every copy.
         try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
             f.files.sources.put(
                     ROOT,
                     root(
-                            3,
-                            new long[] {GROUP, GROUP + 1, GROUP + 2},
+                            8,
+                            new long[] {
+                                GROUP, GROUP + 1, GROUP + 2, GROUP + 3, GROUP + 4, GROUP + 5,
+                                GROUP + 6, GROUP + 7
+                            },
                             List.of(new Material(0, IMAGE, 0), new Material(1, IMAGE2, 0))));
-            for (int g = 0; g < 3; g++) {
+            for (int g = 0; g < 8; g++) {
                 f.files.sources.put(
                         GROUP + g,
                         group(
@@ -5254,19 +5261,20 @@ class WorldExteriorObjectsTest {
 
     @Test
     void aRootCappedMidwayWithdrawsItsReadAheadAndFetchesNoFurtherGroup() {
-        // Seven 16384-vertex groups exceed the vertex budget: the first root caps at its seventh
-        // group. A second root then keeps the operation reading, so capped hints left queued
-        // would still be fetched ahead of its groups.
+        // Sixty 16384-vertex groups exceed the building pool at the seventh group and the
+        // large allowance it falls back to (458,752 vertices with the interior one) at the
+        // twenty-ninth: the first root caps there. A second root then keeps the operation
+        // reading, so capped hints left queued would still be fetched ahead of its groups.
         var files = new SlowGroups();
         files.delay = 30;
         long second = 800;
         try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8), Modf.of(second, 2, 0x8)), files)) {
-            var capped = manyGroups(files, 20);
+            var capped = manyGroups(files, 60);
             for (long id : capped) {
                 files.sources.put(id, group(EXT, 16384, 1, List.of(new Batch(0, 3, 0, 0))));
             }
             f.files.sources.put(ROOT, root(capped));
-            var kept = new long[] {GROUP + 50, GROUP + 51, GROUP + 52, GROUP + 53};
+            var kept = new long[] {GROUP + 90, GROUP + 91, GROUP + 92, GROUP + 93};
             for (long id : kept) {
                 files.sources.put(id, group(EXT));
             }
@@ -5280,9 +5288,14 @@ class WorldExteriorObjectsTest {
             for (long id : capped) {
                 cappedOpens += files.opens(id);
             }
-            // Seven consumed, plus at most the reads already started when the cap was decided.
+            // Twenty-nine consumed (seven while sizing it for the building pool, twenty-two more
+            // from the large allowance), plus two read-ahead windows. When the root leaves the
+            // building pool at its seventh group, every read started and not yet consumed is
+            // withdrawn: at most WINDOW of groups 8 to 15, each opened again when the large
+            // allowance reads it. When it caps at its twenty-ninth, at most WINDOW reads past it
+            // have started. Each group is otherwise opened once.
             assertTrue(
-                    cappedOpens <= 7 + WorldStreamScopes.Prefetcher.WINDOW,
+                    cappedOpens <= 29 + 2 * WorldStreamScopes.Prefetcher.WINDOW,
                     "capped root groups opened: " + cappedOpens);
             for (long id : kept) {
                 assertEquals(1, files.opens(id), "kept group " + id);
@@ -5512,17 +5525,40 @@ class WorldExteriorObjectsTest {
 
     @Test
     void aPlacementInOneTileOrOneThatFitsATileIsNeverDrawnByGroup() {
-        // The same oversized root with recorded bounds inside the one tile is capped, as before.
+        // The same oversized root with recorded bounds inside the one tile is never split: over
+        // an empty tile's 98,304 building vertices, it is drawn whole from the large allowance,
+        // every group by this tile.
         var inside =
                 new Modf(BIG, 77, 0x8, 10400, 0, 4200, 0, 0, 0, 1024)
                         .bounded(10300, -10, 4150, 10500, 10, 4250);
         try (var f = new Fixture(List.of(inside))) {
             putBig(f, new int[] {EXT, EXT}, new int[] {60_000, 60_000}, new float[] {0, 200});
             try (var set = f.runOpenWorld()) {
-                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
-                assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
+                assertEquals(List.of(0, 1), groupsOf(set, BIG));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_WHOLE_LARGE));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
                 assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
                 assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_OTHER_TILE));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertPlacementsAccounted(set, 1);
+                assertEquals(120_000, set.vertices());
+            }
+        }
+        // A second placement of that root in the tile draws the same model.
+        var again =
+                new Modf(BIG, 78, 0x8, 10420, 0, 4220, 0, 0, 0, 1024)
+                        .bounded(10300, -10, 4150, 10500, 10, 4250);
+        try (var f = new Fixture(List.of(inside, again))) {
+            putBig(f, new int[] {EXT, EXT}, new int[] {60_000, 60_000}, new float[] {0, 200});
+            try (var set = f.runOpenWorld()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_WHOLE_LARGE));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
+                assertEquals(1, set.models().size());
+                assertPlacementsAccounted(set, 2);
+                assertEquals(120_000, set.vertices());
             }
         }
         // A placement across the border whose root fits an empty tile is drawn whole by every
@@ -5539,20 +5575,48 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
-    void aMultiTileRootThatFitsAnEmptyTileButNotWhatIsLeftIsCappedWhole() {
+    void aMultiTileRootThatFitsAnEmptyTileButNotWhatIsLeftIsDrawnWholeFromTheLargeAllowance() {
         // Sized alone, the 60,000-vertex border root fits an empty tile, so it is never split;
-        // a larger single-tile building admitted first leaves too little for it, and it is
-        // capped whole as without the rule.
+        // a larger single-tile building admitted first leaves too little for it, so it is drawn
+        // whole from the large allowance. The neighbour that also lists it, with nothing else,
+        // draws it whole from its building pool: both tiles decide whole from the root alone,
+        // neither draws it by group, and both draw the same groups and set doodads (the copies
+        // coincide).
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var neighbour = alsoRecordOwn(files, 8, 19, 5, List.of(largePlacement()));
         var normal = Modf.of(NORMAL, 2, 0x8).sized(5000);
-        try (var f = new Fixture(List.of(largePlacement(), normal))) {
-            putBig(f, new int[] {EXT}, new int[] {60_000}, new float[] {0});
+        try (var f = new Fixture(List.of(largePlacement(), normal), files)) {
+            putModel(f, MODEL, model());
+            putBig(
+                    f,
+                    new int[] {EXT, EXT},
+                    new int[] {30_000, 30_000},
+                    new float[] {0, 200},
+                    doodadChunks(new int[][] {{0, 2}}, new long[] {MODEL}, standing(0, 200)));
             f.files.sources.put(NORMAL + 1, bigGroup(EXT, 50_000));
             f.files.sources.put(NORMAL, root(NORMAL + 1));
-            try (var set = f.runOpenWorld()) {
+            try (var set = f.runOpenWorld();
+                    var there = openWorldOn(f, neighbour)) {
                 assertEquals(List.of(0), groupsOf(set, NORMAL));
-                assertEquals(List.of(), groupsOf(set, BIG));
-                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                assertEquals(List.of(0, 1), groupsOf(set, BIG));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_WHOLE_LARGE));
                 assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_OTHER_TILE));
+                assertPlacementsAccounted(set, 2);
+                assertEquals(List.of(0, 1), groupsOf(there, BIG));
+                assertEquals(0, there.count(WorldExteriorObjects.Count.ROOT_WHOLE_LARGE));
+                assertEquals(0, there.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
+                assertEquals(1, there.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
+                var bigHere = new java.util.TreeSet<String>();
+                for (var key : drawnGroupKeys(set)) {
+                    if (key.startsWith("77:")) {
+                        bigHere.add(key);
+                    }
+                }
+                assertEquals(drawnGroupKeys(there), bigHere);
+                assertEquals(2, setDoodadKeys(there).size());
+                assertEquals(setDoodadKeys(there), setDoodadKeys(set));
             }
         }
     }
@@ -5573,14 +5637,17 @@ class WorldExteriorObjectsTest {
                 assertEquals(150_000, set.vertices());
             }
         }
-        // A share over the large allowance (three owned groups, 150,000 vertices) caps only the
-        // large placement on this tile; the tile's building is drawn as before.
+        // A share over the large allowance with the interior one (eight owned groups, 480,000
+        // vertices of 458,752) caps only the large placement on this tile; the tile's building
+        // is drawn as before.
         try (var f = new Fixture(List.of(largePlacement(), normal))) {
             putBig(
                     f,
-                    new int[] {EXT, EXT, EXT, EXT},
-                    new int[] {50_000, 60_000, 50_000, 50_000},
-                    new float[] {0, 200, 10, 20});
+                    new int[] {EXT, EXT, EXT, EXT, EXT, EXT, EXT, EXT, EXT},
+                    new int[] {
+                        60_000, 60_000, 60_000, 60_000, 60_000, 60_000, 60_000, 60_000, 60_000
+                    },
+                    new float[] {0, 200, 10, 20, 30, 40, 50, 60, 65});
             f.files.sources.put(NORMAL + 1, bigGroup(EXT, 45_000));
             f.files.sources.put(NORMAL, root(NORMAL + 1, NORMAL + 1));
             try (var set = f.runOpenWorld()) {
@@ -5590,6 +5657,308 @@ class WorldExteriorObjectsTest {
                 assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
                 assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
                 assertPlacementsAccounted(set, 2);
+            }
+        }
+    }
+
+    @Test
+    void aSplitShareOverTheLargeAllowanceAloneDrawsFromThePooledAllowance() {
+        // The share here (exteriors 0, 2 and 3, 150,000 vertices) is over the 131,072 large
+        // vertices alone, but within the large and interior allowances together (458,752): it is
+        // drawn, its exteriors admitted against both.
+        assertTrue(150_000 > WorldExteriorObjects.MAX_LARGE_VERTICES);
+        try (var f = new Fixture(List.of(largePlacement()))) {
+            putBig(
+                    f,
+                    new int[] {EXT, EXT, EXT, EXT},
+                    new int[] {50_000, 60_000, 50_000, 50_000},
+                    new float[] {0, 200, 10, 20});
+            try (var set = f.runOpenWorld()) {
+                assertEquals(List.of(0, 2, 3), groupsOf(set, BIG));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_CAPPED));
+                assertEquals(150_000, set.vertices());
+            }
+        }
+    }
+
+    @Test
+    void aRootDrawnWholeFromTheLargeAllowanceOnlyTakesWhatSplitExteriorsLeft() {
+        // A single-tile root of two 60,000-vertex groups is over an empty tile's 98,304 building
+        // vertices, so it falls back to the large allowance. It is admitted first on the tile
+        // (larger recorded bounds), yet the split root's exteriors here come first from the
+        // allowance: with six of them (360,000 vertices) the fallback no longer fits (480,000 of
+        // 458,752) and is capped whole; with five (300,000) both draw.
+        var tall =
+                new Modf(NORMAL, 78, 0x8, 10400, 0, 4200, 0, 0, 0, 1024)
+                        .bounded(10300, -600, 4150, 10500, 600, 4250);
+        for (int here : new int[] {6, 5}) {
+            try (var f = new Fixture(List.of(largePlacement(), tall))) {
+                int[] flags = new int[here + 1];
+                int[] sizes = new int[here + 1];
+                float[] centres = new float[here + 1];
+                for (int g = 0; g <= here; g++) {
+                    flags[g] = EXT;
+                    sizes[g] = 60_000;
+                    centres[g] = g < here ? g : 200;
+                }
+                putBig(f, flags, sizes, centres);
+                putRoot(
+                        f,
+                        NORMAL,
+                        new int[] {EXT, EXT},
+                        new int[] {60_000, 60_000},
+                        new float[] {0, 1});
+                try (var set = f.runOpenWorld()) {
+                    var owned = new ArrayList<Integer>();
+                    for (int g = 0; g < here; g++) {
+                        owned.add(g);
+                    }
+                    assertEquals(owned, groupsOf(set, BIG));
+                    assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
+                    if (here == 6) {
+                        assertEquals(List.of(), groupsOf(set, NORMAL));
+                        assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                        assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_WHOLE_LARGE));
+                        assertEquals(here * 60_000, set.vertices());
+                    } else {
+                        assertEquals(List.of(0, 1), groupsOf(set, NORMAL));
+                        assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                        assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_WHOLE_LARGE));
+                        assertEquals(here * 60_000 + 120_000, set.vertices());
+                    }
+                    assertPlacementsAccounted(set, 2);
+                }
+            }
+        }
+    }
+
+    /** Files whose WDT records tile ({@code x}, {@code y}) with its own obj0, file {@code obj0}. */
+    private static WorldFormats.Tile alsoRecordOwn(
+            WorldTerrainTextureSourceTest.Files files,
+            int x,
+            int y,
+            long obj0,
+            List<Modf> records) {
+        var wdt = ByteBuffer.wrap(files.sources.get(1L)).order(ByteOrder.LITTLE_ENDIAN);
+        int ordinal = x * 64 + y;
+        wdt.putInt(12 + 40 + 8 + ordinal * 8, 1);
+        int at = 12 + 40 + 8 + 32768 + 8 + ordinal * 32;
+        wdt.putInt(at, 2).putInt(at + 4, (int) obj0).putInt(at + 12, 3);
+        files.sources.put(obj0, obj0(records, 0));
+        return new WorldFormats.Tile(x, y, 2, 0, 0, (int) obj0, 0, 3, 0, 0);
+    }
+
+    /** Every drawn (building unique ID, LOD0 group) pair of a tile. */
+    private static java.util.Set<String> drawnGroupKeys(WorldExteriorObjects.TileObjects set) {
+        var keys = new java.util.TreeSet<String>();
+        for (var p : set.placements()) {
+            if (p.kind() == WorldExteriorObjects.Kind.BUILDING && p.model() >= 0) {
+                for (var mesh : set.models().get(p.model()).meshes()) {
+                    keys.add(p.uniqueId() + ":" + mesh.groupOrdinal());
+                }
+            }
+        }
+        return keys;
+    }
+
+    /** Every drawn set doodad of a tile, by building unique ID, doodad set and MODD ordinal. */
+    private static java.util.Set<String> setDoodadKeys(WorldExteriorObjects.TileObjects set) {
+        var keys = new java.util.TreeSet<String>();
+        for (var p : set.placements()) {
+            if (p.kind() == WorldExteriorObjects.Kind.SET_DOODAD) {
+                keys.add(p.uniqueId() + ":" + p.doodadSet() + ":" + p.ordinal());
+            }
+        }
+        return keys;
+    }
+
+    @Test
+    void aRootDrawnWholeHereNeverDrawsAPlacementANeighbourSplits() {
+        // Root BIG (two 60,000-vertex groups) is over an empty tile's building pool. On 7,19 its
+        // placement A lies in the tile and decides first (larger recorded bounds): drawn whole
+        // from the large allowance. Its placement B crosses into 8,19, where it decides alone and
+        // is split, 8,19 drawing group 1 and the doodad standing there. 7,19 must not draw B
+        // whole as a further placement of A's root, or B's group 1 and that doodad would be drawn
+        // on both tiles; it is capped there, as before.
+        var inTile =
+                new Modf(BIG, 79, 0x8, 10400, 0, 4150, 0, 0, 0, 1024)
+                        .bounded(10300, -600, 4120, 10500, 600, 4180);
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var neighbour = alsoRecordOwn(files, 8, 19, 5, List.of(largePlacement()));
+        try (var f = new Fixture(List.of(inTile, largePlacement()), files)) {
+            putModel(f, MODEL, model());
+            putBig(
+                    f,
+                    new int[] {EXT, EXT},
+                    new int[] {60_000, 60_000},
+                    new float[] {0, 200},
+                    doodadChunks(new int[][] {{0, 2}}, new long[] {MODEL}, standing(0, 200)));
+            try (var here = f.runOpenWorld();
+                    var there = openWorldOn(f, neighbour)) {
+                assertEquals(List.of(0, 1), groupsOf(here, BIG));
+                assertEquals(1, here.count(WorldExteriorObjects.Count.ROOT_WHOLE_LARGE));
+                assertEquals(1, here.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
+                assertEquals(List.of(1), groupsOf(there, BIG));
+                assertEquals(1, there.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
+                var groups = new java.util.TreeSet<>(drawnGroupKeys(here));
+                groups.retainAll(drawnGroupKeys(there));
+                assertEquals(java.util.Set.of(), groups, "no group drawn on both tiles");
+                var doodads = new java.util.TreeSet<>(setDoodadKeys(here));
+                doodads.retainAll(setDoodadKeys(there));
+                assertEquals(java.util.Set.of(), doodads, "no set doodad placed on both tiles");
+                assertTrue(drawnGroupKeys(here).stream().allMatch(k -> k.startsWith("79:")));
+                assertEquals(2, setDoodadKeys(here).size());
+                assertEquals(1, setDoodadKeys(there).size());
+            }
+        }
+    }
+
+    @Test
+    void aFallbacksExteriorsComeBeforeSplitInteriorsAndSplitInteriorsBeforeItsInteriors() {
+        // Split root BIG: four 60,000-vertex exteriors here (240,000) and a 60,000-vertex interior
+        // here. Fallback root NORMAL, in this tile: two 60,000-vertex exteriors (over the building
+        // pool), a 50,000-vertex interior and a 3-vertex one. Of the 458,752 pooled vertices the
+        // exteriors take 360,000, BIG's interior 60,000 (420,000), and NORMAL's 50,000-vertex
+        // interior no longer fits; its 3-vertex one does. Had the interiors come first NORMAL's
+        // exteriors would not have fit; had NORMAL's interiors come before BIG's, BIG's would not.
+        var inTile =
+                new Modf(NORMAL, 79, 0x8, 10400, 0, 4150, 0, 0, 0, 1024)
+                        .bounded(10300, -10, 4120, 10500, 10, 4180);
+        try (var f = new Fixture(List.of(largePlacement(), inTile))) {
+            putRoot(
+                    f,
+                    BIG,
+                    new int[] {EXT, EXT, ROOM, ROOM, EXT, EXT, EXT},
+                    new int[] {60_000, 60_000, 60_000, 3, 60_000, 60_000, 60_000},
+                    new float[] {0, 200, 5, 205, 1, 2, 3},
+                    splitPortals());
+            putRoot(
+                    f,
+                    NORMAL,
+                    new int[] {EXT, EXT, ROOM, ROOM},
+                    new int[] {60_000, 60_000, 50_000, 3},
+                    new float[] {0, 1, 5, 6},
+                    splitPortals());
+            try (var set = f.runOpenWorld()) {
+                assertEquals(List.of(0, 2, 4, 5, 6), groupsOf(set, BIG));
+                assertEquals(List.of(0, 1, 3), groupsOf(set, NORMAL));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_WHOLE_LARGE));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+            }
+        }
+    }
+
+    @Test
+    void aCappedFallbackPlacesNoSetDoodadAndCapsItsFurtherPlacements() {
+        // Nine 60,000-vertex groups in one tile are over the building pool and the pooled large
+        // allowance: the root is capped whole, its two placements capped, and none of its set
+        // doodads is placed without it.
+        var a =
+                new Modf(BIG, 79, 0x8, 10400, 0, 4150, 0, 0, 0, 1024)
+                        .bounded(10300, -10, 4120, 10500, 10, 4180);
+        var b =
+                new Modf(BIG, 80, 0x8, 10420, 0, 4160, 0, 0, 0, 1024)
+                        .bounded(10300, -10, 4120, 10500, 10, 4180);
+        try (var f = new Fixture(List.of(a, b))) {
+            putModel(f, MODEL, model());
+            putBig(
+                    f,
+                    new int[] {EXT, EXT, EXT, EXT, EXT, EXT, EXT, EXT, EXT},
+                    new int[] {
+                        60_000, 60_000, 60_000, 60_000, 60_000, 60_000, 60_000, 60_000, 60_000
+                    },
+                    new float[] {0, 1, 2, 3, 4, 5, 6, 7, 8},
+                    doodadChunks(new int[][] {{0, 2}}, new long[] {MODEL}, standing(0, 1)));
+            try (var set = f.runOpenWorld()) {
+                assertEquals(List.of(), groupsOf(set, BIG));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.SET_DOODAD_DRAWN));
+                assertEquals(java.util.Set.of(), setDoodadKeys(set));
+                assertPlacementsAccounted(set, 2);
+            }
+        }
+        // With the tile's 64 building slots full once the root is drawn, its further placement
+        // is capped.
+        var records = new ArrayList<Modf>();
+        records.add(a);
+        records.add(b);
+        for (int i = 0; i < 63; i++) {
+            records.add(Modf.of(ROOT, 100 + i, 0x8));
+        }
+        try (var f = new Fixture(records)) {
+            putBig(f, new int[] {EXT, EXT}, new int[] {60_000, 60_000}, new float[] {0, 1});
+            try (var set = f.runOpenWorld()) {
+                assertEquals(List.of(0, 1), groupsOf(set, BIG));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_WHOLE_LARGE));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
+                assertEquals(
+                        1,
+                        set.placements().stream()
+                                .filter(
+                                        p ->
+                                                p.kind() == WorldExteriorObjects.Kind.BUILDING
+                                                        && p.rootId() == BIG)
+                                .count());
+                assertPlacementsAccounted(set, records.size());
+            }
+        }
+    }
+
+    @Test
+    void aFallbacksSetDoodadsAreTiedToItsDrawnInteriors() {
+        // The split root with portals, placed in one tile: over the building pool, it is drawn
+        // whole from the large allowance, every interior with it, and the doodad inside interior
+        // 2 that only interior 2 lists is tied to that group (#649).
+        var inTile =
+                new Modf(BIG, 79, 0x8, 10400, 0, 4150, 0, 0, 0, 1024)
+                        .bounded(10300, -10, 4120, 10500, 10, 4180);
+        try (var f = new Fixture(List.of(inTile))) {
+            putModel(f, MODEL, model());
+            putSplitWithPortals(
+                    f, doodadChunks(new int[][] {{0, 2}}, new long[] {MODEL}, standing(5, -50)));
+            f.files.sources.put(BIG + 3, withDoodadRefs(bigGroup(ROOM, 3), 0));
+            try (var set = f.runOpenWorld()) {
+                assertEquals(List.of(0, 1, 2, 3, 4), groupsOf(set, BIG));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_WHOLE_LARGE));
+                assertNotNull(modelOf(set, BIG).portals());
+                assertEquals(Map.of(0, 2, 1, -1), portalGroups(set));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.SET_DOODAD_IN_GROUP));
+            }
+        }
+    }
+
+    @Test
+    void onInstanceMapsAFallbacksInteriorsNeedItsPortalSet() {
+        // On an instance map a single-tile root over the building pool is drawn whole from the
+        // large allowance too, as roots drawn by group: its interiors draw with the root's portal
+        // set, and without one they are left out (GROUP_INTERIOR_NO_PORTALS) rather than drawn
+        // unculled from the allowance.
+        var inTile =
+                new Modf(BIG, 79, 0x8, 10400, 0, 4150, 0, 0, 0, 1024)
+                        .bounded(10300, -10, 4120, 10500, 10, 4180);
+        try (var f = new Fixture(List.of(inTile))) {
+            putSplitWithPortals(f);
+            try (var set = f.runInstance()) {
+                assertEquals(List.of(0, 1, 2, 3, 4), groupsOf(set, BIG));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_WHOLE_LARGE));
+                assertNotNull(modelOf(set, BIG).portals());
+            }
+        }
+        try (var f = new Fixture(List.of(inTile))) {
+            putBig(
+                    f,
+                    new int[] {EXT, EXT, ROOM},
+                    new int[] {60_000, 60_000, 3},
+                    new float[] {0, 1, 5});
+            try (var set = f.runInstance()) {
+                assertEquals(List.of(0, 1), groupsOf(set, BIG));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_WHOLE_LARGE));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_NO_PORTALS));
             }
         }
     }
@@ -5769,9 +6138,11 @@ class WorldExteriorObjectsTest {
             putModel(f, MODEL, model());
             putBig(
                     f,
-                    new int[] {EXT, EXT, EXT, EXT},
-                    new int[] {50_000, 60_000, 50_000, 50_000},
-                    new float[] {0, 200, 10, 20},
+                    new int[] {EXT, EXT, EXT, EXT, EXT, EXT, EXT, EXT, EXT},
+                    new int[] {
+                        60_000, 60_000, 60_000, 60_000, 60_000, 60_000, 60_000, 60_000, 60_000
+                    },
+                    new float[] {0, 200, 10, 20, 30, 40, 50, 60, 65},
                     doodadChunks(new int[][] {{0, 2}}, new long[] {MODEL}, defs));
             try (var set = f.runOpenWorld()) {
                 assertEquals(List.of(), groupsOf(set, BIG));
@@ -6197,11 +6568,10 @@ class WorldExteriorObjectsTest {
 
     @Test
     void splitRootInteriorsComeFromWhatItsExteriorsLeftAndTheInteriorAllowance() {
-        // Here the exteriors take 120,000 of the 131,072 large vertices. The interiors have what
-        // they left plus the interior allowance: 11,072 + 327,680 = 338,752 vertices. Interiors 2
-        // to 6 (60,000 each, 300,000) draw, far past what the large allowance alone left;
-        // interior 7 (another 60,000) no longer fits and is capped, but interior 8 after it (3
-        // vertices) still fits and draws.
+        // Here the exteriors take 120,000 of the 458,752 vertices of the large and interior
+        // allowances together. The interiors have what they left: 338,752 vertices. Interiors 2
+        // to 6 (60,000 each, 300,000) draw; interior 7 (another 60,000) no longer fits and is
+        // capped, but interior 8 after it (3 vertices) still fits and draws.
         int left = WorldExteriorObjects.MAX_LARGE_VERTICES - 120_000;
         assertTrue(5 * 60_000 <= left + WorldExteriorObjects.MAX_LARGE_INTERIOR_VERTICES);
         assertTrue(6 * 60_000 > left + WorldExteriorObjects.MAX_LARGE_INTERIOR_VERTICES);
@@ -6253,23 +6623,31 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
-    void splitRootInteriorsHaveTheirOwnImageSlotsExteriorsNeverUse() {
-        // Exteriors 0 and 4 here name 65 distinct images: 64 fill the large image slots and the
-        // 65th (on exterior 4) is capped, though the interior slots are still free. Interiors 2
-        // and 5 here name 65 others: 64 draw from the interior slots and the 65th (on interior 5)
-        // is capped. A group holds at most 64 batches, so each 65th image is on a second group,
-        // beside an image already registered.
-        int slots = WorldExteriorObjects.MAX_LARGE_IMAGES;
-        assertEquals(slots, WorldExteriorObjects.MAX_LARGE_INTERIOR_IMAGES);
+    void splitRootImagesShareTheLargeAndInteriorSlotsExteriorsFirst() {
+        // The large and interior image slots are one pool (64 + 96). Exteriors 0 and 4 here name
+        // 100 distinct images, past the 64 large slots alone, and all draw. Interiors 2 and 5
+        // name 61 others after them: 60 fill the pool and the 61st (on interior 5) is capped. A
+        // group holds at most 64 batches, so the last image is on a second group, beside an image
+        // already registered.
+        int slots =
+                WorldExteriorObjects.MAX_LARGE_IMAGES
+                        + WorldExteriorObjects.MAX_LARGE_INTERIOR_IMAGES;
+        assertEquals(160, slots);
         var materials = new ArrayList<Material>();
-        var outside = new ArrayList<Batch>();
-        var inside = new ArrayList<Batch>();
-        for (int i = 0; i < 2 * (slots + 1); i++) {
+        for (int i = 0; i <= slots; i++) {
             materials.add(new Material(0, 3000 + i, 0));
         }
-        for (int i = 0; i < slots; i++) {
+        var outside = new ArrayList<Batch>();
+        var outsideMore = new ArrayList<Batch>();
+        var inside = new ArrayList<Batch>();
+        for (int i = 0; i < 64; i++) {
             outside.add(new Batch(3 * i, 3, 0, i));
-            inside.add(new Batch(3 * i, 3, 0, slots + 1 + i));
+        }
+        for (int i = 0; i < 36; i++) {
+            outsideMore.add(new Batch(3 * i, 3, 0, 64 + i));
+        }
+        for (int i = 0; i < 60; i++) {
+            inside.add(new Batch(3 * i, 3, 0, 100 + i));
         }
         int[] flags = {EXT, EXT, ROOM, ROOM, EXT, ROOM};
         try (var f = new Fixture(List.of(largePlacement()))) {
@@ -6280,22 +6658,14 @@ class WorldExteriorObjectsTest {
             for (int g = 0; g < flags.length; g++) {
                 gfid[g] = BIG + 1 + g;
             }
-            f.files.sources.put(gfid[0], group(EXT, 60_000, slots, outside));
+            f.files.sources.put(gfid[0], group(EXT, 60_000, 64, outside));
             f.files.sources.put(gfid[1], bigGroup(EXT, 60_000));
-            f.files.sources.put(gfid[2], group(ROOM, 3, slots, inside));
+            f.files.sources.put(gfid[2], group(ROOM, 3, 60, inside));
             f.files.sources.put(gfid[3], bigGroup(ROOM, 3));
-            f.files.sources.put(
-                    gfid[4],
-                    group(EXT, 3, 2, List.of(new Batch(0, 3, 0, 0), new Batch(3, 3, 0, slots))));
+            f.files.sources.put(gfid[4], group(EXT, 3, 36, outsideMore));
             f.files.sources.put(
                     gfid[5],
-                    group(
-                            ROOM,
-                            3,
-                            2,
-                            List.of(
-                                    new Batch(0, 3, 0, slots + 1),
-                                    new Batch(3, 3, 0, 2 * slots + 1))));
+                    group(ROOM, 3, 2, List.of(new Batch(0, 3, 0, 100), new Batch(3, 3, 0, slots))));
             f.files.sources.put(
                     BIG,
                     root(
@@ -6306,9 +6676,9 @@ class WorldExteriorObjectsTest {
                             splitPortals()));
             try (var set = f.runOpenWorld()) {
                 assertEquals(List.of(0, 2, 4, 5), groupsOf(set, BIG));
-                assertEquals(2, set.count(WorldExteriorObjects.Count.IMAGE_CAPPED));
-                assertEquals(2, set.count(WorldExteriorObjects.Count.BATCH_IMAGE_CAPPED));
-                assertEquals(2 * slots, set.images().size());
+                assertEquals(1, set.count(WorldExteriorObjects.Count.IMAGE_CAPPED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.BATCH_IMAGE_CAPPED));
+                assertEquals(slots, set.images().size());
                 assertNotNull(modelOf(set, BIG).portals());
             }
         }
@@ -6316,12 +6686,12 @@ class WorldExteriorObjectsTest {
 
     @Test
     void oneSplitRootsInteriorsNeverPushOutAnothersExteriors() {
-        // Two split roots on one tile. The first (larger) has a 60,000-vertex exterior and a
-        // 50,000-vertex interior here; the second a 60,000-vertex exterior here. Every exterior
-        // comes first, from the large allowance alone: both exteriors draw (120,000 of 131,072).
-        // Had the first root's interior come before the second root's exterior, that exterior
-        // would no longer have fit the large allowance. The interior then draws from what is
-        // left and the interior allowance.
+        // Two split roots on one tile. The first (larger) has four 60,000-vertex exteriors and a
+        // 50,000-vertex interior here; the second three 60,000-vertex exteriors here. Every
+        // exterior comes first: both roots' exteriors draw (420,000 of the 458,752 vertices of
+        // the large and interior allowances together). Had the first root's interior come before
+        // the second root's exteriors, those would no longer have fit (470,000). The interior
+        // then takes what is left, too little here, and is capped.
         long second = 970;
         var smaller =
                 new Modf(second, 78, 0x8, 10400, 0, 4200, 0, 0, 0, 1024)
@@ -6330,21 +6700,21 @@ class WorldExteriorObjectsTest {
             putRoot(
                     f,
                     BIG,
-                    new int[] {EXT, EXT, ROOM, ROOM},
-                    new int[] {60_000, 60_000, 50_000, 3},
-                    new float[] {0, 200, 5, 205},
+                    new int[] {EXT, EXT, ROOM, ROOM, EXT, EXT, EXT},
+                    new int[] {60_000, 60_000, 50_000, 3, 60_000, 60_000, 60_000},
+                    new float[] {0, 200, 5, 205, 1, 2, 3},
                     splitPortals());
             putRoot(
                     f,
                     second,
-                    new int[] {EXT, EXT},
-                    new int[] {60_000, 60_000},
-                    new float[] {0, 200});
+                    new int[] {EXT, EXT, EXT, EXT},
+                    new int[] {60_000, 60_000, 60_000, 60_000},
+                    new float[] {0, 200, 1, 2});
             try (var set = f.runOpenWorld()) {
-                assertEquals(List.of(0, 2), groupsOf(set, BIG));
-                assertEquals(List.of(0), groupsOf(set, second));
+                assertEquals(List.of(0, 4, 5, 6), groupsOf(set, BIG));
+                assertEquals(List.of(0, 2, 3), groupsOf(set, second));
                 assertEquals(2, set.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
-                assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
                 assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_CAPPED));
                 assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
             }
@@ -6752,33 +7122,34 @@ class WorldExteriorObjectsTest {
 
     @Test
     void aCappedSplitRootStillCountsEveryGroupOnce() {
-        // Here the root's share (exteriors 0, 4 and 5, 150,000 vertices) is over the large
-        // allowance, so it is capped: exteriors never draw from the interior allowance. Its groups
-        // still land in one bucket each: its exteriors
-        // GROUP_CAPPED, its interior 2 GROUP_INTERIOR_CAPPED, and the neighbour's two other-tile,
-        // as on 8,19, which draws exterior 1 and interior 3.
+        // Here the root's share (exteriors 0 and 4 to 10, 480,000 vertices) is over the large and
+        // interior allowances together (458,752), so it is capped. Its groups still land in one
+        // bucket each: its exteriors GROUP_CAPPED, its interior 2 GROUP_INTERIOR_CAPPED, and the
+        // neighbour's two other-tile, as on 8,19, which draws exterior 1 and interior 3.
         var files = new WorldTerrainTextureSourceTest.Files();
         var neighbour = alsoRecord(files, 8, 19);
         try (var f = new Fixture(List.of(largePlacement()), files)) {
             putRoot(
                     f,
                     BIG,
-                    new int[] {EXT, EXT, ROOM, ROOM, EXT, EXT},
-                    new int[] {50_000, 60_000, 3, 3, 50_000, 50_000},
-                    new float[] {0, 200, 5, 205, 10, 20},
+                    new int[] {EXT, EXT, ROOM, ROOM, EXT, EXT, EXT, EXT, EXT, EXT, EXT},
+                    new int[] {
+                        60_000, 60_000, 3, 3, 60_000, 60_000, 60_000, 60_000, 60_000, 60_000, 60_000
+                    },
+                    new float[] {0, 200, 5, 205, 10, 20, 30, 40, 50, 60, 65},
                     splitPortals());
             try (var here = f.runOpenWorld();
                     var there = openWorldOn(f, neighbour)) {
                 assertEquals(List.of(), groupsOf(here, BIG));
                 assertEquals(1, here.count(WorldExteriorObjects.Count.ROOT_CAPPED));
                 assertEquals(1, here.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
-                assertEquals(3, here.count(WorldExteriorObjects.Count.GROUP_CAPPED));
+                assertEquals(8, here.count(WorldExteriorObjects.Count.GROUP_CAPPED));
                 assertEquals(1, here.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
                 assertEquals(2, here.count(WorldExteriorObjects.Count.GROUP_OTHER_TILE));
-                assertEquals(6, groupOutcomes(here));
+                assertEquals(11, groupOutcomes(here));
                 assertEquals(List.of(1, 3), groupsOf(there, BIG));
-                assertEquals(4, there.count(WorldExteriorObjects.Count.GROUP_OTHER_TILE));
-                assertEquals(6, groupOutcomes(there));
+                assertEquals(9, there.count(WorldExteriorObjects.Count.GROUP_OTHER_TILE));
+                assertEquals(11, groupOutcomes(there));
             }
         }
         // Capped before any read, with every building slot taken by the tile's own 64.

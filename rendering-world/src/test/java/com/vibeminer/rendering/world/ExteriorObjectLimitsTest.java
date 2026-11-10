@@ -23,7 +23,7 @@ class ExteriorObjectLimitsTest {
         assertEquals(589_824 + 393_216 + 983_040, ExteriorObjectLimits.INDICES);
         // #308: 64 building + 4,096 doodad placements, two draws a doodad.
         assertEquals(64 + 4096, ExteriorObjectLimits.PLACEMENTS);
-        assertEquals(64 + 64 + 64 + 32 + 320 + 80, ExteriorObjectLimits.IMAGES);
+        assertEquals(64 + 64 + 96 + 32 + 320 + 80, ExteriorObjectLimits.IMAGES);
         assertEquals(8192, ExteriorObjectLimits.DRAWS);
     }
 }
