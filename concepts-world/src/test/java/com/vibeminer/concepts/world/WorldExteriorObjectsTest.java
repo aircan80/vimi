@@ -5841,9 +5841,82 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
+    void aRootDrawnWholeByAnInTilePlacementNeverDrawsAPlacementANeighbourSplits() {
+        // Root BIG: two 3-vertex exteriors (local x 0 here, 200 there) and two 60,000-vertex MOGI
+        // interiors (5 here, 205 there). Its exteriors fit any tile, but with its interiors it is
+        // over an empty tile's 98,304 building vertices, so the owner rule splits it (#652). On
+        // 7,19 its placement A lies in the tile and decides first: drawn whole from the pool. Its
+        // placement C crosses into 8,19, which decides C alone and splits it, drawing exterior 1,
+        // interior 3 and the doodad standing there. 7,19 must not also draw C whole, or those
+        // would be drawn on both tiles; it is capped there.
+        var inTile =
+                new Modf(BIG, 79, 0x8, 10400, 0, 4150, 0, 0, 0, 1024)
+                        .bounded(10300, -600, 4120, 10500, 600, 4180);
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var neighbour = alsoRecordOwn(files, 8, 19, 5, List.of(largePlacement()));
+        try (var f = new Fixture(List.of(inTile, largePlacement()), files)) {
+            putModel(f, MODEL, model());
+            putRoot(
+                    f,
+                    BIG,
+                    new int[] {EXT, EXT, ROOM, ROOM},
+                    new int[] {3, 3, 60_000, 60_000},
+                    new float[] {0, 200, 5, 205},
+                    splitPortals(),
+                    doodadChunks(new int[][] {{0, 2}}, new long[] {MODEL}, standing(0, 200)));
+            try (var here = f.runOpenWorld();
+                    var there = openWorldOn(f, neighbour)) {
+                assertEquals(1, here.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
+                assertTrue(drawnGroupKeys(here).stream().allMatch(k -> k.startsWith("79:")));
+                assertEquals(1, there.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
+                assertEquals(List.of(1, 3), groupsOf(there, BIG));
+                var groups = new java.util.TreeSet<>(drawnGroupKeys(here));
+                groups.retainAll(drawnGroupKeys(there));
+                assertEquals(java.util.Set.of(), groups, "no group drawn on both tiles");
+                var doodads = new java.util.TreeSet<>(setDoodadKeys(here));
+                doodads.retainAll(setDoodadKeys(there));
+                assertEquals(java.util.Set.of(), doodads, "no set doodad placed on both tiles");
+                assertEquals(1, setDoodadKeys(there).size());
+            }
+        }
+    }
+
+    @Test
     void aFallbacksExteriorsComeBeforeSplitInteriorsAndSplitInteriorsBeforeItsInteriors() {
-        // Split root BIG: four 60,000-vertex exteriors here (240,000) and a 60,000-vertex interior
-        // here. Fallback root NORMAL, in this tile: two 60,000-vertex exteriors (over the building
+        // First, BIG has five 60,000-vertex exteriors here: with NORMAL's the exteriors take
+        // 420,000 of the 458,752 pooled vertices, so BIG's 60,000-vertex interior and NORMAL's
+        // 50,000-vertex one no longer fit (NORMAL's 3-vertex one does). Had split interiors come
+        // before fallback exteriors, BIG's interior would have drawn (360,000) and NORMAL's
+        // exteriors would not have fit (480,000).
+        var first =
+                new Modf(NORMAL, 79, 0x8, 10400, 0, 4150, 0, 0, 0, 1024)
+                        .bounded(10300, -10, 4120, 10500, 10, 4180);
+        try (var f = new Fixture(List.of(largePlacement(), first))) {
+            putRoot(
+                    f,
+                    BIG,
+                    new int[] {EXT, EXT, ROOM, ROOM, EXT, EXT, EXT, EXT},
+                    new int[] {60_000, 60_000, 60_000, 3, 60_000, 60_000, 60_000, 60_000},
+                    new float[] {0, 200, 5, 205, 1, 2, 3, 4},
+                    splitPortals());
+            putRoot(
+                    f,
+                    NORMAL,
+                    new int[] {EXT, EXT, ROOM, ROOM},
+                    new int[] {60_000, 60_000, 50_000, 3},
+                    new float[] {0, 1, 5, 6},
+                    splitPortals());
+            try (var set = f.runOpenWorld()) {
+                assertEquals(List.of(0, 1, 3), groupsOf(set, NORMAL));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_WHOLE_LARGE));
+                assertEquals(List.of(0, 4, 5, 6, 7), groupsOf(set, BIG));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+            }
+        }
+        // Then: split root BIG: four 60,000-vertex exteriors here (240,000) and a 60,000-vertex
+        // interior here. Fallback root NORMAL, in this tile: two 60,000-vertex exteriors (over the
+        // building
         // pool), a 50,000-vertex interior and a 3-vertex one. Of the 458,752 pooled vertices the
         // exteriors take 360,000, BIG's interior 60,000 (420,000), and NORMAL's 50,000-vertex
         // interior no longer fits; its 3-vertex one does. Had the interiors come first NORMAL's

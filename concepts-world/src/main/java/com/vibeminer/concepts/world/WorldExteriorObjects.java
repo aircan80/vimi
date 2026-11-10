@@ -1622,6 +1622,9 @@ public final class WorldExteriorObjects {
                 Rotation rotation,
                 int tileX,
                 int tileY) {
+            if (!crosses(record)) {
+                return null;
+            }
             double c = 51200.0 / 3.0;
             // Recorded bounds are raw ADT axes, as the position: native x from raw z, y from x.
             double lowX = c - (double) record.upperBounds().z();
@@ -1645,6 +1648,19 @@ public final class WorldExteriorObjects {
                     rotation,
                     (lowX + highX) / 2,
                     (lowY + highY) / 2);
+        }
+
+        /** Whether a placement's recorded bounds cross a tile border (the owner rule applies). */
+        static boolean crosses(WorldPlacements.WorldObject record) {
+            double c = 51200.0 / 3.0;
+            double lowX = c - (double) record.upperBounds().z();
+            double highX = c - (double) record.lowerBounds().z();
+            double lowY = c - (double) record.upperBounds().x();
+            double highY = c - (double) record.lowerBounds().x();
+            if (!finite(lowX, highX, lowY) || !Double.isFinite(highY)) {
+                return false;
+            }
+            return tile(highX) != tile(lowX) || tile(highY) != tile(lowY);
         }
 
         /** The filename tile index on one native axis, the camera's rule, within the map. */
@@ -1924,6 +1940,17 @@ public final class WorldExteriorObjects {
 
         /** The one placement each root drawn by group is placed for, in admission order. */
         private final Map<Long, Queued> byGroupQueue = new LinkedHashMap<>();
+
+        /** Roots with a border-crossing placement on this tile (the owner rule applies to it). */
+        private final java.util.Set<Long> crossingRoots = new java.util.HashSet<>();
+
+        /**
+         * Roots drawn whole here, decided by a placement inside the tile, that the owner rule would
+         * draw by group when sized alone with their interiors ({@link #splitsAlone}): their
+         * border-crossing placements are not drawn here, since a neighbour deciding one of them
+         * splits it.
+         */
+        private final java.util.Set<Long> splitsAlone = new java.util.HashSet<>();
 
         /** Roots drawn whole from the large allowance ({@link Owner#whole}), by root. */
         private final Map<Long, Owner> wholeOwners = new HashMap<>();
@@ -2337,6 +2364,11 @@ public final class WorldExteriorObjects {
             }
             // Larger buildings are admitted first, so caps and image budgets never favour a small
             // building only because obj0 records it earlier. Equal sizes keep obj0 order.
+            for (var record : records) {
+                if (Owner.crosses(record)) {
+                    crossingRoots.add(record.reference().value());
+                }
+            }
             var ordered = new ArrayList<>(records);
             ordered.sort(
                     java.util.Comparator.comparingDouble(
@@ -2433,7 +2465,16 @@ public final class WorldExteriorObjects {
                             count(Count.PLACEMENT_CAPPED);
                         }
                     }
-                    case DRAWN -> placeBuilding(record, transform, rootId);
+                    case DRAWN -> {
+                        if (owner != null && splitsAlone.contains(rootId)) {
+                            // A border-crossing placement of a root decided whole by one inside
+                            // the tile: a neighbour sizing it alone splits it, and drawing it whole
+                            // here would draw that neighbour's groups and set doodads twice.
+                            count(Count.PLACEMENT_CAPPED);
+                        } else {
+                            placeBuilding(record, transform, rootId);
+                        }
+                    }
                 }
             }
         }
@@ -3919,6 +3960,11 @@ public final class WorldExteriorObjects {
             // Each read's counts are kept per group, so that a root drawn by group, or drawn whole
             // from the large allowance, keeps its reads and counts.
             var sized = new Sized[lod0];
+            // Decided by a placement inside the tile while a border-crossing one of the root is
+            // listed too: its exteriors are kept for the owner rule's sizing ({@link
+            // #splitsAlone}).
+            boolean sizeAlone = owner == null && crossingRoots.contains(rootId);
+            var exteriorsRead = new ArrayList<PendingMesh>();
             // Interior groups read here (#280, and MOGP-interior groups on open-world maps, #383)
             // are held for the tile-level pass after every building's exterior, so they never cap
             // or displace an exterior.
@@ -3965,6 +4011,9 @@ public final class WorldExteriorObjects {
                     }
                     continue;
                 }
+                if (sizeAlone) {
+                    exteriorsRead.add(mesh);
+                }
                 var admitted = budget.admit(mesh, groupCounts);
                 // A dropped copy is not kept; its counts stay with the group.
                 for (int i = 0; i < local.length; i++) {
@@ -3992,6 +4041,9 @@ public final class WorldExteriorObjects {
                 // Its exteriors fit an empty tile, but not with its interiors: drawn whole, every
                 // tile listing it would cap interiors it could draw by group.
                 return readByGroup(rootId, root, owner, skipped, deferred, sized, interiors);
+            }
+            if (sizeAlone && splitsAlone(root, exteriorsRead, deferred, deferredCount)) {
+                splitsAlone.add(rootId);
             }
             if (!budget.fitsTile()) {
                 // Sized alone (an owner): it fits an empty tile, not what this one left. Drawn
@@ -4035,6 +4087,28 @@ public final class WorldExteriorObjects {
             models.add(new Model(rootId, false, built, portals));
             count(Count.ROOT_DRAWN);
             return RootState.DRAWN;
+        }
+
+        /**
+         * Whether the owner rule would draw a root by group when one of its border-crossing
+         * placements decides it: its exterior groups ({@code exteriors}, in read order) over an
+         * empty tile's building pool, or, with deferred MOGI interiors, over it together with them
+         * ({@link #interiorsOverAlone}). The same sizing a neighbour deciding that placement does,
+         * so the tiles agree on whether it is drawn whole.
+         */
+        private boolean splitsAlone(
+                WmoFormats.Root root,
+                List<PendingMesh> exteriors,
+                boolean[] deferred,
+                int deferredCount) {
+            var alone = new RootBudget(Allowance.ALONE);
+            int[] scratch = new int[counts.length];
+            for (var mesh : exteriors) {
+                if (alone.admit(mesh, scratch) == Admission.OVER) {
+                    return true;
+                }
+            }
+            return deferredCount > 0 && interiorsOverAlone(root, alone, deferred);
         }
 
         /**
