@@ -5288,14 +5288,14 @@ class WorldExteriorObjectsTest {
             for (long id : capped) {
                 cappedOpens += files.opens(id);
             }
-            // Twenty-nine consumed, plus at most the reads already started when the cap was
-            // decided and those withdrawn when the root moved to the large allowance (opened
-            // again there).
+            // Twenty-nine consumed (seven while sizing it for the building pool, twenty-two more
+            // from the large allowance), plus two read-ahead windows. When the root leaves the
+            // building pool at its seventh group, every read started and not yet consumed is
+            // withdrawn: at most WINDOW of groups 8 to 15, each opened again when the large
+            // allowance reads it. When it caps at its twenty-ninth, at most WINDOW reads past it
+            // have started. Each group is otherwise opened once.
             assertTrue(
-                    cappedOpens
-                            <= 29
-                                    + WorldStreamScopes.Prefetcher.WINDOW
-                                    + WorldStreamScopes.Prefetcher.READS,
+                    cappedOpens <= 29 + 2 * WorldStreamScopes.Prefetcher.WINDOW,
                     "capped root groups opened: " + cappedOpens);
             for (long id : kept) {
                 assertEquals(1, files.opens(id), "kept group " + id);
