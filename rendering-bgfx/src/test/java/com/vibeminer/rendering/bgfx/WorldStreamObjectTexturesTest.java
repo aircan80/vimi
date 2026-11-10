@@ -194,7 +194,7 @@ final class WorldStreamObjectTexturesTest {
     }
 
     @Test
-    void twoSetsFillingTheSameIdentityKeepTheFirstCompleteOneShared() {
+    void twoSetsFillingTheSameIdentityShareTheFirstThenTheSurvivingSpare() {
         var planA = cache.plan(keys(9), sizes(1, 1000));
         var a = cache.hold(planA);
         var planB = cache.plan(keys(9), sizes(1, 1000));
@@ -208,11 +208,39 @@ final class WorldStreamObjectTexturesTest {
         assertSame(b[0], cache.plan(keys(9), sizes(1, 1000)).shared()[0]);
         cache.release(b[0]);
         assertEquals(List.of((short) 2), destroyed);
-        // The private duplicate never became shared: the identity is free again.
-        assertTrue(cache.plan(keys(9), sizes(1, 1000)).creates(0));
+        // The surviving spare is shared in its place: a later set uploads nothing.
+        var later = cache.plan(keys(9), sizes(1, 1000));
+        assertSame(a[0], later.shared()[0]);
+        assertEquals(0, later.handles());
+        var c = cache.hold(later);
         cache.release(a[0]);
+        assertEquals(List.of((short) 2), destroyed);
+        assertEquals(1, cache.entries());
+        cache.release(c[0]);
         assertEquals(List.of((short) 2, (short) 1), destroyed);
         assertEquals(0, cache.entries());
+        assertTrue(cache.plan(keys(9), sizes(1, 1000)).creates(0));
+    }
+
+    @Test
+    void aSpareReleasedBeforeTheSharedOneIsNeverShared() {
+        var a = cache.hold(cache.plan(keys(4), sizes(1, 1000)));
+        var b = cache.hold(cache.plan(keys(4), sizes(1, 1000)));
+        var c = cache.hold(cache.plan(keys(4), sizes(1, 1000)));
+        for (var held : List.of(a, b, c)) {
+            cache.created(held[0], nextHandle++);
+        }
+        cache.complete(a[0]);
+        cache.complete(b[0]);
+        cache.complete(c[0]);
+        // b, a spare, goes first: releasing the shared one then promotes c, the one still alive.
+        cache.release(b[0]);
+        cache.release(a[0]);
+        assertSame(c[0], cache.plan(keys(4), sizes(1, 1000)).shared()[0]);
+        cache.release(c[0]);
+        assertEquals(0, cache.entries());
+        assertEquals(0, cache.reservedBytes());
+        assertTrue(cache.plan(keys(4), sizes(1, 1000)).creates(0));
     }
 
     @Test

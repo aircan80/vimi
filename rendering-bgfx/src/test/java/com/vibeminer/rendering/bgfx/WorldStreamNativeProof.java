@@ -25,7 +25,7 @@ public final class WorldStreamNativeProof {
     static final String SCOPE = "cd".repeat(32);
     static final WorldStreamEnvelope.Session SESSION =
             new WorldStreamEnvelope.Session(NONCE, SCOPE, 1);
-    private static final TerrainCamera CAMERA = new TerrainCamera(-100, -10, 50, 0, -.6);
+    static final TerrainCamera CAMERA = new TerrainCamera(-100, -10, 50, 0, -.6);
     private static final int WIDTH = 256, HEIGHT = 256;
 
     /**

@@ -228,4 +228,79 @@ class WorldStreamLateObjectsParentTest {
         state.close();
         assertThrows(IllegalStateException.class, () -> state.lateObjects(resident, 4096, SHA));
     }
+
+    /** Offers one tile with inline objects and has the child read it; not staged yet. */
+    private static WorldStreamParentState.Ticket inline(WorldStreamParentState state, int x) {
+        var ticket = state.reserve(x, 19);
+        assertNotNull(ticket);
+        state.beginProducer(ticket);
+        state.producerDrained(ticket);
+        state.offer(ticket, 4096, SHA, 1, 256, true);
+        state.status(
+                new WorldStreamStatus.InputConsumed(
+                        NONCE, ticket.transaction, WorldStreamStatus.InputKind.TILE));
+        return ticket;
+    }
+
+    @Test
+    void theReleaseRevisionMovesWhenRoomMayHaveFreedAndNeverOnARefusal() {
+        var state = ready(true);
+        var first = resident(state, 7, 19, List.of(), new WorldStreamState.Lease(1, 1, 2));
+        long start = state.objectsReleases();
+        // Staging a tile without objects into an empty slot frees nothing.
+        var second = resident(state, 8, 19, List.of(first), new WorldStreamState.Lease(2, 1, 3));
+        assertEquals(start, state.objectsReleases());
+
+        // A refusal never moves it, so a refused set is not offered again by its own refusal.
+        assertTrue(state.admitLateObjects(second));
+        assertNotNull(state.lateObjects(second, 4096, SHA));
+        state.status(done(second, WorldStreamStatus.LateOutcome.BUDGET));
+        assertEquals(start, state.objectsReleases());
+        // Nor does a late set that attached, failed or was dropped: late sets build one at a time.
+        assertTrue(state.admitLateObjects(first));
+        assertNotNull(state.lateObjects(first, 4096, SHA));
+        state.status(done(first, WorldStreamStatus.LateOutcome.ATTACHED));
+        assertEquals(start, state.objectsReleases());
+
+        // A tile with inline objects staged, failed or not: its build held room while filling and
+        // either completed textures later sets share or freed them.
+        var table = new java.util.ArrayList<>(List.of(first, second));
+        for (int objects = 1; objects <= 2; objects++) {
+            var ticket = inline(state, 20 + objects);
+            state.status(
+                    new WorldStreamStatus.Staged(
+                            NONCE, ticket.transaction, ticket.lease, 1, 256, objects));
+            state.retireTileFile(ticket);
+            assertEquals(start + objects, state.objectsReleases());
+            table.add(ticket.resident);
+            commit(state, table);
+            state.status(
+                    new WorldStreamStatus.Credit(
+                            NONCE, new WorldStreamState.Lease(2 + objects, 1, 3 + objects)));
+        }
+        // A canceled tile with inline objects freed its partial build.
+        var canceled = inline(state, 30);
+        assertNotNull(state.cancel(canceled));
+        state.status(new WorldStreamStatus.Canceled(NONCE, canceled.transaction, canceled.lease));
+        assertEquals(start + 3, state.objectsReleases());
+        state.retireTileFile(canceled);
+        table.remove(first);
+        commit(state, table);
+        assertEquals(start + 3, state.objectsReleases());
+        state.status(new WorldStreamStatus.Credit(NONCE, new WorldStreamState.Lease(0, 2, 6)));
+
+        // Replacing the slot whose generation drew late objects released them.
+        var replacement = state.reserve(9, 19);
+        assertEquals(first.lease.slot(), replacement.lease.slot());
+        state.beginProducer(replacement);
+        state.producerDrained(replacement);
+        state.offer(replacement, 4096, SHA, 1, 256);
+        state.status(
+                new WorldStreamStatus.InputConsumed(
+                        NONCE, replacement.transaction, WorldStreamStatus.InputKind.TILE));
+        state.status(
+                new WorldStreamStatus.Staged(
+                        NONCE, replacement.transaction, replacement.lease, 1, 256, 0));
+        assertEquals(start + 4, state.objectsReleases());
+    }
 }
