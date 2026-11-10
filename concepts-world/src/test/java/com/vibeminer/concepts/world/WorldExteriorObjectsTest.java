@@ -1656,6 +1656,109 @@ class WorldExteriorObjectsTest {
         }
     }
 
+    /** {@code count} batches of one triangle each, all of material 0. */
+    private static List<Batch> batches(int count) {
+        var list = new ArrayList<Batch>();
+        for (int b = 0; b < count; b++) {
+            list.add(new Batch(3 * b, 3, 0, 0));
+        }
+        return list;
+    }
+
+    @Test
+    void tileInteriorsNeverCostASplitRootsExteriorItsDraws() {
+        // Seven placements of the tile's building, with 130 interior groups of 64 ranges: each
+        // group costs 448 draws, far past the 8,192 budget. The split root's two exteriors here
+        // have 64 ranges each (128 draws). Exteriors come first tile-wide: the split exteriors
+        // draw in full, and the interiors take what is left, the rest capped. (Had the interiors
+        // come first, they would have left 121 draws, too few for the split exteriors.)
+        int interiors = 130;
+        var records = new ArrayList<Modf>();
+        for (int i = 0; i < 7; i++) {
+            records.add(Modf.of(ROOT, 1 + i, 0x8));
+        }
+        records.add(largePlacement());
+        try (var f = new Fixture(records)) {
+            long[] gfid = new long[interiors + 1];
+            gfid[0] = GROUP;
+            for (int g = 1; g <= interiors; g++) {
+                gfid[g] = 20_000 + g;
+                f.files.sources.put(gfid[g], group(INT, 3, 64, batches(64)));
+            }
+            f.files.sources.put(
+                    ROOT, root(interiors + 1, gfid, List.of(new Material(0, IMAGE, 0))));
+            f.files.sources.put(BIG + 1, group(EXT, 60_000, 64, batches(64)));
+            f.files.sources.put(BIG + 2, group(EXT, 3, 64, batches(64)));
+            f.files.sources.put(BIG + 3, bigGroup(EXT, 60_000));
+            f.files.sources.put(
+                    BIG,
+                    root(
+                            3,
+                            new long[] {BIG + 1, BIG + 2, BIG + 3},
+                            List.of(new Material(0, IMAGE, 0)),
+                            mogiBoxes(new int[] {EXT, EXT, EXT}, new float[] {0, 1, 200})));
+            try (var set = f.runInstance()) {
+                assertEquals(List.of(0, 1), groupsOf(set, BIG));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_CAPPED));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
+                int drawn = groupsOf(set, ROOT).size() - 1;
+                assertTrue(drawn > 0, "interiors take what is left");
+                assertEquals(
+                        interiors - drawn,
+                        set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+            }
+        }
+    }
+
+    @Test
+    void tileInteriorsNeverCostASplitShareItsDraws() {
+        // Seven placements of building D (its own tile's), with 130 MOGI-interior groups of 64
+        // ranges: 448 draws a group. BIG is decided whole by its in-tile placement A and split by
+        // the owner rule; its crossing placement C (77) draws its share here, exterior 0 with 64
+        // ranges. The share's draws are kept for it before D's interiors are admitted: C's share
+        // draws, and D's interiors are capped. (Unreserved, D's interiors would have left 56.)
+        long d = 40_000;
+        int interiors = 130;
+        var inTile =
+                new Modf(BIG, 79, 0x8, 10400, 0, 4150, 0, 0, 0, 1024)
+                        .bounded(10300, -600, 4120, 10500, 600, 4180);
+        var records = new ArrayList<Modf>(List.of(inTile, largePlacement()));
+        for (int i = 0; i < 7; i++) {
+            records.add(Modf.of(d, 91 + i, 0x8));
+        }
+        try (var f = new Fixture(records)) {
+            int[] flags = new int[interiors + 1];
+            int[] sizes = new int[interiors + 1];
+            float[] centres = new float[interiors + 1];
+            flags[0] = EXT;
+            sizes[0] = 3;
+            for (int g = 1; g <= interiors; g++) {
+                flags[g] = ROOM;
+                sizes[g] = 3;
+                centres[g] = 1;
+            }
+            putRoot(f, d, flags, sizes, centres);
+            for (int g = 1; g <= interiors; g++) {
+                f.files.sources.put(d + 1 + g, group(ROOM, 3, 64, batches(64)));
+            }
+            putRoot(
+                    f,
+                    BIG,
+                    new int[] {EXT, EXT, ROOM, ROOM},
+                    new int[] {3, 3, 60_000, 60_000},
+                    new float[] {0, 200, 5, 205},
+                    splitPortals());
+            f.files.sources.put(BIG + 1, group(EXT, 3, 64, batches(64)));
+            try (var set = f.runOpenWorld()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_SPLIT_SHARE));
+                assertTrue(keysOf(set, 77).contains("77:0"));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
+                assertTrue(set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED) > 0);
+            }
+        }
+    }
+
     @Test
     void tileInteriorsDrawFromTheirAllowanceButExteriorsNeverDo() {
         // A 65,536-vertex exterior leaves 32,768 vertices of the building pool; a 60,000-vertex
@@ -6149,10 +6252,11 @@ class WorldExteriorObjectsTest {
                 assertEquals(0, here.count(WorldExteriorObjects.Count.PLACEMENT_SPLIT_SHARE));
                 assertEquals(0, there.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
                 assertTrue(keysOf(here, 77).containsAll(List.of("77:0", "77:1")));
-                // Both draw C whole; 8,19, which draws it from its pool, also draws group 2 from
-                // the tile interior allowance (MOGP interior), which a root drawn from the large
-                // allowance leaves out without a MOGI interior.
-                assertTrue(keysOf(there, 77).containsAll(keysOf(here, 77)));
+                // Both draw C whole. 7,19 draws it from the large allowance, which leaves out group
+                // 2 (MOGP interior without a MOGI interior); 8,19 draws it from its pool and draws
+                // group 2 as an interior, from the tile interior allowance.
+                assertEquals(java.util.Set.of("77:0", "77:1"), keysOf(here, 77));
+                assertEquals(java.util.Set.of("77:0", "77:1", "77:2"), keysOf(there, 77));
             }
         }
     }

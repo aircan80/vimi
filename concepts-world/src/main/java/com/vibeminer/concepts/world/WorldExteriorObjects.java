@@ -2008,6 +2008,9 @@ public final class WorldExteriorObjects {
          */
         private final java.util.Set<Integer> shareModels = new java.util.HashSet<>();
 
+        /** Roots drawn by group whose exteriors are placed, waiting for their interiors. */
+        private final List<Object[]> byGroupLater = new ArrayList<>();
+
         /** Roots drawn whole from the large allowance ({@link Owner#whole}), by root. */
         private final Map<Long, Owner> wholeOwners = new HashMap<>();
 
@@ -2100,15 +2103,21 @@ public final class WorldExteriorObjects {
                 // objects.phase.interiors also covers the second set-doodad pass: the doodad sets
                 // of interior-only roots, deferred above, are placed here and are not counted
                 // under objects.phase.setDoodads.
+                // The exteriors of roots drawn by group (split and drawn whole from the large
+                // allowance) come before every interior: their group reads, draws, slots, meshes,
+                // images and surfaces come from what the tile's own buildings and doodads left.
+                phase = WorldStageTimings.start();
+                placeByGroup();
+                WorldStageTimings.stop("objects.phase.byGroup", phase);
                 phase = WorldStageTimings.start();
                 placeInteriors();
                 placeSetDoodads(building -> deferred.contains(building.rootId()));
                 WorldStageTimings.stop("objects.phase.interiors", phase);
-                // Roots drawn by group last of all: their remaining group reads, draws, slots,
-                // meshes, images and surfaces come only from what the tile's own buildings,
-                // doodads and interiors left, and so do their set doodads.
+                // Then their interiors, the further placements of roots drawn whole and the
+                // split shares (whose draws and slots the tile's interiors reserved), and the set
+                // doodads of all of them.
                 phase = WorldStageTimings.start();
-                placeByGroup();
+                placeByGroupInteriors();
                 placeWholeExtras();
                 placeSplitShares();
                 placeByGroupSetDoodads();
@@ -2605,16 +2614,17 @@ public final class WorldExteriorObjects {
         }
 
         /**
-         * Roots drawn by group ({@link Owner}), after everything else the tile draws, in admission
-         * order, then roots drawn whole from the large allowance ({@link Owner#whole}) in admission
-         * order: the owned exterior groups the sizing pass did not read are read now from the group
-         * reads left, and every owned exterior is admitted against the large and interior
-         * allowances together and resolved, its opaque images in their own slots. Placement slots,
-         * meshes, draws and the cutout and blended budget come only from what the tile's buildings,
-         * doodads and interiors left, so a root drawn by group never displaces any of them. Every
-         * limit is checked before anything is resolved; when its cutout and blended ranges do not
-         * fit the draws left, only its opaque ranges are drawn. Its owned interior groups follow
-         * every such root's exteriors, from what they left ({@link #byGroupInteriors}), with its
+         * The exteriors of roots drawn by group ({@link Owner}) in admission order, then of roots
+         * drawn whole from the large allowance ({@link Owner#whole}) in admission order, after the
+         * tile's own buildings and doodads and before any interior: the owned exterior groups the
+         * sizing pass did not read are read now from the group reads left, and every owned exterior
+         * is admitted against the large and interior allowances together and resolved, its opaque
+         * images in their own slots. Placement slots, meshes, draws and the cutout and blended
+         * budget come only from what the tile's buildings and doodads left, so a root drawn by
+         * group never displaces any of them, and no interior ever displaces it. Every limit is
+         * checked before anything is resolved; when its cutout and blended ranges do not fit the
+         * draws left, only its opaque ranges are drawn. Its owned interior groups follow after the
+         * tile's own interiors ({@link #placeByGroupInteriors}), from what they left, with its
          * portal set. A split root that does not fit, or keeps nothing, still places the set
          * doodads standing in this tile; a root drawn whole that does not fit is capped as a tile
          * root, without them.
@@ -2741,12 +2751,24 @@ public final class WorldExteriorObjects {
                 later.add(new Object[] {rootId, queued, read, addByGroup(rootId, queued, built)});
             }
             byGroupQueue.clear();
+            byGroupLater.clear();
+            byGroupLater.addAll(later);
+        }
+
+        /**
+         * The owned interiors of roots drawn by group ({@link #byGroupInteriors}), after their
+         * exteriors ({@link #placeByGroup}) and after the tile's own interiors, in the same order.
+         * Model ordinals are looked up again: the tile's interior pass may have removed a model.
+         */
+        private void placeByGroupInteriors() {
+            var later = new ArrayList<>(byGroupLater);
+            byGroupLater.clear();
             for (var entry : later) {
                 token.check();
                 long rootId = (Long) entry[0];
                 var queued = (Queued) entry[1];
                 var read = (ByGroup) entry[2];
-                int model = (Integer) entry[3];
+                int model = (Integer) entry[3] < 0 ? -1 : modelSlots.get(rootId);
                 int[] local = new int[counts.length];
                 long buildings = placements.stream().filter(p -> p.kind() == Kind.BUILDING).count();
                 if (model < 0
@@ -3963,6 +3985,35 @@ public final class WorldExteriorObjects {
                 meshes += models.get(m).doodad() ? 0 : models.get(m).meshes().size();
                 reserved += (long) uses[m] * modelDraws(m);
             }
+            // Exteriors placed after the interiors keep what they need too: the further
+            // placements of roots drawn whole draw their model's exteriors, and each split share
+            // its owned exterior groups of a drawn model, with a mesh row each and a slot.
+            int reservedSlots = 0;
+            for (var entry : wholeExtras.entrySet()) {
+                Integer slot = modelSlots.get(entry.getKey());
+                if (slot != null && byGroupRoots.contains(entry.getKey())) {
+                    reserved += (long) entry.getValue().size() * modelDraws(slot);
+                    reservedSlots += entry.getValue().size();
+                }
+            }
+            for (var queued : splitShares) {
+                long rootId = queued.record().reference().value();
+                var root = byGroupRootFacts.get(rootId);
+                Integer slot =
+                        rootStates.get(rootId) == RootState.DRAWN ? modelSlots.get(rootId) : null;
+                if (root == null || slot == null) {
+                    continue;
+                }
+                var owned = queued.owner().owned(root);
+                for (var mesh : models.get(slot).meshes()) {
+                    int g = mesh.groupOrdinal();
+                    if (g >= 0 && g < owned.length && owned[g]) {
+                        meshes++;
+                        reserved += mesh.ranges().size();
+                    }
+                }
+                reservedSlots++;
+            }
             int[] local = new int[counts.length];
             boolean[] removed = new boolean[models.size()];
             for (int m = 0; m < models.size(); m++) {
@@ -3982,7 +4033,9 @@ public final class WorldExteriorObjects {
                 // interior-only root whose groups did not fit the tile's reads is capped too.
                 boolean needsSlots = admissionDraws(m) == 0;
                 boolean unread = interiorReadsCapped.contains(model.rootId());
-                if (unread || needsSlots && uses[m] > MAX_PLACEMENTS - opaquePlacements) {
+                if (unread
+                        || needsSlots
+                                && uses[m] > MAX_PLACEMENTS - opaquePlacements - reservedSlots) {
                     local[Count.GROUP_INTERIOR_CAPPED.ordinal()] += held.size();
                     if (model.meshes().isEmpty()) {
                         removed[m] = true;
