@@ -2,7 +2,7 @@
 
 Latest verified release: [alpha.20](https://github.com/aircan80/vimi/releases/tag/v0.1.0-alpha.20), source590aa0e, all five platform packages and18 assets. Published tags and frozen launchers are immutable. Group ready parallel milestones into explicit GitHub prereleases after review and checks.
 
-The user authorized all items below and autonomous continued work, including overnight work, agents, routine fixes and prereleases. Do not ask for repeated routine confirmation. Preserve truthful source provenance, bounded ownership, off-FX acquisition/preparation and visible activity through presentation.
+All items below are approved, along with routine fixes and prereleases. Preserve truthful source provenance, bounded ownership, off-FX acquisition/preparation and visible activity through presentation.
 
 | Work | Current state | Delivery gate |
 | --- | --- | --- |

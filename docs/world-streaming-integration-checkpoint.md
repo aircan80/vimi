@@ -44,7 +44,7 @@ cold-child proof passes valid pixels/camera/resize/EOF/CLOSE and malformed, miss
 absent annex paths (`/tmp/vimi-world-cold-child-integrated-native.log`).
 
 The accepted matching CLOSE now arms the independent child watchdog from the control
-reader during startup. Wrong nonce does not arm it. Root integrated bgfx checks and
+reader during startup. Wrong nonce does not arm it. Integrated bgfx checks and
 actual streaming child proof pass40tasks: same child3content commits/15camera changes,
 EOF and unread stdout shutdown in11.874s, owned exit73
 (`/tmp/vimi-world-early-close-integrated-root-check.log`). This is not proof that a

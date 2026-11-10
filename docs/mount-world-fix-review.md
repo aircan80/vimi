@@ -3,7 +3,7 @@
 Independent scopes: domain approved legacy version272 admission `7d59c1f`, World grid
 `a5abe46` and GUI/native qualification original `1ec6ec2` (integrated `22f63c8`).
 Architecture independently approved CPUqualification original `2b3472f`
-(integrated `06915eb`). Root reviewed agent-authored production code and fixtures.
+(integrated `06915eb`). Production code and fixtures were reviewed independently.
 The GPU-control repair original `af593d2` is integrated as `fdfc861`.
 
 Full local check/assemble/installDist plus authored Mounts, World and GPU UI

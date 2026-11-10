@@ -20,6 +20,6 @@ Authored gates cover absent/present-empty, exact planar arrays, unsigned depth, 
 
 Read-only private source proof used existing `/tmp/vimi-terrain-texture-proof/root-777952.adt` and `root-778147.adt`, with no acquisition, writes or Git assets. Results: root777952 PRESENT/12076 payload bytes/20 instances/819 layout0 cells; root778147 PRESENT/14834 bytes/26 instances/682 cells. These match the proposal's recorded sums. The low-level proof does not qualify LiquidType→Material/LVF or assert rendered water. Private harness/log: `<scratch>/liquids-raw-proof/`.
 
-## Root integration review
+## Integration review
 
-Root reviewed the bounded raw parser and shared checked ADT walk, then integrated 1ec4e89 as 73608b8 in the next-feature branch after alpha.21 was tagged. Independent Maps-agent checks and actual raw source counts passed. Root `:formats-world:check` passed 7 tasks. This grants raw parsing only; table qualification, combined ownership, coordinates and rendering remain separate gates.
+The bounded raw parser and shared checked ADT walk were reviewed and integrated (1ec4e89 as 73608b8) in the next-feature branch after alpha.21 was tagged. Independent map checks and actual raw source counts passed. `:formats-world:check` passed 7 tasks. This grants raw parsing only; table qualification, combined ownership, coordinates and rendering remain separate gates.

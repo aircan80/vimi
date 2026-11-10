@@ -18,10 +18,10 @@ Reviewed and integrated:
   unavailable/retry text. Actual regression fails before and passes after (95tasks);
   independently reviewed by architect.
 - Canonical native receipt stamp329f304, froma808132: private immutable bounded
-  bytes, exact equality, unchanged streaming SHA serializer. Root reviewed and
+  bytes, exact equality, unchanged streaming SHA serializer. Reviewed and
   mechanically compared the serializer body; full formats-table checks46 tasks.
 - Shared character choicesed48eb8, fromcc98c30: internal context-bound vector feeds
-  geometry and atlas, preserving defaults and entering cache identity. Root reviewed
+  geometry and atlas, preserving defaults and entering cache identity. Reviewed
   production and full races checks pass48 tasks. Visible alternative proof is next.
 
 Additional reviewed integration, 2026-11-04:
@@ -71,11 +71,11 @@ Documentation-only updates efa9afc/e6527ba follow that tested source head.
 Followup review and integrated checks:
 
 - Flat liquid geometry93405ac is independently approved and promoted asac56f66.
-  Root integrated concepts/formats checks pass42 tasks (7 executed). Same private
+  Integrated concepts/formats checks pass42 tasks (7 executed). Same private
   two-owner Source limits, no scene/native integration. Independent forced tests
   pass32 tasks; actual author proof matches5,268 vertices and7,902 indices.
 - Standalone candidate renderer2cb45f2 and six test-only shaders1796a4c are
-  independently approved and promoted as6b6a749/9366208. Root integrated bgfx check
+  independently approved and promoted as6b6a749/9366208. Integrated bgfx check
   plus actual Vulkan native proof passes41 tasks (16 executed),19 readbacks:
   `<scratch>/global-native-root-integrated-check.log`.
   Independent actual Vulkan proof also passes19 readbacks. Root inspected the
@@ -115,5 +115,5 @@ Next integrated milestones:
 - Fixed global frame ownerd45aaf21+66a5ab44 is independently approved after sticky
   native/cleanup-error hardening and deterministic timeout/free-failure tests.
   Native independent proof passes12frames/48pixel oracles,3pending tickets and
-  actual read-issued-then-Error shutdown safety. Root integrated proof is running.
+  actual read-issued-then-Error shutdown safety. Integrated proof is running.
   Design2f185ef4 separately pins explicit GLOBAL child/parent protocol; no GUI route.

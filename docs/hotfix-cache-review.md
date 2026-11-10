@@ -100,7 +100,7 @@ These are format/byte-read facts only, not evidence for the requested70707 rows.
 
 ## Explicit conservative effective-row policy v1
 
-Root review pins an application policy rather than claiming exact DBCD/client
+Review pins an application policy rather than claiming exact DBCD/client
 parity. Stable signed push order and physical ordinal break ties. VALID nonempty
 bodies add/replace only after layout decoding. NOT_PUBLIC masks as protected;
 INVALID, NOT_SET, empty VALID and unsupported bodies mask as unknown, so stale

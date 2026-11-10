@@ -17,7 +17,7 @@ Domain independently approved GUI/service and root pipeline at
 frame-file work. Two blockers found during review were fixed: completion could
 reinsert an older frame over a newer one, and a queued frame could restore GPU
 readiness after terminal failure. Deterministic handoff and authored JavaFX
-failure-order regressions cover both corrections. Root reviewed agent-authored
+failure-order regressions cover both corrections. The independently reviewed changes cover
 scene/camera, frame protocol, service/view and the delivery corrections.
 
 ## Local evidence

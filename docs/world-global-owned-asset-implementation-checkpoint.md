@@ -25,6 +25,6 @@ The actual native-wire mesh SHA is `f023c6d6b6716af139456e06a6f20f8aa3478ce0c731
 
 A future writer must extend the fixed actual source operation before its final gates, own unreturned file R, and provide its separately reviewed post-final actual resource pin/MOVE contract. Generic scalar `withBorrow<T>` does not certify a file or future native owner. No later-stage grant is implied by this checkpoint.
 
-## Root integration review
+## Integration review
 
-Root reviewed the private payload owner and shared source credit registry and integrated a7a9ddc as e7d5f32 in the next-feature branch after alpha.21 was tagged. The current cancellation/decoder fixes remain inherited from alpha.21. Independent Java-agent review and its focused checks passed; root combined `:concepts-world:check :formats-assets:check` passed 62 tasks. This is source payload readiness only, with no visible instance-rendering claim.
+The private payload owner and shared source credit registry were reviewed and integrated (a7a9ddc as e7d5f32) in the next-feature branch after alpha.21 was tagged. The current cancellation/decoder fixes remain inherited from alpha.21. Independent review and its focused checks passed; the combined `:concepts-world:check :formats-assets:check` passed 62 tasks. This is source payload readiness only, with no visible instance-rendering claim.

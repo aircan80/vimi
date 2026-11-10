@@ -92,7 +92,7 @@ metadata; it ends only at accepted presentation or explicit terminal outcome.
 3. Causal tests hold source writer/lower cancellation, STAGED, COMMITTED, actual frame and FX upload
    independently. Prove superseded cancel-before-stale ordering, continuous camera progress, 12-owner
    union pressure, no height flash, untaken/MOVED cleanup, stale frames and hide/close drain.
-4. Root integration then traverses real Map0 in the same child, measuring source/upload/presentation
+4. Integration then traverses real Map0 in the same child, measuring source/upload/presentation
    latency. No source-only test claims FPS or completed game-like smoothness.
 
 ## Frozen view-facing API shape

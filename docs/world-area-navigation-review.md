@@ -14,7 +14,7 @@ implements GUI. Each author excludes their own implementation from review.
   one worker/latest pending, source receipt checks, cancellation/drain, bounded
   diagnostics and borrowed source lifetime. New service tests645d374 verify stale
   source rejection despite old cached geometry and close ordering.
-- Root reviewed GUI26b11fb plus correctioneb82aa8 (integrated5c4bd97/2a7eba2).
+- Reviewed GUI26b11fb plus correctioneb82aa8 (integrated5c4bd97/2a7eba2).
   A discovered cancellation deadlock was fixed with a separate bounded cleanup
   worker and a synchronous-blocking provider regression. Progress is coalesced,
   stale generations cannot clear newer activity, and areaTile verifies entry

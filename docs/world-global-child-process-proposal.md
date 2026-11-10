@@ -62,7 +62,7 @@ Use a private GlobalGpuOwner adapter paralleling the reviewed sticky WorldStream
 
 ## Concrete implementation partitions and gates
 
-1. Pure global argv/control/Closed codec, mapping-nonce checks and fixed-scalar pre-allocation selection; deterministic malformed/mixed/overflow/partial-line/exhaustion tests. Root review before runtime parser wiring.
+1. Pure global argv/control/Closed codec, mapping-nonce checks and fixed-scalar pre-allocation selection; deterministic malformed/mixed/overflow/partial-line/exhaustion tests. Review before runtime parser wiring.
 2. Global child dispatcher around reviewed frame owner and lifetime/deadline writer; actual Vulkan firstCAM/resize/continuousCAM/samePID/CLOSE/EOF/parentdeath/blockedpipe/partialinit/timeouts, actual shutdown-before-free proof. No GUI route yet; full eight real shader blobs required before default distribution activation.
 3. Source-neutral single-child parent transport plus explicit same-service GLOBAL request/adapter, with held startup/source/MOVE/file-delete/reader/process-drain causal tests and queued cross-kind successor gating. Private Source bridge remains fixed writer, never generic provider promotion.
 4. Actual configured Source→fixed file→MOVE→one child→matched mapping→accepted FX pixels, current generation/resize/close gate; then a separately reviewed visible instance route. Compiler success alone is not backend hardware, frame acceptance or client fidelity.

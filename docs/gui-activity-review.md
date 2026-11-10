@@ -1,7 +1,7 @@
 # GUI activity integration review — 2026-11-03
 
 Implementation source checkpoint: `8c3ed4c`, based on main `f1b5413`.
-The user authorized separate agents and continued loading/responsiveness work.
+This slice continues the loading and responsiveness work.
 The World explorer remains CPU rendered; this slice moves preparation off FX.
 
 ## Independent scopes
@@ -17,8 +17,8 @@ The World explorer remains CPU rendered; this slice moves preparation off FX.
 - Domain approved the additional Races retirement correction at original
   `8c0f987` (integrated `8c3ed4c`), including generation-first guards and
   asynchronous GPU/audio cleanup.
-- Root reviewed agent-authored production changes and fixtures. No author
-  supplied the independent approval for their own implementation.
+- The production changes and fixtures were reviewed independently; no author
+  approved their own implementation.
 
 Review corrected external-source results that could leave spinners attached,
 older selection callbacks that could retire newer activity, pending recipe
@@ -58,7 +58,7 @@ paths retain existing generation, source, owner and current-display-policy guard
 Unavailable composition/rendering and close retire the phase explicitly. Textures
 OFF accepts the target appearance under the requested display policy.
 
-Root reviewed39e4e3d and independently ran integrated GUI/unit/fake-GPU/World
+Reviewed39e4e3d and independently ran integrated GUI/unit/fake-GPU/World
 navigation checks plus Races FX. Authored delayed-result tests cover neutral model
 visibility, pending feedback, accepted-frame handoff, obsolete target retirement,
 provider failure and workspace close. This screenshot contains authored geometry
