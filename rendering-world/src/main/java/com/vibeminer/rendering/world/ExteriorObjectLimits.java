@@ -26,14 +26,14 @@ public final class ExteriorObjectLimits {
      * (Stormwind City's 9 exterior groups need 150,358 vertices and 322,080 indices). Every tile
      * that lists such a placement draws only the groups whose MOGI box centre lies in it, so each
      * group is drawn once over the map, from this allowance and never from the building pool: the
-     * tile's own buildings keep their whole budget. Its owned interior groups, culled by the root's
-     * portal set, come from what its exteriors leave of this allowance and from the interior
-     * allowance ({@link #LARGE_INTERIOR_VERTICES}). On build 70862 the Stormwind tile holding its
-     * two largest exterior groups (48,30) needs 111,920 vertices and about 232,000 indices; the
-     * other owners need at most 25,383 vertices for exteriors. It is one pool with the interior
-     * allowance ({@link #LARGE_INTERIOR_VERTICES}): exteriors are admitted against both together,
-     * so the Forever Dalaran owner tile (0:31,31), whose 18 exterior groups need 162,681 vertices
-     * and 491,961 indices, draws them. A root to be drawn whole that does not fit what the tile's
+     * tile's own buildings keep their whole budget. This allowance and the interior allowance
+     * ({@link #LARGE_INTERIOR_VERTICES}) are one pool: every such root's exteriors are admitted
+     * first against both together, and its owned interior groups, culled by the root's portal set,
+     * take what the exteriors left. On build 70862 the Stormwind tile holding its two largest
+     * exterior groups (48,30) needs 111,920 vertices and about 232,000 indices; the other owners
+     * need at most 25,383 vertices for exteriors. The Forever Dalaran owner tile (0:31,31), whose
+     * 18 exterior groups need 162,681 vertices and 491,961 indices, draws them only from the pool
+     * with the interior allowance. A root to be drawn whole that does not fit what the tile's
      * building pool left (a single-tile root over an empty pool, such as Gilneas's 125,413-vertex
      * root on 35,29, or a busy tile) is drawn whole from the same pool, after every split root's
      * exteriors and before any interior.

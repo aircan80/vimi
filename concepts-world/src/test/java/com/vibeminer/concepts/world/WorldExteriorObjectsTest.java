@@ -5580,15 +5580,23 @@ class WorldExteriorObjectsTest {
         // a larger single-tile building admitted first leaves too little for it, so it is drawn
         // whole from the large allowance. The neighbour that also lists it, with nothing else,
         // draws it whole from its building pool: both tiles decide whole from the root alone,
-        // and neither draws it by group.
+        // neither draws it by group, and both draw the same groups and set doodads (the copies
+        // coincide).
         var files = new WorldTerrainTextureSourceTest.Files();
-        var neighbour = alsoRecord(files, 8, 19);
+        var neighbour = alsoRecordOwn(files, 8, 19, 5, List.of(largePlacement()));
         var normal = Modf.of(NORMAL, 2, 0x8).sized(5000);
         try (var f = new Fixture(List.of(largePlacement(), normal), files)) {
-            putBig(f, new int[] {EXT, EXT}, new int[] {30_000, 30_000}, new float[] {0, 200});
+            putModel(f, MODEL, model());
+            putBig(
+                    f,
+                    new int[] {EXT, EXT},
+                    new int[] {30_000, 30_000},
+                    new float[] {0, 200},
+                    doodadChunks(new int[][] {{0, 2}}, new long[] {MODEL}, standing(0, 200)));
             f.files.sources.put(NORMAL + 1, bigGroup(EXT, 50_000));
             f.files.sources.put(NORMAL, root(NORMAL + 1));
-            try (var set = f.runOpenWorld()) {
+            try (var set = f.runOpenWorld();
+                    var there = openWorldOn(f, neighbour)) {
                 assertEquals(List.of(0), groupsOf(set, NORMAL));
                 assertEquals(List.of(0, 1), groupsOf(set, BIG));
                 assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
@@ -5596,20 +5604,19 @@ class WorldExteriorObjectsTest {
                 assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
                 assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_OTHER_TILE));
                 assertPlacementsAccounted(set, 2);
-                assertEquals(110_000, set.vertices());
-            }
-        }
-        // The neighbour, whose building pool takes it, draws it whole as before: both draw the
-        // same root whole (the copies coincide), and neither splits it.
-        var only = new WorldTerrainTextureSourceTest.Files();
-        var other = alsoRecord(only, 8, 19);
-        try (var f = new Fixture(List.of(largePlacement()), only)) {
-            putBig(f, new int[] {EXT, EXT}, new int[] {30_000, 30_000}, new float[] {0, 200});
-            try (var there = openWorldOn(f, other)) {
                 assertEquals(List.of(0, 1), groupsOf(there, BIG));
                 assertEquals(0, there.count(WorldExteriorObjects.Count.ROOT_WHOLE_LARGE));
                 assertEquals(0, there.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
                 assertEquals(1, there.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
+                var bigHere = new java.util.TreeSet<String>();
+                for (var key : drawnGroupKeys(set)) {
+                    if (key.startsWith("77:")) {
+                        bigHere.add(key);
+                    }
+                }
+                assertEquals(drawnGroupKeys(there), bigHere);
+                assertEquals(2, setDoodadKeys(there).size());
+                assertEquals(setDoodadKeys(there), setDoodadKeys(set));
             }
         }
     }
@@ -5723,6 +5730,235 @@ class WorldExteriorObjectsTest {
                     }
                     assertPlacementsAccounted(set, 2);
                 }
+            }
+        }
+    }
+
+    /** Files whose WDT records tile ({@code x}, {@code y}) with its own obj0, file {@code obj0}. */
+    private static WorldFormats.Tile alsoRecordOwn(
+            WorldTerrainTextureSourceTest.Files files,
+            int x,
+            int y,
+            long obj0,
+            List<Modf> records) {
+        var wdt = ByteBuffer.wrap(files.sources.get(1L)).order(ByteOrder.LITTLE_ENDIAN);
+        int ordinal = x * 64 + y;
+        wdt.putInt(12 + 40 + 8 + ordinal * 8, 1);
+        int at = 12 + 40 + 8 + 32768 + 8 + ordinal * 32;
+        wdt.putInt(at, 2).putInt(at + 4, (int) obj0).putInt(at + 12, 3);
+        files.sources.put(obj0, obj0(records, 0));
+        return new WorldFormats.Tile(x, y, 2, 0, 0, (int) obj0, 0, 3, 0, 0);
+    }
+
+    /** Every drawn (building unique ID, LOD0 group) pair of a tile. */
+    private static java.util.Set<String> drawnGroupKeys(WorldExteriorObjects.TileObjects set) {
+        var keys = new java.util.TreeSet<String>();
+        for (var p : set.placements()) {
+            if (p.kind() == WorldExteriorObjects.Kind.BUILDING && p.model() >= 0) {
+                for (var mesh : set.models().get(p.model()).meshes()) {
+                    keys.add(p.uniqueId() + ":" + mesh.groupOrdinal());
+                }
+            }
+        }
+        return keys;
+    }
+
+    /** Every drawn set doodad of a tile, by building unique ID, doodad set and MODD ordinal. */
+    private static java.util.Set<String> setDoodadKeys(WorldExteriorObjects.TileObjects set) {
+        var keys = new java.util.TreeSet<String>();
+        for (var p : set.placements()) {
+            if (p.kind() == WorldExteriorObjects.Kind.SET_DOODAD) {
+                keys.add(p.uniqueId() + ":" + p.doodadSet() + ":" + p.ordinal());
+            }
+        }
+        return keys;
+    }
+
+    @Test
+    void aRootDrawnWholeHereNeverDrawsAPlacementANeighbourSplits() {
+        // Root BIG (two 60,000-vertex groups) is over an empty tile's building pool. On 7,19 its
+        // placement A lies in the tile and decides first (larger recorded bounds): drawn whole
+        // from the large allowance. Its placement B crosses into 8,19, where it decides alone and
+        // is split, 8,19 drawing group 1 and the doodad standing there. 7,19 must not draw B
+        // whole as a further placement of A's root, or B's group 1 and that doodad would be drawn
+        // on both tiles; it is capped there, as before.
+        var inTile =
+                new Modf(BIG, 79, 0x8, 10400, 0, 4150, 0, 0, 0, 1024)
+                        .bounded(10300, -600, 4120, 10500, 600, 4180);
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var neighbour = alsoRecordOwn(files, 8, 19, 5, List.of(largePlacement()));
+        try (var f = new Fixture(List.of(inTile, largePlacement()), files)) {
+            putModel(f, MODEL, model());
+            putBig(
+                    f,
+                    new int[] {EXT, EXT},
+                    new int[] {60_000, 60_000},
+                    new float[] {0, 200},
+                    doodadChunks(new int[][] {{0, 2}}, new long[] {MODEL}, standing(0, 200)));
+            try (var here = f.runOpenWorld();
+                    var there = openWorldOn(f, neighbour)) {
+                assertEquals(List.of(0, 1), groupsOf(here, BIG));
+                assertEquals(1, here.count(WorldExteriorObjects.Count.ROOT_WHOLE_LARGE));
+                assertEquals(1, here.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
+                assertEquals(List.of(1), groupsOf(there, BIG));
+                assertEquals(1, there.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
+                var groups = new java.util.TreeSet<>(drawnGroupKeys(here));
+                groups.retainAll(drawnGroupKeys(there));
+                assertEquals(java.util.Set.of(), groups, "no group drawn on both tiles");
+                var doodads = new java.util.TreeSet<>(setDoodadKeys(here));
+                doodads.retainAll(setDoodadKeys(there));
+                assertEquals(java.util.Set.of(), doodads, "no set doodad placed on both tiles");
+                assertTrue(drawnGroupKeys(here).stream().allMatch(k -> k.startsWith("79:")));
+                assertEquals(2, setDoodadKeys(here).size());
+                assertEquals(1, setDoodadKeys(there).size());
+            }
+        }
+    }
+
+    @Test
+    void aFallbacksExteriorsComeBeforeSplitInteriorsAndSplitInteriorsBeforeItsInteriors() {
+        // Split root BIG: four 60,000-vertex exteriors here (240,000) and a 60,000-vertex interior
+        // here. Fallback root NORMAL, in this tile: two 60,000-vertex exteriors (over the building
+        // pool), a 50,000-vertex interior and a 3-vertex one. Of the 458,752 pooled vertices the
+        // exteriors take 360,000, BIG's interior 60,000 (420,000), and NORMAL's 50,000-vertex
+        // interior no longer fits; its 3-vertex one does. Had the interiors come first NORMAL's
+        // exteriors would not have fit; had NORMAL's interiors come before BIG's, BIG's would not.
+        var inTile =
+                new Modf(NORMAL, 79, 0x8, 10400, 0, 4150, 0, 0, 0, 1024)
+                        .bounded(10300, -10, 4120, 10500, 10, 4180);
+        try (var f = new Fixture(List.of(largePlacement(), inTile))) {
+            putRoot(
+                    f,
+                    BIG,
+                    new int[] {EXT, EXT, ROOM, ROOM, EXT, EXT, EXT},
+                    new int[] {60_000, 60_000, 60_000, 3, 60_000, 60_000, 60_000},
+                    new float[] {0, 200, 5, 205, 1, 2, 3},
+                    splitPortals());
+            putRoot(
+                    f,
+                    NORMAL,
+                    new int[] {EXT, EXT, ROOM, ROOM},
+                    new int[] {60_000, 60_000, 50_000, 3},
+                    new float[] {0, 1, 5, 6},
+                    splitPortals());
+            try (var set = f.runOpenWorld()) {
+                assertEquals(List.of(0, 2, 4, 5, 6), groupsOf(set, BIG));
+                assertEquals(List.of(0, 1, 3), groupsOf(set, NORMAL));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_WHOLE_LARGE));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+            }
+        }
+    }
+
+    @Test
+    void aCappedFallbackPlacesNoSetDoodadAndCapsItsFurtherPlacements() {
+        // Nine 60,000-vertex groups in one tile are over the building pool and the pooled large
+        // allowance: the root is capped whole, its two placements capped, and none of its set
+        // doodads is placed without it.
+        var a =
+                new Modf(BIG, 79, 0x8, 10400, 0, 4150, 0, 0, 0, 1024)
+                        .bounded(10300, -10, 4120, 10500, 10, 4180);
+        var b =
+                new Modf(BIG, 80, 0x8, 10420, 0, 4160, 0, 0, 0, 1024)
+                        .bounded(10300, -10, 4120, 10500, 10, 4180);
+        try (var f = new Fixture(List.of(a, b))) {
+            putModel(f, MODEL, model());
+            putBig(
+                    f,
+                    new int[] {EXT, EXT, EXT, EXT, EXT, EXT, EXT, EXT, EXT},
+                    new int[] {
+                        60_000, 60_000, 60_000, 60_000, 60_000, 60_000, 60_000, 60_000, 60_000
+                    },
+                    new float[] {0, 1, 2, 3, 4, 5, 6, 7, 8},
+                    doodadChunks(new int[][] {{0, 2}}, new long[] {MODEL}, standing(0, 1)));
+            try (var set = f.runOpenWorld()) {
+                assertEquals(List.of(), groupsOf(set, BIG));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.SET_DOODAD_DRAWN));
+                assertEquals(java.util.Set.of(), setDoodadKeys(set));
+                assertPlacementsAccounted(set, 2);
+            }
+        }
+        // With the tile's 64 building slots full once the root is drawn, its further placement
+        // is capped.
+        var records = new ArrayList<Modf>();
+        records.add(a);
+        records.add(b);
+        for (int i = 0; i < 63; i++) {
+            records.add(Modf.of(ROOT, 100 + i, 0x8));
+        }
+        try (var f = new Fixture(records)) {
+            putBig(f, new int[] {EXT, EXT}, new int[] {60_000, 60_000}, new float[] {0, 1});
+            try (var set = f.runOpenWorld()) {
+                assertEquals(List.of(0, 1), groupsOf(set, BIG));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_WHOLE_LARGE));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
+                assertEquals(
+                        1,
+                        set.placements().stream()
+                                .filter(
+                                        p ->
+                                                p.kind() == WorldExteriorObjects.Kind.BUILDING
+                                                        && p.rootId() == BIG)
+                                .count());
+                assertPlacementsAccounted(set, records.size());
+            }
+        }
+    }
+
+    @Test
+    void aFallbacksSetDoodadsAreTiedToItsDrawnInteriors() {
+        // The split root with portals, placed in one tile: over the building pool, it is drawn
+        // whole from the large allowance, every interior with it, and the doodad inside interior
+        // 2 that only interior 2 lists is tied to that group (#649).
+        var inTile =
+                new Modf(BIG, 79, 0x8, 10400, 0, 4150, 0, 0, 0, 1024)
+                        .bounded(10300, -10, 4120, 10500, 10, 4180);
+        try (var f = new Fixture(List.of(inTile))) {
+            putModel(f, MODEL, model());
+            putSplitWithPortals(
+                    f, doodadChunks(new int[][] {{0, 2}}, new long[] {MODEL}, standing(5, -50)));
+            f.files.sources.put(BIG + 3, withDoodadRefs(bigGroup(ROOM, 3), 0));
+            try (var set = f.runOpenWorld()) {
+                assertEquals(List.of(0, 1, 2, 3, 4), groupsOf(set, BIG));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_WHOLE_LARGE));
+                assertNotNull(modelOf(set, BIG).portals());
+                assertEquals(Map.of(0, 2, 1, -1), portalGroups(set));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.SET_DOODAD_IN_GROUP));
+            }
+        }
+    }
+
+    @Test
+    void onInstanceMapsAFallbacksInteriorsNeedItsPortalSet() {
+        // On an instance map a single-tile root over the building pool is drawn whole from the
+        // large allowance too, as roots drawn by group: its interiors draw with the root's portal
+        // set, and without one they are left out (GROUP_INTERIOR_NO_PORTALS) rather than drawn
+        // unculled from the allowance.
+        var inTile =
+                new Modf(BIG, 79, 0x8, 10400, 0, 4150, 0, 0, 0, 1024)
+                        .bounded(10300, -10, 4120, 10500, 10, 4180);
+        try (var f = new Fixture(List.of(inTile))) {
+            putSplitWithPortals(f);
+            try (var set = f.runInstance()) {
+                assertEquals(List.of(0, 1, 2, 3, 4), groupsOf(set, BIG));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_WHOLE_LARGE));
+                assertNotNull(modelOf(set, BIG).portals());
+            }
+        }
+        try (var f = new Fixture(List.of(inTile))) {
+            putBig(
+                    f,
+                    new int[] {EXT, EXT, ROOM},
+                    new int[] {60_000, 60_000, 3},
+                    new float[] {0, 1, 5});
+            try (var set = f.runInstance()) {
+                assertEquals(List.of(0, 1), groupsOf(set, BIG));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_WHOLE_LARGE));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_NO_PORTALS));
             }
         }
     }

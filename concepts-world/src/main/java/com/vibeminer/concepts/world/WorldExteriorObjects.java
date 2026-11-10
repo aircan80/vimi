@@ -1928,6 +1928,14 @@ public final class WorldExteriorObjects {
         /** Roots drawn whole from the large allowance ({@link Owner#whole}), by root. */
         private final Map<Long, Owner> wholeOwners = new HashMap<>();
 
+        /**
+         * Roots drawn whole from the large allowance that are known to fit an empty tile's building
+         * pool: only their border-crossing further placements may be drawn whole here. A neighbour
+         * sizing such a placement of any other root alone could split it, and its groups would then
+         * be drawn twice.
+         */
+        private final java.util.Set<Long> wholeFitsAlone = new java.util.HashSet<>();
+
         /** The unique ID of the first (drawn) placement of a root drawn whole, by root. */
         private final Map<Long, Long> wholeFirst = new HashMap<>();
 
@@ -2405,11 +2413,18 @@ public final class WorldExteriorObjects {
                                         ? new Queued(record, transform, owner, false)
                                         : new Queued(record, transform, whole, true);
                         if (byGroupQueue.putIfAbsent(rootId, queued) != null && whole != null) {
-                            // Drawn whole: its other placements draw the same model, placed
-                            // once it is decided (placeWholeExtras).
-                            wholeExtras
-                                    .computeIfAbsent(rootId, ignored -> new ArrayList<>())
-                                    .add(queued);
+                            if (owner != null && !wholeFitsAlone.contains(rootId)) {
+                                // A border-crossing placement of a root not known to fit an
+                                // empty tile: a neighbour listing it may draw it by group, so it
+                                // is not drawn whole here.
+                                count(Count.PLACEMENT_CAPPED);
+                            } else {
+                                // Drawn whole: its other placements draw the same model, placed
+                                // once it is decided (placeWholeExtras).
+                                wholeExtras
+                                        .computeIfAbsent(rootId, ignored -> new ArrayList<>())
+                                        .add(queued);
+                            }
                         } else if (byGroupQueue.get(rootId) == queued) {
                             if (whole != null) {
                                 wholeFirst.put(rootId, record.uniqueId());
@@ -3968,7 +3983,7 @@ public final class WorldExteriorObjects {
                         }
                         // In one tile and over what its building pool left (or over an empty
                         // pool): drawn whole from the large allowance if it fits there.
-                        return readWhole(rootId, root, skipped, deferred, sized, interiors);
+                        return readWhole(rootId, root, skipped, deferred, sized, interiors, false);
                     }
                 }
             }
@@ -3980,7 +3995,7 @@ public final class WorldExteriorObjects {
             if (!budget.fitsTile()) {
                 // Sized alone (an owner): it fits an empty tile, not what this one left. Drawn
                 // whole, as every tile listing it decides, from the large allowance if it fits.
-                return readWhole(rootId, root, skipped, deferred, sized, interiors);
+                return readWhole(rootId, root, skipped, deferred, sized, interiors, true);
             }
             var built = new ArrayList<Mesh>(pending.size());
             for (var mesh : pending) {
@@ -4082,6 +4097,10 @@ public final class WorldExteriorObjects {
          * doodads are read, admitted and placed as there, after every split root's exteriors
          * ({@link #placeByGroup}). A border-crossing root is still decided whole from the root
          * alone, as on every tile that lists it; only the allowance that pays depends on this tile.
+         * {@code fitsAlone}: the root is known to fit an empty tile's building pool (a border-
+         * crossing one sized alone), so its border-crossing placements are drawn whole by every
+         * tile listing them; otherwise such a placement may be split by a neighbour and is not
+         * drawn whole here ({@link #wholeFitsAlone}).
          */
         private RootState readWhole(
                 long rootId,
@@ -4089,9 +4108,13 @@ public final class WorldExteriorObjects {
                 boolean[] skipped,
                 boolean[] deferred,
                 Sized[] sized,
-                List<PendingMesh> held) {
+                List<PendingMesh> held,
+                boolean fitsAlone) {
             var whole = Owner.whole(admission.recorded().x(), admission.recorded().y());
             wholeOwners.put(rootId, whole);
+            if (fitsAlone) {
+                wholeFitsAlone.add(rootId);
+            }
             return readByGroup(rootId, root, whole, skipped, deferred, sized, held);
         }
 
