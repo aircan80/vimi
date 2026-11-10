@@ -1555,7 +1555,7 @@ final class WorldStreamScopes {
             if (keep > passed) {
                 return keep;
             }
-            for (var list : named.tailMap(base(passed), false).values()) {
+            for (var list : named.tailMap(base(passed), true).values()) {
                 for (var it = list.iterator(); it.hasNext(); ) {
                     var hint = it.next();
                     if (hint.key().equals(key) && hint.order() > passed) {
