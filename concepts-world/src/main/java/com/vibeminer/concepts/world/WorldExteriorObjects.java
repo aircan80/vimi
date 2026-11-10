@@ -714,7 +714,13 @@ public final class WorldExteriorObjects {
          * crossing root drawn whole that fits an empty tile but not this one. Not an outcome
          * bucket.
          */
-        ROOT_WHOLE_LARGE
+        ROOT_WHOLE_LARGE,
+        /**
+         * Drawn border-crossing placements of a root drawn whole here that the owner rule splits:
+         * each draws only its share of the root's drawn model, from the large allowance. Not an
+         * outcome bucket (they are also PLACEMENT_DRAWN).
+         */
+        PLACEMENT_SPLIT_SHARE
     }
 
     /** The group buckets ({@link Count}). */
@@ -1952,6 +1958,12 @@ public final class WorldExteriorObjects {
          */
         private final java.util.Set<Long> splitsAlone = new java.util.HashSet<>();
 
+        /**
+         * Border-crossing placements of roots drawn whole here that the owner rule splits: each
+         * draws only the groups and set doodads it gives this tile ({@link #placeSplitShares}).
+         */
+        private final List<Queued> splitShares = new ArrayList<>();
+
         /** Roots drawn whole from the large allowance ({@link Owner#whole}), by root. */
         private final Map<Long, Owner> wholeOwners = new HashMap<>();
 
@@ -2054,6 +2066,7 @@ public final class WorldExteriorObjects {
                 phase = WorldStageTimings.start();
                 placeByGroup();
                 placeWholeExtras();
+                placeSplitShares();
                 placeByGroupSetDoodads();
                 WorldStageTimings.stop("objects.phase.byGroup", phase);
                 // LOD0 group files this tile read (MAX_GROUPS), for the measurement probe; the
@@ -2364,15 +2377,27 @@ public final class WorldExteriorObjects {
             }
             // Larger buildings are admitted first, so caps and image budgets never favour a small
             // building only because obj0 records it earlier. Equal sizes keep obj0 order.
-            for (var record : records) {
-                if (Owner.crosses(record)) {
-                    crossingRoots.add(record.reference().value());
-                }
-            }
             var ordered = new ArrayList<>(records);
             ordered.sort(
                     java.util.Comparator.comparingDouble(
                             (WorldPlacements.WorldObject r) -> -recordedSize(r)));
+            // Roots with a border-crossing placement this tile could place: qualified, neither
+            // conflicting nor a duplicate, among the first MAX_PLACEMENTS such records.
+            int candidates = 0;
+            for (var record : ordered) {
+                if (candidates >= MAX_PLACEMENTS) {
+                    break;
+                }
+                if (conflicting.get(record.uniqueId())
+                        || byUid.get(record.uniqueId()).getFirst() != record
+                        || qualify(record) == null) {
+                    continue;
+                }
+                candidates++;
+                if (Owner.crosses(record)) {
+                    crossingRoots.add(record.reference().value());
+                }
+            }
             for (var record : ordered) {
                 token.check();
                 var group = byUid.get(record.uniqueId());
@@ -2448,8 +2473,8 @@ public final class WorldExteriorObjects {
                             if (owner != null && !wholeFitsAlone.contains(rootId)) {
                                 // A border-crossing placement of a root not known to fit an
                                 // empty tile: a neighbour listing it may draw it by group, so it
-                                // is not drawn whole here.
-                                count(Count.PLACEMENT_CAPPED);
+                                // draws here only the share its owner rule gives this tile.
+                                splitShares.add(new Queued(record, transform, owner, false));
                             } else {
                                 // Drawn whole: its other placements draw the same model, placed
                                 // once it is decided (placeWholeExtras).
@@ -2468,9 +2493,9 @@ public final class WorldExteriorObjects {
                     case DRAWN -> {
                         if (owner != null && splitsAlone.contains(rootId)) {
                             // A border-crossing placement of a root decided whole by one inside
-                            // the tile: a neighbour sizing it alone splits it, and drawing it whole
-                            // here would draw that neighbour's groups and set doodads twice.
-                            count(Count.PLACEMENT_CAPPED);
+                            // the tile: a neighbour sizing it alone splits it, so this tile draws
+                            // only the share the owner rule gives it (placeSplitShares).
+                            splitShares.add(new Queued(record, transform, owner, false));
                         } else {
                             placeBuilding(record, transform, rootId);
                         }
@@ -2778,6 +2803,90 @@ public final class WorldExteriorObjects {
                 }
             }
             wholeExtras.clear();
+        }
+
+        /**
+         * The placements of {@link #splitShares}, after every root drawn by group: the groups of
+         * the root's drawn model whose owner is this tile under the placement's own rule, as a root
+         * drawn by group draws them, so every tile listing the placement draws its own share
+         * whichever placement decided the root there, and no group is drawn by two tiles. The share
+         * takes no reads (its meshes are the drawn model's) but its own model, placement slot,
+         * draws and geometry from the large allowance; its set doodads follow the owner rule
+         * ({@link #placeByGroupSetDoodads}). A share with no group here, or one that does not fit,
+         * still places the set doodads standing in this tile, as a split root's.
+         */
+        private void placeSplitShares() {
+            for (var queued : splitShares) {
+                token.check();
+                var record = queued.record();
+                long rootId = record.reference().value();
+                Integer slot =
+                        rootStates.get(rootId) == RootState.DRAWN ? modelSlots.get(rootId) : null;
+                var root = byGroupRootFacts.get(rootId);
+                if (slot == null || root == null) {
+                    count(Count.PLACEMENT_CAPPED);
+                    continue;
+                }
+                var owned = queued.owner().owned(root);
+                var whole = models.get(slot);
+                var share = new ArrayList<Mesh>();
+                long vertices = 0, indices = 0, ranges = 0;
+                for (var mesh : whole.meshes()) {
+                    int g = mesh.groupOrdinal();
+                    if (g >= 0 && g < owned.length && owned[g]) {
+                        share.add(mesh);
+                        vertices += mesh.vertexCount();
+                        indices += mesh.indices().remaining();
+                        ranges += mesh.ranges().size();
+                    }
+                }
+                if (share.isEmpty()) {
+                    count(Count.PLACEMENT_OTHER_TILE);
+                    doodadsOnly(record, queued.transform(), rootId, queued.owner());
+                    continue;
+                }
+                int meshes = 0, buildingModels = 0;
+                for (var m : models) {
+                    meshes += m.doodad() ? 0 : m.meshes().size();
+                    buildingModels += m.doodad() ? 0 : 1;
+                }
+                long buildings = placements.stream().filter(p -> p.kind() == Kind.BUILDING).count();
+                // The share is a model of its own, within the tile's building model rows.
+                if (buildingModels >= MAX_ROOTS
+                        || opaquePlacements >= MAX_PLACEMENTS
+                        || buildings >= MAX_PLACEMENTS
+                        || share.size() > MAX_MESHES - meshes
+                        || ranges > MAX_DRAWS - draws
+                        || vertices
+                                > MAX_LARGE_VERTICES + MAX_LARGE_INTERIOR_VERTICES - largeVertices
+                        || indices > MAX_LARGE_INDICES + MAX_LARGE_INTERIOR_INDICES - largeIndices
+                        || ranges > MAX_LARGE_RANGES + MAX_LARGE_INTERIOR_RANGES - largeRanges) {
+                    count(Count.PLACEMENT_CAPPED);
+                    doodadsOnly(record, queued.transform(), rootId, queued.owner());
+                    continue;
+                }
+                largeVertices += vertices;
+                largeIndices += indices;
+                largeRanges += ranges;
+                draws += (int) ranges;
+                opaquePlacements++;
+                int model = models.size();
+                models.add(new Model(rootId, false, share, whole.portals()));
+                count(Count.PLACEMENT_DRAWN);
+                count(Count.PLACEMENT_SPLIT_SHARE);
+                var placement = buildingPlacement(record, queued.transform(), rootId, model);
+                int at = 0;
+                while (at < placements.size()
+                        && placements.get(at).kind() == Kind.BUILDING
+                        && placements.get(at).ordinal() < placement.ordinal()) {
+                    at++;
+                }
+                placements.add(at, placement);
+                owners.put(placement.uniqueId(), queued.owner());
+                byGroupBuildings.add(placement);
+                interiorsDrawn.put(placement.uniqueId(), drawnGroups(share, 0));
+            }
+            splitShares.clear();
         }
 
         /** A root drawn by group that draws nothing here: its local set doodads are kept. */
@@ -4032,8 +4141,23 @@ public final class WorldExteriorObjects {
                                     rootId, root, owner, skipped, deferred, sized, interiors);
                         }
                         // In one tile and over what its building pool left (or over an empty
-                        // pool): drawn whole from the large allowance if it fits there.
-                        return readWhole(rootId, root, skipped, deferred, sized, interiors, false);
+                        // pool): drawn whole from the large allowance if it fits there. With a
+                        // border-crossing placement listed too, sized as the owner rule sizes it,
+                        // its unread exteriors and deferred interiors included.
+                        boolean fitsAlone = false;
+                        if (sizeAlone) {
+                            var more = deferred.clone();
+                            for (int later = g + 1; later < lod0; later++) {
+                                more[later] |=
+                                        root.gfid(later) != 0
+                                                && !skipped[later]
+                                                && !deferred[later];
+                            }
+                            fitsAlone = !splitsAlone(root, exteriorsRead, more);
+                            noteSplitsAlone(rootId, root, !fitsAlone);
+                        }
+                        return readWhole(
+                                rootId, root, skipped, deferred, sized, interiors, fitsAlone);
                     }
                 }
             }
@@ -4042,8 +4166,14 @@ public final class WorldExteriorObjects {
                 // tile listing it would cap interiors it could draw by group.
                 return readByGroup(rootId, root, owner, skipped, deferred, sized, interiors);
             }
-            if (sizeAlone && splitsAlone(root, exteriorsRead, deferred, deferredCount)) {
-                splitsAlone.add(rootId);
+            if (sizeAlone) {
+                noteSplitsAlone(
+                        rootId,
+                        root,
+                        splitsAlone(
+                                root,
+                                exteriorsRead,
+                                deferredCount > 0 ? deferred : new boolean[lod0]));
             }
             if (!budget.fitsTile()) {
                 // Sized alone (an owner): it fits an empty tile, not what this one left. Drawn
@@ -4091,24 +4221,39 @@ public final class WorldExteriorObjects {
 
         /**
          * Whether the owner rule would draw a root by group when one of its border-crossing
-         * placements decides it: its exterior groups ({@code exteriors}, in read order) over an
-         * empty tile's building pool, or, with deferred MOGI interiors, over it together with them
-         * ({@link #interiorsOverAlone}). The same sizing a neighbour deciding that placement does,
-         * so the tiles agree on whether it is drawn whole.
+         * placements decides it: its exterior groups read so far ({@code exteriors}) over an empty
+         * tile's building pool, or over it together with the groups in {@code more} (exteriors not
+         * yet read and deferred MOGI interiors), read for their size only ({@link
+         * #interiorsOverAlone}). The same sizing a neighbour deciding that placement does, so the
+         * tiles agree on whether it is drawn whole or by group.
          */
         private boolean splitsAlone(
-                WmoFormats.Root root,
-                List<PendingMesh> exteriors,
-                boolean[] deferred,
-                int deferredCount) {
+                WmoFormats.Root root, List<PendingMesh> exteriors, boolean[] more) {
             var alone = new RootBudget(Allowance.ALONE);
             int[] scratch = new int[counts.length];
+            // An empty pool is looser than what the tile's pool left for opaque geometry, but not
+            // for cutout or blended groups: the tile drops one over its material budget, an empty
+            // pool's sizing counts it (within one more set of both budgets), so exteriors that fit
+            // the tile can still be over here.
             for (var mesh : exteriors) {
                 if (alone.admit(mesh, scratch) == Admission.OVER) {
                     return true;
                 }
             }
-            return deferredCount > 0 && interiorsOverAlone(root, alone, deferred);
+            for (boolean m : more) {
+                if (m) {
+                    return interiorsOverAlone(root, alone, more);
+                }
+            }
+            return false;
+        }
+
+        /** Records the owner rule's sizing of a root decided by a placement inside the tile. */
+        private void noteSplitsAlone(long rootId, WmoFormats.Root root, boolean splits) {
+            if (splits) {
+                splitsAlone.add(rootId);
+                byGroupRootFacts.put(rootId, root);
+            }
         }
 
         /**
