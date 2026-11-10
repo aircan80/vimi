@@ -6374,11 +6374,16 @@ class WorldExteriorObjectsTest {
                                 0, set.count(WorldExteriorObjects.Count.PLACEMENT_SPLIT_SHARE));
                         assertEquals(java.util.Set.of(), keysOf(set, 77));
                         assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
+                        assertEquals(
+                                0, set.count(WorldExteriorObjects.Count.SHARE_INTERIOR_DROPPED));
                     } else {
                         assertEquals(
                                 1, set.count(WorldExteriorObjects.Count.PLACEMENT_SPLIT_SHARE));
                         assertEquals(java.util.Set.of("77:0"), keysOf(set, 77));
                         assertEquals(0, set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
+                        // Interior 2, the share's only interior here, is left out.
+                        assertEquals(
+                                1, set.count(WorldExteriorObjects.Count.SHARE_INTERIOR_DROPPED));
                     }
                 }
             }

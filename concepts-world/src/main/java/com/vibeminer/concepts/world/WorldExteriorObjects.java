@@ -750,7 +750,15 @@ public final class WorldExteriorObjects {
          * building image, MODEL_UNAVAILABLE for a doodad model or its SKIN, MODEL_IMAGE_UNAVAILABLE
          * for a doodad image) and every bucket sum still holds. Not an outcome bucket itself.
          */
-        SOURCE_READ_CAPPED
+        SOURCE_READ_CAPPED,
+        /**
+         * MOGI-interior groups a split share would have drawn here, left out because the share fits
+         * only without them and is placed with its exteriors only (no other tile owns them).
+         * Counted once per group left out, only for a share that is placed (a capped share is
+         * PLACEMENT_CAPPED alone). Not an outcome bucket: the groups are the root's, counted once
+         * with it.
+         */
+        SHARE_INTERIOR_DROPPED
     }
 
     /** The group buckets ({@link Count}). */
@@ -2947,8 +2955,11 @@ public final class WorldExteriorObjects {
                 // Its exteriors were held for it before the interiors were admitted; its
                 // interiors were not, so a share that does not fit with them is placed with its
                 // exteriors only, rather than leave its exteriors undrawn.
+                int dropped = 0;
                 if (!shareFits(share)) {
+                    int before = share.size();
                     share.removeIf(mesh -> mogiInterior(root, mesh.groupOrdinal()));
+                    dropped = before - share.size();
                 }
                 long vertices = 0, indices = 0, ranges = 0;
                 for (var mesh : share) {
@@ -2978,6 +2989,9 @@ public final class WorldExteriorObjects {
                 shareModels.add(model);
                 count(Count.PLACEMENT_DRAWN);
                 count(Count.PLACEMENT_SPLIT_SHARE);
+                // Only a share placed without its interiors leaves them out; a capped one is
+                // PLACEMENT_CAPPED alone.
+                counts[Count.SHARE_INTERIOR_DROPPED.ordinal()] += dropped;
                 var placement = buildingPlacement(record, queued.transform(), rootId, model);
                 int at = 0;
                 while (at < placements.size()
