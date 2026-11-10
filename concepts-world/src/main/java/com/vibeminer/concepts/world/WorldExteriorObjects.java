@@ -1590,17 +1590,17 @@ public final class WorldExteriorObjects {
     /**
      * Which LOD0 groups of a very large placement a tile draws. A placement whose recorded MODF
      * bounds cross a tile border, and whose root's exterior groups are over the opaque building
-     * pool of an empty tile (on maps drawing open-world interiors, its exterior and MOGI-interior
-     * groups together), cannot be drawn whole by any tile that lists it. It is drawn by group
-     * instead: each group belongs to the tile holding the centre of its MOGI box, placed by the
-     * building transform and kept within the tiles the recorded bounds cover. A root without
-     * retained MOGI bounds belongs whole to the tile holding the centre of the recorded bounds. The
-     * rule reads only the placement and its root, so the tiles that list a placement agree on every
-     * group's owner without seeing each other, and each group is drawn by exactly one of them. A
-     * part of the building is then resident exactly while its tile is, as terrain is. The rule
-     * assumes every ADT that lists the placement records an identical MODF entry (position,
-     * rotation, scale and bounds), as Blizzard's data does; tiles whose records differed would
-     * compute different owners.
+     * pool of an empty tile (on maps drawing interiors, its exterior and MOGI-interior groups
+     * together), cannot be drawn whole by any tile that lists it. It is drawn by group instead:
+     * each group belongs to the tile holding the centre of its MOGI box, placed by the building
+     * transform and kept within the tiles the recorded bounds cover. A root without retained MOGI
+     * bounds belongs whole to the tile holding the centre of the recorded bounds. The rule reads
+     * only the placement and its root, so the tiles that list a placement agree on every group's
+     * owner without seeing each other, and each group is drawn by exactly one of them. A part of
+     * the building is then resident exactly while its tile is, as terrain is. The rule assumes
+     * every ADT that lists the placement records an identical MODF entry (position, rotation, scale
+     * and bounds), as Blizzard's data does; tiles whose records differed would compute different
+     * owners.
      */
     static final class Owner {
         private final int tileX, tileY, minX, maxX, minY, maxY;
@@ -1764,6 +1764,7 @@ public final class WorldExteriorObjects {
             boolean[] unread,
             PendingMesh[] readyInterior,
             boolean[] unreadInterior,
+            boolean[] charged,
             int[] local) {}
 
     /**
@@ -1771,7 +1772,43 @@ public final class WorldExteriorObjects {
      * failed, was dropped or is an interior), whether its MOGP flags say interior, and the counts
      * its read made, kept apart so a root drawn by group counts only its own groups.
      */
-    private record Sized(PendingMesh mesh, boolean interior, int[] counts) {}
+    private record Sized(PendingMesh mesh, boolean interior, int[] counts, Size size) {
+        Sized(PendingMesh mesh, boolean interior, int[] counts) {
+            this(mesh, interior, counts, null);
+        }
+    }
+
+    /**
+     * What a root budget charges for one group's mesh ({@link Builder.RootBudget#admit}): its
+     * vertices and indices, its ranges, whether every range is cutout or blended, and its opaque
+     * ranges and their indices. On instance maps the sizing pass keeps this for every interior
+     * group it read, whether or not the tile holds its copy, so the owner rule sizes a root from
+     * the root alone (#280, #643).
+     */
+    private record Size(
+            int vertices,
+            int indices,
+            int ranges,
+            boolean materialOnly,
+            int opaqueIndices,
+            int opaqueRanges) {
+        static Size of(PendingMesh mesh) {
+            int opaqueIndices = 0, opaqueRanges = 0;
+            for (var range : mesh.ranges()) {
+                if (kind(range.blend()) == OPAQUE) {
+                    opaqueIndices += range.indexCount();
+                    opaqueRanges++;
+                }
+            }
+            return new Size(
+                    mesh.vertices().length / VERTEX_FLOATS,
+                    mesh.indices().length,
+                    mesh.ranges().size(),
+                    opaqueRanges == 0,
+                    opaqueIndices,
+                    opaqueRanges);
+        }
+    }
 
     /** A placement of a root drawn by group, with its owner rule. */
     private record Queued(
@@ -1792,6 +1829,12 @@ public final class WorldExteriorObjects {
         TILE_INTERIOR,
         /** An empty tile's building pool: whether the root could ever fit one alone. */
         ALONE,
+        /**
+         * An empty tile's building pool with its interior allowance added: whether a root's
+         * exteriors and then its instance interiors could ever fit one alone, as a tile drawing it
+         * whole draws its interiors ({@link #TILE_INTERIOR}).
+         */
+        ALONE_INTERIOR,
         /**
          * What is left of the tile's large allowance with the interior allowance added, one pool
          * for roots drawn by group and roots drawn whole from it: every such root's exteriors
@@ -3170,7 +3213,23 @@ public final class WorldExteriorObjects {
                 }
                 for (int g = 0; g < read.unreadInterior().length; g++) {
                     var mesh = read.readyInterior()[g];
-                    if (read.unreadInterior()[g]) {
+                    if (read.unreadInterior()[g] && read.charged()[g]) {
+                        // Read and counted by the sizing pass already: read again, uncharged.
+                        token.check();
+                        // Its doodad ties were kept by that read too.
+                        mesh =
+                                readGroup(
+                                        g,
+                                        root.gfid(g),
+                                        root,
+                                        new int[counts.length],
+                                        headers,
+                                        false);
+                        if (mesh == null) {
+                            local[Count.GROUP_INTERIOR_CAPPED.ordinal()]++;
+                            continue;
+                        }
+                    } else if (read.unreadInterior()[g]) {
                         token.check();
                         if (groupsRead >= MAX_GROUPS) {
                             local[Count.GROUP_INTERIOR_CAPPED.ordinal()]++;
@@ -3950,33 +4009,38 @@ public final class WorldExteriorObjects {
             }
 
             Admission admit(PendingMesh mesh, int[] local) {
-                int meshVertices = mesh.vertices().length / VERTEX_FLOATS;
-                boolean materialOnly =
-                        mesh.ranges().stream().noneMatch(r -> kind(r.blend()) == OPAQUE);
+                return admit(Size.of(mesh), local);
+            }
+
+            Admission admit(Size mesh, int[] local) {
+                int meshVertices = mesh.vertices();
+                boolean materialOnly = mesh.materialOnly();
                 // Sized alone, nothing is dropped here: a drop would depend on the tile, or on
                 // other tiles' groups of a root drawn by group. A mesh that does not fit is capped
                 // against this tile's material budget when it is resolved, with the same counts.
                 long tileMaterial = Builder.this.materialVertices;
-                if (allowance != Allowance.ALONE
+                boolean alone =
+                        allowance == Allowance.ALONE || allowance == Allowance.ALONE_INTERIOR;
+                if (!alone
                         && materialOnly
-                        && !mesh.ranges().isEmpty()
+                        && mesh.ranges() > 0
                         && meshVertices > MAX_MATERIAL_VERTICES - tileMaterial - materialVertices) {
                     // resolveBuilding would cap every range of this cutout- or blend-only mesh on
                     // its vertices (BATCH_CAPPED, then GROUP_EMPTY) before reading any image; do it
                     // now so its copy is never held. Material vertices still pending are charged
                     // as if kept, a conservative bound.
-                    local[Count.BATCH_CAPPED.ordinal()] += mesh.ranges().size();
+                    local[Count.BATCH_CAPPED.ordinal()] += mesh.ranges();
                     local[Count.GROUP_EMPTY.ordinal()]++;
                     return Admission.DROPPED;
                 }
                 if (materialOnly) {
                     materialVertices += meshVertices;
                 }
-                if (allowance == Allowance.ALONE && materialOnly && !mesh.ranges().isEmpty()) {
+                if (alone && materialOnly && mesh.ranges() > 0) {
                     // Its copy is bounded on its own (one more set of both budgets), never
                     // against the opaque candidates: only a root past that bound is over.
                     aloneMaterialVertices += meshVertices;
-                    aloneMaterialIndices += mesh.indices().length;
+                    aloneMaterialIndices += mesh.indices();
                     return aloneMaterialVertices > MAX_VERTICES + MAX_MATERIAL_VERTICES
                                     || aloneMaterialIndices > MAX_INDICES + MAX_MATERIAL_INDICES
                             ? Admission.OVER
@@ -3985,34 +4049,31 @@ public final class WorldExteriorObjects {
                 long capVertices =
                         switch (allowance) {
                             case LARGE -> MAX_LARGE_VERTICES + MAX_LARGE_INTERIOR_VERTICES;
-                            case TILE_INTERIOR -> MAX_VERTICES + MAX_TILE_INTERIOR_VERTICES;
+                            case TILE_INTERIOR, ALONE_INTERIOR ->
+                                    MAX_VERTICES + MAX_TILE_INTERIOR_VERTICES;
                             default -> MAX_VERTICES;
                         };
                 long capIndices =
                         switch (allowance) {
                             case LARGE -> MAX_LARGE_INDICES + MAX_LARGE_INTERIOR_INDICES;
-                            case TILE_INTERIOR -> MAX_INDICES + MAX_TILE_INTERIOR_INDICES;
+                            case TILE_INTERIOR, ALONE_INTERIOR ->
+                                    MAX_INDICES + MAX_TILE_INTERIOR_INDICES;
                             default -> MAX_INDICES;
                         };
                 long capRanges =
                         switch (allowance) {
                             case LARGE -> MAX_LARGE_RANGES + MAX_LARGE_INTERIOR_RANGES;
-                            case TILE_INTERIOR -> MAX_RANGES + MAX_TILE_INTERIOR_RANGES;
+                            case TILE_INTERIOR, ALONE_INTERIOR ->
+                                    MAX_RANGES + MAX_TILE_INTERIOR_RANGES;
                             default -> MAX_RANGES;
                         };
                 pendingVertices += meshVertices;
-                pendingIndices += mesh.indices().length;
+                pendingIndices += mesh.indices();
                 if (pendingVertices > capVertices + MAX_MATERIAL_VERTICES
                         || pendingIndices > capIndices + MAX_MATERIAL_INDICES) {
                     return Admission.OVER;
                 }
-                int opaqueIndices = 0, opaqueRanges = 0;
-                for (var range : mesh.ranges()) {
-                    if (kind(range.blend()) == OPAQUE) {
-                        opaqueIndices += range.indexCount();
-                        opaqueRanges++;
-                    }
-                }
+                int opaqueIndices = mesh.opaqueIndices(), opaqueRanges = mesh.opaqueRanges();
                 if (opaqueRanges > 0) {
                     vertices += meshVertices;
                 }
@@ -4022,19 +4083,19 @@ public final class WorldExteriorObjects {
                         switch (allowance) {
                             case TILE, TILE_INTERIOR -> Builder.this.vertices;
                             case LARGE -> largeVertices;
-                            case ALONE -> 0;
+                            case ALONE, ALONE_INTERIOR -> 0;
                         };
                 long usedIndices =
                         switch (allowance) {
                             case TILE, TILE_INTERIOR -> Builder.this.indices;
                             case LARGE -> largeIndices;
-                            case ALONE -> 0;
+                            case ALONE, ALONE_INTERIOR -> 0;
                         };
                 long usedRanges =
                         switch (allowance) {
                             case TILE, TILE_INTERIOR -> Builder.this.ranges;
                             case LARGE -> largeRanges;
-                            case ALONE -> 0;
+                            case ALONE, ALONE_INTERIOR -> 0;
                         };
                 if (vertices > capVertices - usedVertices
                         || indices > capIndices - usedIndices
@@ -4288,12 +4349,13 @@ public final class WorldExteriorObjects {
         /**
          * Reads and admits one root. With an {@code owner} (a placement whose recorded bounds cross
          * a tile border) the root's exterior is first sized against an empty tile's building pool,
-         * on open-world maps together with its MOGI-interior groups ({@link #interiorsOverAlone}):
-         * one that fits is admitted against what the tile left, exactly as without an owner, its
-         * interiors still waiting for the interior pass; one over it is drawn by group instead
-         * ({@link #readByGroup}). A root to be drawn whole that does not fit what the tile's
-         * building pool left is drawn whole from the large allowance instead of capped ({@link
-         * #readWhole}).
+         * together with its MOGI-interior groups on open-world maps ({@link #interiorsOverAlone})
+         * and on instance maps, where they are read with the exterior ({@link
+         * #instanceInteriorsOverAlone}): one that fits is admitted against what the tile left,
+         * exactly as without an owner, its interiors still waiting for the interior pass; one over
+         * it is drawn by group instead ({@link #readByGroup}). A root to be drawn whole that does
+         * not fit what the tile's building pool left is drawn whole from the large allowance
+         * instead of capped ({@link #readWhole}).
          */
         private RootState readRoot(long rootId, Owner owner) {
             rootsRead++;
@@ -4401,14 +4463,19 @@ public final class WorldExteriorObjects {
                     continue;
                 }
                 if ((mesh.flags() & INTERIOR) != 0) {
+                    // On instance maps the size of one drawn by group too (MOGI interior) is kept
+                    // whether or not its copy is: the owner rule sizes the root with its interiors
+                    // from the root alone.
+                    var size = instanceInteriors() && mogiInterior(root, g) ? Size.of(mesh) : null;
                     // Bounded as it is read: past what both budgets could draw, a copy is never
                     // held (GROUP_INTERIOR_CAPPED). Released again if this root is capped.
                     if (!holdInterior(mesh)) {
                         local[Count.GROUP_INTERIOR_CAPPED.ordinal()]++;
+                        sized[g] = new Sized(null, true, sized[g].counts(), size);
                     } else {
                         interiors.add(mesh);
                         // Kept for the interiors of a root drawn by group (instance maps).
-                        sized[g] = new Sized(mesh, true, sized[g].counts());
+                        sized[g] = new Sized(mesh, true, sized[g].counts(), size);
                     }
                     continue;
                 }
@@ -4448,7 +4515,8 @@ public final class WorldExteriorObjects {
                                             root,
                                             exteriorsRead,
                                             later,
-                                            deferredCount > 0 ? deferred : new boolean[lod0]);
+                                            deferredCount > 0 ? deferred : new boolean[lod0],
+                                            sized);
                             noteSplitsAlone(rootId, root, !fitsAlone);
                         }
                         return readWhole(
@@ -4456,7 +4524,10 @@ public final class WorldExteriorObjects {
                     }
                 }
             }
-            if (owner != null && deferredCount > 0 && interiorsOverAlone(root, budget, deferred)) {
+            if (owner != null
+                    && (deferredCount > 0
+                            ? interiorsOverAlone(root, budget, deferred)
+                            : instanceInteriorsOverAlone(budget, sized, List.of()))) {
                 // Its exteriors fit an empty tile, but not with its interiors: drawn whole, every
                 // tile listing it would cap interiors it could draw by group.
                 return readByGroup(rootId, root, owner, skipped, deferred, sized, interiors);
@@ -4469,7 +4540,8 @@ public final class WorldExteriorObjects {
                                 root,
                                 exteriorsRead,
                                 new boolean[lod0],
-                                deferredCount > 0 ? deferred : new boolean[lod0]));
+                                deferredCount > 0 ? deferred : new boolean[lod0],
+                                sized));
             }
             if (!budget.fitsTile()) {
                 // Sized alone (an owner): it fits an empty tile, not what this one left. Drawn
@@ -4521,15 +4593,17 @@ public final class WorldExteriorObjects {
          * placements decides it: its exterior groups read so far ({@code exteriors}) over an empty
          * tile's building pool, or over it with the exteriors not yet read ({@code later}, {@link
          * #laterOverAlone}), or, with deferred MOGI interiors ({@code deferred}), over it with them
-         * too ({@link #interiorsOverAlone}, under the same read bound). The same sizing a neighbour
-         * deciding that placement does, so the tiles agree on whether it is drawn whole or by
-         * group.
+         * too ({@link #interiorsOverAlone}, under the same read bound), or, on instance maps, over
+         * it with the interior groups read so far ({@code sized}) and the later ones too ({@link
+         * #instanceInteriorsOverAlone}). The same sizing a neighbour deciding that placement does,
+         * so the tiles agree on whether it is drawn whole or by group.
          */
         private boolean splitsAlone(
                 WmoFormats.Root root,
                 List<PendingMesh> exteriors,
                 boolean[] later,
-                boolean[] deferred) {
+                boolean[] deferred,
+                Sized[] sized) {
             var alone = new RootBudget(Allowance.ALONE);
             int[] scratch = new int[counts.length];
             // An empty pool is looser than what the tile's pool left for opaque geometry, but not
@@ -4541,7 +4615,11 @@ public final class WorldExteriorObjects {
                     return true;
                 }
             }
-            if (laterOverAlone(root, alone, later)) {
+            var laterInteriors = new ArrayList<Size>();
+            if (laterOverAlone(root, alone, later, laterInteriors)) {
+                return true;
+            }
+            if (instanceInteriorsOverAlone(alone, sized, laterInteriors)) {
                 return true;
             }
             for (boolean d : deferred) {
@@ -4555,10 +4633,12 @@ public final class WorldExteriorObjects {
         /**
          * Reads the exterior groups in {@code later} for their size only and admits each against
          * {@code budget} as the owner rule's sizing does: a group whose MOGP flags say interior is
-         * held there, not admitted, so it is not charged here either. The budget keeps what they
-         * took, for the deferred interiors after them.
+         * held there, not admitted, so it is not charged here either; on instance maps its size is
+         * added to {@code interiors}, in order, for {@link #instanceInteriorsOverAlone}. The budget
+         * keeps what they took, for the interiors after them.
          */
-        private boolean laterOverAlone(WmoFormats.Root root, RootBudget budget, boolean[] later) {
+        private boolean laterOverAlone(
+                WmoFormats.Root root, RootBudget budget, boolean[] later, List<Size> interiors) {
             int[] scratch = new int[counts.length];
             var headers = new WmoFormats.GroupHeader[later.length];
             try {
@@ -4574,9 +4654,11 @@ public final class WorldExteriorObjects {
                     token.check();
                     sizingReads++;
                     var mesh = readGroup(g, root.gfid(g), root, scratch, headers, false);
-                    if (mesh != null
-                            && (mesh.flags() & INTERIOR) == 0
-                            && budget.admit(mesh, scratch) == Admission.OVER) {
+                    if (mesh != null && (mesh.flags() & INTERIOR) != 0) {
+                        if (instanceInteriors() && mogiInterior(root, g)) {
+                            interiors.add(Size.of(mesh));
+                        }
+                    } else if (mesh != null && budget.admit(mesh, scratch) == Admission.OVER) {
                         return true;
                     }
                 }
@@ -4584,6 +4666,46 @@ public final class WorldExteriorObjects {
             } finally {
                 admission.cancelPrefetch();
             }
+        }
+
+        /** Whether this tile draws instance interiors: read with their roots' exterior groups. */
+        private boolean instanceInteriors() {
+            return interiors && !deferInteriors;
+        }
+
+        /**
+         * On instance maps, whether a border-crossing root's interior groups take its sizing
+         * ({@code budget}, its exteriors already admitted against an empty tile's building pool)
+         * over that pool with an empty tile's interior allowance added ({@link
+         * Allowance#ALONE_INTERIOR}), from which a tile drawing the root whole draws its interiors:
+         * each interior group the sizing pass read ({@code sized}: MOGP interior, as it holds them,
+         * and MOGI interior, as a root drawn by group draws them), then the later ones ({@code
+         * later}), charged in group order as an exterior would be. Sized from the sizes the pass
+         * kept for every interior group, whether or not this tile holds its copy, so every tile
+         * listing the placement agrees. No group is read here. False on other maps. {@code budget}
+         * is left as it was.
+         */
+        private boolean instanceInteriorsOverAlone(
+                RootBudget budget, Sized[] sized, List<Size> later) {
+            if (!instanceInteriors()) {
+                return false;
+            }
+            var withInteriors = new RootBudget(Allowance.ALONE_INTERIOR);
+            withInteriors.reset(budget.mark());
+            int[] scratch = new int[counts.length];
+            for (var group : sized) {
+                if (group != null
+                        && group.size() != null
+                        && withInteriors.admit(group.size(), scratch) == Admission.OVER) {
+                    return true;
+                }
+            }
+            for (var size : later) {
+                if (withInteriors.admit(size, scratch) == Admission.OVER) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         /** Records the owner rule's sizing of a root decided by a placement inside the tile. */
@@ -4682,10 +4804,11 @@ public final class WorldExteriorObjects {
          * pass read keeps that copy and its counts, so no group is read or charged twice; the
          * others are read by {@link #placeByGroup}, after everything else the tile draws. With
          * interiors, an owned group MOGI marks interior waits for placeByGroup too (its copy kept
-         * when the sizing pass read it, on instance maps); it is drawn only with the root's portal
-         * set, which describes every group from MOGI. A group read as exterior whose MOGP flags say
-         * interior while MOGI does not is not drawn (GROUP_INTERIOR_NO_PORTALS): the set would call
-         * it exterior and never cull it. A root none of whose groups is this tile's is
+         * when the sizing pass read it, on instance maps, or read again there, uncharged, when the
+         * bound on held copies dropped it); it is drawn only with the root's portal set, which
+         * describes every group from MOGI. A group read as exterior whose MOGP flags say interior
+         * while MOGI does not is not drawn (GROUP_INTERIOR_NO_PORTALS): the set would call it
+         * exterior and never cull it. A root none of whose groups is this tile's is
          * ROOT_OTHER_TILE. {@code held} are the interior copies the sizing pass held: all leave the
          * shared held-copy bound here. An owned MOGI-interior group the sizing pass never reached
          * (instance maps) waits for the interiors too.
@@ -4708,6 +4831,7 @@ public final class WorldExteriorObjects {
             var unread = new boolean[lod0];
             var readyInterior = new PendingMesh[lod0];
             var unreadInterior = new boolean[lod0];
+            var charged = new boolean[lod0];
             for (int g = 0; g < lod0; g++) {
                 if (root.gfid(g) == 0) {
                     local[Count.GROUP_UNSUPPORTED.ordinal()]++;
@@ -4736,6 +4860,12 @@ public final class WorldExteriorObjects {
                             ready[g] = sized[g].mesh();
                         } else if (!mogiInterior(root, g)) {
                             local[interiorNotDrawn().ordinal()]++;
+                        } else if (sized[g].mesh() == null && sized[g].size() != null) {
+                            // Its copy was dropped past the held-copy bound, which other groups
+                            // and roots filled: read again when the interiors are placed, its
+                            // read already charged and counted.
+                            unreadInterior[g] = true;
+                            charged[g] = true;
                         } else if (sized[g].mesh() == null) {
                             local[Count.GROUP_INTERIOR_CAPPED.ordinal()]++;
                         } else {
@@ -4755,7 +4885,9 @@ public final class WorldExteriorObjects {
                 return RootState.OTHER_TILE;
             }
             byGroupReads.put(
-                    rootId, new ByGroup(root, ready, unread, readyInterior, unreadInterior, local));
+                    rootId,
+                    new ByGroup(
+                            root, ready, unread, readyInterior, unreadInterior, charged, local));
             return RootState.BY_GROUP;
         }
 
