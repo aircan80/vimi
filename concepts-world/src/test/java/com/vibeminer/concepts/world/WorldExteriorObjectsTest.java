@@ -7829,32 +7829,157 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
-    void onInstanceMapsABorderRootIsStillSizedByItsExteriorsAlone() {
-        // Instance maps size a border root as before: its interiors are held for the interior
-        // pass and never make it split, so the root is drawn whole. Its interiors (120,003
-        // vertices) draw from what the tile left of the building pool and the interior
-        // allowance; with three 60,000-vertex ones (180,003) the last no longer fits and is
-        // capped.
-        try (var f = new Fixture(List.of(largePlacement()))) {
-            putSmallExteriorLargeInteriors(f, 60_000);
-            try (var set = f.runInstance()) {
-                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
-                assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_OTHER_TILE));
-                assertEquals(List.of(0, 1, 2, 3, 4), groupsOf(set, BIG));
-                assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
-            }
-        }
-        try (var f = new Fixture(List.of(largePlacement()))) {
+    void onInstanceMapsABorderRootWhoseInteriorsAreOverAnEmptyTileIsDrawnByGroup() {
+        // The exteriors alone fit any tile, but with its interiors (180,006 vertices) the root is
+        // over what an empty tile draws a whole root's interiors from: its 98,304 building
+        // vertices and its 65,536-vertex interior allowance. Drawn whole, every tile listing it
+        // would cap an interior; drawn by group, each tile draws its own share, every group and
+        // every set doodad exactly once across the two tiles.
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var neighbour = alsoRecord(files, 8, 19);
+        try (var f = new Fixture(List.of(largePlacement()), files)) {
+            putModel(f, MODEL, model());
             putBig(
                     f,
                     new int[] {EXT, EXT, ROOM, ROOM, ROOM},
                     new int[] {3, 3, 60_000, 60_000, 60_000},
-                    new float[] {0, 200, 5, 205, 6},
+                    new float[] {0, 200, 5, 205, 67.5f},
+                    splitPortals(),
+                    doodadChunks(
+                            new int[][] {{0, 4}},
+                            new long[] {MODEL},
+                            standing(5, 66.6f, -50, 205)));
+            try (var here = f.runInstance();
+                    var there = instanceOn(f, neighbour)) {
+                assertEquals(List.of(0, 2), groupsOf(here, BIG));
+                assertEquals(List.of(1, 3, 4), groupsOf(there, BIG));
+                for (var set : List.of(here, there)) {
+                    assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
+                    assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                    assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+                    assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_PORTALS));
+                    assertNotNull(modelOf(set, BIG).portals());
+                    assertEquals(2, set.count(WorldExteriorObjects.Count.SET_DOODAD_DRAWN));
+                    assertEquals(2, set.count(WorldExteriorObjects.Count.SET_DOODAD_OTHER_TILE));
+                }
+                assertEquals(3, here.count(WorldExteriorObjects.Count.GROUP_OTHER_TILE));
+                assertEquals(2, there.count(WorldExteriorObjects.Count.GROUP_OTHER_TILE));
+                var drawn = new java.util.TreeSet<String>(drawnGroupKeys(here));
+                for (var key : drawnGroupKeys(there)) {
+                    assertTrue(drawn.add(key), "group " + key + " drawn by both tiles");
+                }
+                assertEquals(5, drawn.size());
+                // Repeating a tile gives the same set: sizing reads only the placement and root.
+                try (var again = f.runInstance()) {
+                    assertEquals(counts(here), counts(again));
+                    assertEquals(groupsOf(here, BIG), groupsOf(again, BIG));
+                }
+            }
+        }
+    }
+
+    @Test
+    void onInstanceMapsABorderRootWhoseInteriorsFitAnEmptyTileIsStillDrawnWhole() {
+        // With 3-vertex interiors the root fits an empty tile: drawn whole by every tile listing
+        // it, its interiors held for the interior pass, exactly as before. With 60,000-vertex
+        // ones (120,003) it still fits an empty tile's building pool and interior allowance
+        // together (163,840), from which a tile drawing it whole draws its interiors.
+        for (int interior : new int[] {3, 60_000}) {
+            var files = new WorldTerrainTextureSourceTest.Files();
+            var neighbour = alsoRecord(files, 8, 19);
+            try (var f = new Fixture(List.of(largePlacement()), files)) {
+                putSmallExteriorLargeInteriors(f, interior);
+                try (var here = f.runInstance();
+                        var there = instanceOn(f, neighbour)) {
+                    for (var set : List.of(here, there)) {
+                        assertEquals(List.of(0, 1, 2, 3, 4), groupsOf(set, BIG));
+                        assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
+                        assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_OTHER_TILE));
+                        assertEquals(
+                                0, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void onInstanceMapsTilesAgreeOnABorderRootWhenOneDroppedItsInteriorCopies() {
+        // 7,19 first reads a building whose interiors (189,000 vertices) fill most of the bound on
+        // held interior copies (196,608), so it drops the border root's 60,000-vertex interior
+        // copies; 8,19 lists only the border root and holds them. Sized from every interior's
+        // size (180,006 vertices, over an empty tile), both draw the root by group, and 7,19
+        // reads its dropped interior 2 again to draw it: every group is drawn exactly once across
+        // the tiles.
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var neighbour = alsoRecordOwn(files, 8, 19, 5, List.of(largePlacement()));
+        try (var f =
+                new Fixture(List.of(busyBuilding(NORMAL, 81, 2000), largePlacement()), files)) {
+            f.files.sources.put(NORMAL + 1, group(EXT));
+            for (int g = 2; g <= 4; g++) {
+                f.files.sources.put(NORMAL + g, bigGroup(INT, 63_000));
+            }
+            f.files.sources.put(NORMAL, root(NORMAL + 1, NORMAL + 2, NORMAL + 3, NORMAL + 4));
+            putBig(
+                    f,
+                    new int[] {EXT, EXT, ROOM, ROOM, ROOM},
+                    new int[] {3, 3, 60_000, 60_000, 60_000},
+                    new float[] {0, 200, 5, 205, 67.5f},
                     splitPortals());
-            try (var set = f.runInstance()) {
-                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
-                assertEquals(List.of(0, 1, 2, 3), groupsOf(set, BIG));
-                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+            try (var here = f.runInstance();
+                    var there = instanceOn(f, neighbour)) {
+                assertEquals(List.of(0, 2), groupsOf(here, BIG));
+                assertEquals(List.of(1, 3, 4), groupsOf(there, BIG));
+                for (var set : List.of(here, there)) {
+                    assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
+                }
+                var drawn = new java.util.TreeSet<String>(drawnGroupKeys(here));
+                for (var key : drawnGroupKeys(there)) {
+                    assertTrue(drawn.add(key), "group " + key + " drawn by both tiles");
+                }
+                assertTrue(
+                        drawn.containsAll(List.of("77:0", "77:1", "77:2", "77:3", "77:4")),
+                        drawn.toString());
+            }
+        }
+    }
+
+    @Test
+    void onInstanceMapsAnInTileDecisionSizesTheInteriorsAsTheOwnerRuleDoes() {
+        // Root BIG: exteriors 0 and 1 (30,000 vertices each), MOGI interiors 2 and 3 (60,000
+        // each) and a small one. 8,19 lists only the crossing placement C: sized with its
+        // interiors (180,003) it is over an empty tile, so drawn by group. 7,19, busy, decides BIG
+        // by its
+        // in-tile placement and goes over at exterior 1; sizing as the owner rule does, interiors
+        // included, it finds the same split and draws C's share, so each group of C is drawn
+        // exactly once across the two tiles.
+        var inTile =
+                new Modf(BIG, 79, 0x8, 10400, 0, 4150, 0, 0, 0, 1024)
+                        .bounded(10300, -600, 4120, 10500, 600, 4180);
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var neighbour = alsoRecordOwn(files, 8, 19, 5, List.of(largePlacement()));
+        try (var f =
+                new Fixture(
+                        List.of(busyBuilding(NORMAL, 81, 2000), inTile, largePlacement()), files)) {
+            putRoot(f, NORMAL, new int[] {EXT}, new int[] {50_000}, new float[] {0});
+            putBig(
+                    f,
+                    new int[] {EXT, EXT, ROOM, ROOM, ROOM},
+                    new int[] {30_000, 30_000, 60_000, 60_000, 3},
+                    new float[] {0, 200, 5, 205, 67.5f},
+                    splitPortals());
+            try (var here = f.runInstance();
+                    var there = instanceOn(f, neighbour)) {
+                assertEquals(1, there.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
+                assertEquals(1, here.count(WorldExteriorObjects.Count.PLACEMENT_SPLIT_SHARE));
+                var mine = keysOf(here, 77);
+                var theirs = keysOf(there, 77);
+                for (var key : mine) {
+                    assertFalse(theirs.contains(key), "group " + key + " drawn by both tiles");
+                }
+                var all = new java.util.TreeSet<String>(mine);
+                all.addAll(theirs);
+                assertEquals(java.util.Set.of("77:0", "77:1", "77:2", "77:3", "77:4"), all);
             }
         }
     }
