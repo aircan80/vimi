@@ -6361,6 +6361,125 @@ class WorldExteriorObjectsTest {
         }
     }
 
+    /**
+     * A border-crossing root with a small exterior and large interiors: exteriors 0 (here) and 1
+     * (there) of 3 vertices, interiors 2 (here) and 3 (there) of 60,000 vertices joined by portals,
+     * and interior 4 (there) of 3 vertices.
+     */
+    private static void putSmallExteriorLargeInteriors(Fixture f, int interiorVertices) {
+        putBig(
+                f,
+                new int[] {EXT, EXT, ROOM, ROOM, ROOM},
+                new int[] {3, 3, interiorVertices, interiorVertices, 3},
+                new float[] {0, 200, 5, 205, 67.5f},
+                splitPortals());
+    }
+
+    @Test
+    void aBorderRootWhoseInteriorsAreOverAnEmptyTileIsDrawnByGroup() {
+        // Its exteriors alone fit any tile, but with its interiors (120,006 vertices) the root is
+        // over an empty tile's 98,304 building vertices: drawn whole, every tile listing it would
+        // cap an interior. Sized with its interiors, it is drawn by group, and each tile draws
+        // its own share whole, every interior with the root's portal set.
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var neighbour = alsoRecord(files, 8, 19);
+        try (var f = new Fixture(List.of(largePlacement()), files)) {
+            putSmallExteriorLargeInteriors(f, 60_000);
+            try (var here = f.runOpenWorld();
+                    var there = openWorldOn(f, neighbour)) {
+                assertEquals(List.of(0, 2), groupsOf(here, BIG));
+                assertEquals(List.of(1, 3, 4), groupsOf(there, BIG));
+                for (var set : List.of(here, there)) {
+                    assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
+                    assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+                    assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                    assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+                    assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_PORTALS));
+                    assertNotNull(modelOf(set, BIG).portals());
+                    assertPlacementsAccounted(set, 1);
+                }
+                assertEquals(3, here.count(WorldExteriorObjects.Count.GROUP_OTHER_TILE));
+                assertEquals(2, there.count(WorldExteriorObjects.Count.GROUP_OTHER_TILE));
+                assertEquals(60_003, here.vertices());
+                assertEquals(60_006, there.vertices());
+                // Repeating a tile gives the same set: sizing reads only the placement and root.
+                try (var again = f.runOpenWorld()) {
+                    assertEquals(counts(here), counts(again));
+                    assertEquals(groupsOf(here, BIG), groupsOf(again, BIG));
+                }
+            }
+        }
+    }
+
+    @Test
+    void aBorderRootWhoseInteriorsFitAnEmptyTileIsStillDrawnWhole() {
+        // The same root with 3-vertex interiors fits an empty tile with them: every tile listing
+        // it draws it whole, its interiors after every exterior, exactly as before.
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var neighbour = alsoRecord(files, 8, 19);
+        try (var f = new Fixture(List.of(largePlacement()), files)) {
+            putSmallExteriorLargeInteriors(f, 3);
+            try (var here = f.runOpenWorld();
+                    var there = openWorldOn(f, neighbour)) {
+                for (var set : List.of(here, there)) {
+                    assertEquals(List.of(0, 1, 2, 3, 4), groupsOf(set, BIG));
+                    assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
+                    assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_OTHER_TILE));
+                    assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+                    assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
+                    assertNotNull(modelOf(set, BIG).portals());
+                }
+            }
+        }
+    }
+
+    @Test
+    void sizingABorderRootsInteriorsNeverSpendsTheTileGroupReads() {
+        // The border root (admitted first, as the largest) has 3 exteriors and 40 small
+        // interiors, which fit an empty tile with them; a later root has 220 exterior groups.
+        // Sizing reads the interiors without charging the tile's 256 group reads, so the later
+        // root is still read whole and drawn (3 + 220), and the border root's interiors are
+        // capped whole in the interior pass (40 > 33 left), exactly as when they were never sized.
+        long later = 821;
+        var flags = new int[43];
+        var vertices = new int[43];
+        var centres = new float[43];
+        for (int g = 0; g < 43; g++) {
+            flags[g] = g < 3 ? EXT : INT;
+            vertices[g] = 3;
+            centres[g] = g < 3 ? 0 : 5;
+        }
+        try (var f = new Fixture(List.of(largePlacement(), Modf.of(later, 2, 0x8).sized(10)))) {
+            putBig(f, flags, vertices, centres);
+            f.files.sources.put(GROUP + 50, group(EXT));
+            f.files.sources.put(later, mogiRoot(repeat(GROUP + 50, 220), repeatFlags(EXT, 220)));
+            try (var set = f.runOpenWorld()) {
+                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+                assertEquals(40, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+                assertEquals(List.of(0, 1, 2), groupsOf(set, BIG));
+                assertEquals(220, groupsOf(set, later).size());
+            }
+        }
+    }
+
+    @Test
+    void onInstanceMapsABorderRootIsStillSizedByItsExteriorsAlone() {
+        // Instance maps size a border root as before: its interiors are held for the interior
+        // pass and never make it split, so the root is drawn whole and the interior that does not
+        // fit what the tile left is capped.
+        try (var f = new Fixture(List.of(largePlacement()))) {
+            putSmallExteriorLargeInteriors(f, 60_000);
+            try (var set = f.runInstance()) {
+                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_OTHER_TILE));
+                assertEquals(List.of(0, 1, 2, 4), groupsOf(set, BIG));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+            }
+        }
+    }
+
     @Test
     void outdoorSetDoodadsOfASplitRootComeBeforeThoseInItsInteriors() {
         // The doodad inside interior 2 is recorded first; the outdoor one is still placed first.
@@ -6708,10 +6827,15 @@ class WorldExteriorObjectsTest {
         assertEquals(2 * (192 + 160), slots * 2);
         assertEquals(models, profile.derivedReads(WorldStreamScopes.DerivedKind.M2_MODEL));
         assertEquals(models, profile.derivedReads(WorldStreamScopes.DerivedKind.M2_SKIN));
-        // Every distinct source a tile may bind: WDT, OBJ0, 24 roots, 256 groups, the WMO image
-        // slots, and each doodad model, skin and image slot.
+        // Every distinct source a tile may bind: WDT, OBJ0, 24 roots, 256 groups, 256 groups read
+        // only for sizing, the WMO image slots, and each doodad model, skin and image slot.
         assertEquals(
-                2 + 24 + 256 + 64 + 64 + 64 + 32 + models + models + slots, profile.bindingLimit());
+                2 + 24 + 256 + 256 + 64 + 64 + 64 + 32 + models + models + slots,
+                profile.bindingLimit());
+        // The tile's group reads, and as many again for sizing border-crossing roots.
+        assertEquals(
+                2 * WorldExteriorObjects.MAX_GROUPS,
+                profile.derivedReads(WorldStreamScopes.DerivedKind.WMO_GROUP));
     }
 
     @Test

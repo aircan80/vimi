@@ -1522,10 +1522,11 @@ public final class WorldExteriorObjects {
 
     /**
      * Which LOD0 groups of a very large placement a tile draws. A placement whose recorded MODF
-     * bounds cross a tile border, and whose root's exterior groups alone are over the opaque
-     * building pool of an empty tile, cannot be drawn whole by any tile that lists it. It is drawn
-     * by group instead: each group belongs to the tile holding the centre of its MOGI box, placed
-     * by the building transform and kept within the tiles the recorded bounds cover. A root without
+     * bounds cross a tile border, and whose root's exterior groups are over the opaque building
+     * pool of an empty tile (on maps drawing open-world interiors, its exterior and MOGI-interior
+     * groups together), cannot be drawn whole by any tile that lists it. It is drawn by group
+     * instead: each group belongs to the tile holding the centre of its MOGI box, placed by the
+     * building transform and kept within the tiles the recorded bounds cover. A root without
      * retained MOGI bounds belongs whole to the tile holding the centre of the recorded bounds. The
      * rule reads only the placement and its root, so the tiles that list a placement agree on every
      * group's owner without seeing each other, and each group is drawn by exactly one of them. A
@@ -1763,6 +1764,15 @@ public final class WorldExteriorObjects {
         private int opaquePlacements;
 
         private int rootsRead, groupsRead, imagesRead, vertices, indices, ranges;
+
+        /**
+         * MOGI-interior groups read only to size a border-crossing root ({@link
+         * #interiorsOverAlone}): bounded by their own MAX_GROUPS per tile (the read profile's
+         * second set of group reads) and never charged to {@code groupsRead}, so sizing never takes
+         * a group read an exterior could use.
+         */
+        private int sizingReads;
+
         private int modelsRead, modelImagesRead, doodadVertices, doodadIndices, doodadRanges;
 
         /** While true, a doodad model being read charges its images to the interior slots. */
@@ -1952,6 +1962,8 @@ public final class WorldExteriorObjects {
                 // interior pass's share separately (#383).
                 WorldStageTimings.value("objects.groups.readPerTile", groupsRead);
                 WorldStageTimings.value("objects.groups.interiorReadPerTile", interiorReads);
+                // Interior groups read only to size border-crossing roots, not in readPerTile.
+                WorldStageTimings.value("objects.groups.sizingReadPerTile", sizingReads);
             }
             long phase = WorldStageTimings.start();
             allocateImages();
@@ -3678,9 +3690,11 @@ public final class WorldExteriorObjects {
 
         /**
          * Reads and admits one root. With an {@code owner} (a placement whose recorded bounds cross
-         * a tile border) the root's exterior is first sized against an empty tile's building pool:
-         * one that fits is admitted against what the tile left, exactly as without an owner; one
-         * over it is drawn by group instead ({@link #readByGroup}).
+         * a tile border) the root's exterior is first sized against an empty tile's building pool,
+         * on open-world maps together with its MOGI-interior groups ({@link #interiorsOverAlone}):
+         * one that fits is admitted against what the tile left, exactly as without an owner, its
+         * interiors still waiting for the interior pass; one over it is drawn by group instead
+         * ({@link #readByGroup}).
          */
         private RootState readRoot(long rootId, Owner owner) {
             rootsRead++;
@@ -3822,6 +3836,11 @@ public final class WorldExteriorObjects {
                     }
                 }
             }
+            if (owner != null && deferredCount > 0 && interiorsOverAlone(root, budget, deferred)) {
+                // Its exteriors fit an empty tile, but not with its interiors: drawn whole, every
+                // tile listing it would cap interiors it could draw by group.
+                return readByGroup(rootId, root, owner, skipped, deferred, sized, interiors);
+            }
             if (!budget.fitsTile()) {
                 // Sized alone (an owner): it fits an empty tile, not what this one left.
                 releaseInteriors(interiors);
@@ -3865,6 +3884,58 @@ public final class WorldExteriorObjects {
             models.add(new Model(rootId, false, built, portals));
             count(Count.ROOT_DRAWN);
             return RootState.DRAWN;
+        }
+
+        /**
+         * Whether the MOGI-interior groups a border-crossing root defers on an open-world map
+         * ({@code deferred}) take its sizing ({@code budget}, its exteriors already admitted
+         * against an empty tile's building pool) over that pool (#383): an interior there is
+         * charged as an exterior would be. Each is read for its size only, in order until one is
+         * over: its copy, counts, header and doodad references are discarded, so a root that still
+         * fits draws exactly as before, its interiors read again in {@link #readInteriors}, and a
+         * root drawn by group reads its owned interiors again in {@link #byGroupInteriors}. An
+         * unreadable interior is left out of the size. The reads are bounded by {@link
+         * #sizingReads}, not the tile's group reads; past that bound the root is sized by its
+         * exteriors alone. The budget is left as it was.
+         */
+        private boolean interiorsOverAlone(
+                WmoFormats.Root root, RootBudget budget, boolean[] deferred) {
+            int reads = 0;
+            for (boolean d : deferred) {
+                reads += d ? 1 : 0;
+            }
+            if (reads > MAX_GROUPS - sizingReads) {
+                return false;
+            }
+            long[] mark = budget.mark();
+            int[] scratch = new int[counts.length];
+            var headers = new WmoFormats.GroupHeader[deferred.length];
+            // As in the interior pass, an interior group whose input is missing is only unread,
+            // never a failure of the tile.
+            interiorPass = true;
+            try {
+                for (int g = 0; g < deferred.length; g++) {
+                    if (deferred[g]) {
+                        admission.prefetch(root.gfid(g), WorldStreamScopes.DerivedKind.WMO_GROUP);
+                    }
+                }
+                for (int g = 0; g < deferred.length; g++) {
+                    if (!deferred[g]) {
+                        continue;
+                    }
+                    token.check();
+                    sizingReads++;
+                    var mesh = readGroup(g, root.gfid(g), root, scratch, headers, false);
+                    if (mesh != null && budget.admit(mesh, scratch) == Admission.OVER) {
+                        return true;
+                    }
+                }
+                return false;
+            } finally {
+                interiorPass = false;
+                budget.reset(mark);
+                admission.cancelPrefetch();
+            }
         }
 
         /**
@@ -4211,6 +4282,20 @@ public final class WorldExteriorObjects {
                 WmoFormats.Root root,
                 int[] local,
                 WmoFormats.GroupHeader[] headers) {
+            return readGroup(ordinal, id, root, local, headers, true);
+        }
+
+        /**
+         * As above; {@code keepRefs} false leaves the group's MODR out of the set doodad ties, for
+         * a read that only sizes a root.
+         */
+        private PendingMesh readGroup(
+                int ordinal,
+                long id,
+                WmoFormats.Root root,
+                int[] local,
+                WmoFormats.GroupHeader[] headers,
+                boolean keepRefs) {
             var input = derived(id, WorldStreamScopes.DerivedKind.WMO_GROUP);
             if (input == null) {
                 local[Count.GROUP_UNAVAILABLE.ordinal()]++;
@@ -4224,7 +4309,9 @@ public final class WorldExteriorObjects {
                         token::isCanceled,
                         borrow -> {
                             headers[ordinal] = borrow.header();
-                            keepDoodadRefs(root, ordinal, borrow.doodadRefs());
+                            if (keepRefs) {
+                                keepDoodadRefs(root, ordinal, borrow.doodadRefs());
+                            }
                             long flags = borrow.header().flags();
                             if ((flags & INTERIOR) != 0 && !interiors) {
                                 outcome[0] = Count.GROUP_INTERIOR;

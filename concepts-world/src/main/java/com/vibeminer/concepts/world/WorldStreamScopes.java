@@ -458,16 +458,18 @@ final class WorldStreamScopes {
         BASIC_WMO(11, 1, 1 << 10, 1, 32 << 10, 6, 64 << 10),
         LIQUID_INSPECTION(11, 0, 0, 0, 0, 0, 0),
         /**
-         * Per-tile outdoor exterior set: WDT, OBJ0, the capped derived WMO reads (64 opaque images,
-         * 64 opaque images of very large buildings drawn by group, 64 more for their interiors and
-         * 32 cutout or blended images) and the capped BASIC doodad reads (M2 models, their first
-         * SKIN and their images), with the interior allowance's 128 more models and 160 more images
-         * for set doodads tied to an interior group. Every doodad image slot is a distinct source
-         * and may be read twice, like the WMO images.
+         * Per-tile outdoor exterior set: WDT, OBJ0, the capped derived WMO reads (256 groups, 256
+         * more groups read only to size border-crossing buildings with their interiors, 64 opaque
+         * images, 64 opaque images of very large buildings drawn by group, 64 more for their
+         * interiors and 32 cutout or blended images) and the capped BASIC doodad reads (M2 models,
+         * their first SKIN and their images), with the interior allowance's 128 more models and 160
+         * more images for set doodads tied to an interior group. Every doodad image slot is a
+         * distinct source and may be read twice, like the WMO images.
          */
         BASIC_EXTERIOR(
                 2
                         + 24
+                        + 256
                         + 256
                         + 64
                         + 64
@@ -478,7 +480,7 @@ final class WorldStreamScopes {
                         + DOODAD_IMAGE_SLOTS,
                 24,
                 1 << 20,
-                256,
+                256 + 256,
                 com.vibeminer.formats.world.WmoGroupSpans.MAX_BYTES,
                 // Each image may be read twice: once when admitted, once at its allotted level.
                 2 * (64 + 64 + 64 + 32),
