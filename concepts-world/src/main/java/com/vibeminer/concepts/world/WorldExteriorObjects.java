@@ -52,6 +52,15 @@ public final class WorldExteriorObjects {
     // Pool bounds come from ExteriorObjectLimits, which the objects file sums into its tables.
     static final int MAX_PLACEMENTS = ExteriorObjectLimits.BUILDING_PLACEMENTS;
     static final int MAX_ROOTS = ExteriorObjectLimits.BUILDING_ROOTS, MAX_GROUPS = 256;
+
+    /**
+     * MOGI-interior groups a border-crossing root may have and still be sized with them (#383): a
+     * root with more is sized by its exteriors alone. A property of the root only, so every tile
+     * listing a placement makes the same decision. A tile reads at most this many groups per root
+     * to size it, at most {@link #MAX_ROOTS} roots, a bound the read profile carries.
+     */
+    static final int MAX_SIZING_READS = MAX_GROUPS;
+
     static final int MAX_IMAGES = ExteriorObjectLimits.BUILDING_IMAGES;
     static final int MAX_VERTICES = ExteriorObjectLimits.BUILDING_VERTICES;
     static final int MAX_INDICES = ExteriorObjectLimits.BUILDING_INDICES;
@@ -1766,10 +1775,10 @@ public final class WorldExteriorObjects {
         private int rootsRead, groupsRead, imagesRead, vertices, indices, ranges;
 
         /**
-         * MOGI-interior groups read only to size a border-crossing root ({@link
-         * #interiorsOverAlone}): bounded by their own MAX_GROUPS per tile (the read profile's
-         * second set of group reads) and never charged to {@code groupsRead}, so sizing never takes
-         * a group read an exterior could use.
+         * MOGI-interior groups read only to size border-crossing roots ({@link
+         * #interiorsOverAlone}), for the measurement probe. Never charged to {@code groupsRead}, so
+         * sizing never takes a group read an exterior could use, and never part of a decision: the
+         * read profile allows {@link #MAX_SIZING_READS} for every root a tile may read.
          */
         private int sizingReads;
 
@@ -3893,10 +3902,14 @@ public final class WorldExteriorObjects {
          * charged as an exterior would be. Each is read for its size only, in order until one is
          * over: its copy, counts, header and doodad references are discarded, so a root that still
          * fits draws exactly as before, its interiors read again in {@link #readInteriors}, and a
-         * root drawn by group reads its owned interiors again in {@link #byGroupInteriors}. An
-         * unreadable interior is left out of the size. The reads are bounded by {@link
-         * #sizingReads}, not the tile's group reads; past that bound the root is sized by its
-         * exteriors alone. The budget is left as it was.
+         * root drawn by group reads its owned interiors again in {@link #byGroupInteriors}. The
+         * decision reads only the root, so every tile listing the placement agrees: a root with
+         * more than {@link #MAX_SIZING_READS} interiors is sized by its exteriors alone, whatever
+         * other roots the tile sized; a missing, protected or over-limit interior
+         * (SOURCE_UNAVAILABLE, a property of the source) is left out of the size; and an interior
+         * not readable now (SOURCE_INPUT) fails the tile as an exterior read does, so it is
+         * prepared again later rather than deciding differently from its neighbours. The reads are
+         * not charged to the tile's group reads. The budget is left as it was.
          */
         private boolean interiorsOverAlone(
                 WmoFormats.Root root, RootBudget budget, boolean[] deferred) {
@@ -3904,15 +3917,13 @@ public final class WorldExteriorObjects {
             for (boolean d : deferred) {
                 reads += d ? 1 : 0;
             }
-            if (reads > MAX_GROUPS - sizingReads) {
+            if (reads > MAX_SIZING_READS) {
                 return false;
             }
             long[] mark = budget.mark();
             int[] scratch = new int[counts.length];
             var headers = new WmoFormats.GroupHeader[deferred.length];
-            // As in the interior pass, an interior group whose input is missing is only unread,
-            // never a failure of the tile.
-            interiorPass = true;
+            // Outside the interior pass: a SOURCE_INPUT refusal fails the tile (see above).
             try {
                 for (int g = 0; g < deferred.length; g++) {
                     if (deferred[g]) {
@@ -3932,7 +3943,6 @@ public final class WorldExteriorObjects {
                 }
                 return false;
             } finally {
-                interiorPass = false;
                 budget.reset(mark);
                 admission.cancelPrefetch();
             }
