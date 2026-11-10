@@ -739,7 +739,9 @@ public final class WorldExteriorObjects {
         /**
          * Derived source reads left unread because the operation's read profile for their kind was
          * spent (WorldStreamScopes.UseProfile); each is treated as unavailable and only it is
-         * omitted. Not an outcome bucket.
+         * omitted, so it also lands in its kind's outcome bucket for an unavailable source
+         * (IMAGE_UNAVAILABLE, GROUP_UNAVAILABLE, MODEL_UNAVAILABLE or MODEL_IMAGE_UNAVAILABLE) and
+         * every bucket sum still holds. Not an outcome bucket itself.
          */
         SOURCE_READ_CAPPED
     }

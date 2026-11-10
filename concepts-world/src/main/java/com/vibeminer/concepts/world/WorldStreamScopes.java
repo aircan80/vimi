@@ -120,6 +120,21 @@ final class WorldStreamScopes {
     private final long owner;
     private final AtomicBoolean working = new AtomicBoolean();
 
+    /**
+     * Lowered derived read limits by kind, for tests only: a value below the operation's profile
+     * replaces it, so the profile's limit paths can be reached without exhausting it.
+     */
+    private final int[] loweredDerivedReads = new int[DerivedKind.values().length];
+
+    {
+        java.util.Arrays.fill(loweredDerivedReads, Integer.MAX_VALUE);
+    }
+
+    /** Lowers the derived read limit of {@code kind} for later operations (tests only). */
+    void lowerDerivedReadsForTest(DerivedKind kind, int reads) {
+        loweredDerivedReads[kind.ordinal()] = Math.max(0, reads);
+    }
+
     /** Largest read-ahead bytes any operation held unconsumed (#371); diagnostics and tests. */
     final java.util.concurrent.atomic.AtomicLong prefetchPeakHeldBytes =
             new java.util.concurrent.atomic.AtomicLong();
@@ -969,8 +984,12 @@ final class WorldStreamScopes {
 
         /** Reads of {@code kind} this operation may still make under its profile. */
         int derivedReadsLeft(DerivedKind kind) {
-            return profile.derivedReads(kind)
-                    - derivedReads[Objects.requireNonNull(kind).ordinal()];
+            return readLimit(kind) - derivedReads[Objects.requireNonNull(kind).ordinal()];
+        }
+
+        /** The profile's derived read limit of {@code kind}, or a lower one a test set. */
+        private int readLimit(DerivedKind kind) {
+            return Math.min(profile.derivedReads(kind), engine.loweredDerivedReads[kind.ordinal()]);
         }
 
         /** Actual bytes only: private WMO factory must independently prove parent ancestry. */
@@ -983,7 +1002,7 @@ final class WorldStreamScopes {
                 throw new IllegalStateException("Input credit busy");
             }
             int ordinal = Objects.requireNonNull(kind).ordinal();
-            if (derivedReads[ordinal] >= profile.derivedReads(kind)) {
+            if (derivedReads[ordinal] >= readLimit(kind)) {
                 throw new IllegalStateException(
                         switch (kind) {
                             case WMO_ROOT -> "WMO root read limit";
@@ -1033,12 +1052,12 @@ final class WorldStreamScopes {
                                     Objects.requireNonNull(next),
                                     follow,
                                     profile.derivedLimit(next),
-                                    profile.derivedReads(next) - derivedReads[next.ordinal()]);
+                                    readLimit(next) - derivedReads[next.ordinal()]);
             prefetcher.hint(
                     id,
                     kind,
                     profile.derivedLimit(kind),
-                    profile.derivedReads(kind) - derivedReads[kind.ordinal()],
+                    readLimit(kind) - derivedReads[kind.ordinal()],
                     then);
         }
 

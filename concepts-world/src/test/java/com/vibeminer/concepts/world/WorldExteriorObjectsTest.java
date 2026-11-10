@@ -3219,6 +3219,43 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
+    void aSpentImageReadProfileLeavesOnlyThoseImagesUnread() {
+        // Building image reads lowered to two: the first two images are read and drawn, the
+        // other two are left unread (SOURCE_READ_CAPPED), counted unavailable and not drawn, and
+        // never read again; the building and its other surfaces still draw.
+        var materials = new ArrayList<Material>();
+        var batches = new ArrayList<Batch>();
+        for (int i = 0; i < 4; i++) {
+            materials.add(new Material(0, 6000 + i, 0));
+            batches.add(new Batch(3 * i, 3, 0, i));
+            // A second surface of the same image: a capped source is not read again for it.
+            batches.add(new Batch(3 * (4 + i), 3, 0, i));
+        }
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            for (int i = 0; i < 4; i++) {
+                f.files.sources.put(6000L + i, blp(4, 4, 1, 0x0841 * (i + 1)));
+            }
+            f.files.sources.put(ROOT, root(1, new long[] {GROUP}, materials));
+            f.files.sources.put(GROUP, group(EXT, 3, 8, batches));
+            f.engine.lowerDerivedReadsForTest(WorldStreamScopes.DerivedKind.WMO_IMAGE, 2);
+            try (var set = f.run()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertEquals(2, set.images().size());
+                assertEquals(2, set.count(WorldExteriorObjects.Count.SOURCE_READ_CAPPED));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.IMAGE_UNAVAILABLE));
+                assertEquals(4, set.count(WorldExteriorObjects.Count.BATCH_DRAWN));
+                assertEquals(4, set.count(WorldExteriorObjects.Count.BATCH_MISSING_IMAGE));
+                assertEquals(1, set.placements().size());
+            }
+            assertEquals(1, f.files.opens(6000L));
+            assertEquals(1, f.files.opens(6001L));
+            assertEquals(0, f.files.opens(6002L), "a capped source is never read");
+            assertEquals(0, f.files.opens(6003L));
+        }
+    }
+
+    @Test
     void retainedImageSourcesStayWithinTheirBoundAndCountEachFileOnce() {
         // One 256^2 file with three recorded levels, drawn opaque and cutout: two images (one per
         // material class) from one source file.
