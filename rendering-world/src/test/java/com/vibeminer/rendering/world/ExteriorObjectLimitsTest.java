@@ -7,14 +7,14 @@ import org.junit.jupiter.api.Test;
 class ExteriorObjectLimitsTest {
     @Test
     void fileTablesAreTheSumsOfThePools() {
-        // 24 building roots and 256 building meshes; 640 doodad models (one mesh each) and 64 more
-        // for set doodads tied to an interior group, with 800 and 80 images of their own.
-        assertEquals(640, ExteriorObjectLimits.DOODAD_MODELS);
-        assertEquals(800, ExteriorObjectLimits.DOODAD_IMAGES);
+        // 24 building roots and 256 building meshes; 672 doodad models (one mesh each) and 64 more
+        // for set doodads tied to an interior group, with 840 and 80 images of their own.
+        assertEquals(672, ExteriorObjectLimits.DOODAD_MODELS);
+        assertEquals(840, ExteriorObjectLimits.DOODAD_IMAGES);
         assertEquals(64, ExteriorObjectLimits.DOODAD_INTERIOR_MODELS);
         assertEquals(80, ExteriorObjectLimits.DOODAD_INTERIOR_IMAGES);
-        assertEquals(24 + 640 + 64, ExteriorObjectLimits.MODELS);
-        assertEquals(256 + 640 + 64, ExteriorObjectLimits.MESHES);
+        assertEquals(24 + 672 + 64, ExteriorObjectLimits.MODELS);
+        assertEquals(256 + 672 + 64, ExteriorObjectLimits.MESHES);
         // Very large buildings drawn by group add their own vertex, index and range allowance,
         // their interiors another, and both their own opaque images; they take no model, mesh or
         // placement rows of their own.
@@ -23,7 +23,7 @@ class ExteriorObjectLimitsTest {
         assertEquals(884_736 + 393_216 + 983_040, ExteriorObjectLimits.INDICES);
         // 64 building + 5,120 doodad placements; the draw budget stays at 8,192 (measured).
         assertEquals(64 + 5120, ExteriorObjectLimits.PLACEMENTS);
-        assertEquals(64 + 64 + 96 + 32 + 800 + 80, ExteriorObjectLimits.IMAGES);
+        assertEquals(128 + 64 + 96 + 32 + 840 + 80, ExteriorObjectLimits.IMAGES);
         assertEquals(8192, ExteriorObjectLimits.DRAWS);
     }
 }

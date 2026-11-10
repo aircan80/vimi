@@ -2682,30 +2682,39 @@ class WorldExteriorObjectsTest {
 
     @Test
     void imageReadCapCountsCappedImagesDeterministically() {
-        // WmoGroupSpans admits at most 64 batches per group, so two groups carry 66 materials.
+        // WmoGroupSpans admits at most 64 batches per group, so the MAX_IMAGES + 2 materials are
+        // spread over groups of 64, one image each.
+        int images = WorldExteriorObjects.MAX_IMAGES + 2;
         var materials = new ArrayList<Material>();
-        var first = new ArrayList<Batch>();
-        var second = new ArrayList<Batch>();
-        for (int i = 0; i < 66; i++) {
+        int groups = (images + 63) / 64;
+        var batches = new ArrayList<List<Batch>>();
+        for (int g = 0; g < groups; g++) {
+            batches.add(new ArrayList<>());
+        }
+        for (int i = 0; i < images; i++) {
             materials.add(new Material(0, 3000 + i, 0));
-            (i < 33 ? first : second).add(new Batch(i % 33 * 3, 3, 0, i));
+            batches.get(i / 64).add(new Batch(i % 64 * 3, 3, 0, i));
         }
         try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
-            f.files.sources.put(ROOT, root(2, new long[] {GROUP, GROUP + 1}, materials));
-            f.files.sources.put(GROUP, group(EXT, 3, 33, first));
-            f.files.sources.put(GROUP + 1, group(EXT, 3, 33, second));
-            for (int i = 0; i < 66; i++) {
+            long[] gfid = new long[groups];
+            for (int g = 0; g < groups; g++) {
+                gfid[g] = GROUP + 10 + g;
+                f.files.sources.put(gfid[g], group(EXT, 3, batches.get(g).size(), batches.get(g)));
+            }
+            f.files.sources.put(ROOT, root(groups, gfid, materials));
+            for (int i = 0; i < images; i++) {
                 f.files.sources.put(3000L + i, blp(4, 4, 1, i));
             }
             try (var set = f.run()) {
-                assertEquals(64, set.images().size());
-                assertEquals(64, set.count(WorldExteriorObjects.Count.BATCH_DRAWN));
+                int cap = WorldExteriorObjects.MAX_IMAGES;
+                assertEquals(cap, set.images().size());
+                assertEquals(cap, set.count(WorldExteriorObjects.Count.BATCH_DRAWN));
                 // Over the image count cap: a budget, reported as such (#280 review).
                 assertEquals(2, set.count(WorldExteriorObjects.Count.BATCH_IMAGE_CAPPED));
                 assertEquals(0, set.count(WorldExteriorObjects.Count.BATCH_MISSING_IMAGE));
                 assertEquals(2, set.count(WorldExteriorObjects.Count.IMAGE_CAPPED));
-                assertEquals(null, f.files.opens.get(3064L));
-                assertEquals(3063L, set.images().getLast().id());
+                assertEquals(null, f.files.opens.get(3000L + cap));
+                assertEquals(3000L + cap - 1, set.images().getLast().id());
             }
         }
     }
@@ -6571,23 +6580,31 @@ class WorldExteriorObjectsTest {
     void aByGroupRootTakesItsOpaqueImagesFromItsOwnSlots() {
         // The tile's building registers all 64 building images; the large placement's image
         // still draws, from the slots kept for roots drawn by group.
+        // A group holds at most 64 batches, so the images are spread over groups of 64.
         var normal = Modf.of(NORMAL, 2, 0x8);
         var materials = new ArrayList<Material>();
-        var batches = new ArrayList<Batch>();
-        for (int i = 0; i < WorldExteriorObjects.MAX_IMAGES; i++) {
-            materials.add(new Material(0, 1000 + i, 0));
-            batches.add(new Batch(3 * i, 3, 0, i));
-        }
+        int groups = WorldExteriorObjects.MAX_IMAGES / 64;
+        long[] gfid = new long[groups];
         try (var f = new Fixture(List.of(largePlacement(), normal))) {
             putBig(f, new int[] {EXT, EXT}, new int[] {60_000, 60_000}, new float[] {0, 200});
-            for (int i = 0; i < WorldExteriorObjects.MAX_IMAGES; i++) {
-                f.files.sources.put(1000L + i, blp(4, 4, 1, 0x0841 * (i + 1)));
+            for (int g = 0; g < groups; g++) {
+                var batches = new ArrayList<Batch>();
+                for (int b = 0; b < 64; b++) {
+                    int i = g * 64 + b;
+                    materials.add(new Material(0, 1000 + i, 0));
+                    batches.add(new Batch(3 * b, 3, 0, i));
+                    f.files.sources.put(1000L + i, blp(4, 4, 1, 0x0841 * (i % 30 + 1)));
+                }
+                gfid[g] = NORMAL + 1 + g;
+                f.files.sources.put(gfid[g], group(EXT, 3, 64, batches));
             }
-            f.files.sources.put(
-                    NORMAL + 1, group(EXT, 3, WorldExteriorObjects.MAX_IMAGES, batches));
-            f.files.sources.put(NORMAL, root(1, new long[] {NORMAL + 1}, materials));
+            f.files.sources.put(NORMAL, root(groups, gfid, materials));
+            var expected = new ArrayList<Integer>();
+            for (int g = 0; g < groups; g++) {
+                expected.add(g);
+            }
             try (var set = f.runOpenWorld()) {
-                assertEquals(List.of(0), groupsOf(set, NORMAL));
+                assertEquals(expected, groupsOf(set, NORMAL));
                 assertEquals(List.of(0), groupsOf(set, BIG));
                 assertEquals(0, set.count(WorldExteriorObjects.Count.BATCH_IMAGE_CAPPED));
                 assertEquals(0, set.count(WorldExteriorObjects.Count.IMAGE_CAPPED));
@@ -7798,8 +7815,8 @@ class WorldExteriorObjectsTest {
         int models = WorldExteriorObjects.MAX_MODELS + WorldExteriorObjects.MAX_INTERIOR_MODELS;
         // An image may be read when admitted and again at its allotted level (source(Demand)).
         assertEquals(2 * slots, profile.derivedReads(WorldStreamScopes.DerivedKind.M2_IMAGE));
-        assertEquals(2 * (800 + 80), slots * 2);
-        assertEquals(640 + 64, models);
+        assertEquals(2 * (840 + 80), slots * 2);
+        assertEquals(672 + 64, models);
         // The read-ahead queue holds every model hint of a placement pass and each one's skin.
         assertEquals(2 * models, WorldStreamScopes.Prefetcher.QUEUE);
         assertEquals(models, profile.derivedReads(WorldStreamScopes.DerivedKind.M2_MODEL));

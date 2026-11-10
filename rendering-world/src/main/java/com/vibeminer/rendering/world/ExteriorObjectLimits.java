@@ -15,7 +15,17 @@ public final class ExteriorObjectLimits {
     // ---- opaque buildings ----------------------------------------------------------------------
 
     public static final int BUILDING_PLACEMENTS = 64, BUILDING_ROOTS = 24;
-    public static final int BUILDING_MESHES = 256, BUILDING_RANGES = 1024, BUILDING_IMAGES = 64;
+
+    /**
+     * Building meshes, ranges and opaque images per tile. Read without image caps on build 70862,
+     * the 5 x 5 tiles around Stormwind City, Dalaran (map 0), Gilneas City, Orgrimmar, Ironforge,
+     * Undercity and Thunder Bluff use at most 108 opaque building images on one tile (Stormwind's
+     * 48,30, its share of the split city included) and 95 elsewhere; the old 64 capped 339 batches
+     * around Dalaran, 208 around Gilneas and 43 around Stormwind. The building pixel budget is
+     * unchanged, so more images share the same texels at lower levels.
+     */
+    public static final int BUILDING_MESHES = 256, BUILDING_RANGES = 1024, BUILDING_IMAGES = 128;
+
     public static final int BUILDING_VERTICES = 98_304, BUILDING_INDICES = 294_912;
 
     // ---- very large buildings drawn by group ----------------------------------------------------
@@ -96,19 +106,21 @@ public final class ExteriorObjectLimits {
      * 256 no MDDF doodad was capped there and one set doodad was (on 28,40). With the Forever
      * Dalaran city drawn whole (#659), its owner tile (0:31,31) reads 642 distinct doodad models
      * with every cap lifted, and Gilneas City's 35,27 reads 372: 256 capped 1,178 set doodads on
-     * 31,31 and 183 doodads by model count around Gilneas. At 640 (plus the interior allowance) 5
-     * set doodads stay capped on 31,31 and none elsewhere in those windows.
+     * 31,31 and 183 doodads by model count around Gilneas. 31,31 reads 664 models in all (13 of
+     * them failed and 9 empty, each still a read), so 640 left 5 set doodads capped there; at 672
+     * none is capped in those windows.
      */
-    public static final int DOODAD_MODELS = 640;
+    public static final int DOODAD_MODELS = 672;
 
     /**
      * Distinct doodad images per tile (#308), 1.25 per model. With billboard-bearing models
      * admitted (#390) Elwynn tiles reached the old 96; read without a model cap, the city tiles
      * above need at most 240 doodad images (Ironforge's 39,33), and the Dalaran owner tile
-     * (0:31,31) 536. The doodad pixel budget is separate and unchanged, so more images share the
-     * same texels at lower levels: the cap costs file table rows, not GPU memory.
+     * (0:31,31) 536; 1.25 per model of {@link #DOODAD_MODELS} is 840. The doodad pixel budget is
+     * separate and unchanged, so more images share the same texels at lower levels: the cap costs
+     * file table rows, not GPU memory.
      */
-    public static final int DOODAD_IMAGES = 800;
+    public static final int DOODAD_IMAGES = 840;
 
     /**
      * Doodad models a tile may read beyond {@link #DOODAD_MODELS}, only for set doodads tied to one
