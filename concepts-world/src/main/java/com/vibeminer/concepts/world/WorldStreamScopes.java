@@ -497,6 +497,14 @@ final class WorldStreamScopes {
     static final int SIZING_GROUP_READS =
             WorldExteriorObjects.MAX_ROOTS * WorldExteriorObjects.MAX_SIZING_READS;
 
+    /**
+     * Groups a tile may read a second time: on instance maps, an owned interior of a root drawn by
+     * group whose copy the bound on held copies dropped is read again when it is placed, outside
+     * the tile's group reads. Each is one of the groups the tile read ({@link
+     * WorldExteriorObjects#MAX_GROUPS}), at most once.
+     */
+    static final int REREAD_GROUP_READS = WorldExteriorObjects.MAX_GROUPS;
+
     enum UseProfile {
         TERRAIN_BASIC(67, 0, 0, 0, 0, 0, 0),
         BASIC_WMO(11, 1, 1 << 10, 1, 32 << 10, 6, 64 << 10),
@@ -504,12 +512,13 @@ final class WorldStreamScopes {
         /**
          * Per-tile outdoor exterior set: WDT, OBJ0, the capped derived WMO reads (256 groups, up to
          * 256 more for each of the 24 roots, read only to size border-crossing buildings with their
-         * interiors, and every building image slot, {@link #WMO_IMAGE_SLOTS}) and the capped BASIC
-         * doodad reads (the doodad models, their first SKIN and their image slots, the interior
-         * allowance's included, {@link #DOODAD_MODEL_READS} and {@link #DOODAD_IMAGE_SLOTS}). Every
-         * image slot is a distinct source, read again for each later use whose bytes were not
-         * retained (WorldExteriorObjects.RETAINED_SOURCE_BYTES): {@link #IMAGE_READS_PER_SLOT}
-         * times at most. The image counts derive from the caps. The exterior set never calls {@link
+         * interiors, up to 256 read again, {@link #REREAD_GROUP_READS}, and every building image
+         * slot, {@link #WMO_IMAGE_SLOTS}) and the capped BASIC doodad reads (the doodad models,
+         * their first SKIN and their image slots, the interior allowance's included, {@link
+         * #DOODAD_MODEL_READS} and {@link #DOODAD_IMAGE_SLOTS}). Every image slot is a distinct
+         * source, read again for each later use whose bytes were not retained
+         * (WorldExteriorObjects.RETAINED_SOURCE_BYTES): {@link #IMAGE_READS_PER_SLOT} times at
+         * most. The image counts derive from the caps. The exterior set never calls {@link
          * TileAdmission#readDerivedCandidate} past a limit: it checks {@link
          * TileAdmission#derivedReadsLeft} first and leaves that one source unread instead.
          */
@@ -524,7 +533,8 @@ final class WorldStreamScopes {
                         + DOODAD_IMAGE_SLOTS,
                 24,
                 1 << 20,
-                256 + SIZING_GROUP_READS,
+                // A group read again binds the source it read before: no binding of its own.
+                256 + SIZING_GROUP_READS + REREAD_GROUP_READS,
                 com.vibeminer.formats.world.WmoGroupSpans.MAX_BYTES,
                 IMAGE_READS_PER_SLOT * WMO_IMAGE_SLOTS,
                 1 << 20,

@@ -7945,6 +7945,71 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
+    void onInstanceMapsAFailedReadOfADroppedInteriorIsCappedOnceAndTheRootStillDraws() {
+        // As above, 7,19 drops the border root's interior copies and reads its own interior 2
+        // again to draw it. When that second read fails, unavailable or refused at SOURCE_INPUT,
+        // interior 2 alone is GROUP_INTERIOR_CAPPED, once: every group keeps one bucket, the set
+        // does not fail, and the root still draws its other group here.
+        long dropped = BIG + 3;
+        int[] base = null;
+        for (String variant : List.of("read", "unavailable", "input")) {
+            var files =
+                    variant.equals("input")
+                            ? refusingReads(dropped, 2)
+                            : new WorldTerrainTextureSourceTest.Files();
+            // Opens asked for, including one that fails before its stream exists.
+            var seen = new AtomicInteger();
+            files.onOpenRead =
+                    id -> {
+                        if (id == dropped
+                                && seen.incrementAndGet() == 2
+                                && variant.equals("unavailable")) {
+                            files.failedOpens.put(
+                                    id,
+                                    new com.vibeminer.files.FileTypes.FileOpen(
+                                            com.vibeminer.files.FileTypes.FileReadState.PROTECTED,
+                                            null,
+                                            null,
+                                            null,
+                                            null));
+                        }
+                    };
+            alsoRecordOwn(files, 8, 19, 5, List.of(largePlacement()));
+            try (var f =
+                    new Fixture(List.of(busyBuilding(NORMAL, 81, 2000), largePlacement()), files)) {
+                f.files.sources.put(NORMAL + 1, group(EXT));
+                for (int g = 2; g <= 4; g++) {
+                    f.files.sources.put(NORMAL + g, bigGroup(INT, 63_000));
+                }
+                f.files.sources.put(NORMAL, root(NORMAL + 1, NORMAL + 2, NORMAL + 3, NORMAL + 4));
+                putBig(
+                        f,
+                        new int[] {EXT, EXT, ROOM, ROOM, ROOM},
+                        new int[] {3, 3, 60_000, 60_000, 60_000},
+                        new float[] {0, 200, 5, 205, 67.5f},
+                        splitPortals());
+                try (var here = f.runInstance()) {
+                    assertEquals(1, here.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
+                    assertTrue(seen.get() >= 2, variant + ": read again");
+                    int[] counts = new int[2];
+                    for (var bucket : WorldExteriorObjects.GROUP_OUTCOMES) {
+                        counts[0] += here.count(bucket);
+                    }
+                    counts[1] = here.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED);
+                    if (base == null) {
+                        assertEquals(List.of(0, 2), groupsOf(here, BIG));
+                        base = counts;
+                    } else {
+                        assertEquals(List.of(0), groupsOf(here, BIG), variant);
+                        assertEquals(base[0], counts[0], variant + ": one bucket per group");
+                        assertEquals(base[1] + 1, counts[1], variant + ": capped once");
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
     void onInstanceMapsAnInTileDecisionSizesTheInteriorsAsTheOwnerRuleDoes() {
         // Root BIG: exteriors 0 and 1 (30,000 vertices each), MOGI interiors 2 and 3 (60,000
         // each) and a small one. 8,19 lists only the crossing placement C: sized with its
@@ -8359,9 +8424,11 @@ class WorldExteriorObjectsTest {
                 WorldExteriorObjects.MAX_ROOTS * WorldExteriorObjects.MAX_SIZING_READS, sizing);
         assertEquals(
                 2 + 24 + 256 + sizing + wmoSlots + models + models + slots, profile.bindingLimit());
-        // The tile's group reads, and the worst case of sizing border-crossing roots.
+        // The tile's group reads, the worst case of sizing border-crossing roots, and one second
+        // read of each group the tile read (an instance interior whose held copy was dropped).
+        assertEquals(256, WorldStreamScopes.REREAD_GROUP_READS);
         assertEquals(
-                WorldExteriorObjects.MAX_GROUPS + sizing,
+                WorldExteriorObjects.MAX_GROUPS + sizing + WorldStreamScopes.REREAD_GROUP_READS,
                 profile.derivedReads(WorldStreamScopes.DerivedKind.WMO_GROUP));
     }
 
