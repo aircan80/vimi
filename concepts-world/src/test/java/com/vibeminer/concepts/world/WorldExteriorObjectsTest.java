@@ -6039,8 +6039,8 @@ class WorldExteriorObjectsTest {
         // Split root 970 owns seven 60,000-vertex exteriors here (420,000 of the 458,752 pooled
         // vertices). BIG is decided whole by its in-tile placement A and split by the owner rule
         // (small exteriors, two 60,000-vertex interiors); C's share here (exterior 0 and interior
-        // 2, 60,003 vertices) no longer fits what is left. It is capped, its groups counted
-        // capped, and the doodad standing here is still placed.
+        // 2, 60,003 vertices) no longer fits what is left. It is capped (PLACEMENT_CAPPED alone,
+        // no group counts), and the doodad standing here is still placed.
         long other = 970;
         var split =
                 new Modf(other, 90, 0x8, 10400, 0, 4200, 0, 0, 0, 1024)
@@ -6068,8 +6068,9 @@ class WorldExteriorObjectsTest {
                 assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
                 assertEquals(0, set.count(WorldExteriorObjects.Count.PLACEMENT_SPLIT_SHARE));
                 assertEquals(java.util.Set.of(), keysOf(set, 77));
-                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_CAPPED));
-                assertTrue(set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED) >= 1);
+                // PLACEMENT_CAPPED alone records it; its groups are BIG's, counted once with it.
+                assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_CAPPED));
                 assertTrue(setDoodadKeys(set).stream().anyMatch(k -> k.startsWith("77:")));
             }
         }
@@ -6142,6 +6143,59 @@ class WorldExteriorObjectsTest {
                     var there = openWorldOn(f, neighbour)) {
                 assertEquals(1, here.count(WorldExteriorObjects.Count.PLACEMENT_SPLIT_SHARE));
                 assertDrawnOnce(here, there, 77, List.of(0, 1, 2, 3), 2);
+            }
+        }
+    }
+
+    @Test
+    void aSharesPortalSetIsCountedOnceEvenWhenUnusedImagesAreDropped() {
+        // Sixty placements of building 980 (one opaque and 191 cutout batches) are over the draw
+        // budget with their cutouts, so the cutouts are dropped and their image goes unused: every
+        // model is rebuilt without it. BIG is drawn whole with its portal set and C (77) draws its
+        // share with the same set: the set is counted once (ROOT_PORTALS), share or not.
+        long busy = 980;
+        var inTile =
+                new Modf(BIG, 79, 0x8, 10400, 0, 4150, 0, 0, 0, 1024)
+                        .bounded(10300, -600, 4120, 10500, 600, 4180);
+        var records = new ArrayList<Modf>(List.of(inTile, largePlacement()));
+        for (int i = 0; i < 60; i++) {
+            records.add(Modf.of(busy, 2000 + i, 0x8));
+        }
+        var first = new ArrayList<Batch>(List.of(new Batch(0, 3, 0, 0)));
+        var cutouts = new ArrayList<Batch>();
+        for (int b = 0; b < 63; b++) {
+            first.add(new Batch(3 + b * 3, 3, 0, 1));
+        }
+        for (int b = 0; b < 64; b++) {
+            cutouts.add(new Batch(b * 3, 3, 0, 1));
+        }
+        try (var f = new Fixture(records)) {
+            putRoot(
+                    f,
+                    BIG,
+                    new int[] {EXT, EXT, ROOM, ROOM},
+                    new int[] {3, 3, 60_000, 60_000},
+                    new float[] {0, 200, 5, 205},
+                    splitPortals());
+            f.files.sources.put(
+                    busy,
+                    root(
+                            3,
+                            new long[] {busy + 1, busy + 2, busy + 3},
+                            List.of(new Material(0, IMAGE, 0), new Material(1, IMAGE2, 0))));
+            f.files.sources.put(busy + 1, group(EXT, 3, 64, first));
+            f.files.sources.put(busy + 2, group(EXT, 3, 64, cutouts));
+            f.files.sources.put(busy + 3, group(EXT, 3, 64, cutouts));
+            try (var set = f.runOpenWorld()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_SPLIT_SHARE));
+                assertTrue(set.count(WorldExteriorObjects.Count.BATCH_CAPPED) > 0);
+                assertTrue(set.images().stream().noneMatch(i -> i.id() == IMAGE2));
+                assertEquals(
+                        2,
+                        set.models().stream()
+                                .filter(m -> m.rootId() == BIG && m.portals() != null)
+                                .count());
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_PORTALS));
             }
         }
     }

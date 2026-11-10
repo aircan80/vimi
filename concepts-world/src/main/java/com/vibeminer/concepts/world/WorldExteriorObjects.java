@@ -452,11 +452,14 @@ public final class WorldExteriorObjects {
      * never read because of the root cap only cap their placements). Groups and batches count LOD0
      * groups and their batches for roots that were not failed or capped, except that every LOD0
      * group of a root drawn by group lands in one group bucket on each tile listing it, capped
-     * there or not (GROUP_CAPPED, {@link #GROUP_OUTCOMES}); BATCH_CUTOUT and BATCH_BLENDED are the
-     * subsets of BATCH_DRAWN with those material classes. Root caps and the opaque image budget are
-     * decided by opaque batches alone, exactly as the opaque-only profile did; cutout and blended
-     * batches are then added from their own budget. Images: every distinct texture1 (per alpha
-     * treatment) that an otherwise drawable batch needed lands in one IMAGE bucket.
+     * there or not (GROUP_CAPPED, {@link #GROUP_OUTCOMES}). A split share of a root drawn whole
+     * here (PLACEMENT_SPLIT_SHARE) adds no group or batch counts, drawn or capped: its groups are
+     * the root's, counted once with it, and a capped share is recorded by PLACEMENT_CAPPED alone.
+     * BATCH_CUTOUT and BATCH_BLENDED are the subsets of BATCH_DRAWN with those material classes.
+     * Root caps and the opaque image budget are decided by opaque batches alone, exactly as the
+     * opaque-only profile did; cutout and blended batches are then added from their own budget.
+     * Images: every distinct texture1 (per alpha treatment) that an otherwise drawable batch needed
+     * lands in one IMAGE bucket.
      *
      * <p>Doodads: every MDDF record lands in exactly one DOODAD bucket. Every MODD entry of a drawn
      * building's selected sets (set 0 and its MODF doodad set) lands in one SET_DOODAD bucket;
@@ -718,7 +721,8 @@ public final class WorldExteriorObjects {
         /**
          * Drawn border-crossing placements of a root drawn whole here that the owner rule splits:
          * each draws only its share of the root's drawn model, from the large allowance. Not an
-         * outcome bucket (they are also PLACEMENT_DRAWN).
+         * outcome bucket (they are also PLACEMENT_DRAWN). A share adds no group counts; a capped
+         * one is PLACEMENT_CAPPED only.
          */
         PLACEMENT_SPLIT_SHARE
     }
@@ -1964,9 +1968,11 @@ public final class WorldExteriorObjects {
          */
         private final List<Queued> splitShares = new ArrayList<>();
 
-        /** Models of drawn shares: their portal set is the root's, counted once (ROOT_PORTALS). */
-        private final java.util.Set<Model> shareModels =
-                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        /**
+         * Model slots of drawn shares: their portal set is the root's, counted once (ROOT_PORTALS).
+         * Slots, not models: dropping unused images rebuilds every model in its slot.
+         */
+        private final java.util.Set<Integer> shareModels = new java.util.HashSet<>();
 
         /** Roots drawn whole from the large allowance ({@link Owner#whole}), by root. */
         private final Map<Long, Owner> wholeOwners = new HashMap<>();
@@ -2091,8 +2097,8 @@ public final class WorldExteriorObjects {
             unreadSources.clear();
             retainedSourceBytes = 0;
             dropUnusedImages();
-            for (var model : models) {
-                if (model.portals() != null && !shareModels.contains(model)) {
+            for (int m = 0; m < models.size(); m++) {
+                if (models.get(m).portals() != null && !shareModels.contains(m)) {
                     count(Count.ROOT_PORTALS);
                 }
             }
@@ -2875,16 +2881,9 @@ public final class WorldExteriorObjects {
                                 > MAX_LARGE_VERTICES + MAX_LARGE_INTERIOR_VERTICES - largeVertices
                         || indices > MAX_LARGE_INDICES + MAX_LARGE_INTERIOR_INDICES - largeIndices
                         || ranges > MAX_LARGE_RANGES + MAX_LARGE_INTERIOR_RANGES - largeRanges) {
-                    // Its owned groups are this tile's and drawn by no other: counted capped, and
-                    // the set doodads standing here are still placed, as for a capped split root.
-                    for (int g = 0; g < owned.length; g++) {
-                        if (owned[g] && root.gfid(g) != 0) {
-                            count(
-                                    mogiInterior(root, g)
-                                            ? Count.GROUP_INTERIOR_CAPPED
-                                            : Count.GROUP_CAPPED);
-                        }
-                    }
+                    // PLACEMENT_CAPPED alone records it (its groups are the root's, counted once
+                    // with it), and the set doodads standing here are still placed, as for a
+                    // capped split root.
                     count(Count.PLACEMENT_CAPPED);
                     doodadsOnly(record, queued.transform(), rootId, queued.owner());
                     continue;
@@ -2900,7 +2899,7 @@ public final class WorldExteriorObjects {
                 int model = models.size();
                 var shareModel = new Model(rootId, false, share, portals);
                 models.add(shareModel);
-                shareModels.add(shareModel);
+                shareModels.add(model);
                 count(Count.PLACEMENT_DRAWN);
                 count(Count.PLACEMENT_SPLIT_SHARE);
                 var placement = buildingPlacement(record, queued.transform(), rootId, model);
