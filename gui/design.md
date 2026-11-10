@@ -285,7 +285,7 @@ For integration:
 4. Replace fake totals with scoped snapshots. Do not interpret unknown, partial,
    protected, unsupported or stale evidence as zero or complete data.
 5. Treat download policy, operation progress and retained coverage as separate facts.
-6. Coordinate actual layer-7 build inclusion/packaging from the main worker; this
+6. Coordinate actual layer-7 build inclusion/packaging separately; this
    branch deliberately contains no root build/CI/lockfile changes.
 
 Closing a live build retains its last assessed milestone/locale in the current app session, shown as Closed. After app restart, unassessed cache is not labeled unprepared. Cached artifacts still require verification on reopen.

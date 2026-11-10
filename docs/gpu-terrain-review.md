@@ -5,9 +5,9 @@
 - Scene/camera/checksummed file APIa46c7f6: root and acceptance approved immutable
   ownership, bounds, native projection and exact file identity before allocation.
 - Persistent native renderer e6c3ed1: acceptance independently passed30 actual
-  Vulkan frames and maximum nine-tile upload; root reviewed capability checks,
+  Vulkan frames and maximum nine-tile upload; review covered capability checks,
   source shading, resource ownership and cancellation cleanup.
-- Child WORLD transport55c0b4a: root reviewed typed mode/XOR validation, bounded
+- Child WORLD transport55c0b4a: review covered typed mode/XOR validation, bounded
   pre-map opening, failure protocol and shared ring. Legacy model native/FX proofs
   pass. Root additionally reviewed/executed nine-case child proofad90fa9 (integrated
   7d1c4d2): actual color/sky, camera/resize/burst, CLOSE/EOF, wrong-kind/oversized

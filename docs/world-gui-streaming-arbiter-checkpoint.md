@@ -38,7 +38,7 @@ frame. Existing model/cold-terrain replacement/cancel/fallback tests pass unchan
 
 The underlying public lifecycle independently passes40bgfx tasks plus an actual
 Vulkan child/100camera submissions/samePID/CLOSED/exit0/files-gone proof in
-`/tmp/vimi-world-public-lifecycle-root-review.log`; content frames are NOT_TESTED.
+`/tmp/vimi-world-public-lifecycle-review.log`; content frames are NOT_TESTED.
 No WorldView route is switched, no movement/FPS or visible streaming/buildings claim
 is made. The next steps remain concrete tile producer/commit/frame transport, fixed
 source packet bridge and actual inline controller presentation/cadence validation.

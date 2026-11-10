@@ -1,6 +1,6 @@
 # Item-effects source inventory and qualifications
 
-Pinned C# reference: `4fd92d2a36add50c9b82e1c92bf72706e8d0df2b`; root verified the current `1d6632e` has no Concepts/contracts differences.
+Pinned C# reference: `4fd92d2a36add50c9b82e1c92bf72706e8d0df2b`; review verified the current `1d6632e` has no Concepts/contracts differences.
 
 | Pinned C# source | Java implementation |
 | --- | --- |

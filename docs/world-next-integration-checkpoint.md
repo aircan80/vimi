@@ -60,7 +60,7 @@ runners, including one infrastructure retry. Alpha.21 remains unpublished; do no
 retag it. A future combined candidate still needs final integration checks and all
 five platform package gates before publication.
 
-Root combined verification at6e57190: `check assemble` PASSED474 tasks
+Combined verification at6e57190: `check assemble` PASSED474 tasks
 (102 executed,8 from cache,364 up-to-date), log
 `<scratch>/world-next-current-full-check.log`. This includes the
 reviewed PR159 code changes fb80a21/a3fbb5f/6e57190 and liquid Source/mapping,
@@ -77,7 +77,7 @@ Followup review and integrated checks:
 - Standalone candidate renderer2cb45f2 and six test-only shaders1796a4c are
   independently approved and promoted as6b6a749/9366208. Integrated bgfx check
   plus actual Vulkan native proof passes41 tasks (16 executed),19 readbacks:
-  `<scratch>/global-native-root-integrated-check.log`.
+  `<scratch>/global-native-integrated-check.log`.
   Independent actual Vulkan proof also passes19 readbacks. Root inspected the
   authored asymmetric landmark image. This remains a private draw component;
   DX11 artifacts, fixed frame/process owner and GUI enablement are still pending.

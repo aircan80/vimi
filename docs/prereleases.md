@@ -118,7 +118,7 @@ Debian 12, Debian 13, Ubuntu 22.04 and Ubuntu 24.04 for amd64 and arm64.
 
 The packaged application image is launched on every platform. Installer creation is
 checked, but installing/uninstalling the MSI/DMG/DEB/RPM is not automated yet.
-Windows installation is the next manual validation on the user’s Windows machine.
+Windows installation is the next manual validation on native Windows.
 
 ## SDK-backed JavaFX checks
 
