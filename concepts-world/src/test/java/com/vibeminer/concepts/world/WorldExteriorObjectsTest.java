@@ -1760,6 +1760,46 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
+    void splitInteriorsNeverCostALaterShareItsExteriors() {
+        // Split root 970 has a 3-vertex exterior here and seven 60,000-vertex interiors here,
+        // drawn from the large allowance (458,752 vertices with the interior one). BIG is decided
+        // whole by its in-tile placement A and split by the owner rule; C's share here is its
+        // 60,000-vertex exterior 0. The share is placed after the split root's interiors, but
+        // its exterior is held first: it draws in full, and the interiors take what is left (six,
+        // one capped). Unheld, the interiors would have left 38,749 vertices, too few for it.
+        long other = 970;
+        var split =
+                new Modf(other, 90, 0x8, 10400, 0, 4200, 0, 0, 0, 1024)
+                        .bounded(10300, -900, 4100, 10500, 900, 4500);
+        var inTile =
+                new Modf(BIG, 79, 0x8, 10400, 0, 4150, 0, 0, 0, 1024)
+                        .bounded(10300, -600, 4120, 10500, 600, 4180);
+        try (var f = new Fixture(List.of(split, inTile, largePlacement()))) {
+            putRoot(
+                    f,
+                    other,
+                    new int[] {EXT, EXT, ROOM, ROOM, ROOM, ROOM, ROOM, ROOM, ROOM, ROOM},
+                    new int[] {3, 3, 60_000, 3, 60_000, 60_000, 60_000, 60_000, 60_000, 60_000},
+                    new float[] {0, 200, 5, 205, 6, 7, 8, 9, 10, 11},
+                    splitPortals());
+            putRoot(
+                    f,
+                    BIG,
+                    new int[] {EXT, EXT, ROOM, ROOM},
+                    new int[] {60_000, 3, 60_000, 60_000},
+                    new float[] {0, 200, 5, 205},
+                    splitPortals());
+            try (var set = f.runOpenWorld()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_SPLIT_SHARE));
+                assertTrue(keysOf(set, 77).contains("77:0"));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
+                assertEquals(List.of(0, 2, 4, 5, 6, 7, 8), groupsOf(set, other).subList(0, 7));
+                assertTrue(set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED) >= 1);
+            }
+        }
+    }
+
+    @Test
     void tileInteriorsDrawFromTheirAllowanceButExteriorsNeverDo() {
         // A 65,536-vertex exterior leaves 32,768 vertices of the building pool; a 60,000-vertex
         // interior draws from that and the tile interior allowance (65,536 more).
@@ -6296,10 +6336,11 @@ class WorldExteriorObjectsTest {
     @Test
     void aShareWithoutRoomInTheLargeAllowanceIsCappedAndKeepsItsLocalDoodads() {
         // Split root 970 owns seven 60,000-vertex exteriors here (420,000 of the 458,752 pooled
-        // vertices). BIG is decided whole by its in-tile placement A and split by the owner rule
-        // (small exteriors, two 60,000-vertex interiors); C's share here (exterior 0 and interior
-        // 2, 60,003 vertices) no longer fits what is left. It is capped (PLACEMENT_CAPPED alone,
-        // no group counts), and the doodad standing here is still placed.
+        // vertices). BIG is decided whole by its in-tile placement A and split by the owner rule.
+        // With its exterior 0 at 60,000 vertices, C's share here does not fit what is left even
+        // without its interior: it is capped (PLACEMENT_CAPPED alone, no group counts), and the
+        // doodad standing here is still placed. With exterior 0 at 3 vertices the share does not
+        // fit with interior 2 (60,000) but does without it: it draws its exterior only.
         long other = 970;
         var split =
                 new Modf(other, 90, 0x8, 10400, 0, 4200, 0, 0, 0, 1024)
@@ -6307,30 +6348,44 @@ class WorldExteriorObjectsTest {
         var inTile =
                 new Modf(BIG, 79, 0x8, 10400, 0, 4150, 0, 0, 0, 1024)
                         .bounded(10300, -600, 4120, 10500, 600, 4180);
-        try (var f = new Fixture(List.of(split, inTile, largePlacement()))) {
-            putModel(f, MODEL, model());
-            putRoot(
-                    f,
-                    other,
-                    new int[] {EXT, EXT, EXT, EXT, EXT, EXT, EXT, EXT},
-                    new int[] {60_000, 60_000, 60_000, 60_000, 60_000, 60_000, 60_000, 60_000},
-                    new float[] {0, 1, 2, 3, 4, 5, 6, 200});
-            putRoot(
-                    f,
-                    BIG,
-                    new int[] {EXT, EXT, ROOM, ROOM},
-                    new int[] {3, 3, 60_000, 60_000},
-                    new float[] {0, 200, 5, 205},
-                    splitPortals(),
-                    doodadChunks(new int[][] {{0, 2}}, new long[] {MODEL}, standing(0, 200)));
-            try (var set = f.runOpenWorld()) {
-                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
-                assertEquals(0, set.count(WorldExteriorObjects.Count.PLACEMENT_SPLIT_SHARE));
-                assertEquals(java.util.Set.of(), keysOf(set, 77));
-                // PLACEMENT_CAPPED alone records it; its groups are BIG's, counted once with it.
-                assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
-                assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_CAPPED));
-                assertTrue(setDoodadKeys(set).stream().anyMatch(k -> k.startsWith("77:")));
+        for (int exterior : new int[] {60_000, 3}) {
+            try (var f = new Fixture(List.of(split, inTile, largePlacement()))) {
+                putModel(f, MODEL, model());
+                putRoot(
+                        f,
+                        other,
+                        new int[] {EXT, EXT, EXT, EXT, EXT, EXT, EXT, EXT},
+                        new int[] {60_000, 60_000, 60_000, 60_000, 60_000, 60_000, 60_000, 60_000},
+                        new float[] {0, 1, 2, 3, 4, 5, 6, 200});
+                putRoot(
+                        f,
+                        BIG,
+                        new int[] {EXT, EXT, ROOM, ROOM},
+                        new int[] {exterior, 3, 60_000, 60_000},
+                        new float[] {0, 200, 5, 205},
+                        splitPortals(),
+                        doodadChunks(new int[][] {{0, 2}}, new long[] {MODEL}, standing(0, 200)));
+                try (var set = f.runOpenWorld()) {
+                    assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
+                    assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_CAPPED));
+                    assertTrue(setDoodadKeys(set).stream().anyMatch(k -> k.startsWith("77:")));
+                    if (exterior == 60_000) {
+                        assertEquals(
+                                0, set.count(WorldExteriorObjects.Count.PLACEMENT_SPLIT_SHARE));
+                        assertEquals(java.util.Set.of(), keysOf(set, 77));
+                        assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
+                        assertEquals(
+                                0, set.count(WorldExteriorObjects.Count.SHARE_INTERIOR_DROPPED));
+                    } else {
+                        assertEquals(
+                                1, set.count(WorldExteriorObjects.Count.PLACEMENT_SPLIT_SHARE));
+                        assertEquals(java.util.Set.of("77:0"), keysOf(set, 77));
+                        assertEquals(0, set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
+                        // Interior 2, the share's only interior here, is left out.
+                        assertEquals(
+                                1, set.count(WorldExteriorObjects.Count.SHARE_INTERIOR_DROPPED));
+                    }
+                }
             }
         }
     }
