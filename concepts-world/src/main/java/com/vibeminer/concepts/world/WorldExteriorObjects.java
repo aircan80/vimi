@@ -2737,6 +2737,7 @@ public final class WorldExteriorObjects {
                 charge = Charge.LARGE;
                 var built = new ArrayList<Mesh>(pending.size());
                 try {
+                    prefetchBuildingImages(pending);
                     for (var mesh : pending) {
                         token.check();
                         var mapped = resolveBuilding(mesh, local);
@@ -3703,8 +3704,11 @@ public final class WorldExteriorObjects {
          * parse as {@link #readModel} parses them. A model is hinted only where its read is
          * certain: the first use of a model not yet read, within the model cap (the interior
          * allowance only for a tied doodad), while even every queued doodad before it drawing would
-         * leave the placement cap unreached. Images are not hinted: which a model reads depends on
-         * what the tile registered and charged before it.
+         * leave the placement cap unreached. Once its SKIN is read, the images its admitted batches
+         * name follow, in the order {@link #resolve} reads them, within the images the cap still
+         * leaves: which of those the model really reads depends on what the tile registered and
+         * charged before it, so one it skips is only read for nothing, and one the tile already
+         * consumed is not read ahead again.
          */
         private void prefetchModels() {
             int reads = modelsRead;
@@ -3724,19 +3728,30 @@ public final class WorldExteriorObjects {
                 }
                 reads++;
                 hinted.add(id);
+                var parsed = new java.util.concurrent.atomic.AtomicReference<M2Types.Model>();
                 admission.prefetch(
                         id,
                         WorldStreamScopes.DerivedKind.M2_MODEL,
                         WorldStreamScopes.DerivedKind.M2_SKIN,
-                        (bytes, cancel) -> firstSkin(id, bytes, cancel));
+                        (bytes, cancel) -> firstSkin(id, bytes, cancel, parsed),
+                        WorldStreamScopes.DerivedKind.M2_IMAGE,
+                        (bytes, cancel) -> modelImages(id, parsed.get(), bytes, cancel),
+                        // Within the doodad image cap (the interior allowance aside), so an
+                        // image the cap leaves unread is never fetched.
+                        MAX_MODEL_IMAGES - modelImagesRead);
             }
         }
 
         /**
          * The SKIN {@link #readModel} reads after these model bytes, or 0 when it reads none: the
-         * same reader over the same bytes, on the read-ahead thread.
+         * same reader over the same bytes, on the read-ahead thread. Keeps the parsed model in
+         * {@code parsed} for {@link #modelImages}.
          */
-        private long firstSkin(long id, byte[] bytes, Cancellation cancel) {
+        private long firstSkin(
+                long id,
+                byte[] bytes,
+                Cancellation cancel,
+                java.util.concurrent.atomic.AtomicReference<M2Types.Model> parsed) {
             M2Types.Model model;
             try {
                 model = modelReader.read(id, bytes, cancel).join();
@@ -3744,7 +3759,42 @@ public final class WorldExteriorObjects {
                 return 0;
             }
             var skins = model.skinFileDataIds();
-            return skins.isEmpty() || skins.getFirst() <= 0 ? 0 : skins.getFirst();
+            if (skins.isEmpty() || skins.getFirst() <= 0) {
+                return 0;
+            }
+            parsed.set(model);
+            return skins.getFirst();
+        }
+
+        /**
+         * The images {@link #resolve} reads for this model's mesh after these SKIN bytes, in its
+         * order and once each, before the tile's registered images and caps rule some out: the same
+         * reader and the same {@link #copyModel} over the same bytes, on the read-ahead thread.
+         */
+        private long[] modelImages(
+                long id, M2Types.Model model, byte[] bytes, Cancellation cancel) {
+            if (model == null) {
+                return new long[0];
+            }
+            M2Types.Skin skin;
+            try {
+                skin =
+                        M2SkinReader.read(AssetSource.bytes(bytes), model, MODEL_LIMITS, cancel)
+                                .join();
+            } catch (RuntimeException failed) {
+                return new long[0];
+            }
+            var pending =
+                    copyModel(
+                            id,
+                            model.skinFileDataIds().getFirst(),
+                            model,
+                            skin,
+                            new int[counts.length]);
+            if (pending == null || pending == ALL_BILLBOARD) {
+                return new long[0];
+            }
+            return pending.ranges().stream().mapToLong(range -> range.image()).distinct().toArray();
         }
 
         /**
@@ -4292,9 +4342,10 @@ public final class WorldExteriorObjects {
                 return RootState.CAPPED;
             }
             // Read ahead (#371): this uncapped root reads its groups next, in this order. Only a
-            // later geometry cap (ROOT_CAPPED) stops it, at most a window of reads early. Roots,
-            // models and images are not read ahead: caps decided by earlier parsing leave many of
-            // them unread, and a capped source must never be fetched.
+            // later geometry cap (ROOT_CAPPED) stops it, at most a window of reads early. Roots
+            // are not read ahead: caps decided by earlier parsing leave many of them unread, and
+            // a capped source must never be fetched. Its images are, once its groups are read
+            // (prefetchBuildingImages), within the image caps.
             for (int g = 0; g < lod0; g++) {
                 if (root.gfid(g) != 0 && !skipped[g] && !deferred[g]) {
                     admission.prefetch(root.gfid(g), WorldStreamScopes.DerivedKind.WMO_GROUP);
@@ -4423,6 +4474,7 @@ public final class WorldExteriorObjects {
                 return readWhole(rootId, root, skipped, deferred, sized, interiors, true);
             }
             var built = new ArrayList<Mesh>(pending.size());
+            prefetchBuildingImages(pending);
             for (var mesh : pending) {
                 token.check();
                 var mapped = resolveBuilding(mesh, local);
@@ -4789,6 +4841,48 @@ public final class WorldExteriorObjects {
                         new Model(rootId, false, model.meshes(), portals(root, pending.headers())));
             }
             deferredInteriors.clear();
+        }
+
+        /**
+         * Hints, in the order {@link #resolveBuilding} reads them for {@code meshes}, the images it
+         * will register: per mesh its opaque ranges' images, then, unless materials are skipped,
+         * its cutout and blended ones; never one the tile already registered in that class, nor
+         * more than each pool's image cap leaves. One the material budgets then leave unread is
+         * only read for nothing.
+         */
+        private void prefetchBuildingImages(List<PendingMesh> meshes) {
+            var hinted = new java.util.HashSet<Long>();
+            // As image(): a root drawn by group registers its opaque images in the large pool.
+            int opaqueRoom =
+                    charge != Charge.BUILDING
+                            ? MAX_LARGE_IMAGES + MAX_LARGE_INTERIOR_IMAGES - largeImagesRead
+                            : MAX_IMAGES - imagesRead;
+            int materialRoom = MAX_MATERIAL_IMAGES - materialImagesRead;
+            // Every hint's room is the pools' together: each image consumed from now on spends one.
+            int room = Math.max(0, opaqueRoom) + Math.max(0, materialRoom);
+            for (var mesh : meshes) {
+                for (int pass = 0; pass < 2; pass++) {
+                    for (var range : mesh.ranges()) {
+                        boolean opaque = kind(range.blend()) == OPAQUE;
+                        if (opaque != (pass == 0) || !opaque && skipMaterials) {
+                            continue;
+                        }
+                        long id = range.image();
+                        long key = id * 3 + (opaque ? OPAQUE : imageClass(range.blend()));
+                        if ((opaque ? imageSlots : materialImageSlots).containsKey(key)
+                                || (opaque ? opaqueRoom : materialRoom) <= 0
+                                || !hinted.add(key)) {
+                            continue;
+                        }
+                        if (opaque) {
+                            opaqueRoom--;
+                        } else {
+                            materialRoom--;
+                        }
+                        admission.prefetchOnce(id, WorldStreamScopes.DerivedKind.WMO_IMAGE, room);
+                    }
+                }
+            }
         }
 
         /**
