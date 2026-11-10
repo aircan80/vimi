@@ -58,7 +58,7 @@ replacement commits atomically. Failed/canceled passes preserve that snapshot.
 
 The original approved design remains available with `--mock`, including preparation,
 Overview, Files, Tables, Items and Creatures. Mock mode uses authored fixtures and
-performs no backend I/O. See [handoff.md](handoff.md) for the design decisions.
+performs no backend I/O. See [design.md](design.md) for the design decisions.
 
 ## Build and run
 

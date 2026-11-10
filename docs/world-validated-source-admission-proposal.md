@@ -92,8 +92,8 @@ and parser scratch remain explicit charges in their factory ledgers. No claim
 that a binding-count cap alone bounds live bytes is permitted.
 A profile cannot borrow another's binding/input allowance.
 Overflow/missing profile is unsupported/backpressure, never a fabricated positive
-or height fallback. Exact child format/material profiles remain owned by the WMO
-agent's separately reviewed parser/source proposal.
+or height fallback. Exact child format/material profiles remain owned by the separately
+reviewed WMO parser/source proposal.
 
 ## Scene-qualified composition
 

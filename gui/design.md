@@ -1,4 +1,4 @@
-# GUI design and integration handoff
+# GUI design and integration notes
 
 ## Current preparation integration
 
@@ -18,8 +18,8 @@ work usable; Close build and application shutdown drain accepted work. Prepared 
 reads cannot join online acquisition flights; media uses the separate online path.
 Read [README.md](README.md) for configured providers, limitations and checks.
 
-The original mock experience remains under `--mock`. Original design worktree and
-Settings mockups are independent; do not overwrite their work. Earlier sections below
+The original mock experience remains under `--mock`. The original design and
+Settings mockups are kept separately. Earlier sections below
 are historical mock design decisions, not current backend integration status.
 
 ## Live research screens
@@ -44,11 +44,11 @@ remain separate. UI review fixtures/screenshots must not be described as live da
 
 ## Branch and scope
 
-This prototype was developed in `/Users/aircan/Development/vimi-gui` on
+This prototype was developed in a separate prototype checkout on
 `gui/design`. All implementation and build changes are under `gui/`.
 Backend modules, root Gradle settings/build, CI, dependency lockfiles and the
-sibling C# checkout were not modified. Integrate this branch from the main worker;
-this handoff does not authorize changes to those boundaries during design work.
+sibling C# checkout were not modified. Design work does not change
+those boundaries.
 
 The user approved the current light/teal visual direction, VibeMiner branding,
 build-area navigation, Overview redesign, compact Files grid, Items browser and
@@ -285,7 +285,7 @@ For integration:
 4. Replace fake totals with scoped snapshots. Do not interpret unknown, partial,
    protected, unsupported or stale evidence as zero or complete data.
 5. Treat download policy, operation progress and retained coverage as separate facts.
-6. Coordinate actual layer-7 build inclusion/packaging from the main worker; this
+6. Coordinate actual layer-7 build inclusion/packaging separately; this
    branch deliberately contains no root build/CI/lockfile changes.
 
 Closing a live build retains its last assessed milestone/locale in the current app session, shown as Closed. After app restart, unassessed cache is not labeled unprepared. Cached artifacts still require verification on reopen.

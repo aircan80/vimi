@@ -10,8 +10,8 @@ reference (`4fd92d2a36add50c9b82e1c92bf72706e8d0df2b`, `src/backend/VibeMiner.Ob
 only as a well-tested point of comparison. A difference from it is not a defect in
 itself. Each finding below is judged on its effect on vimi.
 
-The documented list is README "Current limits" and HANDOFF "Remaining parity
-work". This review checks each item and records further storage issues found
+The documented list is the README "Current limits" and the former "Remaining
+parity work" notes. This review checks each item and records further storage issues found
 along the way. File references are to the Java `object-store` sources and, where
 a comparison helps, to the C# reference.
 
@@ -52,7 +52,7 @@ issue G1 below.
 
 | Item | Status | Evidence |
 | --- | --- | --- |
-| Native Windows/macOS validation of locking, sharing and SQLite | **macOS resolved; Windows resolved once #258 merges** | Native macOS (HANDOFF, 2026-11-01) and native Windows (PR #258): writer-lock exclusion, leased pack handles surviving concurrent append and unlink (`PackReaderCacheTest`) |
+| Native Windows/macOS validation of locking, sharing and SQLite | **macOS resolved; Windows resolved once #258 merges** | Native macOS (2026-11-01) and native Windows (PR #258): writer-lock exclusion, leased pack handles surviving concurrent append and unlink (`PackReaderCacheTest`) |
 | Read-only media validation (#25) | **Resolved once #258 merges** | All five `ReadOnlyMediaTest` cases run on Linux and macOS today, and on Windows with #258's ACL enforcement |
 | Bounded maintenance (#19) and other resource stories (#7, #8, #18, #23) | **Resolved** | Closed stories; regression suite in `maintenance-resources.md`; benchmark above |
 | SQLite lock waits keep a 5 s busy timeout | **Fine as is** | `NativeSqlite.BUSY_TIMEOUT_MILLIS = 5000`; the reference uses the same value |
@@ -72,7 +72,7 @@ The PM is filing G1 and G2 as issues.
 opens a connection, runs one probe query, does its work and closes the connection
 (`ObjectStore.reading` at `ObjectStore.java:805-820`, `openReader` at `:675-703`).
 SQLite's page cache is left at its default of about 2 MiB, and it is lost on every
-close. A throwaway probe on the Windows machine above measured the difference. Setup:
+close. A throwaway probe on native Windows measured the difference. Setup:
 - the index of a freshly created store, with its writer still open (WAL mode, the
   `store` row, no object rows);
 - connections opened through `NativeSqlite` with `sqlite3_open_v2` flags

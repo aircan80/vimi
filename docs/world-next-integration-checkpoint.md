@@ -18,10 +18,10 @@ Reviewed and integrated:
   unavailable/retry text. Actual regression fails before and passes after (95tasks);
   independently reviewed by architect.
 - Canonical native receipt stamp329f304, froma808132: private immutable bounded
-  bytes, exact equality, unchanged streaming SHA serializer. Root reviewed and
+  bytes, exact equality, unchanged streaming SHA serializer. Reviewed and
   mechanically compared the serializer body; full formats-table checks46 tasks.
 - Shared character choicesed48eb8, fromcc98c30: internal context-bound vector feeds
-  geometry and atlas, preserving defaults and entering cache identity. Root reviewed
+  geometry and atlas, preserving defaults and entering cache identity. Reviewed
   production and full races checks pass48 tasks. Visible alternative proof is next.
 
 Additional reviewed integration, 2026-11-04:
@@ -60,9 +60,9 @@ runners, including one infrastructure retry. Alpha.21 remains unpublished; do no
 retag it. A future combined candidate still needs final integration checks and all
 five platform package gates before publication.
 
-Root combined verification at6e57190: `check assemble` PASSED474 tasks
+Combined verification at6e57190: `check assemble` PASSED474 tasks
 (102 executed,8 from cache,364 up-to-date), log
-`/home/aircan/.cache/vimi-tmp/world-next-current-full-check.log`. This includes the
+`<scratch>/world-next-current-full-check.log`. This includes the
 reviewed PR159 code changes fb80a21/a3fbb5f/6e57190 and liquid Source/mapping,
 but excludes the still-reviewed flat geometry implementation and unfinished native
 instance renderer/bridge. Separate root liquid owner/mapping checks passed42 tasks.
@@ -71,13 +71,13 @@ Documentation-only updates efa9afc/e6527ba follow that tested source head.
 Followup review and integrated checks:
 
 - Flat liquid geometry93405ac is independently approved and promoted asac56f66.
-  Root integrated concepts/formats checks pass42 tasks (7 executed). Same private
+  Integrated concepts/formats checks pass42 tasks (7 executed). Same private
   two-owner Source limits, no scene/native integration. Independent forced tests
   pass32 tasks; actual author proof matches5,268 vertices and7,902 indices.
 - Standalone candidate renderer2cb45f2 and six test-only shaders1796a4c are
-  independently approved and promoted as6b6a749/9366208. Root integrated bgfx check
+  independently approved and promoted as6b6a749/9366208. Integrated bgfx check
   plus actual Vulkan native proof passes41 tasks (16 executed),19 readbacks:
-  `/home/aircan/.cache/vimi-tmp/global-native-root-integrated-check.log`.
+  `<scratch>/global-native-integrated-check.log`.
   Independent actual Vulkan proof also passes19 readbacks. Root inspected the
   authored asymmetric landmark image. This remains a private draw component;
   DX11 artifacts, fixed frame/process owner and GUI enablement are still pending.
@@ -85,7 +85,7 @@ Followup review and integrated checks:
 Closed source/file bridge c62ac04 is independently approved and integrated0bd6416
 with genuine fixture2a688ce. Root GUI/world checks pass144tasks (57executed);
 full combined `check assemble` then passes479tasks (57executed), log
-`/home/aircan/.cache/vimi-tmp/world-next-bridge-native-full-check.log`.
+`<scratch>/world-next-bridge-native-full-check.log`.
 
 Ready user-facing fixes are isolated in release/world-character-alpha22, PR162:
 https://github.com/aircan80/vimi/pull/162 . Its runtime30aabaf passes full checks,
@@ -115,5 +115,5 @@ Next integrated milestones:
 - Fixed global frame ownerd45aaf21+66a5ab44 is independently approved after sticky
   native/cleanup-error hardening and deterministic timeout/free-failure tests.
   Native independent proof passes12frames/48pixel oracles,3pending tickets and
-  actual read-issued-then-Error shutdown safety. Root integrated proof is running.
+  actual read-issued-then-Error shutdown safety. Integrated proof is running.
   Design2f185ef4 separately pins explicit GLOBAL child/parent protocol; no GUI route.

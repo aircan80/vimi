@@ -216,7 +216,7 @@ or runner images.
 ## Scope and next review
 
 Main `dc7c5a4` is the reviewed source baseline, not a claim that an earlier published
-alpha contains every surface above. HANDOFF candidate/proposal statements do not
+alpha contains every surface above. Candidate and proposal statements do not
 establish shipped behavior. Later next-feature worktrees are excluded unless
 explicitly identified by the companion inventory; global WMO/water/other candidate
 features need their own review before release.

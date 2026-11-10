@@ -263,11 +263,11 @@ approximation.
 
 | Stage | Owner / boundary | Acceptance |
 | --- | --- | --- |
-| 1. Material/geometry data and math | Domain agent: rendering-models types, legacy adapters, codec, shared camera/ENV/bind-card math and CPU renderer. No GUI/native ownership. | Legacy output unchanged; malformed codec rejection; analytic equations, alpha/depth and card-bound fixtures. |
-| 2. Source evidence and admission | Root: DisplayModelService plus narrowly required bounded reader facts. No global raw-format reinterpretation. | Exact raw profiles, source/weight/coordinate/own-track/bone checks; unknowns remain partial; policy/cache cold and restored parity. |
-| 3. GPU implementation | Architecture/renderer agent: GpuModelScene/BgfxModelRenderer/camera/shaders/offscreen integration. | Upload ownership/bounds, fill/edge parity, new native analytic and image fixtures; all offline shader profiles verified. |
-| 4. Independent target proofs | Acceptance agent: private live 79/103 payloads, CPU/Vulkan comparisons, cache roundtrip and authored FX checks. Do not commit game assets. | Eye cards remain camera-facing over yaw/pitch; ENV changes with view; glow blends/occludes correctly; fresh/restored payloads agree. |
-| 5. Integration and review | Root coordinates; each reviewer excludes their own authored slice. | Full module/GUI checks, platform packaging/native probes, scoped independent review, accurate partial/rest-mode UX. |
+| 1. Material/geometry data and math | Rendering-models: types, legacy adapters, codec, shared camera/ENV/bind-card math and CPU renderer. No GUI/native ownership. | Legacy output unchanged; malformed codec rejection; analytic equations, alpha/depth and card-bound fixtures. |
+| 2. Source evidence and admission | Display model service: DisplayModelService plus narrowly required bounded reader facts. No global raw-format reinterpretation. | Exact raw profiles, source/weight/coordinate/own-track/bone checks; unknowns remain partial; policy/cache cold and restored parity. |
+| 3. GPU implementation | GPU renderer: GpuModelScene/BgfxModelRenderer/camera/shaders/offscreen integration. | Upload ownership/bounds, fill/edge parity, new native analytic and image fixtures; all offline shader profiles verified. |
+| 4. Independent target proofs | Acceptance: private live 79/103 payloads, CPU/Vulkan comparisons, cache roundtrip and authored FX checks. Do not commit game assets. | Eye cards remain camera-facing over yaw/pitch; ENV changes with view; glow blends/occludes correctly; fresh/restored payloads agree. |
+| 5. Integration and review | Integration; each reviewer excludes their own authored slice. | Full module/GUI checks, platform packaging/native probes, scoped independent review, accurate partial/rest-mode UX. |
 
 Stages 1–3 start only after the shared API/math contract is approved. Stage 1's
 committed API precedes dependent implementation. Do not race edits to shared

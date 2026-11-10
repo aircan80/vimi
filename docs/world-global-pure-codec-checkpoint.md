@@ -58,6 +58,6 @@ API lines exclude LF; the future bounded byte reader allows at most256bytes incl
 
 Seven deterministic test methods cover independent Python SHA vectors for build/recipe/native-group/native-mesh; literal raw -0 vs native+0/UV-0; identity/profile substitutions; independent Source64 bytes; exact max/min offsets and malformed products; group/index/batch/finite/cancellation guards; bounded provider-list preallocation; independent small-byte SHA/CRC oracles including arbitrary chunks across hash holes/header/body boundaries and cursor preservation; three-way SHA/CRC tampering; and canonical status lengths/identity/numeric/ASCII negatives. No game assets or screenshots are used.
 
-`JAVA_HOME=/usr/lib/jvm/java-25-openjdk ./gradlew :rendering-bgfx:check` passes (private log `/home/aircan/.cache/vimi-tmp/global-pure-codec-check.log`). Existing shader/resource/protocol files are unchanged; there is no runtime/GPU proof claim.
+`JAVA_HOME=/usr/lib/jvm/java-25-openjdk ./gradlew :rendering-bgfx:check` passes (private log `<scratch>/global-pure-codec-check.log`). Existing shader/resource/protocol files are unchanged; there is no runtime/GPU proof claim.
 
 Next implementation requires review of the complete canonical header+descriptor encoder/reader and closed source writer/MOVE bridge, with same-handle/CREATE_NEW/NOFOLLOW/actual-close/failure ownership. Native renderer/shaders/standalone owner and GUI integration remain separate grants and cannot be inferred from these pure types.

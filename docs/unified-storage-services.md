@@ -135,8 +135,8 @@ Use a full Java 25 JDK and the repository's native SQLite setup:
 
 The first command checks affected storage/build components. GUI tasks use synthetic,
 offline native fixtures, including metadata-only load, status/size persistence,
-legacy preservation and restart. The local Linux ARM64 JavaFX override described
-in HANDOFF.md is needed only where the pinned classifier is unavailable.
+legacy preservation and restart. A local JavaFX override is needed only on Linux ARM64
+machines where the pinned classifier is unavailable.
 
 Historical BLOB measurements are in [the performance report](unified-storage-performance.md).
 Do not interpret those as a speed claim for the selected pack library. Actual app

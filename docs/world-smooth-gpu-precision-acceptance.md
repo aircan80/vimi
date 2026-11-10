@@ -53,9 +53,9 @@ mapped-frame World v2 content-revision contract is not implemented here. Vulkan 
 must not be reported as Metal, D3D11 or OpenGL runtime qualification. Cross-profile source
 compilation remains necessary and separate from hardware execution.
 
-## Root verification
+## Verification
 
-Root reviewed the complete acceptance and shader paths, then reran the opt-in
+Reviewed the complete acceptance and shader paths, then reran the opt-in
 acceptance with all spike shader verification enabled after importing the matching
 Windows artifacts22391a1. Vulkan passes71 frames and1,042,972 samples. Fog retains
 distinct source colors at the tested depth cases. The constant-X test plane holds
