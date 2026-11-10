@@ -5937,6 +5937,215 @@ class WorldExteriorObjectsTest {
         }
     }
 
+    private static WorldExteriorObjects.TileObjects instanceOn(Fixture f, WorldFormats.Tile tile) {
+        return WorldExteriorObjects.prepare(
+                f.engine,
+                f.scope,
+                tile,
+                Cancellation.NONE,
+                WorldExteriorObjects.ModelReader.STANDARD,
+                WorldExteriorObjects.ImageDetail.STANDARD,
+                WorldExteriorObjects.RETAINED_SOURCE_BYTES,
+                WorldExteriorObjects.Interiors.INSTANCE,
+                0);
+    }
+
+    /** A building inside 7,19 whose recorded bounds are taller than A's and sort before it. */
+    private static Modf busyBuilding(long id, long uid, float tall) {
+        return new Modf(id, uid, 0x8, 10420, 0, 4160, 0, 0, 0, 1024)
+                .bounded(10300, -tall, 4120, 10500, tall, 4180);
+    }
+
+    /** Placement {@code uid}'s drawn (unique ID, group) keys on a tile. */
+    private static java.util.Set<String> keysOf(WorldExteriorObjects.TileObjects set, long uid) {
+        var keys = new java.util.TreeSet<String>();
+        for (var key : drawnGroupKeys(set)) {
+            if (key.startsWith(uid + ":")) {
+                keys.add(key);
+            }
+        }
+        return keys;
+    }
+
+    @Test
+    void aRootThatFitsAnEmptyTileIsDrawnWholeOnBothTiles() {
+        // A busy building (50,000 vertices) on 7,19 leaves too little for root BIG (two
+        // 30,000-vertex groups), decided there by its in-tile placement A: drawn whole from the
+        // large allowance. Sized as the owner rule sizes it, BIG fits an empty tile, so its
+        // border-crossing placement C (77) is drawn whole here, as 8,19, deciding C alone, draws
+        // it whole from its pool: the two copies coincide, and neither tile splits C.
+        var inTile =
+                new Modf(BIG, 79, 0x8, 10400, 0, 4150, 0, 0, 0, 1024)
+                        .bounded(10300, -600, 4120, 10500, 600, 4180);
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var neighbour = alsoRecordOwn(files, 8, 19, 5, List.of(largePlacement()));
+        try (var f =
+                new Fixture(
+                        List.of(busyBuilding(NORMAL, 81, 2000), inTile, largePlacement()), files)) {
+            putRoot(f, NORMAL, new int[] {EXT}, new int[] {50_000}, new float[] {0});
+            putBig(f, new int[] {EXT, EXT}, new int[] {30_000, 30_000}, new float[] {0, 200});
+            try (var here = f.runOpenWorld();
+                    var there = openWorldOn(f, neighbour)) {
+                assertEquals(1, here.count(WorldExteriorObjects.Count.ROOT_WHOLE_LARGE));
+                assertEquals(0, here.count(WorldExteriorObjects.Count.PLACEMENT_SPLIT_SHARE));
+                assertEquals(java.util.Set.of("77:0", "77:1"), keysOf(here, 77));
+                assertEquals(0, there.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
+                assertEquals(java.util.Set.of("77:0", "77:1"), keysOf(there, 77));
+            }
+        }
+    }
+
+    @Test
+    void onInstanceMapsTheOwnerRuleSizingLeavesOutGroupsMogpCallsInterior() {
+        // On an instance map nothing is deferred. Root BIG: exteriors 0 and 1 (30,000 vertices
+        // each) and group 2 (50,000), MOGI exterior but MOGP interior. The owner rule holds group
+        // 2 as an interior while sizing, so BIG fits an empty tile (60,000) and 8,19 draws C whole.
+        // 7,19, busy, decides BIG by its in-tile placement and goes over at exterior 1; sizing the
+        // groups it has not read, it must leave group 2 out too, so it also draws C whole rather
+        // than as a share of a split it would wrongly assume.
+        var inTile =
+                new Modf(BIG, 79, 0x8, 10400, 0, 4150, 0, 0, 0, 1024)
+                        .bounded(10300, -600, 4120, 10500, 600, 4180);
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var neighbour = alsoRecordOwn(files, 8, 19, 5, List.of(largePlacement()));
+        try (var f =
+                new Fixture(
+                        List.of(busyBuilding(NORMAL, 81, 2000), inTile, largePlacement()), files)) {
+            putRoot(f, NORMAL, new int[] {EXT}, new int[] {50_000}, new float[] {0});
+            long[] gfid = {BIG + 1, BIG + 2, BIG + 3};
+            f.files.sources.put(gfid[0], bigGroup(EXT, 30_000));
+            f.files.sources.put(gfid[1], bigGroup(EXT, 30_000));
+            f.files.sources.put(gfid[2], bigGroup(INT, 50_000));
+            f.files.sources.put(
+                    BIG,
+                    root(
+                            3,
+                            gfid,
+                            List.of(new Material(0, IMAGE, 0)),
+                            mogiBoxes(new int[] {EXT, EXT, EXT}, new float[] {0, 200, 5})));
+            try (var here = f.runInstance();
+                    var there = instanceOn(f, neighbour)) {
+                assertEquals(1, here.count(WorldExteriorObjects.Count.ROOT_WHOLE_LARGE));
+                assertEquals(0, here.count(WorldExteriorObjects.Count.PLACEMENT_SPLIT_SHARE));
+                assertEquals(0, there.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
+                assertTrue(keysOf(here, 77).containsAll(List.of("77:0", "77:1")));
+                assertEquals(keysOf(there, 77), keysOf(here, 77));
+            }
+        }
+    }
+
+    @Test
+    void aShareWithoutRoomInTheLargeAllowanceIsCappedAndKeepsItsLocalDoodads() {
+        // Split root 970 owns seven 60,000-vertex exteriors here (420,000 of the 458,752 pooled
+        // vertices). BIG is decided whole by its in-tile placement A and split by the owner rule
+        // (small exteriors, two 60,000-vertex interiors); C's share here (exterior 0 and interior
+        // 2, 60,003 vertices) no longer fits what is left. It is capped, its groups counted
+        // capped, and the doodad standing here is still placed.
+        long other = 970;
+        var split =
+                new Modf(other, 90, 0x8, 10400, 0, 4200, 0, 0, 0, 1024)
+                        .bounded(10300, -900, 4100, 10500, 900, 4500);
+        var inTile =
+                new Modf(BIG, 79, 0x8, 10400, 0, 4150, 0, 0, 0, 1024)
+                        .bounded(10300, -600, 4120, 10500, 600, 4180);
+        try (var f = new Fixture(List.of(split, inTile, largePlacement()))) {
+            putModel(f, MODEL, model());
+            putRoot(
+                    f,
+                    other,
+                    new int[] {EXT, EXT, EXT, EXT, EXT, EXT, EXT, EXT},
+                    new int[] {60_000, 60_000, 60_000, 60_000, 60_000, 60_000, 60_000, 60_000},
+                    new float[] {0, 1, 2, 3, 4, 5, 6, 200});
+            putRoot(
+                    f,
+                    BIG,
+                    new int[] {EXT, EXT, ROOM, ROOM},
+                    new int[] {3, 3, 60_000, 60_000},
+                    new float[] {0, 200, 5, 205},
+                    splitPortals(),
+                    doodadChunks(new int[][] {{0, 2}}, new long[] {MODEL}, standing(0, 200)));
+            try (var set = f.runOpenWorld()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.PLACEMENT_SPLIT_SHARE));
+                assertEquals(java.util.Set.of(), keysOf(set, 77));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_CAPPED));
+                assertTrue(set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED) >= 1);
+                assertTrue(setDoodadKeys(set).stream().anyMatch(k -> k.startsWith("77:")));
+            }
+        }
+    }
+
+    @Test
+    void aShareOfARootNotDrawnHereStillPlacesItsLocalDoodads() {
+        // Split root 970 takes 420,000 of the pooled vertices here, so BIG (two 60,000-vertex
+        // groups, decided by its in-tile placement A and over the building pool) is capped in
+        // the large allowance. C's share has no drawn model to come from: it is capped, and the
+        // doodad standing here is still placed; A's root places none without its building.
+        long other = 970;
+        var split =
+                new Modf(other, 90, 0x8, 10400, 0, 4200, 0, 0, 0, 1024)
+                        .bounded(10300, -900, 4100, 10500, 900, 4500);
+        var inTile =
+                new Modf(BIG, 79, 0x8, 10400, 0, 4150, 0, 0, 0, 1024)
+                        .bounded(10300, -600, 4120, 10500, 600, 4180);
+        try (var f = new Fixture(List.of(split, inTile, largePlacement()))) {
+            putModel(f, MODEL, model());
+            putRoot(
+                    f,
+                    other,
+                    new int[] {EXT, EXT, EXT, EXT, EXT, EXT, EXT, EXT},
+                    new int[] {60_000, 60_000, 60_000, 60_000, 60_000, 60_000, 60_000, 60_000},
+                    new float[] {0, 1, 2, 3, 4, 5, 6, 200});
+            putBig(
+                    f,
+                    new int[] {EXT, EXT},
+                    new int[] {60_000, 60_000},
+                    new float[] {0, 200},
+                    doodadChunks(new int[][] {{0, 2}}, new long[] {MODEL}, standing(0, 200)));
+            try (var set = f.runOpenWorld()) {
+                assertEquals(List.of(), groupsOf(set, BIG));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.PLACEMENT_SPLIT_SHARE));
+                assertTrue(setDoodadKeys(set).stream().anyMatch(k -> k.startsWith("77:")));
+                assertTrue(setDoodadKeys(set).stream().noneMatch(k -> k.startsWith("79:")));
+            }
+        }
+    }
+
+    @Test
+    void aCrossingPlacementPastSixtyFourOthersIsStillSizedForItsShare() {
+        // Seventy placements of a missing root sort before everything else and take no building
+        // slot. BIG is decided whole by its in-tile placement A and split by the owner rule; its
+        // crossing placement C (77) comes after all seventy, yet it is still recognised as
+        // crossing and draws only its share, each of its groups and doodads exactly once.
+        var inTile =
+                new Modf(BIG, 79, 0x8, 10400, 0, 4150, 0, 0, 0, 1024)
+                        .bounded(10300, -600, 4120, 10500, 600, 4180);
+        var records = new ArrayList<Modf>();
+        for (int i = 0; i < 70; i++) {
+            records.add(busyBuilding(9_000, 1000 + i, 900));
+        }
+        records.add(inTile);
+        records.add(largePlacement());
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var neighbour = alsoRecordOwn(files, 8, 19, 5, List.of(largePlacement()));
+        try (var f = new Fixture(records, files)) {
+            putModel(f, MODEL, model());
+            putRoot(
+                    f,
+                    BIG,
+                    new int[] {EXT, EXT, ROOM, ROOM},
+                    new int[] {3, 3, 60_000, 60_000},
+                    new float[] {0, 200, 5, 205},
+                    splitPortals(),
+                    doodadChunks(new int[][] {{0, 2}}, new long[] {MODEL}, standing(0, 200)));
+            try (var here = f.runOpenWorld();
+                    var there = openWorldOn(f, neighbour)) {
+                assertEquals(1, here.count(WorldExteriorObjects.Count.PLACEMENT_SPLIT_SHARE));
+                assertDrawnOnce(here, there, 77, List.of(0, 1, 2, 3), 2);
+            }
+        }
+    }
+
     @Test
     void aShareNeedsAFreeBuildingModelRow() {
         // The share of C (77) is a model of its own. With the root drawn whole beside 23 other

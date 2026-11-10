@@ -1964,6 +1964,10 @@ public final class WorldExteriorObjects {
          */
         private final List<Queued> splitShares = new ArrayList<>();
 
+        /** Models of drawn shares: their portal set is the root's, counted once (ROOT_PORTALS). */
+        private final java.util.Set<Model> shareModels =
+                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+
         /** Roots drawn whole from the large allowance ({@link Owner#whole}), by root. */
         private final Map<Long, Owner> wholeOwners = new HashMap<>();
 
@@ -2088,7 +2092,7 @@ public final class WorldExteriorObjects {
             retainedSourceBytes = 0;
             dropUnusedImages();
             for (var model : models) {
-                if (model.portals() != null) {
+                if (model.portals() != null && !shareModels.contains(model)) {
                     count(Count.ROOT_PORTALS);
                 }
             }
@@ -2382,18 +2386,14 @@ public final class WorldExteriorObjects {
                     java.util.Comparator.comparingDouble(
                             (WorldPlacements.WorldObject r) -> -recordedSize(r)));
             // Roots with a border-crossing placement this tile could place: qualified, neither
-            // conflicting nor a duplicate, among the first MAX_PLACEMENTS such records.
-            int candidates = 0;
+            // conflicting nor a duplicate. No slot count is cut here: which records take a
+            // building slot is only known as they are admitted.
             for (var record : ordered) {
-                if (candidates >= MAX_PLACEMENTS) {
-                    break;
-                }
                 if (conflicting.get(record.uniqueId())
                         || byUid.get(record.uniqueId()).getFirst() != record
                         || qualify(record) == null) {
                     continue;
                 }
-                candidates++;
                 if (Owner.crosses(record)) {
                     crossingRoots.add(record.reference().value());
                 }
@@ -2820,30 +2820,43 @@ public final class WorldExteriorObjects {
                 token.check();
                 var record = queued.record();
                 long rootId = record.reference().value();
-                Integer slot =
-                        rootStates.get(rootId) == RootState.DRAWN ? modelSlots.get(rootId) : null;
                 var root = byGroupRootFacts.get(rootId);
-                if (slot == null || root == null) {
-                    count(Count.PLACEMENT_CAPPED);
+                if (root == null) {
+                    count(Count.PLACEMENT_CAPPED); // never recorded: no rule to place doodads by
                     continue;
                 }
                 var owned = queued.owner().owned(root);
-                var whole = models.get(slot);
-                var share = new ArrayList<Mesh>();
-                long vertices = 0, indices = 0, ranges = 0;
-                for (var mesh : whole.meshes()) {
-                    int g = mesh.groupOrdinal();
-                    if (g >= 0 && g < owned.length && owned[g]) {
-                        share.add(mesh);
-                        vertices += mesh.vertexCount();
-                        indices += mesh.indices().remaining();
-                        ranges += mesh.ranges().size();
-                    }
+                boolean any = false;
+                for (boolean o : owned) {
+                    any |= o;
                 }
-                if (share.isEmpty()) {
+                if (!any) {
                     count(Count.PLACEMENT_OTHER_TILE);
                     doodadsOnly(record, queued.transform(), rootId, queued.owner());
                     continue;
+                }
+                Integer slot =
+                        rootStates.get(rootId) == RootState.DRAWN ? modelSlots.get(rootId) : null;
+                var whole = slot == null ? null : models.get(slot);
+                var portals = whole == null ? null : whole.portals();
+                if (portals != null && !portalsFit(portals)) {
+                    count(Count.ROOT_PORTALS_DROPPED);
+                    portals = null;
+                }
+                var share = new ArrayList<Mesh>();
+                long vertices = 0, indices = 0, ranges = 0;
+                for (var mesh : whole == null ? List.<Mesh>of() : whole.meshes()) {
+                    int g = mesh.groupOrdinal();
+                    if (g < 0 || g >= owned.length || !owned[g]) {
+                        continue;
+                    }
+                    if (portals == null && mogiInterior(root, g)) {
+                        continue; // unculled interiors would cost every frame (as split roots)
+                    }
+                    share.add(mesh);
+                    vertices += mesh.vertexCount();
+                    indices += mesh.indices().remaining();
+                    ranges += mesh.ranges().size();
                 }
                 int meshes = 0, buildingModels = 0;
                 for (var m : models) {
@@ -2852,7 +2865,8 @@ public final class WorldExteriorObjects {
                 }
                 long buildings = placements.stream().filter(p -> p.kind() == Kind.BUILDING).count();
                 // The share is a model of its own, within the tile's building model rows.
-                if (buildingModels >= MAX_ROOTS
+                if (share.isEmpty()
+                        || buildingModels >= MAX_ROOTS
                         || opaquePlacements >= MAX_PLACEMENTS
                         || buildings >= MAX_PLACEMENTS
                         || share.size() > MAX_MESHES - meshes
@@ -2861,9 +2875,22 @@ public final class WorldExteriorObjects {
                                 > MAX_LARGE_VERTICES + MAX_LARGE_INTERIOR_VERTICES - largeVertices
                         || indices > MAX_LARGE_INDICES + MAX_LARGE_INTERIOR_INDICES - largeIndices
                         || ranges > MAX_LARGE_RANGES + MAX_LARGE_INTERIOR_RANGES - largeRanges) {
+                    // Its owned groups are this tile's and drawn by no other: counted capped, and
+                    // the set doodads standing here are still placed, as for a capped split root.
+                    for (int g = 0; g < owned.length; g++) {
+                        if (owned[g] && root.gfid(g) != 0) {
+                            count(
+                                    mogiInterior(root, g)
+                                            ? Count.GROUP_INTERIOR_CAPPED
+                                            : Count.GROUP_CAPPED);
+                        }
+                    }
                     count(Count.PLACEMENT_CAPPED);
                     doodadsOnly(record, queued.transform(), rootId, queued.owner());
                     continue;
+                }
+                if (portals != null) {
+                    chargePortals(portals);
                 }
                 largeVertices += vertices;
                 largeIndices += indices;
@@ -2871,7 +2898,9 @@ public final class WorldExteriorObjects {
                 draws += (int) ranges;
                 opaquePlacements++;
                 int model = models.size();
-                models.add(new Model(rootId, false, share, whole.portals()));
+                var shareModel = new Model(rootId, false, share, portals);
+                models.add(shareModel);
+                shareModels.add(shareModel);
                 count(Count.PLACEMENT_DRAWN);
                 count(Count.PLACEMENT_SPLIT_SHARE);
                 var placement = buildingPlacement(record, queued.transform(), rootId, model);
@@ -3062,11 +3091,7 @@ public final class WorldExteriorObjects {
             if (built.size() == before) {
                 return null;
             }
-            portalSets++;
-            portalGroups += set.groups().size();
-            portalCount += set.portals().size();
-            portalVertices += set.vertexCount();
-            portalRefs += set.refs().size();
+            chargePortals(set);
             return set;
         }
 
@@ -4146,14 +4171,17 @@ public final class WorldExteriorObjects {
                         // its unread exteriors and deferred interiors included.
                         boolean fitsAlone = false;
                         if (sizeAlone) {
-                            var more = deferred.clone();
-                            for (int later = g + 1; later < lod0; later++) {
-                                more[later] |=
-                                        root.gfid(later) != 0
-                                                && !skipped[later]
-                                                && !deferred[later];
+                            var later = new boolean[lod0];
+                            for (int next = g + 1; next < lod0; next++) {
+                                later[next] =
+                                        root.gfid(next) != 0 && !skipped[next] && !deferred[next];
                             }
-                            fitsAlone = !splitsAlone(root, exteriorsRead, more);
+                            fitsAlone =
+                                    !splitsAlone(
+                                            root,
+                                            exteriorsRead,
+                                            later,
+                                            deferredCount > 0 ? deferred : new boolean[lod0]);
                             noteSplitsAlone(rootId, root, !fitsAlone);
                         }
                         return readWhole(
@@ -4173,6 +4201,7 @@ public final class WorldExteriorObjects {
                         splitsAlone(
                                 root,
                                 exteriorsRead,
+                                new boolean[lod0],
                                 deferredCount > 0 ? deferred : new boolean[lod0]));
             }
             if (!budget.fitsTile()) {
@@ -4222,13 +4251,17 @@ public final class WorldExteriorObjects {
         /**
          * Whether the owner rule would draw a root by group when one of its border-crossing
          * placements decides it: its exterior groups read so far ({@code exteriors}) over an empty
-         * tile's building pool, or over it together with the groups in {@code more} (exteriors not
-         * yet read and deferred MOGI interiors), read for their size only ({@link
-         * #interiorsOverAlone}). The same sizing a neighbour deciding that placement does, so the
-         * tiles agree on whether it is drawn whole or by group.
+         * tile's building pool, or over it with the exteriors not yet read ({@code later}, {@link
+         * #laterOverAlone}), or, with deferred MOGI interiors ({@code deferred}), over it with them
+         * too ({@link #interiorsOverAlone}, under the same read bound). The same sizing a neighbour
+         * deciding that placement does, so the tiles agree on whether it is drawn whole or by
+         * group.
          */
         private boolean splitsAlone(
-                WmoFormats.Root root, List<PendingMesh> exteriors, boolean[] more) {
+                WmoFormats.Root root,
+                List<PendingMesh> exteriors,
+                boolean[] later,
+                boolean[] deferred) {
             var alone = new RootBudget(Allowance.ALONE);
             int[] scratch = new int[counts.length];
             // An empty pool is looser than what the tile's pool left for opaque geometry, but not
@@ -4240,12 +4273,49 @@ public final class WorldExteriorObjects {
                     return true;
                 }
             }
-            for (boolean m : more) {
-                if (m) {
-                    return interiorsOverAlone(root, alone, more);
+            if (laterOverAlone(root, alone, later)) {
+                return true;
+            }
+            for (boolean d : deferred) {
+                if (d) {
+                    return interiorsOverAlone(root, alone, deferred);
                 }
             }
             return false;
+        }
+
+        /**
+         * Reads the exterior groups in {@code later} for their size only and admits each against
+         * {@code budget} as the owner rule's sizing does: a group whose MOGP flags say interior is
+         * held there, not admitted, so it is not charged here either. The budget keeps what they
+         * took, for the deferred interiors after them.
+         */
+        private boolean laterOverAlone(WmoFormats.Root root, RootBudget budget, boolean[] later) {
+            int[] scratch = new int[counts.length];
+            var headers = new WmoFormats.GroupHeader[later.length];
+            try {
+                for (int g = 0; g < later.length; g++) {
+                    if (later[g]) {
+                        admission.prefetch(root.gfid(g), WorldStreamScopes.DerivedKind.WMO_GROUP);
+                    }
+                }
+                for (int g = 0; g < later.length; g++) {
+                    if (!later[g]) {
+                        continue;
+                    }
+                    token.check();
+                    sizingReads++;
+                    var mesh = readGroup(g, root.gfid(g), root, scratch, headers, false);
+                    if (mesh != null
+                            && (mesh.flags() & INTERIOR) == 0
+                            && budget.admit(mesh, scratch) == Admission.OVER) {
+                        return true;
+                    }
+                }
+                return false;
+            } finally {
+                admission.cancelPrefetch();
+            }
         }
 
         /** Records the owner rule's sizing of a root decided by a placement inside the tile. */
@@ -4659,12 +4729,17 @@ public final class WorldExteriorObjects {
                 count(Count.ROOT_PORTALS_DROPPED);
                 return null;
             }
+            chargePortals(set);
+            return set;
+        }
+
+        /** Charges {@code set} to the tile's portal tables ({@link #portalsFit} first). */
+        private void chargePortals(WmoPortalSet set) {
             portalSets++;
             portalGroups += set.groups().size();
             portalCount += set.portals().size();
             portalVertices += set.vertexCount();
             portalRefs += set.refs().size();
-            return set;
         }
 
         /** Whether {@code set} fits what is left of the tile's portal tables. */
