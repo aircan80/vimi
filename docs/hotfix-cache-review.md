@@ -95,7 +95,7 @@ Read-only Java proof using that exact parser passes on the existing70450 cache:
 3827112bytes,49919entries, VALID16074/DELETE244/INVALID16068/NOT_PUBLIC17533.
 Five selected non-key bodies pass the actual body-SHA reread. The original file
 was opened READ/NOFOLLOW; no overlay/key activation or new game asset was written.
-Private diagnostic log: `/home/aircan/.cache/vimi-tmp/hotfix-container-proof/proof.log`.
+Private diagnostic log: `<scratch>/hotfix-container-proof/proof.log`.
 These are format/byte-read facts only, not evidence for the requested70707 rows.
 
 ## Explicit conservative effective-row policy v1

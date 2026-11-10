@@ -18,7 +18,7 @@ JAVA_HOME=/usr/lib/jvm/java-25-openjdk ./gradlew \
   :rendering-bgfx:check :rendering-world:check :concepts-world:check :gui:check \
   :rendering-bgfx:nativeGpuWorldStreamSessionProof \
   -PsqliteLibrary=/lib64/libsqlite3.so.0 \
-  -PreferenceRoot=/home/aircan/Development/vibeminer
+  -PreferenceRoot=../vibeminer
 ```
 
 Local evidence is `/tmp/vimi-world-actor-annex-integration-check.log`: samechild

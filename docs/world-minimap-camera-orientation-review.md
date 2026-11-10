@@ -61,8 +61,8 @@ downloads, or interaction with an existing user process were performed.
 Java 25, Linux JavaFX display, actual Vulkan production terrain:
 
 ```
-JAVA_HOME=/home/aircan/.gradle/jdks/eclipse_adoptium-25-amd64-linux.2 \
-JAVA_TOOL_OPTIONS=-Djava.io.tmpdir=/home/aircan/.cache/vimi-tmp \
+JAVA_HOME=<jdk-25> \
+JAVA_TOOL_OPTIONS=-Djava.io.tmpdir=<scratch> \
 DISPLAY=:0 XAUTHORITY=/run/user/1000/.mutter-Xwaylandauth.8PT7X3 \
 ./gradlew :gui:worldMinimapUiTest :gui:worldMinimapInputUiTest \
   :rendering-bgfx:nativeGpuTerrainProductionAcceptance --offline

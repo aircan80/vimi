@@ -80,7 +80,7 @@ MOHD ambient/counts and omitted root chunks remain preserved/digested descriptio
 intentionally unused by this unlit recipe. No array is sized from omitted counts.
 
 New read-only/local-only diagnostic checked ALL16 words of actual19materials:
-`/home/aircan/.cache/vimi-tmp/global-declaration-actual/root-material-diagnostic.log`.
+`<scratch>/global-declaration-actual/root-material-diagnostic.log`.
 The required zero operands hold; word8 is10 and color words are nonzero. Do not
 claim all operands are zero. Earlier actual root has declared208doodads versus76
 physical40-byte MODD records and43 MODI IDs; preserve that semantic discrepancy,

@@ -62,7 +62,7 @@ five platform package gates before publication.
 
 Root combined verification at6e57190: `check assemble` PASSED474 tasks
 (102 executed,8 from cache,364 up-to-date), log
-`/home/aircan/.cache/vimi-tmp/world-next-current-full-check.log`. This includes the
+`<scratch>/world-next-current-full-check.log`. This includes the
 reviewed PR159 code changes fb80a21/a3fbb5f/6e57190 and liquid Source/mapping,
 but excludes the still-reviewed flat geometry implementation and unfinished native
 instance renderer/bridge. Separate root liquid owner/mapping checks passed42 tasks.
@@ -77,7 +77,7 @@ Followup review and integrated checks:
 - Standalone candidate renderer2cb45f2 and six test-only shaders1796a4c are
   independently approved and promoted as6b6a749/9366208. Root integrated bgfx check
   plus actual Vulkan native proof passes41 tasks (16 executed),19 readbacks:
-  `/home/aircan/.cache/vimi-tmp/global-native-root-integrated-check.log`.
+  `<scratch>/global-native-root-integrated-check.log`.
   Independent actual Vulkan proof also passes19 readbacks. Root inspected the
   authored asymmetric landmark image. This remains a private draw component;
   DX11 artifacts, fixed frame/process owner and GUI enablement are still pending.
@@ -85,7 +85,7 @@ Followup review and integrated checks:
 Closed source/file bridge c62ac04 is independently approved and integrated0bd6416
 with genuine fixture2a688ce. Root GUI/world checks pass144tasks (57executed);
 full combined `check assemble` then passes479tasks (57executed), log
-`/home/aircan/.cache/vimi-tmp/world-next-bridge-native-full-check.log`.
+`<scratch>/world-next-bridge-native-full-check.log`.
 
 Ready user-facing fixes are isolated in release/world-character-alpha22, PR162:
 https://github.com/aircan80/vimi/pull/162 . Its runtime30aabaf passes full checks,

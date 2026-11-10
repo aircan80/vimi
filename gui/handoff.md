@@ -44,7 +44,7 @@ remain separate. UI review fixtures/screenshots must not be described as live da
 
 ## Branch and scope
 
-This prototype was developed in `/Users/aircan/Development/vimi-gui` on
+This prototype was developed in a separate prototype checkout on
 `gui/design`. All implementation and build changes are under `gui/`.
 Backend modules, root Gradle settings/build, CI, dependency lockfiles and the
 sibling C# checkout were not modified. Integrate this branch from the main worker;

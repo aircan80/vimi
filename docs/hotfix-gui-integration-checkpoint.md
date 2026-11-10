@@ -41,7 +41,7 @@ Talent model selection, stale filtering and text/rank presentation are unchanged
 TraitTree #164 is explicitly queued and not started.
 
 Initial compilation plus store/provenance checks pass96tasks (8executed):
-`/home/aircan/.cache/vimi-tmp/hotfix-gui-wiring-pre-freeze.log`.
+`<scratch>/hotfix-gui-wiring-pre-freeze.log`.
 Native-work cancellation/adoption tests, full combined/FX checks and independent
 integration review remain required before declaring the urgent fix ready. The
 reported70707 cache is still unavailable locally; do not claim its concrete rows

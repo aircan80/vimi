@@ -18,7 +18,7 @@ textured terrain and roads are visible. Shutdown waited actual process/worker/fi
 retirement, then source holders closed and atlas claims returned to zero.
 
 Evidence and images are private under
-`/home/aircan/.cache/vimi-tmp/world-stream-real-proof/`:
+`<scratch>/world-stream-real-proof/`:
 `ActualStreamingProof.java`, `actual-network.log`, and `run-2/terrain-{1,2,3}.png`.
 The original and prior libraries were READONLY. Network acquisition used a fresh
 writable proof cache (297MiB), not the original library. Initial Map/build setup and

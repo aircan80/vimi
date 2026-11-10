@@ -176,7 +176,7 @@ dungeon rows use WMODoodadPlacementID.
     the lair.
   - **Drain.** Closing the window drained with no request directories left.
   - **Location.** Helper, log and screenshots are in
-    `/home/aircan/.cache/vimi-tmp/global-interior-actual-proof/`.
+    `<scratch>/global-interior-actual-proof/`.
 
 ## Instance coverage (#170, profile V2)
 
