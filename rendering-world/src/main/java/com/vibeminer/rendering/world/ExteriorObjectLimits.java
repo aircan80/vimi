@@ -28,6 +28,20 @@ public final class ExteriorObjectLimits {
 
     public static final int BUILDING_VERTICES = 98_304, BUILDING_INDICES = 294_912;
 
+    /**
+     * The interior allowance of the tile's own buildings (roots drawn whole from the building
+     * pool), on top of what their exteriors leave of the pool: their interior groups are admitted
+     * after every building's exterior, so no exterior ever draws from it or yields to an interior,
+     * and sizing a root alone (an empty tile's building pool) never counts it. On build 70862 the
+     * busiest tiles left interiors undrawn with the pool all but full: Gilneas City's 34,29 six
+     * groups of 58,569 vertices and 201,099 indices beside 97,002 used vertices, Thunder Bluff's
+     * 34,31 one group (its indices), Dalaran's neighbour 33,29 two.
+     */
+    public static final int TILE_INTERIOR_VERTICES = 65_536, TILE_INTERIOR_INDICES = 196_608;
+
+    /** Draw ranges of {@link #TILE_INTERIOR_VERTICES}. */
+    public static final int TILE_INTERIOR_RANGES = 256;
+
     // ---- very large buildings drawn by group ----------------------------------------------------
 
     /**
@@ -172,6 +186,7 @@ public final class ExteriorObjectLimits {
     public static final int MESHES = BUILDING_MESHES + DOODAD_MODELS + DOODAD_INTERIOR_MODELS;
     public static final int RANGES =
             BUILDING_RANGES
+                    + TILE_INTERIOR_RANGES
                     + LARGE_RANGES
                     + LARGE_INTERIOR_RANGES
                     + MATERIAL_RANGES
@@ -186,12 +201,14 @@ public final class ExteriorObjectLimits {
                     + DOODAD_INTERIOR_IMAGES;
     public static final int VERTICES =
             BUILDING_VERTICES
+                    + TILE_INTERIOR_VERTICES
                     + LARGE_VERTICES
                     + LARGE_INTERIOR_VERTICES
                     + MATERIAL_VERTICES
                     + DOODAD_VERTICES;
     public static final int INDICES =
             BUILDING_INDICES
+                    + TILE_INTERIOR_INDICES
                     + LARGE_INDICES
                     + LARGE_INTERIOR_INDICES
                     + MATERIAL_INDICES

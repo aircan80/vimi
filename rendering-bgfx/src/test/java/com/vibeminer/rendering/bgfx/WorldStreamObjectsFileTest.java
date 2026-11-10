@@ -968,7 +968,7 @@ final class WorldStreamObjectsFileTest {
         // Every table at its cap, the portal tables (#383) included, fits the ceiling, which is
         // derived from them (#308): 33 MiB with the vertex colours of #375 and the large allowance,
         // 46 MiB with the interior allowance of roots drawn by group, 50 MiB with the larger doodad
-        // pools.
+        // pools, 53 MiB with the tile's own interior allowance.
         long caps =
                 WorldStreamObjectsFile.length(
                                 WorldStreamObjectsFile.MAX_MODELS,
@@ -986,7 +986,7 @@ final class WorldStreamObjectsFileTest {
                                 WmoPortalSet.MAX_TILE_VERTICES,
                                 WmoPortalSet.MAX_TILE_REFS);
         assertTrue(caps > (25 << 20) && caps <= WorldStreamObjectsFile.MAX_BYTES, "caps " + caps);
-        assertEquals(50 << 20, WorldStreamObjectsFile.MAX_BYTES);
+        assertEquals(53 << 20, WorldStreamObjectsFile.MAX_BYTES);
         // The ceiling itself is enforced by the reference and by the tile header.
         assertThrows(
                 IllegalArgumentException.class,
