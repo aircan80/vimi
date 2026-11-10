@@ -33,22 +33,23 @@ import java.util.concurrent.CancellationException;
 import java.util.function.BooleanSupplier;
 
 /**
- * Immutable per-tile BASIC_EXTERIOR_V1 objects file {@code tile-<txn>.wso}, version 8. Structural
+ * Immutable per-tile BASIC_EXTERIOR_V1 objects file {@code tile-<txn>.wso}, version 9. Structural
  * only: the application's closed source bridge is its sole producer, and the OBJECTS command (or
  * the terrain tile header) names its exact length and SHA-256.
  *
  * <p>Little-endian layout: a 256-byte header, then the model, mesh, range (first index, index
- * count, image, material class), placement (model, translation, scale and a row-major rotation) and
- * image (width, height, format) tables, then 32-byte vertices (position, normal, uv floats), one
- * 4-byte vertex colour per vertex (R, G, B, then a zero byte), u16 mesh-relative indices padded to
- * four bytes, and image data. Each image's data is its full mip chain, top level down to 1 x 1 and
- * tightly packed, in its format: RGBA8 texels ({@link ObjectTextureMips}, issue #265) or BC1, BC2
- * or BC3 blocks ({@link ObjectTextureFormats}, issue #374). Then one group ordinal per mesh (-1 for
- * a mesh of a model without portals), and the portal tables of #383: per set (model, groups,
- * portals, vertices, references), per group (MOGP flags, first reference, reference count), the
- * group boxes (six floats), per portal its vertex count, the portal planes (four floats), the
- * portal vertices (three floats) and per reference (portal, group, side), every index relative to
- * its set. Every count, offset, index and float is validated; reserved bytes must be zero.
+ * count, image, material class), placement (model, portal tie, translation, scale and a row-major
+ * rotation) and image (width, height, format) tables, then 32-byte vertices (position, normal, uv
+ * floats), one 4-byte vertex colour per vertex (R, G, B, then a zero byte), u16 mesh-relative
+ * indices padded to four bytes, and image data. Each image's data is its full mip chain, top level
+ * down to 1 x 1 and tightly packed, in its format: RGBA8 texels ({@link ObjectTextureMips}, issue
+ * #265) or BC1, BC2 or BC3 blocks ({@link ObjectTextureFormats}, issue #374). Then one group
+ * ordinal per mesh (-1 for a mesh of a model without portals), and the portal tables of #383: per
+ * set (model, groups, portals, vertices, references), per group (MOGP flags, first reference,
+ * reference count), the group boxes (six floats), per portal its vertex count, the portal planes
+ * (four floats), the portal vertices (three floats) and per reference (portal, group, side), every
+ * index relative to its set. Every count, offset, index and float is validated; reserved bytes must
+ * be zero.
  */
 final class WorldStreamObjectsFile {
     // Version 5 (#367): range classes add ADDITIVE and the UNLIT flag, on #420's version 4.
@@ -57,8 +58,9 @@ final class WorldStreamObjectsFile {
     // as blocks (#374); a reader before #374 refuses a nonzero mask there. Version 7 (#383 step
     // 3a): mesh group ordinals and the portal tables of building roots on instance maps, whose
     // counts follow at header bytes 152-171. Version 8 (#383): the INTERIOR_LIGHT range flag, an
-    // interior group lit by its vertex colours (its raw MOCV) instead of the sun.
-    static final int VERSION = 8, HEADER_BYTES = 256;
+    // interior group lit by its vertex colours (its raw MOCV) instead of the sun. Version 9: the
+    // placement's formerly reserved int is its portal tie ({@link #tie}), zero for none.
+    static final int VERSION = 9, HEADER_BYTES = 256;
     // The tables are the sums of the producer's pools (ExteriorObjectLimits): opaque buildings,
     // their cutout and blended surfaces, and doodads. Creature models share whatever room remains.
     static final int MAX_MODELS = ExteriorObjectLimits.MODELS;
@@ -137,6 +139,15 @@ final class WorldStreamObjectsFile {
     }
 
     static final int RANGE_INTS = 4, PLACEMENT_DOUBLES = 13;
+
+    /**
+     * A placement's portal tie as stored (version 9): zero for none, else {@code (parent + 1) << 16
+     * | group}, a set doodad drawn only while a walk of placement {@code parent}'s portal set
+     * reaches interior group {@code group}.
+     */
+    static int tie(int parent, int group) {
+        return parent < 0 ? 0 : (parent + 1) << 16 | group;
+    }
 
     /** Portal tables (#383): ints per set, group, portal and reference; floats per box, plane. */
     static final int PORTAL_SET_INTS = 5, PORTAL_GROUP_INTS = 3, PORTAL_REF_INTS = 3;
@@ -247,6 +258,16 @@ final class WorldStreamObjectsFile {
         /** Per reference: portal, group (both within its set) and the raw side. */
         final int[] portalRefs;
 
+        /**
+         * Per placement: the placement whose portal set it is tied to, or -1; with {@link
+         * #placementGroups}, an interior group of that set. A tied placement is drawn only while a
+         * walk of its parent's set reaches the group.
+         */
+        final int[] placementParents;
+
+        /** Per placement: its tied group in its parent's portal set, or -1. */
+        final int[] placementGroups;
+
         final int draws;
 
         /**
@@ -334,6 +355,52 @@ final class WorldStreamObjectsFile {
                 float[] portalPlanes,
                 float[] portalVertices,
                 int[] portalRefs) {
+            this(
+                    models,
+                    meshes,
+                    ranges,
+                    placementModels,
+                    placements,
+                    images,
+                    vertices,
+                    colours,
+                    indices,
+                    pixels,
+                    compressedFormats,
+                    meshGroups,
+                    portalSets,
+                    portalGroups,
+                    portalBoxes,
+                    portalVertexCounts,
+                    portalPlanes,
+                    portalVertices,
+                    portalRefs,
+                    unset(placementModels.length),
+                    unset(placementModels.length));
+        }
+
+        Data(
+                int[] models,
+                int[] meshes,
+                int[] ranges,
+                int[] placementModels,
+                double[] placements,
+                int[] images,
+                float[] vertices,
+                int[] colours,
+                short[] indices,
+                byte[] pixels,
+                int compressedFormats,
+                int[] meshGroups,
+                int[] portalSets,
+                int[] portalGroups,
+                float[] portalBoxes,
+                int[] portalVertexCounts,
+                float[] portalPlanes,
+                float[] portalVertices,
+                int[] portalRefs,
+                int[] placementParents,
+                int[] placementGroups) {
             require((compressedFormats & ~0xE) == 0, "Compressed format mask");
             this.compressedFormats = compressedFormats;
             this.models = Objects.requireNonNull(models);
@@ -354,6 +421,8 @@ final class WorldStreamObjectsFile {
             this.portalPlanes = Objects.requireNonNull(portalPlanes);
             this.portalVertices = Objects.requireNonNull(portalVertices);
             this.portalRefs = Objects.requireNonNull(portalRefs);
+            this.placementParents = Objects.requireNonNull(placementParents);
+            this.placementGroups = Objects.requireNonNull(placementGroups);
             draws = validate();
         }
 
@@ -732,6 +801,40 @@ final class WorldStreamObjectsFile {
                             "Mesh groups");
                 }
             }
+            validateTies(setGroups);
+        }
+
+        /**
+         * Portal ties: none (both -1), or another placement whose model has a portal set and one
+         * interior group of that set.
+         */
+        private void validateTies(int[] setGroups) {
+            int count = placementCount();
+            require(
+                    placementParents.length == count && placementGroups.length == count,
+                    "Placement ties");
+            int[] firstGroup = new int[setGroups.length];
+            for (int set = 0, at = 0; set < portalSetCount(); set++) {
+                firstGroup[portalSets[set * PORTAL_SET_INTS]] = at;
+                at += portalSets[set * PORTAL_SET_INTS + 1];
+            }
+            for (int p = 0; p < count; p++) {
+                int parent = placementParents[p], group = placementGroups[p];
+                if (parent == -1 && group == -1) {
+                    continue;
+                }
+                require(parent >= 0 && parent < count && parent != p, "Placement ties");
+                int model = placementModels[parent];
+                require(
+                        model >= 0
+                                && model < setGroups.length
+                                && group >= 0
+                                && group < setGroups[model]
+                                && (portalGroups[(firstGroup[model] + group) * PORTAL_GROUP_INTS]
+                                                & WmoPortalTraversal.INTERIOR)
+                                        != 0,
+                        "Placement ties");
+            }
         }
     }
 
@@ -895,7 +998,9 @@ final class WorldStreamObjectsFile {
                 }
                 for (int p = 0; p < data.placementCount(); p++) {
                     output.writeInt(Integer.reverseBytes(data.placementModels[p]));
-                    output.writeInt(0);
+                    output.writeInt(
+                            Integer.reverseBytes(
+                                    tie(data.placementParents[p], data.placementGroups[p])));
                     for (int i = 0; i < PLACEMENT_DOUBLES; i++) {
                         output.writeLong(
                                 Long.reverseBytes(
@@ -1084,10 +1189,16 @@ final class WorldStreamObjectsFile {
             int[] meshTable = ints(input, meshes * 6);
             int[] rangeTable = ints(input, ranges * RANGE_INTS);
             int[] placementModels = new int[placements];
+            int[] parents = new int[placements], tiedGroups = new int[placements];
             double[] transforms = new double[placements * PLACEMENT_DOUBLES];
             for (int p = 0; p < placements; p++) {
                 placementModels[p] = Integer.reverseBytes(input.readInt());
-                require(input.readInt() == 0, "Reserved placement bytes");
+                int tie = Integer.reverseBytes(input.readInt());
+                // Zero, or a parent in 1..MAX_PLACEMENTS above a 16-bit group; Data checks both.
+                require(tie >= 0 && tie >>> 16 <= MAX_PLACEMENTS, "Placement tie");
+                parents[p] = tie == 0 ? -1 : (tie >>> 16) - 1;
+                tiedGroups[p] = tie == 0 ? -1 : tie & 0xffff;
+                require(tie == 0 || parents[p] >= 0, "Placement tie");
                 for (int i = 0; i < PLACEMENT_DOUBLES; i++) {
                     transforms[p * PLACEMENT_DOUBLES + i] =
                             Double.longBitsToDouble(Long.reverseBytes(input.readLong()));
@@ -1158,7 +1269,9 @@ final class WorldStreamObjectsFile {
                             portalVertexCountData,
                             portalPlaneData,
                             portalVertexData,
-                            portalRefData);
+                            portalRefData,
+                            parents,
+                            tiedGroups);
             require(data.draws == draws, "Object draw count");
             return data;
         } catch (EOFException truncated) {

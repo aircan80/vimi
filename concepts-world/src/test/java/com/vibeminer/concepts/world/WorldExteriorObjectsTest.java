@@ -6565,4 +6565,199 @@ class WorldExteriorObjectsTest {
             }
         }
     }
+
+    // ---- set doodads tied to one interior group, culled with it ----------------------------
+
+    /** {@code group} (MOGP its last chunk) with a MODR listing {@code refs} appended to MOGP. */
+    private static byte[] withDoodadRefs(byte[] group, int... refs) {
+        int body = indexOf(group, "MOGP") + 8;
+        var r = buffer(refs.length * 2);
+        for (int ref : refs) {
+            r.putShort((short) ref);
+        }
+        return join(
+                version(17),
+                chunk(
+                        "MOGP",
+                        join(
+                                Arrays.copyOfRange(group, body, group.length),
+                                chunk("MODR", r.array()))));
+    }
+
+    /** Each drawn set doodad's MODD ordinal and portal group, in placement order. */
+    private static Map<Integer, Integer> portalGroups(WorldExteriorObjects.TileObjects set) {
+        var groups = new java.util.TreeMap<Integer, Integer>();
+        for (var p : set.placements()) {
+            if (p.kind() == WorldExteriorObjects.Kind.SET_DOODAD) {
+                groups.put(p.ordinal(), p.portalGroup());
+            }
+        }
+        return groups;
+    }
+
+    @Test
+    void setDoodadsOfASplitRootAreTiedToTheOneDrawnInteriorListingThem() {
+        // In interior 2 (x 4..6, drawn here): doodad 0 is listed by interior 2's MODR alone,
+        // doodad 1 by interior 2 and exterior 0, doodad 2 by no group; doodad 3 stands outdoors
+        // and exterior 0 lists it. Doodad 4 stands outdoors too, but only interior 2 lists it:
+        // another tile's group, unread here, might list it as well, so a split root ties a
+        // doodad only to the interior whose box placed it. Only doodad 0 is tied, to group 2.
+        var files = new WorldTerrainTextureSourceTest.Files();
+        try (var f = new Fixture(List.of(largePlacement()), files)) {
+            putModel(f, MODEL, model());
+            putSplitWithPortals(
+                    f,
+                    doodadChunks(
+                            new int[][] {{0, 5}},
+                            new long[] {MODEL},
+                            standing(5, 5.5f, 5.2f, -50, -40)));
+            f.files.sources.put(BIG + 1, withDoodadRefs(bigGroup(EXT, 60_000), 1, 3));
+            // References past the root's five MODD entries are dropped.
+            f.files.sources.put(BIG + 3, withDoodadRefs(bigGroup(ROOM, 3), 0, 1, 4, 5, 65535));
+            try (var here = f.runOpenWorld()) {
+                assertEquals(List.of(0, 2), groupsOf(here, BIG));
+                assertEquals(Map.of(0, 2, 1, -1, 2, -1, 3, -1, 4, -1), portalGroups(here));
+                assertEquals(1, here.count(WorldExteriorObjects.Count.SET_DOODAD_IN_GROUP));
+                assertEquals(1, here.count(WorldExteriorObjects.Count.SET_DOODAD_GROUPS_SHARED));
+                assertEquals(5, here.count(WorldExteriorObjects.Count.SET_DOODAD_DRAWN));
+                // The tied doodad's building is the placement with its unique ID.
+                var tied =
+                        here.placements().stream()
+                                .filter(p -> p.portalGroup() >= 0)
+                                .findFirst()
+                                .orElseThrow();
+                assertEquals(
+                        1,
+                        here.placements().stream()
+                                .filter(
+                                        p ->
+                                                p.kind() == WorldExteriorObjects.Kind.BUILDING
+                                                        && p.uniqueId() == tied.uniqueId())
+                                .count());
+            }
+        }
+        // Without a portal set nothing is tied, though the MODR is the same.
+        try (var f = new Fixture(List.of(largePlacement()), files)) {
+            putModel(f, MODEL, model());
+            putBig(
+                    f,
+                    new int[] {EXT, EXT, INT, INT, INT},
+                    new int[] {60_000, 60_000, 3, 3, 3},
+                    new float[] {0, 200, 5, 205, 67.5f},
+                    doodadChunks(new int[][] {{0, 2}}, new long[] {MODEL}, standing(-50, -40)));
+            f.files.sources.put(BIG + 1, withDoodadRefs(bigGroup(EXT, 60_000), 0, 1));
+            try (var here = f.runOpenWorld()) {
+                assertEquals(Map.of(0, -1, 1, -1), portalGroups(here));
+                assertEquals(0, here.count(WorldExteriorObjects.Count.SET_DOODAD_IN_GROUP));
+            }
+        }
+    }
+
+    /** An instance root: exterior GROUP and interior INTERIOR joined by one portal. */
+    private static void putRootWithPortals(Fixture f, byte[] doodads, int[] outside, int[] inside) {
+        f.files.sources.put(
+                ROOT,
+                root(
+                        2,
+                        new long[] {GROUP, INTERIOR},
+                        List.of(new Material(0, IMAGE, 0)),
+                        portalChunks(1, true),
+                        doodads));
+        f.files.sources.put(GROUP, withDoodadRefs(portalRange(group(EXT), 0, 1), outside));
+        f.files.sources.put(INTERIOR, withDoodadRefs(portalRange(group(INT), 1, 1), inside));
+    }
+
+    @Test
+    void setDoodadsOfARootWithPortalsAreTiedToTheirInteriorGroup() {
+        // Doodad 0 is listed by the interior, 1 by the exterior, 2 by both, 3 by neither.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            putModel(f, MODEL, model());
+            putRootWithPortals(
+                    f,
+                    doodadChunks(new int[][] {{0, 4}}, new long[] {MODEL}, standing(0, 0, 0, 0)),
+                    new int[] {1, 2},
+                    new int[] {0, 2});
+            try (var set = f.runInstance()) {
+                assertNotNull(set.models().getFirst().portals());
+                assertEquals(Map.of(0, 1, 1, -1, 2, -1, 3, -1), portalGroups(set));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.SET_DOODAD_IN_GROUP));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.SET_DOODAD_GROUPS_SHARED));
+            }
+            // Without interiors there is no portal set and no tie.
+            try (var set = f.run()) {
+                assertNull(set.models().getFirst().portals());
+                assertEquals(Map.of(0, -1, 1, -1, 2, -1, 3, -1), portalGroups(set));
+            }
+        }
+    }
+
+    @Test
+    void theDoodadReadProfileCoversEverySlotReadTwice() {
+        var profile = WorldStreamScopes.UseProfile.BASIC_EXTERIOR;
+        int slots =
+                com.vibeminer.rendering.world.ExteriorObjectLimits.DOODAD_IMAGES
+                        + com.vibeminer.rendering.world.ExteriorObjectLimits.DOODAD_INTERIOR_IMAGES;
+        int models = WorldExteriorObjects.MAX_MODELS + WorldExteriorObjects.MAX_INTERIOR_MODELS;
+        // An image may be read when admitted and again at its allotted level (source(Demand)).
+        assertEquals(2 * slots, profile.derivedReads(WorldStreamScopes.DerivedKind.M2_IMAGE));
+        assertEquals(2 * (192 + 160), slots * 2);
+        assertEquals(models, profile.derivedReads(WorldStreamScopes.DerivedKind.M2_MODEL));
+        assertEquals(models, profile.derivedReads(WorldStreamScopes.DerivedKind.M2_SKIN));
+        // Every distinct source a tile may bind: WDT, OBJ0, 24 roots, 256 groups, the WMO image
+        // slots, and each doodad model, skin and image slot.
+        assertEquals(
+                2 + 24 + 256 + 64 + 64 + 64 + 32 + models + models + slots, profile.bindingLimit());
+    }
+
+    @Test
+    void tiedSetDoodadsMayReadModelsFromTheInteriorAllowance() {
+        // MDDF doodads read all MAX_MODELS models first. Then the root's set doodads each name a
+        // new model: those the interior lists are tied and read from the interior allowance
+        // until it is spent; the one the exterior lists is capped as before.
+        int base = WorldExteriorObjects.MAX_MODELS,
+                allowance = WorldExteriorObjects.MAX_INTERIOR_MODELS;
+        long first = 10_000; // clear of every other fixture ID
+        var mddf = new ArrayList<Mddf>();
+        for (int i = 0; i < base; i++) {
+            mddf.add(Mddf.of(first + i, i + 1, 0x40));
+        }
+        int tied = allowance + 1;
+        var ids = new long[tied + 1];
+        var defs = new ArrayList<Modd>();
+        var inside = new int[tied];
+        for (int i = 0; i <= tied; i++) {
+            ids[i] = first + base + i;
+            defs.add(new Modd(i, 0, 0, 0, new double[] {0, 0, 0, 1}, 1));
+            if (i < tied) {
+                inside[i] = i;
+            }
+        }
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            for (int i = 0; i < base + tied + 1; i++) {
+                putModel(f, first + i, model());
+            }
+            putRootWithPortals(
+                    f,
+                    doodadChunks(new int[][] {{0, tied + 1}}, ids, defs),
+                    new int[] {tied},
+                    inside);
+            f.files.sources.put(4L, obj0(List.of(Modf.of(ROOT, 1, 0x8)), mddf));
+            try (var set = f.runInstance()) {
+                assertEquals(base, set.count(WorldExteriorObjects.Count.DOODAD_DRAWN));
+                assertEquals(
+                        allowance, set.count(WorldExteriorObjects.Count.MODEL_INTERIOR_ALLOWANCE));
+                assertEquals(allowance, set.count(WorldExteriorObjects.Count.SET_DOODAD_DRAWN));
+                assertEquals(allowance, set.count(WorldExteriorObjects.Count.SET_DOODAD_IN_GROUP));
+                // One tied doodad past the allowance and the untied one.
+                assertEquals(2, set.count(WorldExteriorObjects.Count.SET_DOODAD_CAPPED));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.DOODAD_CAP_MODELS));
+                assertEquals(
+                        base + allowance,
+                        set.models().stream().filter(WorldExteriorObjects.Model::doodad).count());
+                var groups = portalGroups(set);
+                assertEquals(allowance, groups.size());
+                assertTrue(groups.values().stream().allMatch(g -> g == 1));
+            }
+        }
+    }
 }

@@ -85,6 +85,15 @@ public final class WorldExteriorObjects {
 
     static final int MAX_MODELS = ExteriorObjectLimits.DOODAD_MODELS;
     static final int MAX_MODEL_IMAGES = ExteriorObjectLimits.DOODAD_IMAGES;
+
+    /**
+     * Doodad models and their image slots read beyond {@link #MAX_MODELS} and {@link
+     * #MAX_MODEL_IMAGES}, only for set doodads tied to one drawn interior group ({@link
+     * Placement#portalGroup}), which the renderer culls with that group.
+     */
+    static final int MAX_INTERIOR_MODELS = ExteriorObjectLimits.DOODAD_INTERIOR_MODELS;
+
+    static final int MAX_INTERIOR_MODEL_IMAGES = ExteriorObjectLimits.DOODAD_INTERIOR_IMAGES;
     static final int MAX_DOODAD_VERTICES = ExteriorObjectLimits.DOODAD_VERTICES;
     static final int MAX_DOODAD_INDICES = ExteriorObjectLimits.DOODAD_INDICES;
     static final int MAX_DOODAD_RANGES = ExteriorObjectLimits.DOODAD_RANGES;
@@ -663,6 +672,25 @@ public final class WorldExteriorObjects {
          */
         SET_DOODAD_INTERIOR,
         /**
+         * Drawn set doodads tied to one interior group of their building's portal set ({@link
+         * Placement#portalGroup}): that group is drawn here, its MODR lists the doodad and no other
+         * group this tile read does. The renderer draws them only while the group is visible. Not
+         * an outcome bucket.
+         */
+        SET_DOODAD_IN_GROUP,
+        /**
+         * Set doodads of a root with a portal set that the MODR of more than one group read here
+         * lists; they are never tied to a group, so they draw whenever they are in view. Not an
+         * outcome bucket.
+         */
+        SET_DOODAD_GROUPS_SHARED,
+        /**
+         * Doodad models read beyond the {@link #MAX_MODELS} cap from the interior allowance ({@link
+         * #MAX_INTERIOR_MODELS}), for set doodads tied to an interior group: every read, whatever
+         * its outcome, as each spends a slot. Not an outcome bucket.
+         */
+        MODEL_INTERIOR_ALLOWANCE,
+        /**
          * An exterior group this tile owns of a root drawn by group whose share here is capped
          * (ROOT_CAPPED); its owned interiors are GROUP_INTERIOR_CAPPED. A group bucket.
          */
@@ -799,7 +827,41 @@ public final class WorldExteriorObjects {
             double scale,
             double cos,
             double sin,
-            Rotation rotation) {}
+            Rotation rotation,
+            int portalGroup) {
+        /**
+         * {@code portalGroup}: for a set doodad tied to one interior group, that group's ordinal in
+         * its building's portal set (the building is the BUILDING placement with the same {@code
+         * uniqueId}), drawn only while a walk of that set reaches the group; otherwise -1.
+         */
+        public Placement {
+            if (portalGroup < -1 || portalGroup >= 0 && kind != Kind.SET_DOODAD) {
+                throw new IllegalArgumentException("Placement portal group");
+            }
+        }
+
+        /** A placement tied to no portal group. */
+        public Placement(
+                Kind kind,
+                int ordinal,
+                long uniqueId,
+                long rootId,
+                int model,
+                int flags,
+                int doodadSet,
+                int nameSet,
+                double x,
+                double y,
+                double z,
+                double scale,
+                double cos,
+                double sin,
+                Rotation rotation) {
+            this(
+                    kind, ordinal, uniqueId, rootId, model, flags, doodadSet, nameSet, x, y, z,
+                    scale, cos, sin, rotation, -1);
+        }
+    }
 
     /**
      * Index range into one mesh, drawn with one decoded image (index into images()); blend is the
@@ -1113,12 +1175,13 @@ public final class WorldExteriorObjects {
             }
             require(
                     this.placements.size() <= MAX_PLACEMENTS + MAX_DOODADS
-                            && this.models.size() <= MAX_ROOTS + MAX_MODELS
+                            && this.models.size() <= MAX_ROOTS + MAX_MODELS + MAX_INTERIOR_MODELS
                             && this.images.size()
                                     <= MAX_IMAGES
                                             + MAX_LARGE_IMAGES
                                             + MAX_LARGE_INTERIOR_IMAGES
                                             + MAX_MODEL_IMAGES
+                                            + MAX_INTERIOR_MODEL_IMAGES
                                             + MAX_MATERIAL_IMAGES
                             && v
                                     <= MAX_VERTICES
@@ -1138,7 +1201,7 @@ public final class WorldExteriorObjects {
                                             + MAX_LARGE_INTERIOR_RANGES
                                             + MAX_DOODAD_RANGES
                                             + MAX_MATERIAL_RANGES
-                            && m <= MAX_MESHES + MAX_MODELS
+                            && m <= MAX_MESHES + MAX_MODELS + MAX_INTERIOR_MODELS
                             && p <= detail.totalPixels(),
                     "EXTERIOR_TILE_BOUNDS");
             vertices = v;
@@ -1697,6 +1760,21 @@ public final class WorldExteriorObjects {
 
         private int rootsRead, groupsRead, imagesRead, vertices, indices, ranges;
         private int modelsRead, modelImagesRead, doodadVertices, doodadIndices, doodadRanges;
+
+        /** While true, a doodad model being read charges its images to the interior slots. */
+        private boolean interiorModelCharge;
+
+        /** Doodad models (M2 FileDataIDs) read from the interior allowance. */
+        private final java.util.Set<Long> interiorModels = new java.util.HashSet<>();
+
+        /**
+         * Per root's doodad declarations (by identity, as each root holds one), each MODD entry's
+         * only listing group among the groups this tile read (their MODR): -1 for none, -2 for more
+         * than one. One short per declared doodad, so a malformed MODR costs no more.
+         */
+        private final Map<WmoFormats.Doodads, short[]> doodadGroups =
+                new java.util.IdentityHashMap<>();
+
         private int doodads, draws;
         private int materialImagesRead, materialVertices, materialIndices;
         private int materialRanges;
@@ -2749,6 +2827,9 @@ public final class WorldExteriorObjects {
             /** Whether the last doodad placed stands inside a drawn interior. */
             boolean inside;
 
+            /** That interior's group, the one whose box assigned the doodad; else -1. */
+            int insideGroup = -1;
+
             /** Set and MODD ordinal of each doodad waiting for the interiors' turn. */
             final List<int[]> deferred = new ArrayList<>();
 
@@ -2783,6 +2864,7 @@ public final class WorldExteriorObjects {
             /** Null to place the doodad, else the bucket it is left out under. */
             Count refuse(double nativeX, double nativeY, double a, double b, double c) {
                 inside = false;
+                insideGroup = -1;
                 for (int i = 0; i < interiorGroups.length; i++) {
                     int at = i * 6;
                     if (a >= interiorBoxes[at]
@@ -2796,6 +2878,7 @@ public final class WorldExteriorObjects {
                             return Count.SET_DOODAD_OTHER_TILE;
                         }
                         inside = drawn.get(g);
+                        insideGroup = inside ? g : -1;
                         return inside ? null : Count.SET_DOODAD_INTERIOR;
                     }
                 }
@@ -2875,7 +2958,8 @@ public final class WorldExteriorObjects {
                                 scale,
                                 transform.cos(),
                                 transform.sin(),
-                                rotation);
+                                rotation,
+                                -1);
                 count(
                         switch (outcome) {
                             case DRAWN -> Count.DOODAD_DRAWN;
@@ -3038,6 +3122,12 @@ public final class WorldExteriorObjects {
             // building transform: building * T(position) * fromQuat(q) * S(scale) (wowdev WMO rev
             // 37115 MODD placement matrix; wow.export 4474fa4 WMORenderer.js:400-466).
             var rotation = building.rotation().times(Rotation.quaternion(qx, qy, qz, qw));
+            int group = portalGroup(building, declared, ordinal);
+            // A root drawn by group: this tile reads only its own groups, so another tile's group
+            // might also list the doodad. Tie it only to the interior whose box placed it here.
+            if (filter != null && group != filter.insideGroup) {
+                group = -1;
+            }
             var outcome =
                     doodad(
                             Kind.SET_DOODAD,
@@ -3052,7 +3142,11 @@ public final class WorldExteriorObjects {
                             scale,
                             building.cos(),
                             building.sin(),
-                            rotation);
+                            rotation,
+                            group);
+            if (outcome == RootState.DRAWN && group >= 0) {
+                count(Count.SET_DOODAD_IN_GROUP);
+            }
             count(
                     switch (outcome) {
                         case DRAWN -> Count.SET_DOODAD_DRAWN;
@@ -3064,7 +3158,11 @@ public final class WorldExteriorObjects {
                     });
         }
 
-        /** Places one qualified doodad, reading its model on first use. */
+        /**
+         * Places one qualified doodad, reading its model on first use. A set doodad tied to an
+         * interior group ({@code portalGroup} at least 0) may read its model from the interior
+         * allowance once the {@link #MAX_MODELS} cap is reached.
+         */
         private RootState doodad(
                 Kind kind,
                 long modelId,
@@ -3078,18 +3176,29 @@ public final class WorldExteriorObjects {
                 double scale,
                 double cos,
                 double sin,
-                Rotation rotation) {
+                Rotation rotation,
+                int portalGroup) {
             if (doodads >= MAX_DOODADS) {
                 count(Count.DOODAD_CAP_PLACEMENTS);
                 return RootState.CAPPED;
             }
             var state = doodadStates.get(modelId);
             if (state == null) {
-                if (modelsRead >= MAX_MODELS) {
+                if (modelsRead >= MAX_MODELS + (portalGroup >= 0 ? MAX_INTERIOR_MODELS : 0)) {
                     count(Count.DOODAD_CAP_MODELS);
                     return RootState.CAPPED;
                 }
-                state = readModel(modelId);
+                boolean interior = modelsRead >= MAX_MODELS;
+                interiorModelCharge = interior;
+                try {
+                    state = readModel(modelId);
+                } finally {
+                    interiorModelCharge = false;
+                }
+                if (interior) {
+                    interiorModels.add(modelId);
+                    count(Count.MODEL_INTERIOR_ALLOWANCE);
+                }
                 doodadStates.put(modelId, state);
             }
             if (state != RootState.DRAWN) {
@@ -3107,8 +3216,22 @@ public final class WorldExteriorObjects {
             doodads++;
             placements.add(
                     new Placement(
-                            kind, ordinal, uniqueId, modelId, model, flags, doodadSet, 0, x, y, z,
-                            scale, cos, sin, rotation));
+                            kind,
+                            ordinal,
+                            uniqueId,
+                            modelId,
+                            model,
+                            flags,
+                            doodadSet,
+                            0,
+                            x,
+                            y,
+                            z,
+                            scale,
+                            cos,
+                            sin,
+                            rotation,
+                            portalGroup));
             return RootState.DRAWN;
         }
 
@@ -3987,6 +4110,7 @@ public final class WorldExteriorObjects {
                         token::isCanceled,
                         borrow -> {
                             headers[ordinal] = borrow.header();
+                            keepDoodadRefs(root, ordinal, borrow.doodadRefs());
                             long flags = borrow.header().flags();
                             if ((flags & INTERIOR) != 0 && !interiors) {
                                 outcome[0] = Count.GROUP_INTERIOR;
@@ -4014,6 +4138,65 @@ public final class WorldExteriorObjects {
                 return null;
             }
             return result[0];
+        }
+
+        /** Keeps group {@code ordinal}'s MODR for tying set doodads to their group. */
+        private void keepDoodadRefs(WmoFormats.Root root, int ordinal, WmoGroupSpans.Indices refs) {
+            var declared = root.doodads();
+            int groups = (int) Math.min(root.header().groupCount(), WmoFormats.MAX_GROUPS);
+            if (declared == null || ordinal >= groups) {
+                return;
+            }
+            int defs = declared.definitions().size();
+            if (refs == null || defs == 0) {
+                return;
+            }
+            var only =
+                    doodadGroups.computeIfAbsent(
+                            declared,
+                            ignored -> {
+                                var fresh = new short[defs];
+                                Arrays.fill(fresh, (short) -1);
+                                return fresh;
+                            });
+            for (int i = 0; i < refs.size(); i++) {
+                int d = refs.get(i);
+                // References past the root's MODD name no doodad and are dropped.
+                if (d < defs && only[d] != ordinal) {
+                    only[d] = (short) (only[d] == -1 ? ordinal : -2);
+                }
+            }
+        }
+
+        /**
+         * The interior group set doodad {@code ordinal} of {@code building} is tied to, or -1: the
+         * group must be the only one read here whose MODR lists the doodad, and interior in the
+         * building model's portal set. A doodad listed by several groups is never tied
+         * (SET_DOODAD_GROUPS_SHARED), so it draws whenever it is in view. A root drawn by group
+         * places a doodad inside an interior only while it draws that interior; any other root's
+         * doodads are placed as before, so a tied doodad of an interior not drawn (capped) is now
+         * culled with the room instead of always drawing.
+         */
+        private int portalGroup(Placement building, WmoFormats.Doodads declared, int ordinal) {
+            if (building.model() < 0) {
+                return -1;
+            }
+            var set = models.get(building.model()).portals();
+            var groups = doodadGroups.get(declared);
+            if (set == null || groups == null) {
+                return -1;
+            }
+            int g = ordinal < groups.length ? groups[ordinal] : -1;
+            if (g == -2) {
+                count(Count.SET_DOODAD_GROUPS_SHARED);
+                return -1;
+            }
+            if (g < 0
+                    || g >= set.groups().size()
+                    || (set.groups().get(g).flags() & INTERIOR) == 0) {
+                return -1;
+            }
+            return g;
         }
 
         /**
@@ -4501,7 +4684,12 @@ public final class WorldExteriorObjects {
                                                                 : 0)
                                         : imagesRead >= MAX_IMAGES;
                         case MATERIAL -> materialImagesRead >= MAX_MATERIAL_IMAGES;
-                        case DOODAD -> modelImagesRead >= MAX_MODEL_IMAGES;
+                        case DOODAD ->
+                                modelImagesRead
+                                        >= MAX_MODEL_IMAGES
+                                                + (interiorModelCharge
+                                                        ? MAX_INTERIOR_MODEL_IMAGES
+                                                        : 0);
                     };
             if (full) {
                 local[
@@ -4800,12 +4988,24 @@ public final class WorldExteriorObjects {
         private void allocateImages() {
             boolean[] used = new boolean[images.size()];
             boolean[] exterior = new boolean[images.size()];
-            for (var model : models) {
+            // A doodad model from the interior allowance that only tied set doodads place is
+            // allotted with the interiors too, so it never lowers another doodad image's level
+            // beyond its reserve.
+            boolean[] untied = new boolean[models.size()];
+            for (var placement : placements) {
+                if (placement.model() >= 0) {
+                    untied[placement.model()] |= placement.portalGroup() < 0;
+                }
+            }
+            for (int m = 0; m < models.size(); m++) {
+                var model = models.get(m);
                 // A root drawn by group is allotted with the interiors, from what the tile's own
                 // exteriors leave, so it never lowers one of their levels beyond its reserve.
                 boolean byGroup = !model.doodad() && byGroupRoots.contains(model.rootId());
+                boolean interiorModel =
+                        model.doodad() && !untied[m] && interiorModels.contains(model.rootId());
                 for (var mesh : model.meshes()) {
-                    boolean interior = byGroup || interiorMeshes.contains(mesh);
+                    boolean interior = byGroup || interiorModel || interiorMeshes.contains(mesh);
                     for (var range : mesh.ranges()) {
                         used[range.image()] = true;
                         exterior[range.image()] |= !interior;

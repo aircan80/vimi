@@ -209,4 +209,31 @@ final class WorldStreamPortalCullingTest {
         culling.frame(null);
         assertFalse(culling.walk(traversal, placements, 0, into), "No view, no walk");
     }
+
+    /**
+     * A placement tied to an interior group of its parent's set is culled only when the parent was
+     * in view (so it walked this frame) and its walk missed the group; an untied placement, or one
+     * whose parent was out of view, keeps its own frustum test.
+     */
+    @Test
+    void tiedPlacementsFollowTheirParentsWalk() {
+        var walked = new BitSet();
+        walked.set(0);
+        walked.set(2);
+        BitSet[] walks = {walked, null, null, null, null};
+        int[] parents = {-1, 0, 0, -1, 0};
+        int[] groups = {-1, 1, 2, -1, 1};
+        boolean[] visible = {true, true, true, true, true};
+        assertFalse(BgfxWorldStreamRenderer.portalCulled(parents, groups, visible, walks, 0));
+        assertTrue(BgfxWorldStreamRenderer.portalCulled(parents, groups, visible, walks, 1));
+        assertFalse(BgfxWorldStreamRenderer.portalCulled(parents, groups, visible, walks, 2));
+        assertFalse(BgfxWorldStreamRenderer.portalCulled(parents, groups, visible, walks, 3));
+        // The parent out of view did not walk: its stale set never culls.
+        visible[0] = false;
+        assertFalse(BgfxWorldStreamRenderer.portalCulled(parents, groups, visible, walks, 4));
+        // A parent without a set (no walk) never culls either.
+        int[] setless = {-1, 3, 0, -1, 3};
+        visible[0] = true;
+        assertFalse(BgfxWorldStreamRenderer.portalCulled(setless, groups, visible, walks, 1));
+    }
 }

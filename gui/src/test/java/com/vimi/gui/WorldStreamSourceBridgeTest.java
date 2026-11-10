@@ -36,6 +36,7 @@ public final class WorldStreamSourceBridgeTest {
         terrainProducerNeverWaitsForObjects();
         objectsStatusShowsDrawnAndOmittedCounts();
         portalSetsAreCopiedWhileTheyFit();
+        tiesFollowTheirBuildingsCopy();
         waterCopyMergesFullFlatChunksOnly();
         waterCopyCapsWholeLayersAtThePacketBound();
         waterCopyKeepsAChunksDepthGradient();
@@ -353,6 +354,56 @@ public final class WorldStreamSourceBridgeTest {
         check(!WorldStreamSourceBridge.startModel(builder, set),
                 "Past the tile's portal tables the model is copied without its set");
         check(!builder.portalsFit(set), "The tile's portal tables are full");
+    }
+
+    /**
+     * A set doodad tied to an interior group names its building's index in the file; a tie to a
+     * building the copy capped, or one placed out of order, is dropped and the doodad draws untied.
+     */
+    private static void tiesFollowTheirBuildingsCopy() {
+        var room = new com.vibeminer.rendering.world.WmoPortalSet(
+                java.util.List.of(new com.vibeminer.rendering.world.WmoPortalTraversal.Group(
+                        0x2000, 0, 0, 0, 1, 1, 1, 0, 0)),
+                java.util.List.of(), java.util.List.of());
+        var tied = new WorldStreamSourceBridge.Placed(false, 0, 300, 5, 6, 1,
+                new double[] {1, 0, 0, 0, 1, 0, 0, 0, 1}, placed(false, 0, 13, 300).source(), 0, 0);
+        var orphan = new WorldStreamSourceBridge.Placed(false, 0, 400, 5, 6, 1,
+                new double[] {1, 0, 0, 0, 1, 0, 0, 0, 1}, placed(false, 0, 14, 400).source(), 1, 0);
+        var ahead = new WorldStreamSourceBridge.Placed(false, 0, 500, 5, 6, 1,
+                new double[] {1, 0, 0, 0, 1, 0, 0, 0, 1}, placed(false, 0, 15, 500).source(), 5, 0);
+        // Building 11 of model 0 (with the room's set), building 12 over the draw budget.
+        var set = new WorldStreamSourceBridge.ObjectSet((builder, token) -> {
+            builder.image(1, 1, java.nio.ByteBuffer.wrap(new byte[] {1, 2, 3, (byte) 255}));
+            for (int m = 0; m < 2; m++) {
+                boolean portals = WorldStreamSourceBridge.startModel(builder, m == 0 ? room : null);
+                builder.mesh(java.nio.FloatBuffer.wrap(new float[] {
+                        0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0, 1, 0, 1}),
+                        java.nio.IntBuffer.wrap(new int[] {0, 1, 2}), new int[] {0, 3, 0}, new int[1],
+                        java.nio.IntBuffer.allocate(0), portals ? 0 : -1);
+            }
+        }, new int[] {1, com.vibeminer.rendering.bgfx.WorldStreamTileWriter.Exterior.MAX_DRAWS},
+                java.util.List.of(placed(true, 0, 11, 100), placed(true, 1, 12, 200), tied, orphan, ahead), 2);
+        var copy = WorldStreamSourceBridge.finish(set, false, "b", WorldStreamSourceBridge.ExteriorSummary.NONE,
+                TILE, new Cancellation(), null);
+        check(java.util.Arrays.equals(tieTable(copy, "placementParents"), new int[] {-1, 0, -1, -1}),
+                "The tie names building 11's copy, and the others are dropped: "
+                        + java.util.Arrays.toString(tieTable(copy, "placementParents")));
+        check(java.util.Arrays.equals(tieTable(copy, "placementGroups"), new int[] {-1, 0, -1, -1}),
+                "Only the kept tie names its group");
+    }
+
+    /** One per-placement tie table of a copy's objects file data. */
+    private static int[] tieTable(WorldStreamSourceBridge.ExteriorCopy copy, String name) {
+        try {
+            var data = copy.exterior().getClass().getDeclaredField("data");
+            data.setAccessible(true);
+            var value = data.get(copy.exterior());
+            var table = value.getClass().getDeclaredField(name);
+            table.setAccessible(true);
+            return (int[]) table.get(value);
+        } catch (ReflectiveOperationException failed) {
+            throw new AssertionError(failed);
+        }
     }
 
     private static void objectsStatusShowsDrawnAndOmittedCounts() {

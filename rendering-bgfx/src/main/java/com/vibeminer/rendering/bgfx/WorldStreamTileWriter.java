@@ -244,6 +244,10 @@ public final class WorldStreamTileWriter {
             private final java.util.ArrayList<double[]> placements = new java.util.ArrayList<>();
             private final java.util.ArrayList<Integer> placementModels =
                     new java.util.ArrayList<>();
+
+            /** Per placement: its portal tie's parent placement and group, or -1 and -1. */
+            private final java.util.ArrayList<int[]> placementTies = new java.util.ArrayList<>();
+
             private final java.util.ArrayList<int[]> images = new java.util.ArrayList<>();
             private final java.util.ArrayList<float[]> vertexBlocks = new java.util.ArrayList<>();
             private final java.util.ArrayList<int[]> colourBlocks = new java.util.ArrayList<>();
@@ -554,6 +558,24 @@ public final class WorldStreamTileWriter {
             /** One placement with a row-major rotation (rows are output X, Y, Z). */
             public void placement(
                     int model, double x, double y, double z, double scale, double[] rotation) {
+                placement(model, x, y, z, scale, rotation, -1, -1);
+            }
+
+            /**
+             * One placement tied to interior group {@code group} of an earlier placement {@code
+             * parent}'s portal set: drawn only while a walk of that set reaches the group. A tie
+             * the parent cannot carry (no such placement, no portal set on its model, or not an
+             * interior group of it) is dropped, so the placement draws whenever it is in view.
+             */
+            public void placement(
+                    int model,
+                    double x,
+                    double y,
+                    double z,
+                    double scale,
+                    double[] rotation,
+                    int parent,
+                    int group) {
                 open();
                 Objects.requireNonNull(rotation);
                 if (placements.size() == WorldStreamObjectsFile.MAX_PLACEMENTS
@@ -564,6 +586,7 @@ public final class WorldStreamTileWriter {
                     draws += drawCost(model);
                 }
                 placementModels.add(model);
+                placementTies.add(tieFits(parent, group) ? new int[] {parent, group} : null);
                 var row = new double[WorldStreamObjectsFile.PLACEMENT_DOUBLES];
                 row[0] = x;
                 row[1] = y;
@@ -571,6 +594,21 @@ public final class WorldStreamTileWriter {
                 row[3] = scale;
                 System.arraycopy(rotation, 0, row, 4, 9);
                 placements.add(row);
+            }
+
+            /**
+             * Whether {@code parent} is an earlier placement whose portal set has interior group.
+             */
+            private boolean tieFits(int parent, int group) {
+                if (parent < 0 || parent >= placementModels.size() || group < 0) {
+                    return false;
+                }
+                var set = portalSets.get(placementModels.get(parent));
+                return set != null
+                        && group < set.groups().size()
+                        && (set.groups().get(group).flags()
+                                        & com.vibeminer.rendering.world.WmoPortalTraversal.INTERIOR)
+                                != 0;
             }
 
             /** Validates the whole set against the reader's exact checks. */
@@ -593,9 +631,14 @@ public final class WorldStreamTileWriter {
                 }
                 int doubles = WorldStreamObjectsFile.PLACEMENT_DOUBLES;
                 var models = new int[placementModels.size()];
+                var parents = new int[models.length];
+                var tiedGroups = new int[models.length];
                 var transforms = new double[placements.size() * doubles];
                 for (int i = 0; i < models.length; i++) {
                     models[i] = placementModels.get(i);
+                    var tie = placementTies.get(i);
+                    parents[i] = tie == null ? -1 : tie[0];
+                    tiedGroups[i] = tie == null ? -1 : tie[1];
                     System.arraycopy(placements.get(i), 0, transforms, i * doubles, doubles);
                 }
                 int imageInts = WorldStreamObjectsFile.IMAGE_INTS;
@@ -699,7 +742,9 @@ public final class WorldStreamTileWriter {
                                 vertexCountData,
                                 planeData,
                                 portalVertexData,
-                                refData));
+                                refData,
+                                parents,
+                                tiedGroups));
             }
 
             private void open() {
