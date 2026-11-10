@@ -453,22 +453,32 @@ final class WorldStreamScopes {
             com.vibeminer.rendering.world.ExteriorObjectLimits.DOODAD_IMAGES
                     + com.vibeminer.rendering.world.ExteriorObjectLimits.DOODAD_INTERIOR_IMAGES;
 
+    /**
+     * Groups a tile may read only to size border-crossing roots with their interiors: {@link
+     * WorldExteriorObjects#MAX_SIZING_READS} for each of its {@link WorldExteriorObjects#MAX_ROOTS}
+     * roots, the worst case, so no tile-wide running total decides anything.
+     */
+    static final int SIZING_GROUP_READS =
+            WorldExteriorObjects.MAX_ROOTS * WorldExteriorObjects.MAX_SIZING_READS;
+
     enum UseProfile {
         TERRAIN_BASIC(67, 0, 0, 0, 0, 0, 0),
         BASIC_WMO(11, 1, 1 << 10, 1, 32 << 10, 6, 64 << 10),
         LIQUID_INSPECTION(11, 0, 0, 0, 0, 0, 0),
         /**
-         * Per-tile outdoor exterior set: WDT, OBJ0, the capped derived WMO reads (64 opaque images,
-         * 64 opaque images of very large buildings drawn by group, 64 more for their interiors and
-         * 32 cutout or blended images) and the capped BASIC doodad reads (M2 models, their first
-         * SKIN and their images), with the interior allowance's 128 more models and 160 more images
-         * for set doodads tied to an interior group. Every doodad image slot is a distinct source
-         * and may be read twice, like the WMO images.
+         * Per-tile outdoor exterior set: WDT, OBJ0, the capped derived WMO reads (256 groups, up to
+         * 256 more for each of the 24 roots, read only to size border-crossing buildings with their
+         * interiors, 64 opaque images, 64 opaque images of very large buildings drawn by group, 64
+         * more for their interiors and 32 cutout or blended images) and the capped BASIC doodad
+         * reads (M2 models, their first SKIN and their images), with the interior allowance's 128
+         * more models and 160 more images for set doodads tied to an interior group. Every doodad
+         * image slot is a distinct source and may be read twice, like the WMO images.
          */
         BASIC_EXTERIOR(
                 2
                         + 24
                         + 256
+                        + SIZING_GROUP_READS
                         + 64
                         + 64
                         + 64
@@ -478,7 +488,7 @@ final class WorldStreamScopes {
                         + DOODAD_IMAGE_SLOTS,
                 24,
                 1 << 20,
-                256,
+                256 + SIZING_GROUP_READS,
                 com.vibeminer.formats.world.WmoGroupSpans.MAX_BYTES,
                 // Each image may be read twice: once when admitted, once at its allotted level.
                 2 * (64 + 64 + 64 + 32),
