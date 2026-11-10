@@ -524,6 +524,18 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         return renderer.splatArrayCreated();
     }
 
+    /** Test seam; see {@link BgfxWorldStreamRenderer#liveTextureSpareForProof}. */
+    void liveTextureSpareForProof(int spare, long waitNanos) {
+        requireOpen();
+        renderer.liveTextureSpareForProof(spare, waitNanos);
+    }
+
+    /** Proof observation; see {@link BgfxWorldStreamRenderer#textureWaitStepsForProof}. */
+    long textureWaitStepsForProof() {
+        requireOpen();
+        return renderer.textureWaitStepsForProof();
+    }
+
     /** Test seam for native proofs; see {@link BgfxWorldStreamRenderer#objectBudgetForProof}. */
     void objectBudgetForProof(long bytes) {
         requireOpen();
@@ -702,6 +714,8 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                     framing);
             if (rendering) {
                 frameStats();
+                WorldStageTimings.value(
+                        "child.objects.textureHandles", renderer.objectTexturesHeld());
             }
         }
         renderedThisFrame = false;
@@ -841,6 +855,7 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                     (stats.gpuTimeEnd() - stats.gpuTimeBegin()) * 1_000_000_000L / gpuFrequency);
         }
         WorldStageTimings.value("child.gpu.textureMemoryMiB", stats.textureMemoryUsed() >> 20);
+        WorldStageTimings.value("child.gpu.textures", Short.toUnsignedInt(stats.numTextures()));
         if (stats.gpuMemoryUsed() > 0) {
             WorldStageTimings.value("child.gpu.memoryUsedMiB", stats.gpuMemoryUsed() >> 20);
         }

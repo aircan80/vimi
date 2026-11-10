@@ -386,6 +386,17 @@ tasks.register('nativeGpuWorldStreamObjectsBudgetProof', JavaExec) {
     args layout.buildDirectory.dir('native-world-stream-objects-budget').get().asFile.absolutePath
 }
 
+tasks.register('nativeGpuWorldStreamObjectsTextureBudgetProof', JavaExec) {
+    group = 'verification'
+    description = 'Proves object sets past bgfx texture handle limit are refused as BUDGET and retried.'
+    dependsOn testClasses, tasks.named('verifyWorldStreamShaders'), tasks.named('verifyShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.WorldStreamObjectsTextureBudgetProof'
+    timeout = java.time.Duration.ofMinutes(3)
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args layout.buildDirectory.dir('native-world-stream-objects-textures').get().asFile.absolutePath
+}
+
 tasks.register('nativeGpuWorldStreamNeighborhoodProof', JavaExec) {
     group = 'verification'
     description = 'Times camera frames with 9 and 25 maximum World residents (5 x 5 neighborhood).'
