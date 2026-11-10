@@ -30,7 +30,13 @@ public final class ExteriorObjectLimits {
      * portal set, come from what its exteriors leave of this allowance and from the interior
      * allowance ({@link #LARGE_INTERIOR_VERTICES}). On build 70862 the Stormwind tile holding its
      * two largest exterior groups (48,30) needs 111,920 vertices and about 232,000 indices; the
-     * other owners need at most 25,383 vertices for exteriors.
+     * other owners need at most 25,383 vertices for exteriors. It is one pool with the interior
+     * allowance ({@link #LARGE_INTERIOR_VERTICES}): exteriors are admitted against both together,
+     * so the Forever Dalaran owner tile (0:31,31), whose 18 exterior groups need 162,681 vertices
+     * and 491,961 indices, draws them. A root to be drawn whole that does not fit what the tile's
+     * building pool left (a single-tile root over an empty pool, such as Gilneas's 125,413-vertex
+     * root on 35,29, or a busy tile) is drawn whole from the same pool, after every split root's
+     * exteriors and before any interior.
      */
     public static final int LARGE_VERTICES = 131_072, LARGE_INDICES = 393_216, LARGE_RANGES = 512;
 
@@ -41,21 +47,25 @@ public final class ExteriorObjectLimits {
     public static final int LARGE_IMAGES = 64;
 
     /**
-     * The interior allowance of very large buildings drawn by group, on top of what their exteriors
-     * leave of the large allowance. Owned interior groups, culled by the root's portal set, are
-     * admitted only after every such root's exteriors on the tile, so within a tile an exterior
-     * never draws from it and never yields geometry or slots to an interior. Pixels are shared: the
-     * opaque images of these roots' exteriors and interiors are allotted levels from one list,
-     * after the tile's own exterior images, so drawing the interiors can lower a split root's
-     * exterior image levels slightly. On build 70862 Stormwind City's 280 interior groups need at
-     * most 448,746 vertices and 1,247,094 indices on one owner tile (48,30) with its exteriors,
-     * 317,674 vertices and 853,878 indices past the large allowance; the large allowance alone left
-     * 115 of them undrawn there.
+     * The interior allowance of very large buildings drawn by group, pooled with the large
+     * allowance. Owned interior groups, culled by the root's portal set, are admitted only after
+     * every such root's exteriors on the tile, from what they left, so within a tile an exterior
+     * never yields geometry or slots to an interior. Pixels are shared: the opaque images of these
+     * roots' exteriors and interiors are allotted levels from one list, after the tile's own
+     * exterior images, so drawing the interiors can lower a split root's exterior image levels
+     * slightly. On build 70862 Stormwind City's 280 interior groups need at most 448,746 vertices
+     * and 1,247,094 indices on one owner tile (48,30) with its exteriors, 317,674 vertices and
+     * 853,878 indices past the large allowance; the large allowance alone left 115 of them undrawn
+     * there.
      */
     public static final int LARGE_INTERIOR_VERTICES = 327_680, LARGE_INTERIOR_INDICES = 983_040;
 
-    /** Ranges and opaque image slots of the interior allowance; pixels as {@link #LARGE_IMAGES}. */
-    public static final int LARGE_INTERIOR_RANGES = 1024, LARGE_INTERIOR_IMAGES = 64;
+    /**
+     * Ranges and opaque image slots of the interior allowance, pooled with the large allowance's;
+     * pixels as {@link #LARGE_IMAGES}. The Dalaran owner tile (0:31,31) registers about 154 opaque
+     * images for its split root with every group drawn, so the 64 + 96 slots hold them all.
+     */
+    public static final int LARGE_INTERIOR_RANGES = 1024, LARGE_INTERIOR_IMAGES = 96;
 
     // ---- cutout and blended building surfaces ---------------------------------------------------
 

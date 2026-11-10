@@ -67,7 +67,10 @@ public final class WorldExteriorObjects {
     static final int MAX_RANGES = ExteriorObjectLimits.BUILDING_RANGES;
     static final int MAX_MESHES = ExteriorObjectLimits.BUILDING_MESHES, MAX_PIXELS = 1 << 20;
 
-    /** The allowance of very large buildings drawn by group (see {@link Owner}). */
+    /**
+     * The allowance of very large buildings drawn by group (see {@link Owner}) and of roots drawn
+     * whole from it ({@link Owner#whole}); one pool with the interior allowance below.
+     */
     static final int MAX_LARGE_VERTICES = ExteriorObjectLimits.LARGE_VERTICES;
 
     static final int MAX_LARGE_INDICES = ExteriorObjectLimits.LARGE_INDICES;
@@ -75,8 +78,9 @@ public final class WorldExteriorObjects {
     static final int MAX_LARGE_IMAGES = ExteriorObjectLimits.LARGE_IMAGES;
 
     /**
-     * The interior allowance of roots drawn by group, on top of what their exteriors leave of the
-     * large allowance; never available to an exterior.
+     * The interior allowance, pooled with the large allowance: exteriors of roots drawn by group
+     * (and roots drawn whole from it) are admitted first against both together, and their interiors
+     * take what every exterior left.
      */
     static final int MAX_LARGE_INTERIOR_VERTICES = ExteriorObjectLimits.LARGE_INTERIOR_VERTICES;
 
@@ -703,7 +707,14 @@ public final class WorldExteriorObjects {
          * An exterior group this tile owns of a root drawn by group whose share here is capped
          * (ROOT_CAPPED); its owned interiors are GROUP_INTERIOR_CAPPED. A group bucket.
          */
-        GROUP_CAPPED
+        GROUP_CAPPED,
+        /**
+         * Drawn roots drawn whole from the large allowance ({@link Owner#whole}): a root in one
+         * tile over what the tile's building pool left (or over an empty pool), or a border-
+         * crossing root drawn whole that fits an empty tile but not this one. Not an outcome
+         * bucket.
+         */
+        ROOT_WHOLE_LARGE
     }
 
     /** The group buckets ({@link Count}). */
@@ -1549,6 +1560,7 @@ public final class WorldExteriorObjects {
         private final double x, y, scale;
         private final double[] rotation;
         private final double centreX, centreY;
+        private final boolean whole;
 
         private Owner(
                 int tileX,
@@ -1572,6 +1584,30 @@ public final class WorldExteriorObjects {
             this.rotation = rotation.rowMajor();
             this.centreX = centreX;
             this.centreY = centreY;
+            whole = false;
+        }
+
+        /** {@link #whole}: owns every group and every set doodad on tile (tileX, tileY). */
+        private Owner(int tileX, int tileY) {
+            this.tileX = tileX;
+            this.tileY = tileY;
+            minX = maxX = tileX;
+            minY = maxY = tileY;
+            x = y = centreX = centreY = 0;
+            scale = 1;
+            rotation = new double[9];
+            whole = true;
+        }
+
+        /**
+         * The rule of a root drawn whole from the large allowance ({@link Builder#readRoot}): it
+         * owns every group and set doodad, so the tile draws the root as it would draw it from its
+         * building pool. It changes only which allowance pays: every tile listing a border-crossing
+         * placement still draws it whole, as without the fallback, and the copies coincide where
+         * several of them do.
+         */
+        static Owner whole(int tileX, int tileY) {
+            return new Owner(tileX, tileY);
         }
 
         /**
@@ -1619,6 +1655,9 @@ public final class WorldExteriorObjects {
 
         /** Whether the native point belongs to this tile, kept within the recorded bounds. */
         boolean owns(double nativeX, double nativeY) {
+            if (whole) {
+                return true;
+            }
             int tx = Math.max(minX, Math.min(maxX, tile(nativeX)));
             int ty = Math.max(minY, Math.min(maxY, tile(nativeY)));
             return tx == tileX && ty == tileY;
@@ -1627,6 +1666,10 @@ public final class WorldExteriorObjects {
         /** Per LOD0 group of {@code root}, whether this tile draws it. */
         boolean[] owned(WmoFormats.Root root) {
             var owned = new boolean[(int) root.header().groupCount()];
+            if (whole) {
+                Arrays.fill(owned, true);
+                return owned;
+            }
             if (!root.groupInfoBoundsRetained()) {
                 Arrays.fill(owned, owns(centreX, centreY));
                 return owned;
@@ -1669,7 +1712,10 @@ public final class WorldExteriorObjects {
 
     /** A placement of a root drawn by group, with its owner rule. */
     private record Queued(
-            WorldPlacements.WorldObject record, WorldBasicWmo.Transform transform, Owner owner) {}
+            WorldPlacements.WorldObject record,
+            WorldBasicWmo.Transform transform,
+            Owner owner,
+            boolean fallback) {}
 
     /** Which opaque allowance a root budget answers to. */
     private enum Allowance {
@@ -1677,21 +1723,19 @@ public final class WorldExteriorObjects {
         TILE,
         /** An empty tile's building pool: whether the root could ever fit one alone. */
         ALONE,
-        /** What is left of the tile's large allowance. */
-        LARGE,
         /**
-         * What is left of the tile's large allowance with the interior allowance added: the owned
-         * interiors of roots drawn by group, after every such root's exteriors.
+         * What is left of the tile's large allowance with the interior allowance added, one pool
+         * for roots drawn by group and roots drawn whole from it: every such root's exteriors
+         * first, then their interiors from what the exteriors left.
          */
-        LARGE_INTERIOR
+        LARGE
     }
 
     /** Where resolveBuilding charges a mesh's kept opaque geometry and its images. */
     private enum Charge {
         BUILDING,
-        LARGE,
-        /** The large allowance, as LARGE, with the interior allowance's image slots added. */
-        LARGE_INTERIOR
+        /** The large and interior allowances together, their image slots included. */
+        LARGE
     }
 
     /** A drawn root's MOGI-interior groups (flagged) waiting for the interior read pass (#383). */
@@ -1881,6 +1925,15 @@ public final class WorldExteriorObjects {
         /** The one placement each root drawn by group is placed for, in admission order. */
         private final Map<Long, Queued> byGroupQueue = new LinkedHashMap<>();
 
+        /** Roots drawn whole from the large allowance ({@link Owner#whole}), by root. */
+        private final Map<Long, Owner> wholeOwners = new HashMap<>();
+
+        /** The unique ID of the first (drawn) placement of a root drawn whole, by root. */
+        private final Map<Long, Long> wholeFirst = new HashMap<>();
+
+        /** Further placements of roots drawn whole from the large allowance, by root. */
+        private final Map<Long, List<Queued>> wholeExtras = new LinkedHashMap<>();
+
         /** Roots drawn by group: their images are allotted after the tile's exteriors. */
         private final java.util.Set<Long> byGroupRoots = new java.util.HashSet<>();
 
@@ -1965,6 +2018,7 @@ public final class WorldExteriorObjects {
                 // doodads and interiors left, and so do their set doodads.
                 phase = WorldStageTimings.start();
                 placeByGroup();
+                placeWholeExtras();
                 placeByGroupSetDoodads();
                 WorldStageTimings.stop("objects.phase.byGroup", phase);
                 // LOD0 group files this tile read (MAX_GROUPS), for the measurement probe; the
@@ -2342,10 +2396,25 @@ public final class WorldExteriorObjects {
                         }
                     }
                     case BY_GROUP -> {
-                        // Its groups are this placement's; another placement of the root is not
-                        // drawn here.
-                        if (byGroupQueue.putIfAbsent(rootId, new Queued(record, transform, owner))
-                                != null) {
+                        // Its groups are this placement's; another placement of a split root is
+                        // not drawn here. A root drawn whole from the large allowance keeps its
+                        // rule, and its other placements draw after it.
+                        var whole = wholeOwners.get(rootId);
+                        var queued =
+                                whole == null
+                                        ? new Queued(record, transform, owner, false)
+                                        : new Queued(record, transform, whole, true);
+                        if (byGroupQueue.putIfAbsent(rootId, queued) != null && whole != null) {
+                            // Drawn whole: its other placements draw the same model, placed
+                            // once it is decided (placeWholeExtras).
+                            wholeExtras
+                                    .computeIfAbsent(rootId, ignored -> new ArrayList<>())
+                                    .add(queued);
+                        } else if (byGroupQueue.get(rootId) == queued) {
+                            if (whole != null) {
+                                wholeFirst.put(rootId, record.uniqueId());
+                            }
+                        } else {
                             count(Count.PLACEMENT_CAPPED);
                         }
                     }
@@ -2416,22 +2485,34 @@ public final class WorldExteriorObjects {
 
         /**
          * Roots drawn by group ({@link Owner}), after everything else the tile draws, in admission
+         * order, then roots drawn whole from the large allowance ({@link Owner#whole}) in admission
          * order: the owned exterior groups the sizing pass did not read are read now from the group
-         * reads left, and every owned exterior is admitted against the large allowance and
-         * resolved, its opaque images in their own slots. Placement slots, meshes, draws and the
-         * cutout and blended budget come only from what the tile's buildings, doodads and interiors
-         * left, so a root drawn by group never displaces any of them. Every limit is checked before
-         * anything is resolved; when its cutout and blended ranges do not fit the draws left, only
-         * its opaque ranges are drawn. Its owned interior groups follow every split root's
-         * exteriors, from what they left and the interior allowance ({@link #byGroupInteriors}),
-         * with its portal set. A root that does not fit, or keeps nothing, still places the set
-         * doodads standing in this tile.
+         * reads left, and every owned exterior is admitted against the large and interior
+         * allowances together and resolved, its opaque images in their own slots. Placement slots,
+         * meshes, draws and the cutout and blended budget come only from what the tile's buildings,
+         * doodads and interiors left, so a root drawn by group never displaces any of them. Every
+         * limit is checked before anything is resolved; when its cutout and blended ranges do not
+         * fit the draws left, only its opaque ranges are drawn. Its owned interior groups follow
+         * every such root's exteriors, from what they left ({@link #byGroupInteriors}), with its
+         * portal set. A split root that does not fit, or keeps nothing, still places the set
+         * doodads standing in this tile; a root drawn whole that does not fit is capped as a tile
+         * root, without them.
          */
         private void placeByGroup() {
-            // Every split root's exteriors first, then their interiors (as the tile's own roots):
-            // one root's interiors never take what another's exteriors could use.
+            // Every split root's exteriors first, then the exteriors of roots drawn whole from the
+            // large allowance (Owner#whole), then all of their interiors in the same order (as
+            // the tile's own roots): no interior takes what an exterior could use, and a root
+            // drawn whole only takes what every split root's exteriors left.
             var later = new ArrayList<Object[]>();
-            for (var entry : byGroupQueue.entrySet()) {
+            var order = new ArrayList<Map.Entry<Long, Queued>>(byGroupQueue.size());
+            for (boolean fallback : new boolean[] {false, true}) {
+                for (var entry : byGroupQueue.entrySet()) {
+                    if (entry.getValue().fallback() == fallback) {
+                        order.add(entry);
+                    }
+                }
+            }
+            for (var entry : order) {
                 token.check();
                 long rootId = entry.getKey();
                 var queued = entry.getValue();
@@ -2595,12 +2676,62 @@ public final class WorldExteriorObjects {
             }
         }
 
+        /**
+         * The further placements of roots drawn whole from the large allowance, in admission order,
+         * after every root drawn by group and its interiors: each draws the root's model when a
+         * building slot and its draws are left, as a tile root's further placement, and places its
+         * own set doodads; otherwise, or when the root was not drawn, it is capped.
+         */
+        private void placeWholeExtras() {
+            for (var entry : wholeExtras.entrySet()) {
+                long rootId = entry.getKey();
+                Integer slot =
+                        rootStates.get(rootId) == RootState.DRAWN && byGroupRoots.contains(rootId)
+                                ? modelSlots.get(rootId)
+                                : null;
+                for (var queued : entry.getValue()) {
+                    token.check();
+                    long buildings =
+                            placements.stream().filter(p -> p.kind() == Kind.BUILDING).count();
+                    int cost = slot == null ? 0 : modelDraws(slot);
+                    if (slot == null
+                            || opaquePlacements >= MAX_PLACEMENTS
+                            || buildings >= MAX_PLACEMENTS
+                            || cost > MAX_DRAWS - draws) {
+                        count(Count.PLACEMENT_CAPPED);
+                        continue;
+                    }
+                    draws += cost;
+                    opaquePlacements++;
+                    count(Count.PLACEMENT_DRAWN);
+                    var placement =
+                            buildingPlacement(queued.record(), queued.transform(), rootId, slot);
+                    int at = 0;
+                    while (at < placements.size()
+                            && placements.get(at).kind() == Kind.BUILDING
+                            && placements.get(at).ordinal() < placement.ordinal()) {
+                        at++;
+                    }
+                    placements.add(at, placement);
+                    owners.put(placement.uniqueId(), queued.owner());
+                    byGroupBuildings.add(placement);
+                    var drawnInteriors = interiorsDrawn.get(wholeFirst.get(rootId));
+                    if (drawnInteriors != null) {
+                        interiorsDrawn.put(placement.uniqueId(), drawnInteriors);
+                    }
+                }
+            }
+            wholeExtras.clear();
+        }
+
         /** A root drawn by group that draws nothing here: its local set doodads are kept. */
         private void emptyByGroup(long rootId, Queued queued) {
             rootStates.put(rootId, RootState.EMPTY);
             count(Count.ROOT_EMPTY);
             count(Count.PLACEMENT_EMPTY);
-            doodadsOnly(queued.record(), queued.transform(), rootId, queued.owner());
+            if (!queued.fallback()) {
+                doodadsOnly(queued.record(), queued.transform(), rootId, queued.owner());
+            }
         }
 
         /** Owned interior groups of a root drawn by group still to be drawn or counted. */
@@ -2620,7 +2751,7 @@ public final class WorldExteriorObjects {
             byGroupRoots.add(rootId);
             rootStates.put(rootId, RootState.DRAWN);
             count(Count.ROOT_DRAWN);
-            count(Count.ROOT_BY_GROUP);
+            count(queued.fallback() ? Count.ROOT_WHOLE_LARGE : Count.ROOT_BY_GROUP);
             count(Count.PLACEMENT_DRAWN);
             opaquePlacements++;
             // The tile's true draw total, so the set doodads after it stay within MAX_DRAWS.
@@ -2664,7 +2795,11 @@ public final class WorldExteriorObjects {
             rootStates.put(rootId, RootState.CAPPED);
             count(Count.ROOT_CAPPED);
             count(Count.PLACEMENT_CAPPED);
-            doodadsOnly(queued.record(), queued.transform(), rootId, queued.owner());
+            if (!queued.fallback()) {
+                // A root drawn whole places no set doodad without its building, as a capped
+                // tile root.
+                doodadsOnly(queued.record(), queued.transform(), rootId, queued.owner());
+            }
         }
 
         /**
@@ -2674,11 +2809,10 @@ public final class WorldExteriorObjects {
          * without one none is read (GROUP_INTERIOR_NO_PORTALS) and the set is counted
          * ROOT_PORTALS_DROPPED. Each group in order is read from the tile's group reads left, and
          * admitted while its candidate ranges fit the draws left, a mesh is left and its geometry
-         * fits what the exteriors left of the large allowance plus the interior allowance ({@link
-         * Allowance#LARGE_INTERIOR}), its images in the large and interior image slots; otherwise
-         * it is GROUP_INTERIOR_CAPPED and later ones may still fit. Admitted meshes are added to
-         * {@code built}. Returns the set when an interior was admitted (its tables charged), else
-         * null.
+         * fits what every exterior left of the large and interior allowances together ({@link
+         * Allowance#LARGE}), its images in their image slots; otherwise it is GROUP_INTERIOR_CAPPED
+         * and later ones may still fit. Admitted meshes are added to {@code built}. Returns the set
+         * when an interior was admitted (its tables charged), else null.
          */
         private WmoPortalSet byGroupInteriors(
                 ByGroup read, List<Mesh> built, int meshes, long drawn, int[] local) {
@@ -2709,7 +2843,7 @@ public final class WorldExteriorObjects {
             }
             var headers = new WmoFormats.GroupHeader[read.unreadInterior().length];
             interiorPass = true;
-            charge = Charge.LARGE_INTERIOR;
+            charge = Charge.LARGE;
             try {
                 for (int g = 0; g < read.unreadInterior().length; g++) {
                     if (read.unreadInterior()[g]) {
@@ -2737,7 +2871,7 @@ public final class WorldExteriorObjects {
                         local[Count.GROUP_INTERIOR_CAPPED.ordinal()]++;
                         continue;
                     }
-                    var admitted = new RootBudget(Allowance.LARGE_INTERIOR).admit(mesh, local);
+                    var admitted = new RootBudget(Allowance.LARGE).admit(mesh, local);
                     if (admitted == Admission.DROPPED) {
                         continue; // counted by admit: BATCH_CAPPED, GROUP_EMPTY
                     }
@@ -3477,20 +3611,17 @@ public final class WorldExteriorObjects {
                 }
                 long capVertices =
                         switch (allowance) {
-                            case LARGE -> MAX_LARGE_VERTICES;
-                            case LARGE_INTERIOR -> MAX_LARGE_VERTICES + MAX_LARGE_INTERIOR_VERTICES;
+                            case LARGE -> MAX_LARGE_VERTICES + MAX_LARGE_INTERIOR_VERTICES;
                             default -> MAX_VERTICES;
                         };
                 long capIndices =
                         switch (allowance) {
-                            case LARGE -> MAX_LARGE_INDICES;
-                            case LARGE_INTERIOR -> MAX_LARGE_INDICES + MAX_LARGE_INTERIOR_INDICES;
+                            case LARGE -> MAX_LARGE_INDICES + MAX_LARGE_INTERIOR_INDICES;
                             default -> MAX_INDICES;
                         };
                 long capRanges =
                         switch (allowance) {
-                            case LARGE -> MAX_LARGE_RANGES;
-                            case LARGE_INTERIOR -> MAX_LARGE_RANGES + MAX_LARGE_INTERIOR_RANGES;
+                            case LARGE -> MAX_LARGE_RANGES + MAX_LARGE_INTERIOR_RANGES;
                             default -> MAX_RANGES;
                         };
                 pendingVertices += meshVertices;
@@ -3514,19 +3645,19 @@ public final class WorldExteriorObjects {
                 long usedVertices =
                         switch (allowance) {
                             case TILE -> Builder.this.vertices;
-                            case LARGE, LARGE_INTERIOR -> largeVertices;
+                            case LARGE -> largeVertices;
                             case ALONE -> 0;
                         };
                 long usedIndices =
                         switch (allowance) {
                             case TILE -> Builder.this.indices;
-                            case LARGE, LARGE_INTERIOR -> largeIndices;
+                            case LARGE -> largeIndices;
                             case ALONE -> 0;
                         };
                 long usedRanges =
                         switch (allowance) {
                             case TILE -> Builder.this.ranges;
-                            case LARGE, LARGE_INTERIOR -> largeRanges;
+                            case LARGE -> largeRanges;
                             case ALONE -> 0;
                         };
                 if (vertices > capVertices - usedVertices
@@ -3703,7 +3834,9 @@ public final class WorldExteriorObjects {
          * on open-world maps together with its MOGI-interior groups ({@link #interiorsOverAlone}):
          * one that fits is admitted against what the tile left, exactly as without an owner, its
          * interiors still waiting for the interior pass; one over it is drawn by group instead
-         * ({@link #readByGroup}).
+         * ({@link #readByGroup}). A root to be drawn whole that does not fit what the tile's
+         * building pool left is drawn whole from the large allowance instead of capped ({@link
+         * #readWhole}).
          */
         private RootState readRoot(long rootId, Owner owner) {
             rootsRead++;
@@ -3767,7 +3900,9 @@ public final class WorldExteriorObjects {
             int[] local = new int[counts.length];
             var pending = new ArrayList<PendingMesh>();
             var budget = new RootBudget(owner == null ? Allowance.TILE : Allowance.ALONE);
-            var sized = owner == null ? null : new Sized[lod0];
+            // Each read's counts are kept per group, so that a root drawn by group, or drawn whole
+            // from the large allowance, keeps its reads and counts.
+            var sized = new Sized[lod0];
             // Interior groups read here (#280, and MOGP-interior groups on open-world maps, #383)
             // are held for the tile-level pass after every building's exterior, so they never cap
             // or displace an exterior.
@@ -3789,19 +3924,15 @@ public final class WorldExteriorObjects {
                     continue; // counted by readInteriors
                 }
                 groupsRead++;
-                // Sizing a border-crossing root, each read's counts are kept per group, so that if
-                // it is drawn by group its owned groups keep their reads and counts.
-                int[] groupCounts = owner == null ? local : new int[counts.length];
+                int[] groupCounts = new int[counts.length];
                 var mesh = readGroup(g, groupId, root, groupCounts, headers);
-                if (owner != null) {
-                    sized[g] =
-                            new Sized(
-                                    mesh == null || (mesh.flags() & INTERIOR) != 0 ? null : mesh,
-                                    mesh != null && (mesh.flags() & INTERIOR) != 0,
-                                    groupCounts.clone());
-                    for (int i = 0; i < local.length; i++) {
-                        local[i] += groupCounts[i];
-                    }
+                sized[g] =
+                        new Sized(
+                                mesh == null || (mesh.flags() & INTERIOR) != 0 ? null : mesh,
+                                mesh != null && (mesh.flags() & INTERIOR) != 0,
+                                groupCounts.clone());
+                for (int i = 0; i < local.length; i++) {
+                    local[i] += groupCounts[i];
                 }
                 if (mesh == null) {
                     continue;
@@ -3813,22 +3944,18 @@ public final class WorldExteriorObjects {
                         local[Count.GROUP_INTERIOR_CAPPED.ordinal()]++;
                     } else {
                         interiors.add(mesh);
-                        if (owner != null) {
-                            // Kept for the interiors of a root drawn by group (instance maps).
-                            sized[g] = new Sized(mesh, true, sized[g].counts());
-                        }
+                        // Kept for the interiors of a root drawn by group (instance maps).
+                        sized[g] = new Sized(mesh, true, sized[g].counts());
                     }
                     continue;
                 }
                 var admitted = budget.admit(mesh, groupCounts);
-                if (owner != null) {
-                    // A dropped copy is not kept; its counts stay with the group.
-                    for (int i = 0; i < local.length; i++) {
-                        local[i] += groupCounts[i] - sized[g].counts()[i];
-                    }
-                    if (admitted == Admission.DROPPED) {
-                        sized[g] = new Sized(null, false, groupCounts.clone());
-                    }
+                // A dropped copy is not kept; its counts stay with the group.
+                for (int i = 0; i < local.length; i++) {
+                    local[i] += groupCounts[i] - sized[g].counts()[i];
+                }
+                if (admitted == Admission.DROPPED) {
+                    sized[g] = new Sized(null, false, groupCounts.clone());
                 }
                 switch (admitted) {
                     case ADMITTED -> pending.add(mesh);
@@ -3839,9 +3966,9 @@ public final class WorldExteriorObjects {
                             return readByGroup(
                                     rootId, root, owner, skipped, deferred, sized, interiors);
                         }
-                        releaseInteriors(interiors);
-                        count(Count.ROOT_CAPPED);
-                        return RootState.CAPPED;
+                        // In one tile and over what its building pool left (or over an empty
+                        // pool): drawn whole from the large allowance if it fits there.
+                        return readWhole(rootId, root, skipped, deferred, sized, interiors);
                     }
                 }
             }
@@ -3851,10 +3978,9 @@ public final class WorldExteriorObjects {
                 return readByGroup(rootId, root, owner, skipped, deferred, sized, interiors);
             }
             if (!budget.fitsTile()) {
-                // Sized alone (an owner): it fits an empty tile, not what this one left.
-                releaseInteriors(interiors);
-                count(Count.ROOT_CAPPED);
-                return RootState.CAPPED;
+                // Sized alone (an owner): it fits an empty tile, not what this one left. Drawn
+                // whole, as every tile listing it decides, from the large allowance if it fits.
+                return readWhole(rootId, root, skipped, deferred, sized, interiors);
             }
             var built = new ArrayList<Mesh>(pending.size());
             for (var mesh : pending) {
@@ -3946,6 +4072,27 @@ public final class WorldExteriorObjects {
                 budget.reset(mark);
                 admission.cancelPrefetch();
             }
+        }
+
+        /**
+         * A root to be drawn whole that does not fit what the tile's building pool left: a root in
+         * one tile (over what the pool left, or over an empty pool), or a border-crossing one that
+         * fits an empty tile but not this one. It goes to the large allowance as a root drawn by
+         * group whose rule owns every group ({@link Owner#whole}), so its groups, interiors and set
+         * doodads are read, admitted and placed as there, after every split root's exteriors
+         * ({@link #placeByGroup}). A border-crossing root is still decided whole from the root
+         * alone, as on every tile that lists it; only the allowance that pays depends on this tile.
+         */
+        private RootState readWhole(
+                long rootId,
+                WmoFormats.Root root,
+                boolean[] skipped,
+                boolean[] deferred,
+                Sized[] sized,
+                List<PendingMesh> held) {
+            var whole = Owner.whole(admission.recorded().x(), admission.recorded().y());
+            wholeOwners.put(rootId, whole);
+            return readByGroup(rootId, root, whole, skipped, deferred, sized, held);
         }
 
         /**
@@ -4159,7 +4306,7 @@ public final class WorldExteriorObjects {
                         indices += used;
                         ranges += kept.size();
                     }
-                    case LARGE, LARGE_INTERIOR -> {
+                    case LARGE -> {
                         largeVertices += vertexCount;
                         largeIndices += used;
                         largeRanges += kept.size();
@@ -4889,10 +5036,7 @@ public final class WorldExteriorObjects {
                         case BUILDING ->
                                 large
                                         ? largeImagesRead
-                                                >= MAX_LARGE_IMAGES
-                                                        + (charge == Charge.LARGE_INTERIOR
-                                                                ? MAX_LARGE_INTERIOR_IMAGES
-                                                                : 0)
+                                                >= MAX_LARGE_IMAGES + MAX_LARGE_INTERIOR_IMAGES
                                         : imagesRead >= MAX_IMAGES;
                         case MATERIAL -> materialImagesRead >= MAX_MATERIAL_IMAGES;
                         case DOODAD ->
