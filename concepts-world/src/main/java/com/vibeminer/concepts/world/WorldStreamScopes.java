@@ -579,6 +579,15 @@ final class WorldStreamScopes {
         }
     }
 
+    /**
+     * Names, from a read-ahead read's bytes, the read its consumer makes right after consuming it;
+     * runs on the read-ahead thread under that read's own cancellation.
+     */
+    @FunctionalInterface
+    interface Follow {
+        long next(byte[] bytes, Cancellation cancel);
+    }
+
     enum DerivedKind {
         WMO_ROOT,
         WMO_GROUP,
@@ -964,6 +973,17 @@ final class WorldStreamScopes {
          * order; hints beyond the kind's remaining reads or the queue bound are ignored.
          */
         void prefetch(long id, DerivedKind kind) {
+            prefetch(id, kind, null, null);
+        }
+
+        /**
+         * As {@link #prefetch(long, DerivedKind)}, and once that read has its bytes, {@code follow}
+         * names on the read-ahead thread the {@code next} read the consumer will make right after
+         * consuming this one (0 for none). That read is hinted in its place, ahead of every later
+         * hint. {@code follow} must name only a read the consumer will make for these bytes, and
+         * must not change them; any failure of it only leaves the next read to the consumer.
+         */
+        void prefetch(long id, DerivedKind kind, DerivedKind next, Follow follow) {
             check();
             Objects.requireNonNull(kind);
             if (!Prefetcher.enabled || !profile.derivedWmo() || id <= 0 || id > 0xffff_ffffL) {
@@ -972,11 +992,20 @@ final class WorldStreamScopes {
             if (prefetcher == null) {
                 prefetcher = new Prefetcher(engine, token, profile == UseProfile.BASIC_EXTERIOR);
             }
+            Prefetcher.Next then =
+                    follow == null
+                            ? null
+                            : new Prefetcher.Next(
+                                    Objects.requireNonNull(next),
+                                    follow,
+                                    profile.derivedLimit(next),
+                                    profile.derivedReads(next) - derivedReads[next.ordinal()]);
             prefetcher.hint(
                     id,
                     kind,
                     profile.derivedLimit(kind),
-                    profile.derivedReads(kind) - derivedReads[kind.ordinal()]);
+                    profile.derivedReads(kind) - derivedReads[kind.ordinal()],
+                    then);
         }
 
         /**
@@ -1095,10 +1124,12 @@ final class WorldStreamScopes {
      *
      * <p>Order: hints are consumed in the order given. Taking a hint drops every earlier hint the
      * consumer passed (it will not come back for them), and nothing else is ever dropped, so the
-     * read the consumer needs next is never evicted. {@link #cancelAll} withdraws every hint and
-     * cancels every started read, for a root that stops early. Each read has its own cancellation,
-     * also canceled with the operation's; {@link #close} cancels, joins and drops everything before
-     * the operation ends.
+     * read the consumer needs next is never evicted. A hint may name a follow-up read that its
+     * bytes decide (a doodad model's SKIN), consumed right after it: it is queued in that place,
+     * and may repeat a read another hint's follow-up names, since the consumer reads it once for
+     * each. {@link #cancelAll} withdraws every hint and cancels every started read, for a root that
+     * stops early. Each read has its own cancellation, also canceled with the operation's; {@link
+     * #close} cancels, joins and drops everything before the operation ends.
      */
     static final class Prefetcher {
         static final int READS = 4, WINDOW = 8, QUEUE = 256, HELD_BYTES = 8 << 20;
@@ -1108,15 +1139,31 @@ final class WorldStreamScopes {
 
         private record Key(long id, DerivedKind kind) {}
 
-        private record Hint(Key key, int limit, long order) {}
+        /**
+         * The read a hint's bytes name next: its kind, how to find it, its kind's size limit and
+         * how many reads of its kind the operation could still consume when hinted (an upper bound,
+         * since consumption only grows).
+         */
+        record Next(DerivedKind kind, Follow follow, int limit, int remaining) {}
+
+        /**
+         * Orders are spaced by two: a hint's follow-up takes the order just after it, so it is
+         * consumed, and dropped by {@link #take}, exactly as if it had been hinted in its place.
+         */
+        private record Hint(Key key, int limit, long order, Next next) {}
 
         private static final class Started {
+            final Key key;
             final long order;
             final CompletableFuture<Source> future = new CompletableFuture<>();
             final Cancellation cancel = new Cancellation();
             long held;
 
-            Started(long order) {
+            /** Set under the lock when the read leaves the set without a consumer taking it. */
+            boolean dropped;
+
+            Started(Key key, long order) {
+                this.key = key;
                 this.order = order;
             }
         }
@@ -1124,9 +1171,12 @@ final class WorldStreamScopes {
         private final WorldStreamScopes engine;
         private final Cancellation.Registration link;
         private final boolean classifyUnavailable;
-        private final java.util.ArrayDeque<Hint> queue = new java.util.ArrayDeque<>();
-        private final java.util.LinkedHashMap<Key, Started> started =
-                new java.util.LinkedHashMap<>();
+        private final java.util.PriorityQueue<Hint> queue =
+                new java.util.PriorityQueue<>(java.util.Comparator.comparingLong(Hint::order));
+
+        /** Started and not yet taken or dropped, by order. */
+        private final java.util.TreeMap<Long, Started> started = new java.util.TreeMap<>();
+
         private long nextOrder, heldBytes, peakHeldBytes;
         private int running;
         private boolean closed;
@@ -1138,71 +1188,92 @@ final class WorldStreamScopes {
             this.link = operation.onCancel(this::cancelReads);
         }
 
-        synchronized void hint(long id, DerivedKind kind, int limit, int remaining) {
+        synchronized void hint(long id, DerivedKind kind, int limit, int remaining, Next next) {
             var key = new Key(id, kind);
-            if (closed || started.containsKey(key) || queue.size() >= QUEUE) {
+            if (closed || queue.size() >= QUEUE) {
                 return;
             }
-            int pending = 0;
+            for (var read : started.values()) {
+                if (read.key.equals(key)) {
+                    return;
+                }
+            }
             for (var hint : queue) {
                 if (hint.key().equals(key)) {
                     return;
                 }
-                if (hint.key().kind() == kind) {
+            }
+            if (enqueue(key, limit, remaining, nextOrder, next)) {
+                nextOrder += 2;
+                pump();
+            }
+        }
+
+        /** Queues one hint unless the queue is full or its kind has no reads left to consume. */
+        private boolean enqueue(Key key, int limit, int remaining, long order, Next next) {
+            if (closed || queue.size() >= QUEUE) {
+                return false;
+            }
+            int pending = 0;
+            for (var hint : queue) {
+                if (hint.key().kind() == key.kind()) {
                     pending++;
                 }
             }
-            for (var other : started.keySet()) {
-                if (other.kind() == kind) {
+            for (var read : started.values()) {
+                if (read.key.kind() == key.kind()) {
                     pending++;
                 }
             }
             // Never read ahead more of a kind than the operation may still consume.
             if (pending >= remaining) {
-                return;
+                return false;
             }
-            queue.add(new Hint(key, limit, nextOrder++));
-            pump();
+            queue.add(new Hint(key, limit, order, next));
+            return true;
         }
 
         /**
-         * The started read of exactly this hint, now owned by the caller, or null when the caller
-         * reads it itself (never hinted, or hinted and not yet started). Every earlier hint is
-         * dropped: the consumer has passed it. The operation's cancel hook no longer reaches the
-         * returned read, so the caller links its cancellation for as long as it waits.
+         * The started read of the earliest hint of exactly this read, now owned by the caller, or
+         * null when the caller reads it itself (never hinted, or hinted and not yet started). Every
+         * earlier hint is dropped: the consumer has passed it. The operation's cancel hook no
+         * longer reaches the returned read, so the caller links its cancellation for as long as it
+         * waits.
          */
         Started take(long id, DerivedKind kind) {
             var key = new Key(id, kind);
             var dropped = new ArrayList<Started>();
             Started result = null;
             synchronized (this) {
-                long order = -1;
-                var mine = started.get(key);
-                if (mine != null) {
-                    order = mine.order;
-                } else {
-                    for (var hint : queue) {
-                        if (hint.key().equals(key)) {
-                            order = hint.order();
-                            break;
-                        }
+                long order = Long.MAX_VALUE;
+                Started mine = null;
+                for (var read : started.values()) {
+                    if (read.key.equals(key)) {
+                        mine = read;
+                        order = read.order;
+                        break; // by order: the earliest
                     }
                 }
-                if (order < 0) {
+                for (var hint : queue) {
+                    if (hint.key().equals(key) && hint.order() < order) {
+                        mine = null;
+                        order = hint.order();
+                    }
+                }
+                if (order == Long.MAX_VALUE) {
                     return null;
                 }
                 long passed = order;
                 queue.removeIf(hint -> hint.order() <= passed);
-                for (var entry = started.entrySet().iterator(); entry.hasNext(); ) {
+                for (var entry = started.headMap(passed).entrySet().iterator(); entry.hasNext(); ) {
                     var next = entry.next().getValue();
-                    if (next.order < passed) {
-                        dropped.add(next);
-                        heldBytes -= next.held;
-                        entry.remove();
-                    }
+                    next.dropped = true;
+                    dropped.add(next);
+                    heldBytes -= next.held;
+                    entry.remove();
                 }
                 if (mine != null) {
-                    started.remove(key);
+                    started.remove(passed);
                     heldBytes -= mine.held;
                     result = mine;
                 }
@@ -1218,6 +1289,7 @@ final class WorldStreamScopes {
             synchronized (this) {
                 queue.clear();
                 dropped = new ArrayList<>(started.values());
+                dropped.forEach(read -> read.dropped = true);
                 started.clear();
                 heldBytes = 0;
             }
@@ -1236,14 +1308,15 @@ final class WorldStreamScopes {
                     && !queue.isEmpty()) {
                 var hint = queue.poll();
                 running++;
-                var read = new Started(hint.order());
-                started.put(hint.key(), read);
+                var read = new Started(hint.key(), hint.order());
+                started.put(hint.order(), read);
                 Thread.ofVirtual()
                         .name("world-source-prefetch")
                         .start(
                                 () -> {
                                     Source source = null;
                                     Throwable failure = null;
+                                    long next = 0;
                                     try {
                                         source =
                                                 engine.read(
@@ -1251,10 +1324,11 @@ final class WorldStreamScopes {
                                                         hint.limit(),
                                                         read.cancel,
                                                         classifyUnavailable);
+                                        next = follow(hint, source, read.cancel);
                                     } catch (Throwable thrown) {
                                         failure = thrown;
                                     }
-                                    finished(hint.key(), read, source);
+                                    finished(hint, read, source, next);
                                     if (failure != null) {
                                         read.future.completeExceptionally(failure);
                                     } else {
@@ -1264,12 +1338,38 @@ final class WorldStreamScopes {
             }
         }
 
-        private synchronized void finished(Key key, Started read, Source source) {
+        /**
+         * The read the hint's bytes name next, or 0. Runs before the read completes, so the
+         * follow-up is queued before the consumer can take these bytes and come back for it.
+         */
+        private static long follow(Hint hint, Source source, Cancellation cancel) {
+            if (hint.next() == null) {
+                return 0;
+            }
+            try {
+                long id = hint.next().follow().next(source.bytes(), cancel);
+                return id > 0 && id <= 0xffff_ffffL ? id : 0;
+            } catch (RuntimeException ignored) {
+                return 0; // The consumer reads it itself, or decides not to.
+            }
+        }
+
+        private synchronized void finished(Hint hint, Started read, Source source, long next) {
             running--;
-            if (source != null && started.get(key) == read) {
+            if (source != null && started.get(read.order) == read) {
                 read.held = source.bytes().length;
                 heldBytes += read.held;
                 peakHeldBytes = Math.max(peakHeldBytes, heldBytes);
+            }
+            // A taken read is still consumed, so its follow-up is too; a dropped one is not.
+            if (next != 0 && !read.dropped && !read.cancel.isCanceled()) {
+                var then = hint.next();
+                enqueue(
+                        new Key(next, then.kind()),
+                        then.limit(),
+                        then.remaining(),
+                        hint.order() + 1,
+                        null);
             }
             pump();
         }
@@ -1307,6 +1407,7 @@ final class WorldStreamScopes {
                 closed = true;
                 queue.clear();
                 dropped = new ArrayList<>(started.values());
+                dropped.forEach(read -> read.dropped = true);
                 started.clear();
                 heldBytes = 0;
             }
