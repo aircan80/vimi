@@ -19,6 +19,9 @@ import java.util.concurrent.TimeUnit;
 public final class WorldStreamObjectsBudgetProof {
     private WorldStreamObjectsBudgetProof() {}
 
+    /** Images per set: small distinct 4 x 4 chains, so a set's GPU bytes are mostly textures. */
+    static final int IMAGES = 8;
+
     private static void require(boolean value, String message) {
         if (!value) {
             throw new AssertionError(message);
@@ -71,7 +74,10 @@ public final class WorldStreamObjectsBudgetProof {
                 content++;
                 WorldStreamNativeProof.accepted(owner, reader, content);
             }
-            var data = WorldStreamObjectsMaterialProof.quads().data();
+            // Two sets of the same size whose images differ: identical images would share one
+            // texture (WorldStreamObjectTextures) and the second set would cost only its buffers.
+            var data = WorldStreamObjectsTextureBudgetProof.images(IMAGES, 1);
+            var other = WorldStreamObjectsTextureBudgetProof.images(IMAGES, 2);
             long need;
             try (var probe = WorldStreamPackedObjects.pack(data, () -> false)) {
                 need = probe.payloadBytes();
@@ -83,7 +89,7 @@ public final class WorldStreamObjectsBudgetProof {
                     "First objects set attaches");
             require(owner.stats().upload().objectBytes() == need, "First set reserved");
             require(
-                    late(owner, second, data) == WorldStreamStatus.LateOutcome.BUDGET,
+                    late(owner, second, other) == WorldStreamStatus.LateOutcome.BUDGET,
                     "Second objects set refused for the budget");
             require(owner.stats().upload().objectBytes() == need, "A refused set reserves nothing");
             // Terrain of the refused resident keeps drawing: a new camera still gets a frame.
@@ -104,7 +110,7 @@ public final class WorldStreamObjectsBudgetProof {
             content++;
             WorldStreamNativeProof.accepted(owner, reader, content);
             require(
-                    late(owner, second, data) == WorldStreamStatus.LateOutcome.ATTACHED,
+                    late(owner, second, other) == WorldStreamStatus.LateOutcome.ATTACHED,
                     "The refused resident attaches once budget is free");
             require(owner.stats().upload().objectBytes() == need, "Retried set reserved");
             System.out.println(

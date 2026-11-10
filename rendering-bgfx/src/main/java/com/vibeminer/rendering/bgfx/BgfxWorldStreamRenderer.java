@@ -189,9 +189,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
 
     /**
      * objectBytes: issued GPU bytes of all resident and building exterior object sets;
-     * objectTextures: texture handles those sets hold or will create, at most objectTextureLimit;
-     * compressedImages and decodedImages: object textures uploaded as their own BC blocks, and
-     * compressed ones decoded to RGBA8 because this backend does not sample their format.
+     * objectTextures: texture handles those sets hold or will create, at most objectTextureLimit,
+     * each shared texture counted once (WorldStreamObjectTextures); compressedImages and
+     * decodedImages: object textures uploaded as their own BC blocks, and compressed ones decoded
+     * to RGBA8 because this backend does not sample their format.
      */
     record Stats(
             long callbacks,
@@ -207,7 +208,11 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             // (bgfx's limit less every other texture of the session) and refusals for handles.
             int objectTextures,
             int objectTextureLimit,
-            long textureRefusals) {}
+            long textureRefusals,
+            // Image references those sets hold (at least objectTextures: a texture several sets
+            // share is one handle), and references served by a texture another set had uploaded.
+            int objectTextureReferences,
+            long sharedTextureReferences) {}
 
     /**
      * Diagnostic override: when this system property is {@code true}, every compressed object
@@ -421,20 +426,6 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             return building == null ? 0 : building.bytes;
         }
 
-        /** Texture handles this build has reserved but not created yet. */
-        int uncreatedTextures() {
-            if (building == null) {
-                return 0;
-            }
-            int missing = 0;
-            for (short texture : building.textures) {
-                if (texture == INVALID) {
-                    missing++;
-                }
-            }
-            return missing;
-        }
-
         void closeSource() {
             imageData = null; // may slice the packed native input freed below
             if (source != null) {
@@ -551,13 +542,26 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         short vertices = INVALID, indices = INVALID;
         long bytes;
 
-        /** Full GPU size reserved against OBJECT_BUDGET_BYTES until destroyed. */
+        /**
+         * GPU bytes of this set's own buffers, reserved against OBJECT_BUDGET_BYTES until
+         * destroyed; its textures are reserved once each in the session's shared textures.
+         */
         long reserved;
 
-        /** Texture handles reserved against the object texture limit until destroyed. */
-        int reservedTextures;
+        /** The session's shared object textures, where this set holds one reference per image. */
+        final WorldStreamObjectTextures shared;
 
-        SlotObjects(WorldStreamPackedObjects source) {
+        /** Per image: the texture it holds a reference to, or null once released. */
+        final WorldStreamObjectTextures.Entry[] entries;
+
+        /** Per image: whether this set creates and fills its texture (else it shares one). */
+        final boolean[] creates;
+
+        SlotObjects(
+                WorldStreamPackedObjects source,
+                WorldStreamObjectTextures shared,
+                WorldStreamObjectTextures.Plan plan) {
+            this.shared = shared;
             models = source.models;
             meshes = source.meshes;
             ranges = source.ranges;
@@ -581,6 +585,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             maxBlendedRanges = most;
             textures = new short[source.imageCount()];
             java.util.Arrays.fill(textures, INVALID);
+            creates = new boolean[textures.length];
+            for (int i = 0; i < creates.length; i++) {
+                creates[i] = plan.creates(i);
+            }
             blendedModels = new boolean[models.length / 2];
             for (int m = 0; m < blendedModels.length; m++) {
                 for (int mesh = models[m * 2]; mesh < models[m * 2] + models[m * 2 + 1]; mesh++) {
@@ -629,6 +637,11 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                     portalVisible[p] = new java.util.BitSet(traversal.groupCount());
                 }
             }
+            // Held last, so a failure above holds nothing.
+            entries = shared.hold(plan);
+            for (int i = 0; i < textures.length; i++) {
+                textures[i] = entries[i].handle();
+            }
         }
 
         /** Model m's blended ranges. */
@@ -655,15 +668,17 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 bgfx_destroy_dynamic_index_buffer(indices);
                 indices = INVALID;
             }
-            for (int i = 0; i < textures.length; i++) {
-                if (textures[i] != INVALID) {
-                    bgfx_destroy_texture(textures[i]);
+            // One release per image; the last holder of a texture destroys it, created or not.
+            for (int i = 0; i < entries.length; i++) {
+                if (entries[i] != null) {
+                    var entry = entries[i];
+                    entries[i] = null;
                     textures[i] = INVALID;
+                    shared.release(entry);
                 }
             }
             bytes = 0;
             reserved = 0;
-            reservedTextures = 0;
         }
     }
 
@@ -686,6 +701,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     // Only native proofs change these: extra live spare forces the wait, and its time bound.
     private int extraLiveSpare;
     private long textureWaitNanos = TEXTURE_WAIT_NANOS;
+
+    // Object textures shared across sets by exact image identity (owner thread only).
+    private final WorldStreamObjectTextures objectTextures =
+            new WorldStreamObjectTextures(handle -> bgfx_destroy_texture(handle));
     private final AtomicReference<Upload> uploading = new AtomicReference<>();
     private final AtomicLong callbackCount = new AtomicLong();
     private final AtomicReference<String> callbackFailure = new AtomicReference<>();
@@ -1369,13 +1388,16 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         String step = "buffers";
         try {
             if (build.building == null) {
-                long need = source.payloadBytes();
+                // A texture another set has uploaded is shared: only this set's buffers and the
+                // textures it creates are charged, in bytes and in handles.
+                var plan = planTextures(source);
+                long need = source.bufferBytes() + plan.newBytes();
                 if (!objectsFit(objectBudget, reservedObjectBytes(), need)) {
                     build.budget = true;
                     build.fail();
                     return 0;
                 }
-                int images = source.imageCount();
+                int images = plan.handles();
                 int held = reservedObjectTextures();
                 if (!objectTexturesFit(objectTextureLimit, held, images)) {
                     refuseForTextures(build, images, held);
@@ -1395,9 +1417,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                     refuseForTextures(build, images, held);
                     return 0;
                 }
-                var built = new SlotObjects(source);
-                built.reserved = need;
-                built.reservedTextures = images;
+                var built = new SlotObjects(source, objectTextures, plan);
+                built.reserved = source.bufferBytes();
                 build.building = built;
                 try (var layout = objectLayout()) {
                     built.vertices =
@@ -1442,6 +1463,11 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 return count;
             }
             step = "textures";
+            // Images whose texture this set shares need no upload: skip them all in this step.
+            while (build.image < source.imageCount() && !built.creates[build.image]) {
+                built.textures[build.image] = built.entries[build.image].handle();
+                build.image++;
+            }
             if (build.image < source.imageCount()) {
                 int image = build.image;
                 int width = source.width(image), height = source.height(image);
@@ -1474,6 +1500,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                                             BGFX_TEXTURE_NONE,
                                             null,
                                             0));
+                    objectTextures.created(built.entries[image], built.textures[image]);
                 }
                 int count = 0;
                 for (var slice : build.imagePlan.get(build.imageStep)) {
@@ -1490,8 +1517,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                             updatePitch(build.imageFormat, slice));
                     count += slice.bytes();
                 }
-                built.bytes += count;
+                objectTextures.issued(built.entries[image], count);
                 if (++build.imageStep == build.imagePlan.size()) {
+                    // Fully issued: later sets share it.
+                    objectTextures.complete(built.entries[image]);
                     build.imagePlan = null;
                     build.imageData = null;
                     build.image++;
@@ -3169,7 +3198,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 decodedImages,
                 reservedObjectTextures(),
                 objectTextureLimit,
-                textureRefusals);
+                textureRefusals,
+                objectTextures.references(),
+                objectTextures.sharedReferences());
     }
 
     /**
@@ -3332,14 +3363,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
      */
     private int liveTextureRoom() {
         int live = Short.toUnsignedInt(org.lwjgl.bgfx.BGFX.bgfx_get_stats().numTextures());
-        int pending = 0;
-        var upload = uploading.get();
-        if (upload != null && upload.objects != null && upload.objects.building != null) {
-            pending += upload.objects.uncreatedTextures();
-        }
-        if (late != null && late.build.building != null) {
-            pending += late.build.uncreatedTextures();
-        }
+        int pending = objectTextures.uncreated();
         int lazy = splatArray == INVALID ? LAZY_SHARED_TEXTURES : 0;
         for (var slot : slots) {
             if (slot != null && slot.splatAlpha == INVALID) {
@@ -3356,29 +3380,36 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         return reservedObjectTextures();
     }
 
+    /** Texture handles object sets hold: each shared texture once, created or reserved. */
     private int reservedObjectTextures() {
-        var upload = uploading.get();
-        int total =
-                upload == null || upload.objects == null || upload.objects.building == null
-                        ? 0
-                        : upload.objects.building.reservedTextures;
-        if (late != null && late.build.building != null) {
-            total += late.build.building.reservedTextures;
+        return objectTextures.entries();
+    }
+
+    /** Image references resident and building object sets hold; owner thread only. */
+    int objectTextureReferences() {
+        requireOwner();
+        return objectTextures.references();
+    }
+
+    /** How a set's images would be held now: shared, repeated in the set, or created. */
+    private WorldStreamObjectTextures.Plan planTextures(WorldStreamPackedObjects source) {
+        int count = source.imageCount();
+        var keys = new WorldStreamObjectTextures.Key[count];
+        var sizes = new long[count];
+        for (int i = 0; i < count; i++) {
+            keys[i] = source.key(i);
+            sizes[i] = source.imageBytes(i);
         }
-        for (var slot : slots) {
-            if (slot != null && slot.objects != null) {
-                total += slot.objects.reservedTextures;
-            }
-        }
-        return total;
+        return objectTextures.plan(keys, sizes);
     }
 
     private long reservedObjectBytes() {
         var upload = uploading.get();
         long total =
-                upload == null || upload.objects == null || upload.objects.building == null
-                        ? 0
-                        : upload.objects.building.reserved;
+                (upload == null || upload.objects == null || upload.objects.building == null
+                                ? 0
+                                : upload.objects.building.reserved)
+                        + objectTextures.reservedBytes();
         if (late != null && late.build.building != null) {
             total += late.build.building.reserved;
         }
@@ -3391,7 +3422,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     }
 
     private long objectBytes(Upload upload) {
-        long total = upload == null || upload.objects == null ? 0 : upload.objects.builtBytes();
+        long total =
+                (upload == null || upload.objects == null ? 0 : upload.objects.builtBytes())
+                        + objectTextures.issuedBytes();
         if (late != null) {
             total += late.build.builtBytes();
         }

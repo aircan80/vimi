@@ -18,7 +18,8 @@ import java.util.concurrent.TimeUnit;
  * attaches; the first that does not is refused as BUDGET before it creates anything, never a native
  * allocation failure, its terrain keeps drawing, and it attaches once a resident's slot is reused
  * and that set's handles are returned. Removing the handle check makes the over-limit set fail at
- * the textures step instead.
+ * the textures step instead. Every set's images differ from every other set's, so no texture is
+ * shared ({@link WorldStreamObjectTextures}) and each set needs all its handles.
  */
 public final class WorldStreamObjectsTextureBudgetProof {
     private WorldStreamObjectsTextureBudgetProof() {}
@@ -86,8 +87,9 @@ public final class WorldStreamObjectsTextureBudgetProof {
                 content++;
                 WorldStreamNativeProof.accepted(owner, reader, content);
             }
-            var data = images(IMAGES);
             int before = owner.stats().textures();
+            // The set past the limit: its images differ from every fitting set's.
+            var data = images(IMAGES, fitting);
             // Timeout path: with the live room forced short, a set that fits the accounting
             // waits for handles, then is refused as BUDGET once the bound runs out, having
             // created and reserved nothing.
@@ -109,7 +111,8 @@ public final class WorldStreamObjectsTextureBudgetProof {
             owner.liveTextureSpareForProof(0, BgfxWorldStreamRenderer.TEXTURE_WAIT_NANOS);
             for (int i = 0; i < fitting; i++) {
                 require(
-                        late(owner, leases.get(i), data) == WorldStreamStatus.LateOutcome.ATTACHED,
+                        late(owner, leases.get(i), images(IMAGES, i))
+                                == WorldStreamStatus.LateOutcome.ATTACHED,
                         "Set " + i + " fits and attaches");
             }
             int peak = owner.stats().textures();
@@ -199,14 +202,18 @@ public final class WorldStreamObjectsTextureBudgetProof {
         }
     }
 
-    /** One objects set of {@code count} 4 x 4 RGBA8 images; one quad draws the first. */
-    static WorldStreamObjectsFile.Data images(int count) {
+    /**
+     * One objects set of {@code count} distinct 4 x 4 RGBA8 images, each image's texels its own
+     * index and {@code salt} (0 to 255): sets of different salts share no texture. One quad draws
+     * the first.
+     */
+    static WorldStreamObjectsFile.Data images(int count, int salt) {
         var builder = WorldStreamTileWriter.Exterior.builder();
         var top = ByteBuffer.allocate(4 * 4 * 4);
         for (int i = 0; i < count; i++) {
             top.clear();
             while (top.hasRemaining()) {
-                top.put((byte) i).put((byte) (i >> 8)).put((byte) 128).put((byte) 255);
+                top.put((byte) i).put((byte) (i >> 8)).put((byte) salt).put((byte) 255);
             }
             top.flip();
             builder.image(4, 4, WorldStreamObjectsFileTest.chain(4, 4, top));
