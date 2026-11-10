@@ -329,11 +329,14 @@ final class WorldStreamParentState {
      * Changes whenever the child may have freed objects room or made a texture shareable, so a set
      * refused for budget or texture handles earlier may now fit: a slot whose generation held
      * objects is replaced (the child destroyed them before staging), or a tile offered with inline
-     * objects resolves (staged, rejected or canceled), since that set's build reserved handles and
-     * bytes while filling and either completed its textures, which later sets share, or freed them.
-     * A late objects outcome never moves it: late sets build one at a time, so one that started
-     * after a refusal frees at most what it took since, and a refusal moving it would re-offer
-     * itself at once.
+     * objects resolves (staged, rejected or canceled), since that set's build may have reserved
+     * handles and bytes while filling and either completed its textures, which later sets share, or
+     * freed them. The parent cannot tell an inline set refused before reserving anything (staged as
+     * failed, or canceled before building) from one that held room, so every inline resolution
+     * moves it; inline sets come only with tiles, so this never repeats on its own. A late objects
+     * outcome never moves it, a late refusal included: late sets build one at a time, so one that
+     * started after a refusal frees at most what it took since, and a late refusal moving it would
+     * re-offer itself at once.
      */
     synchronized long objectsReleases() {
         return objectsReleases;

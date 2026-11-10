@@ -1052,9 +1052,10 @@ final class WorldStreamObjectsFile {
                     throw new IOException("Objects file length differs");
                 }
                 WorldStageTimings.add("objectsFile.write.bytes", data.bytes());
-                long forcing = WorldStageTimings.start();
-                channel.force(false);
-                WorldStageTimings.stop("objectsFile.write.fsync", forcing);
+                // No fsync, as for tile files: a session-private scratch file the child reads back
+                // and the parent deletes, which no restart reuses. A torn or short file fails the
+                // exact length and full digest on read. A flush to disk only added latency, which
+                // on Windows can reach seconds while other writers keep the disk busy.
             }
             check(canceled);
             if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
