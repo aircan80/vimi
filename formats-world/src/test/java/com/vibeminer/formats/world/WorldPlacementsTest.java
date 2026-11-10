@@ -138,15 +138,19 @@ class WorldPlacementsTest {
 
     @Test
     void sourceRecordAndChunkCapsHaveExactAcceptedBoundaries() {
-        var m2 = new byte[4096 * 36];
-        var wmo = new byte[4096 * 64];
+        int cap = WorldPlacements.MAX_RECORDS_PER_KIND;
+        var m2 = new byte[cap * 36];
+        var wmo = new byte[cap * 64];
         var maximum =
                 WorldPlacements.readObj0(file(chunk(MDDF, m2), chunk(MODF, wmo)), () -> false);
-        assertEquals(4096, maximum.doodads().size());
-        assertEquals(4096, maximum.worldObjects().size());
-        assertEquals(4095, maximum.worldObjects().getLast().ordinal());
-        reject(file(chunk(MDDF, new byte[4097 * 36])));
-        reject(file(chunk(MODF, new byte[4097 * 64])));
+        assertEquals(cap, maximum.doodads().size());
+        assertEquals(cap, maximum.worldObjects().size());
+        assertEquals(cap - 1, maximum.doodads().getLast().ordinal());
+        assertEquals(cap - 1, maximum.worldObjects().getLast().ordinal());
+        reject(file(chunk(MDDF, new byte[(cap + 1) * 36])));
+        reject(file(chunk(MODF, new byte[(cap + 1) * 64])));
+        reject(file(chunk(0x4d574452, new byte[(cap + 1) * 8])));
+        reject(file(chunk(0x4d574453, new byte[(cap + 1) * 2])));
         var chunks = new byte[4095][];
         java.util.Arrays.fill(chunks, chunk(123, new byte[0]));
         assertTrue(WorldPlacements.readObj0(file(chunks), () -> false).doodads().isEmpty());
@@ -154,6 +158,27 @@ class WorldPlacementsTest {
         var exact = file(chunk(123, new byte[WorldPlacements.MAX_SOURCE_BYTES - 20]));
         assertTrue(WorldPlacements.readObj0(exact, () -> false).worldObjects().isEmpty());
         reject(java.util.Arrays.copyOf(exact, exact.length + 1));
+    }
+
+    @Test
+    void moreThan4096DoodadsAreReadInSourceOrder() {
+        // Gilneas City's densest obj0 (build 70862, tile 34,29) records 4,165 MDDF doodads.
+        int count = 4165;
+        var records = new byte[count][];
+        for (int i = 0; i < count; i++) {
+            records[i] = doodad(1000 + i, 70000 + i, 1024, 0x40);
+        }
+        var read =
+                WorldPlacements.readObj0(
+                        file(chunk(MDDF, concat(records)), chunk(MODF, object(7, 9, 0x8))),
+                        () -> false);
+        assertEquals(count, read.doodads().size());
+        assertEquals(1, read.worldObjects().size());
+        var last = read.doodads().getLast();
+        assertEquals(count - 1, last.ordinal());
+        assertEquals(1000 + count - 1, last.reference().value());
+        assertEquals(70000 + count - 1, last.uniqueId());
+        assertEquals(WorldPlacements.ReferenceKind.FILE_DATA_ID, last.reference().kind());
     }
 
     @Test
