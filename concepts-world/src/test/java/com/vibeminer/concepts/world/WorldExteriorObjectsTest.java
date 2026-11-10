@@ -1639,35 +1639,67 @@ class WorldExteriorObjectsTest {
 
     @Test
     void heldInteriorCopiesAreBoundedWhileReading() {
-        // Three 65,536-vertex interior groups: two fit the held bound (both budgets together,
-        // 131,072 vertices); the third is counted capped as it is read. Of the two held, one fits
-        // the vertex budget left after the exterior.
+        // Four 65,536-vertex interior groups: three fit the held bound (the building pool, the
+        // interior allowance and the cutout budget together, 196,608 vertices); the fourth is
+        // counted capped as it is read. Of the three held, two fit what the exterior left of the
+        // pool and the interior allowance (163,837 vertices).
         try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
-            f.files.sources.put(ROOT, root(GROUP, 211, 212, 213));
-            for (long id = 211; id <= 213; id++) {
+            f.files.sources.put(ROOT, root(GROUP, 211, 212, 213, 214));
+            for (long id = 211; id <= 214; id++) {
                 f.files.sources.put(id, group(INT, 65536, 1, List.of(new Batch(0, 3, 0, 0))));
             }
             try (var set = f.runInstance()) {
-                assertEquals(2, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertEquals(3, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
                 assertEquals(2, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
-                assertEquals(3 + 65536, set.vertices());
+                assertEquals(3 + 2 * 65536, set.vertices());
+            }
+        }
+    }
+
+    @Test
+    void tileInteriorsDrawFromTheirAllowanceButExteriorsNeverDo() {
+        // A 65,536-vertex exterior leaves 32,768 vertices of the building pool; a 60,000-vertex
+        // interior draws from that and the tile interior allowance (65,536 more).
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(ROOT, root(INTERIOR, GROUP));
+            f.files.sources.put(GROUP, group(EXT, 65536, 1, List.of(new Batch(0, 3, 0, 0))));
+            f.files.sources.put(INTERIOR, group(INT, 60000, 1, List.of(new Batch(0, 3, 0, 0))));
+            try (var set = f.runInstance()) {
+                assertEquals(2, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+                assertEquals(125_536, set.vertices());
+                assertTrue(set.vertices() > WorldExteriorObjects.MAX_VERTICES);
+            }
+        }
+        // Two 60,000-vertex exteriors (120,000) are over the building pool: the allowance is
+        // never theirs, so the root falls back to the large allowance as before.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(ROOT, root(GROUP, GROUP + 1));
+            f.files.sources.put(GROUP, group(EXT, 60000, 1, List.of(new Batch(0, 3, 0, 0))));
+            f.files.sources.put(GROUP + 1, group(EXT, 60000, 1, List.of(new Batch(0, 3, 0, 0))));
+            try (var set = f.runInstance()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_WHOLE_LARGE));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
             }
         }
     }
 
     @Test
     void anInteriorThatDoesNotFitIsSkippedWithoutCappingTheExterior() {
-        // A 65,536-vertex exterior group leaves 32,768 opaque vertices; a 40,000-vertex interior
-        // group recorded before it is skipped alone, and the building keeps its exterior.
+        // A 65,536-vertex exterior group leaves 98,304 vertices of the building pool and the
+        // interior allowance; of two 65,536-vertex interior groups recorded before it, the first
+        // draws and the second is skipped alone, and the building keeps its exterior.
         try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
-            f.files.sources.put(ROOT, root(INTERIOR, GROUP));
+            f.files.sources.put(ROOT, root(INTERIOR, INTERIOR + 20, GROUP));
             f.files.sources.put(GROUP, group(EXT, 65536, 1, List.of(new Batch(0, 3, 0, 0))));
-            f.files.sources.put(INTERIOR, group(INT, 40000, 1, List.of(new Batch(0, 3, 0, 0))));
+            f.files.sources.put(INTERIOR, group(INT, 65536, 1, List.of(new Batch(0, 3, 0, 0))));
+            f.files.sources.put(
+                    INTERIOR + 20, group(INT, 65536, 1, List.of(new Batch(0, 3, 0, 0))));
             try (var set = f.runInstance()) {
                 assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
-                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
                 assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
-                assertEquals(65536, set.vertices());
+                assertEquals(2 * 65536, set.vertices());
             }
         }
     }
@@ -6117,7 +6149,10 @@ class WorldExteriorObjectsTest {
                 assertEquals(0, here.count(WorldExteriorObjects.Count.PLACEMENT_SPLIT_SHARE));
                 assertEquals(0, there.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
                 assertTrue(keysOf(here, 77).containsAll(List.of("77:0", "77:1")));
-                assertEquals(keysOf(there, 77), keysOf(here, 77));
+                // Both draw C whole; 8,19, which draws it from its pool, also draws group 2 from
+                // the tile interior allowance (MOGP interior), which a root drawn from the large
+                // allowance leaves out without a MOGI interior.
+                assertTrue(keysOf(there, 77).containsAll(keysOf(here, 77)));
             }
         }
     }
@@ -7536,14 +7571,29 @@ class WorldExteriorObjectsTest {
     @Test
     void onInstanceMapsABorderRootIsStillSizedByItsExteriorsAlone() {
         // Instance maps size a border root as before: its interiors are held for the interior
-        // pass and never make it split, so the root is drawn whole and the interior that does not
-        // fit what the tile left is capped.
+        // pass and never make it split, so the root is drawn whole. Its interiors (120,003
+        // vertices) draw from what the tile left of the building pool and the interior
+        // allowance; with three 60,000-vertex ones (180,003) the last no longer fits and is
+        // capped.
         try (var f = new Fixture(List.of(largePlacement()))) {
             putSmallExteriorLargeInteriors(f, 60_000);
             try (var set = f.runInstance()) {
                 assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
                 assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_OTHER_TILE));
-                assertEquals(List.of(0, 1, 2, 4), groupsOf(set, BIG));
+                assertEquals(List.of(0, 1, 2, 3, 4), groupsOf(set, BIG));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+            }
+        }
+        try (var f = new Fixture(List.of(largePlacement()))) {
+            putBig(
+                    f,
+                    new int[] {EXT, EXT, ROOM, ROOM, ROOM},
+                    new int[] {3, 3, 60_000, 60_000, 60_000},
+                    new float[] {0, 200, 5, 205, 6},
+                    splitPortals());
+            try (var set = f.runInstance()) {
+                assertEquals(0, set.count(WorldExteriorObjects.Count.ROOT_BY_GROUP));
+                assertEquals(List.of(0, 1, 2, 3), groupsOf(set, BIG));
                 assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
             }
         }

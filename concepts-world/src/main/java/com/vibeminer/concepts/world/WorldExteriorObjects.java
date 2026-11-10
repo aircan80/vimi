@@ -65,6 +65,12 @@ public final class WorldExteriorObjects {
     static final int MAX_VERTICES = ExteriorObjectLimits.BUILDING_VERTICES;
     static final int MAX_INDICES = ExteriorObjectLimits.BUILDING_INDICES;
     static final int MAX_RANGES = ExteriorObjectLimits.BUILDING_RANGES;
+
+    /** The interior allowance of the tile's own buildings, on top of the building pool. */
+    static final int MAX_TILE_INTERIOR_VERTICES = ExteriorObjectLimits.TILE_INTERIOR_VERTICES;
+
+    static final int MAX_TILE_INTERIOR_INDICES = ExteriorObjectLimits.TILE_INTERIOR_INDICES;
+    static final int MAX_TILE_INTERIOR_RANGES = ExteriorObjectLimits.TILE_INTERIOR_RANGES;
     static final int MAX_MESHES = ExteriorObjectLimits.BUILDING_MESHES, MAX_PIXELS = 1 << 20;
 
     /**
@@ -1234,18 +1240,21 @@ public final class WorldExteriorObjects {
                                             + MAX_MATERIAL_IMAGES
                             && v
                                     <= MAX_VERTICES
+                                            + MAX_TILE_INTERIOR_VERTICES
                                             + MAX_LARGE_VERTICES
                                             + MAX_LARGE_INTERIOR_VERTICES
                                             + MAX_DOODAD_VERTICES
                                             + MAX_MATERIAL_VERTICES
                             && i
                                     <= MAX_INDICES
+                                            + MAX_TILE_INTERIOR_INDICES
                                             + MAX_LARGE_INDICES
                                             + MAX_LARGE_INTERIOR_INDICES
                                             + MAX_DOODAD_INDICES
                                             + MAX_MATERIAL_INDICES
                             && r
                                     <= MAX_RANGES
+                                            + MAX_TILE_INTERIOR_RANGES
                                             + MAX_LARGE_RANGES
                                             + MAX_LARGE_INTERIOR_RANGES
                                             + MAX_DOODAD_RANGES
@@ -1766,6 +1775,12 @@ public final class WorldExteriorObjects {
     private enum Allowance {
         /** What is left of the tile's building pool. */
         TILE,
+        /**
+         * What is left of the tile's building pool with the interior allowance of the tile's own
+         * buildings added ({@link #MAX_TILE_INTERIOR_VERTICES}): only for their interior groups,
+         * after every exterior.
+         */
+        TILE_INTERIOR,
         /** An empty tile's building pool: whether the root could ever fit one alone. */
         ALONE,
         /**
@@ -3820,16 +3835,19 @@ public final class WorldExteriorObjects {
                 long capVertices =
                         switch (allowance) {
                             case LARGE -> MAX_LARGE_VERTICES + MAX_LARGE_INTERIOR_VERTICES;
+                            case TILE_INTERIOR -> MAX_VERTICES + MAX_TILE_INTERIOR_VERTICES;
                             default -> MAX_VERTICES;
                         };
                 long capIndices =
                         switch (allowance) {
                             case LARGE -> MAX_LARGE_INDICES + MAX_LARGE_INTERIOR_INDICES;
+                            case TILE_INTERIOR -> MAX_INDICES + MAX_TILE_INTERIOR_INDICES;
                             default -> MAX_INDICES;
                         };
                 long capRanges =
                         switch (allowance) {
                             case LARGE -> MAX_LARGE_RANGES + MAX_LARGE_INTERIOR_RANGES;
+                            case TILE_INTERIOR -> MAX_RANGES + MAX_TILE_INTERIOR_RANGES;
                             default -> MAX_RANGES;
                         };
                 pendingVertices += meshVertices;
@@ -3852,19 +3870,19 @@ public final class WorldExteriorObjects {
                 ranges += opaqueRanges;
                 long usedVertices =
                         switch (allowance) {
-                            case TILE -> Builder.this.vertices;
+                            case TILE, TILE_INTERIOR -> Builder.this.vertices;
                             case LARGE -> largeVertices;
                             case ALONE -> 0;
                         };
                 long usedIndices =
                         switch (allowance) {
-                            case TILE -> Builder.this.indices;
+                            case TILE, TILE_INTERIOR -> Builder.this.indices;
                             case LARGE -> largeIndices;
                             case ALONE -> 0;
                         };
                 long usedRanges =
                         switch (allowance) {
-                            case TILE -> Builder.this.ranges;
+                            case TILE, TILE_INTERIOR -> Builder.this.ranges;
                             case LARGE -> largeRanges;
                             case ALONE -> 0;
                         };
@@ -3883,8 +3901,10 @@ public final class WorldExteriorObjects {
          */
         private boolean holdInterior(PendingMesh mesh) {
             long meshVertices = mesh.vertices().length / VERTEX_FLOATS;
-            if (heldVertices + meshVertices > MAX_VERTICES + MAX_MATERIAL_VERTICES
-                    || heldIndices + mesh.indices().length > MAX_INDICES + MAX_MATERIAL_INDICES) {
+            if (heldVertices + meshVertices
+                            > MAX_VERTICES + MAX_TILE_INTERIOR_VERTICES + MAX_MATERIAL_VERTICES
+                    || heldIndices + mesh.indices().length
+                            > MAX_INDICES + MAX_TILE_INTERIOR_INDICES + MAX_MATERIAL_INDICES) {
                 return false;
             }
             heldVertices += meshVertices;
@@ -3985,7 +4005,7 @@ public final class WorldExteriorObjects {
                         local[Count.GROUP_INTERIOR_CAPPED.ordinal()]++;
                         continue;
                     }
-                    var admission = new RootBudget().admit(mesh, local);
+                    var admission = new RootBudget(Allowance.TILE_INTERIOR).admit(mesh, local);
                     if (admission == Admission.DROPPED) {
                         continue; // counted by admit: BATCH_CAPPED, GROUP_EMPTY
                     }

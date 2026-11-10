@@ -17,10 +17,10 @@ class ExteriorObjectLimitsTest {
         assertEquals(256 + 672 + 64, ExteriorObjectLimits.MESHES);
         // Very large buildings drawn by group add their own vertex, index and range allowance,
         // their interiors another, and both their own opaque images; they take no model, mesh or
-        // placement rows of their own.
-        assertEquals(2304 + 512 + 1024, ExteriorObjectLimits.RANGES);
-        assertEquals(294_912 + 131_072 + 327_680, ExteriorObjectLimits.VERTICES);
-        assertEquals(884_736 + 393_216 + 983_040, ExteriorObjectLimits.INDICES);
+        // placement rows of their own. The tile's own buildings add an interior allowance.
+        assertEquals(2304 + 256 + 512 + 1024, ExteriorObjectLimits.RANGES);
+        assertEquals(294_912 + 65_536 + 131_072 + 327_680, ExteriorObjectLimits.VERTICES);
+        assertEquals(884_736 + 196_608 + 393_216 + 983_040, ExteriorObjectLimits.INDICES);
         // 64 building + 5,120 doodad placements; the draw budget stays at 8,192 (measured).
         assertEquals(64 + 5120, ExteriorObjectLimits.PLACEMENTS);
         assertEquals(128 + 64 + 96 + 32 + 840 + 80, ExteriorObjectLimits.IMAGES);
