@@ -1019,6 +1019,31 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
+    void doodadModelsNeverTakeTheBuildingMeshRowsInteriorsNeed() {
+        // More distinct doodad models (one mesh each) than the 256 building mesh rows: they have
+        // rows of their own, so the building's interior, admitted after them, still draws.
+        long first = 10_000;
+        int count = WorldExteriorObjects.MAX_MESHES + 4;
+        assertTrue(count <= WorldExteriorObjects.MAX_MODELS);
+        var distinct = new ArrayList<Mddf>();
+        for (int i = 0; i < count; i++) {
+            distinct.add(Mddf.of(first + i, 1000 + i, 0x40));
+        }
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            for (int i = 0; i < count; i++) {
+                putModel(f, first + i, model());
+            }
+            f.files.sources.put(ROOT, root(GROUP, INTERIOR));
+            f.files.sources.put(4L, obj0(List.of(Modf.of(ROOT, 1, 0x8)), distinct));
+            try (var set = f.runInstance()) {
+                assertEquals(count, set.count(WorldExteriorObjects.Count.MODEL_DRAWN));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+            }
+        }
+    }
+
+    @Test
     void mogiInteriorGroupsAreNeverReadOutsideInstances() {
         // MOGI marks the first group interior: on an open-world map it is counted GROUP_INTERIOR
         // exactly as a read interior group was, but never opened or read ahead. An instance map
@@ -7306,8 +7331,8 @@ class WorldExteriorObjectsTest {
         int models = WorldExteriorObjects.MAX_MODELS + WorldExteriorObjects.MAX_INTERIOR_MODELS;
         // An image may be read when admitted and again at its allotted level (source(Demand)).
         assertEquals(2 * slots, profile.derivedReads(WorldStreamScopes.DerivedKind.M2_IMAGE));
-        assertEquals(2 * (320 + 80), slots * 2);
-        assertEquals(256 + 64, models);
+        assertEquals(2 * (800 + 80), slots * 2);
+        assertEquals(640 + 64, models);
         // The read-ahead queue holds every model hint of a placement pass and each one's skin.
         assertEquals(2 * models, WorldStreamScopes.Prefetcher.QUEUE);
         assertEquals(models, profile.derivedReads(WorldStreamScopes.DerivedKind.M2_MODEL));

@@ -80,9 +80,11 @@ public final class ExteriorObjectLimits {
      * with about 1,350 candidates per tile against 36 distinct models. An obj0 may record more MDDF
      * entries than this ({@code WorldPlacements.MAX_RECORDS_PER_KIND}, 16,384; Gilneas City's 34,29
      * records 4,165 on build 70862): those past it are capped (DOODAD_CAPPED), and the tile's other
-     * objects are still drawn.
+     * objects are still drawn. With every model and vertex cap lifted, Gilneas City's 34,29 needs
+     * 4,814 MDDF and set doodads on build 70862, past the old 4,096 (718 capped); 5,120 draws them
+     * all.
      */
-    public static final int DOODAD_PLACEMENTS = 4096;
+    public static final int DOODAD_PLACEMENTS = 5120;
 
     /**
      * Distinct doodad models read per tile. Zephras Isle needed 48 and Elwynn about 36, but city
@@ -91,19 +93,22 @@ public final class ExteriorObjectLimits {
      * one tile (Orgrimmar's 28,40), 257 on Ironforge's 41,33 and 233 on Stormwind's 50,31; the MDDF
      * doodads of the tile north of Orgrimmar (28,38) alone read 170. The old 96 left 425 MDDF
      * doodads and 259 set doodads undrawn around Orgrimmar and 714 set doodads around Stormwind. At
-     * 256 no MDDF doodad is capped there and one set doodad is (on 28,40), while no tile uses more
-     * than 33,000 of the {@link #DOODAD_VERTICES}.
+     * 256 no MDDF doodad was capped there and one set doodad was (on 28,40). With the Forever
+     * Dalaran city drawn whole (#659), its owner tile (0:31,31) reads 642 distinct doodad models
+     * with every cap lifted, and Gilneas City's 35,27 reads 372: 256 capped 1,178 set doodads on
+     * 31,31 and 183 doodads by model count around Gilneas. At 640 (plus the interior allowance) 5
+     * set doodads stay capped on 31,31 and none elsewhere in those windows.
      */
-    public static final int DOODAD_MODELS = 256;
+    public static final int DOODAD_MODELS = 640;
 
     /**
      * Distinct doodad images per tile (#308), 1.25 per model. With billboard-bearing models
      * admitted (#390) Elwynn tiles reached the old 96; read without a model cap, the city tiles
-     * above need at most 240 doodad images (Ironforge's 39,33). The doodad pixel budget is separate
-     * and unchanged, so more images share the same texels at lower levels: the cap costs file table
-     * rows, not GPU memory.
+     * above need at most 240 doodad images (Ironforge's 39,33), and the Dalaran owner tile
+     * (0:31,31) 536. The doodad pixel budget is separate and unchanged, so more images share the
+     * same texels at lower levels: the cap costs file table rows, not GPU memory.
      */
-    public static final int DOODAD_IMAGES = 320;
+    public static final int DOODAD_IMAGES = 800;
 
     /**
      * Doodad models a tile may read beyond {@link #DOODAD_MODELS}, only for set doodads tied to one
@@ -121,15 +126,26 @@ public final class ExteriorObjectLimits {
     /** Doodad image slots of {@link #DOODAD_INTERIOR_MODELS}, 1.25 per model as above. */
     public static final int DOODAD_INTERIOR_IMAGES = 80;
 
-    public static final int DOODAD_RANGES = 512;
-    public static final int DOODAD_VERTICES = 65_536, DOODAD_INDICES = 196_608;
+    /**
+     * Doodad geometry per tile. Read without caps on build 70862, Gilneas City's 35,27 needs
+     * 149,954 doodad vertices and the Dalaran owner tile (0:31,31) 147,442 vertices, 401,700
+     * indices and 946 ranges; the old 65,536 vertices capped 10,649 doodads and set doodads by size
+     * around Gilneas and 167 on 31,31. These hold them all, at three indices a vertex.
+     */
+    public static final int DOODAD_RANGES = 1024;
+
+    public static final int DOODAD_VERTICES = 163_840, DOODAD_INDICES = 491_520;
 
     /**
      * Draw calls per tile: the sum over placements of their model's ranges. Elwynn doodad models
-     * average about two ranges, so {@link #DOODAD_PLACEMENTS} needs about twice as many draws; the
-     * renderer culls placements outside the view (#369), so a frame submits far fewer.
+     * average about two ranges, so the old 4,096 doodad placements were given twice as many draws;
+     * the renderer culls placements outside the view (#369), so a frame submits far fewer. On build
+     * 70862 the 5 x 5 tiles around Dalaran (map 0), Gilneas City, Stormwind City, Orgrimmar and
+     * Undercity use at most 7,947 on one tile (Gilneas City's 34,29) with every doodad drawn, so
+     * the budget stays at 8,192 though {@link #DOODAD_PLACEMENTS} grew; a tile past it caps only
+     * doodads (DOODAD_CAP_DRAWS).
      */
-    public static final int DRAWS = 2 * DOODAD_PLACEMENTS;
+    public static final int DRAWS = 8192;
 
     // ---- objects file tables: the sum of the pools ----------------------------------------------
 

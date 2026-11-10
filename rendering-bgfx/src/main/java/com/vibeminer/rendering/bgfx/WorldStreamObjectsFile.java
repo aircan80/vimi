@@ -168,9 +168,9 @@ final class WorldStreamObjectsFile {
     /**
      * The file ceiling: every table at its cap ({@link #length}, with the mesh group column) plus
      * the portal tables at theirs ({@link #portalLength}), rounded up to the next MiB. With the
-     * #308 pools, #375's vertex colours, #383's portal tables and the large and interior allowances
-     * of buildings drawn by group that is 46 MiB; it is derived so a raised pool can never outgrow
-     * the file.
+     * #308 pools, #375's vertex colours, #383's portal tables, the large and interior allowances of
+     * buildings drawn by group and the raised doodad pools that is 50 MiB; it is derived so a
+     * raised pool can never outgrow the file.
      */
     static final int MAX_BYTES =
             ceilingMiB(
