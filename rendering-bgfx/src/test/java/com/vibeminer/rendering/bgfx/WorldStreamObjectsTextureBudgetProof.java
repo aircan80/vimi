@@ -88,6 +88,25 @@ public final class WorldStreamObjectsTextureBudgetProof {
             }
             var data = images(IMAGES);
             int before = owner.stats().textures();
+            // Timeout path: with the live room forced short, a set that fits the accounting
+            // waits for handles, then is refused as BUDGET once the bound runs out, having
+            // created and reserved nothing.
+            owner.liveTextureSpareForProof(bgfxLimit, TimeUnit.MILLISECONDS.toNanos(100));
+            long started = System.nanoTime();
+            require(
+                    late(owner, leases.get(0), data) == WorldStreamStatus.LateOutcome.BUDGET,
+                    "A wait that runs out is refused as BUDGET");
+            long waited = System.nanoTime() - started;
+            long timeoutWaits = owner.textureWaitStepsForProof();
+            require(
+                    timeoutWaits > 0 && waited >= TimeUnit.MILLISECONDS.toNanos(100),
+                    "The refused set waited out the bound first");
+            require(
+                    owner.stats().textures() == before
+                            && owner.stats().upload().objectTextures() == 0
+                            && owner.stats().upload().textureRefusals() == 1,
+                    "A timed-out set creates and reserves nothing");
+            owner.liveTextureSpareForProof(0, BgfxWorldStreamRenderer.TEXTURE_WAIT_NANOS);
             for (int i = 0; i < fitting; i++) {
                 require(
                         late(owner, leases.get(i), data) == WorldStreamStatus.LateOutcome.ATTACHED,
@@ -121,19 +140,43 @@ public final class WorldStreamObjectsTextureBudgetProof {
             owner.commit(content, content + 1, active);
             content++;
             WorldStreamNativeProof.accepted(owner, reader, content);
-            WorldStreamNativeProof.upload(owner, packed, reader, content, false);
+            // The new generation's upload destroys the slot's set at once; bgfx returns its
+            // handles only at a later frame. Offered again before any frame, the set fits the
+            // accounting but not bgfx's live count, so it waits rather than failing.
+            var reuse = owner.begin(packed);
+            require(
+                    owner.stats().upload().objectTextures() == (fitting - 1) * IMAGES,
+                    "Slot reuse released the set's handles");
+            int stale = owner.stats().textures();
+            require(stale == peak, "bgfx has not returned the released handles yet: " + stale);
+            long waitsBefore = owner.textureWaitStepsForProof();
+            var retry = owner.beginLate(over, WorldStreamPackedObjects.pack(data, () -> false));
+            owner.stepLate(retry);
+            require(
+                    owner.textureWaitStepsForProof() > waitsBefore && !retry.ready(),
+                    "The retried set waits for the released handles");
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
+            while (!reuse.finished() || !retry.ready()) {
+                if (!reuse.finished()) {
+                    owner.step(reuse);
+                } else {
+                    owner.stepLate(retry);
+                }
+                owner.submit(
+                        WorldStreamNativeProof.command(
+                                ++WorldStreamNativeProof.camera, 256, 256, 1));
+                owner.advance();
+                require(System.nanoTime() < deadline, "Reuse and retry did not finish");
+            }
+            require(reuse.successful(), "Reused slot's terrain uploaded");
+            long liveWaits = owner.textureWaitStepsForProof() - waitsBefore;
+            require(
+                    owner.finishLate(retry, true) == WorldStreamStatus.LateOutcome.ATTACHED,
+                    "The refused set attaches once handles are free");
             active.add(reused);
             owner.commit(content, content + 1, active);
             content++;
             WorldStreamNativeProof.accepted(owner, reader, content);
-            require(
-                    owner.stats().upload().objectTextures() == (fitting - 1) * IMAGES,
-                    "Slot reuse released the set's handles");
-            // Offered again at once: bgfx may not have returned the released handles yet, so
-            // the build waits for them rather than failing or being refused.
-            require(
-                    late(owner, over, data) == WorldStreamStatus.LateOutcome.ATTACHED,
-                    "The refused set attaches once handles are free");
             int after = owner.stats().textures();
             require(after < bgfxLimit, "Live handles stay under bgfx's limit: " + after);
             System.out.println(
@@ -148,7 +191,11 @@ public final class WorldStreamObjectsTextureBudgetProof {
                             + " peakLive="
                             + peak
                             + " refused=BUDGET retried=ATTACHED live="
-                            + after);
+                            + after
+                            + " lateFreeWaits="
+                            + liveWaits
+                            + " timeoutWaits="
+                            + timeoutWaits);
         }
     }
 
@@ -182,9 +229,11 @@ public final class WorldStreamObjectsTextureBudgetProof {
     private static void fresh(WorldStreamNativeOwner owner, WorldFrameFileV2 reader, long content)
             throws Exception {
         long revision = ++WorldStreamNativeProof.camera;
-        owner.submit(WorldStreamNativeProof.command(revision, 256, 256, 1));
+        var command = WorldStreamNativeProof.command(revision, 256, 256, 1);
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
         while (true) {
+            // Submitted again until drawn: a submit finding every readback in flight draws nothing.
+            owner.submit(command);
             owner.advance();
             var frame = WorldStreamNativeProof.read(reader, content, content);
             if (frame != null && frame.metadata().camera() == revision) {

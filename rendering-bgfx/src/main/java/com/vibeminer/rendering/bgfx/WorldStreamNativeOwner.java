@@ -524,6 +524,18 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         return renderer.splatArrayCreated();
     }
 
+    /** Test seam; see {@link BgfxWorldStreamRenderer#liveTextureSpareForProof}. */
+    void liveTextureSpareForProof(int spare, long waitNanos) {
+        requireOpen();
+        renderer.liveTextureSpareForProof(spare, waitNanos);
+    }
+
+    /** Proof observation; see {@link BgfxWorldStreamRenderer#textureWaitStepsForProof}. */
+    long textureWaitStepsForProof() {
+        requireOpen();
+        return renderer.textureWaitStepsForProof();
+    }
+
     /** Test seam for native proofs; see {@link BgfxWorldStreamRenderer#objectBudgetForProof}. */
     void objectBudgetForProof(long bytes) {
         requireOpen();

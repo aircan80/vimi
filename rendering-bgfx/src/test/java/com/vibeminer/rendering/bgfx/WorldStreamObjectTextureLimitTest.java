@@ -67,4 +67,27 @@ final class WorldStreamObjectTextureLimitTest {
                 BgfxWorldStreamRenderer.textureRefusal(1, 2, 3, 4, 2)
                         .endsWith("(2 refusals this session)"));
     }
+
+    @Test
+    void aWaitForReleasedHandlesIsBoundedInTimeNotSteps() {
+        long bound = BgfxWorldStreamRenderer.TEXTURE_WAIT_NANOS;
+        assertEquals(250_000_000L, bound);
+        assertFalse(BgfxWorldStreamRenderer.textureWaitOver(1_000, 1_000, bound));
+        assertFalse(BgfxWorldStreamRenderer.textureWaitOver(1_000, 1_000 + bound - 1, bound));
+        assertTrue(BgfxWorldStreamRenderer.textureWaitOver(1_000, 1_000 + bound, bound));
+        // nanoTime may be negative and wrap; only the difference counts.
+        assertTrue(
+                BgfxWorldStreamRenderer.textureWaitOver(
+                        Long.MAX_VALUE - 10, Long.MAX_VALUE - 10 + bound, bound));
+        assertTrue(BgfxWorldStreamRenderer.textureWaitOver(5, 5, 0));
+    }
+
+    @Test
+    void theLiveSpareLeavesNoLessRoomThanTheAccountingDuringAnOwnerResize() {
+        // The owner holds five handles, ten while a resize's old target is returned; the
+        // accounting kept OWNER_TEXTURE_RESERVE for it.
+        assertEquals(
+                BgfxWorldStreamRenderer.OWNER_TEXTURE_RESERVE,
+                10 + BgfxWorldStreamRenderer.LIVE_TEXTURE_SPARE);
+    }
 }

@@ -117,17 +117,20 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     static final int OWNER_TEXTURE_RESERVE = 16;
 
     /**
-     * The live check's share of that reserve: the owner's own live handles are already counted
-     * live, so it keeps room only for a resize's second target (five) and spare.
+     * The live check's share of that reserve. The owner's own handles are already counted live,
+     * five, or ten while a resize's old target is still being returned, so with six more the live
+     * room is never below the accounting's room except by handles bgfx has yet to return.
      */
-    static final int LIVE_TEXTURE_SPARE = 8;
+    static final int LIVE_TEXTURE_SPARE = OWNER_TEXTURE_RESERVE - 10;
 
     /**
-     * A build whose handles fit the session's accounting but not bgfx's live count (handles of a
-     * set destroyed this frame return only after a bgfx frame or two) waits at most this many
-     * steps, then is refused as BUDGET like any other set that does not fit.
+     * A build whose handles fit the session's accounting but not bgfx's live count waits at most
+     * this long, then is refused as BUDGET like any other set that does not fit. Released handles
+     * return at the next bgfx frame or the one after, so 250 ms is many frames at any present rate;
+     * a shortage lasting longer is a handle the accounting does not know, which a quick retry would
+     * not clear, so the refusal waits for a release like a full budget does.
      */
-    static final int TEXTURE_WAIT_STEPS = 2_000;
+    static final long TEXTURE_WAIT_NANOS = 250_000_000L;
 
     /**
      * Per-slot mesh capacity: one tile's terrain (145 vertices per chunk, up to 256 chunks) plus
@@ -397,8 +400,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         private int imageStep;
         private boolean failed, budget;
 
-        /** Steps spent waiting for bgfx to return released texture handles. */
+        /** Steps spent waiting for bgfx to return released texture handles, since waitStarted. */
         private int textureWaits;
+
+        private long waitStarted;
 
         ObjectsBuild(WorldStreamPackedObjects source) {
             this.source = java.util.Objects.requireNonNull(source);
@@ -677,7 +682,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     // bgfx's texture handle limit (BGFX_CONFIG_MAX_TEXTURES, fixed when bgfx is compiled) and
     // the share of it object sets may hold; see objectTextureLimit(int, int, int).
     private int maxTextures, objectTextureLimit;
-    private long textureRefusals;
+    private long textureRefusals, textureWaitSteps;
+    // Only native proofs change these: extra live spare forces the wait, and its time bound.
+    private int extraLiveSpare;
+    private long textureWaitNanos = TEXTURE_WAIT_NANOS;
     private final AtomicReference<Upload> uploading = new AtomicReference<>();
     private final AtomicLong callbackCount = new AtomicLong();
     private final AtomicReference<String> callbackFailure = new AtomicReference<>();
@@ -1376,7 +1384,12 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 if (!objectTexturesFit(liveTextureRoom(), 0, images)) {
                     // Handles of a set released this frame are not back yet: wait a frame or two
                     // rather than fail at the textures step.
-                    if (++build.textureWaits <= TEXTURE_WAIT_STEPS) {
+                    long now = System.nanoTime();
+                    if (build.textureWaits++ == 0) {
+                        build.waitStarted = now;
+                    }
+                    textureWaitSteps++;
+                    if (!textureWaitOver(build.waitStarted, now, textureWaitNanos)) {
                         return 0;
                     }
                     refuseForTextures(build, images, held);
@@ -3228,6 +3241,30 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         return need >= 0 && reserved >= 0 && need <= budget - reserved;
     }
 
+    /** Whether a wait for released handles that began at {@code started} has run out. */
+    static boolean textureWaitOver(long started, long now, long bound) {
+        return now - started >= bound;
+    }
+
+    /**
+     * Test seam: {@code spare} more handles kept out of the live room, so a set that fits the
+     * accounting waits for handles, for at most {@code waitNanos}.
+     */
+    void liveTextureSpareForProof(int spare, long waitNanos) {
+        requireOwner();
+        if (spare < 0 || waitNanos < 0) {
+            throw new IllegalArgumentException("Proof texture spare");
+        }
+        extraLiveSpare = spare;
+        textureWaitNanos = waitNanos;
+    }
+
+    /** Proof observation: steps object builds have spent waiting for released handles. */
+    long textureWaitStepsForProof() {
+        requireOwner();
+        return textureWaitSteps;
+    }
+
     /** Test seam: a native proof fills past a small budget without hundreds of MiB of objects. */
     void objectBudgetForProof(long bytes) {
         requireOwner();
@@ -3309,7 +3346,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 lazy += LAZY_SLOT_TEXTURES;
             }
         }
-        return Math.max(0, maxTextures - live - pending - lazy - LIVE_TEXTURE_SPARE);
+        return Math.max(
+                0, maxTextures - live - pending - lazy - LIVE_TEXTURE_SPARE - extraLiveSpare);
     }
 
     /** Texture handles resident and building object sets hold; owner thread only. */
