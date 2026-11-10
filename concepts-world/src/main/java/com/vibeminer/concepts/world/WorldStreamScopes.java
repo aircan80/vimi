@@ -448,6 +448,16 @@ final class WorldStreamScopes {
             com.vibeminer.rendering.world.ExteriorObjectLimits.DOODAD_MODELS
                     + com.vibeminer.rendering.world.ExteriorObjectLimits.DOODAD_INTERIOR_MODELS;
 
+    /**
+     * Building image slots: the tile's opaque images, those of very large buildings drawn by group
+     * and their interiors (one shared allowance), and the cutout and blended images.
+     */
+    static final int WMO_IMAGE_SLOTS =
+            com.vibeminer.rendering.world.ExteriorObjectLimits.BUILDING_IMAGES
+                    + com.vibeminer.rendering.world.ExteriorObjectLimits.LARGE_IMAGES
+                    + com.vibeminer.rendering.world.ExteriorObjectLimits.LARGE_INTERIOR_IMAGES
+                    + com.vibeminer.rendering.world.ExteriorObjectLimits.MATERIAL_IMAGES;
+
     /** Doodad image slots, the interior allowance's included. */
     static final int DOODAD_IMAGE_SLOTS =
             com.vibeminer.rendering.world.ExteriorObjectLimits.DOODAD_IMAGES
@@ -468,21 +478,19 @@ final class WorldStreamScopes {
         /**
          * Per-tile outdoor exterior set: WDT, OBJ0, the capped derived WMO reads (256 groups, up to
          * 256 more for each of the 24 roots, read only to size border-crossing buildings with their
-         * interiors, 64 opaque images, 64 opaque images of very large buildings drawn by group, 64
-         * more for their interiors and 32 cutout or blended images) and the capped BASIC doodad
-         * reads (256 M2 models, their first SKIN and 320 images), with the interior allowance's 64
-         * more models and 80 more images for set doodads tied to an interior group. Every doodad
-         * image slot is a distinct source and may be read twice, like the WMO images.
+         * interiors, and every building image slot, {@link #WMO_IMAGE_SLOTS}) and the capped BASIC
+         * doodad reads (the doodad models, their first SKIN and their image slots, the interior
+         * allowance's included, {@link #DOODAD_MODEL_READS} and {@link #DOODAD_IMAGE_SLOTS}). Every
+         * image slot is a distinct source and may be read twice: once when admitted, once at its
+         * allotted level. The counts derive from the caps, so a tile within them never reaches a
+         * read limit; reaching one is a bug, not a data outcome.
          */
         BASIC_EXTERIOR(
                 2
                         + 24
                         + 256
                         + SIZING_GROUP_READS
-                        + 64
-                        + 64
-                        + 64
-                        + 32
+                        + WMO_IMAGE_SLOTS
                         + DOODAD_MODEL_READS
                         + DOODAD_MODEL_READS
                         + DOODAD_IMAGE_SLOTS,
@@ -491,7 +499,7 @@ final class WorldStreamScopes {
                 256 + SIZING_GROUP_READS,
                 com.vibeminer.formats.world.WmoGroupSpans.MAX_BYTES,
                 // Each image may be read twice: once when admitted, once at its allotted level.
-                2 * (64 + 64 + 64 + 32),
+                2 * WMO_IMAGE_SLOTS,
                 1 << 20,
                 DOODAD_MODEL_READS,
                 2 << 20,

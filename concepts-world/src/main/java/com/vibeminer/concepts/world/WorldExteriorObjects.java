@@ -256,8 +256,13 @@ public final class WorldExteriorObjects {
      */
     static final int[] IMAGE_SIDES = {512, 256, 128, 64, 32};
 
-    /** Doodad image sides. */
-    static final int[] MODEL_IMAGE_SIDES = {256, 128, 64, 32};
+    /**
+     * Doodad image sides. The smallest is 16 so that every doodad image slot at the caps ({@link
+     * #MAX_MODEL_IMAGES} and {@link #MAX_INTERIOR_MODEL_IMAGES}) keeps a level within the STANDARD
+     * doodad budget: 920 chains of 32 x 32 would need about 1.26 Mi texels of its 699 Ki, 920 of 16
+     * x 16 about 314 Ki. Images reach 16 only when the budget is that tight.
+     */
+    static final int[] MODEL_IMAGE_SIDES = {256, 128, 64, 32, 16};
 
     /**
      * Largest side of a chain uploaded as RGBA8: 256 for buildings and their surfaces, 128 for

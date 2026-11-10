@@ -7807,8 +7807,18 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
-    void theDoodadReadProfileCoversEverySlotReadTwice() {
+    void theReadProfileCoversEveryImageSlotReadTwice() {
         var profile = WorldStreamScopes.UseProfile.BASIC_EXTERIOR;
+        // Building images: the tile's, the split roots' shared large and interior slots, and the
+        // cutout and blended ones, each read at most twice.
+        int wmoSlots =
+                WorldExteriorObjects.MAX_IMAGES
+                        + WorldExteriorObjects.MAX_LARGE_IMAGES
+                        + WorldExteriorObjects.MAX_LARGE_INTERIOR_IMAGES
+                        + WorldExteriorObjects.MAX_MATERIAL_IMAGES;
+        assertEquals(128 + 64 + 96 + 32, wmoSlots);
+        assertEquals(wmoSlots, WorldStreamScopes.WMO_IMAGE_SLOTS);
+        assertEquals(2 * wmoSlots, profile.derivedReads(WorldStreamScopes.DerivedKind.WMO_IMAGE));
         int slots =
                 com.vibeminer.rendering.world.ExteriorObjectLimits.DOODAD_IMAGES
                         + com.vibeminer.rendering.world.ExteriorObjectLimits.DOODAD_INTERIOR_IMAGES;
@@ -7828,8 +7838,7 @@ class WorldExteriorObjectsTest {
         assertEquals(
                 WorldExteriorObjects.MAX_ROOTS * WorldExteriorObjects.MAX_SIZING_READS, sizing);
         assertEquals(
-                2 + 24 + 256 + sizing + 64 + 64 + 64 + 32 + models + models + slots,
-                profile.bindingLimit());
+                2 + 24 + 256 + sizing + wmoSlots + models + models + slots, profile.bindingLimit());
         // The tile's group reads, and the worst case of sizing border-crossing roots.
         assertEquals(
                 WorldExteriorObjects.MAX_GROUPS + sizing,

@@ -83,6 +83,32 @@ class WorldImageBudgetTest {
     }
 
     @Test
+    void everyDoodadImageSlotFitsTheStandardBudgetAtItsSmallestSide() {
+        // At the caps a tile may hold DOODAD_IMAGES images plus the interior allowance's, every
+        // one at least 32 px: all of them keep a level within the STANDARD doodad budget, so the
+        // set is never failed for its image budget (EXTERIOR_IMAGE_BUDGET).
+        var first = new ArrayList<WorldImageBudget.Request>();
+        var second = new ArrayList<WorldImageBudget.Request>();
+        for (int i = 0; i < WorldExteriorObjects.MAX_MODEL_IMAGES; i++) {
+            first.add(square(256));
+        }
+        for (int i = 0; i < WorldExteriorObjects.MAX_INTERIOR_MODEL_IMAGES; i++) {
+            second.add(square(32));
+        }
+        int[][] levels =
+                WorldImageBudget.allocateFirst(
+                        first,
+                        second,
+                        WorldExteriorObjects.ImageDetail.STANDARD.doodadPixels(),
+                        WorldExteriorObjects.MODEL_IMAGE_SIDES);
+        for (int[] pool : levels) {
+            for (int level : pool) {
+                assertTrue(level >= 0, "every slot keeps a level");
+            }
+        }
+    }
+
+    @Test
     void imagesAreDroppedOnlyWhenEvenTheSmallestSideCannotFit() {
         // A file that records only level 0 of 1024^2 cannot shrink below 1 Mi pixels: it is the
         // one dropped, and the lower-priority image after it still fits at 32^2.
