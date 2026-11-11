@@ -714,7 +714,7 @@ final class RacesServiceTest {
     @Test
     void boneFileModelPlaysTheBaseRigStandWithoutOpeningItsBoneFiles() throws Exception {
         var tables = idleTables();
-        byte[] skin = golden("authored-274.skin");
+        byte[] skin = standSkin();
         byte[] plain = modelWithStand(0x200);
         // Bone files 701 and 702 are declared but not stored: nothing asks for them.
         var files =
@@ -1203,13 +1203,16 @@ final class RacesServiceTest {
         if (base + body != original.length) {
             throw new AssertionError("The authored body must end the file");
         }
-        int sequences = body, bones = sequences + 64, track = bones + 88, extra = 64 + 88 + 48;
+        int sequences = body, bones = sequences + 64, track = bones + 88;
+        int lookup = track + 48, extra = 64 + 88 + 48 + 4;
         var b =
                 java.nio.ByteBuffer.wrap(java.util.Arrays.copyOf(original, original.length + extra))
                         .order(java.nio.ByteOrder.LITTLE_ENDIAN);
         b.putInt(base - 4, body + extra);
         b.putInt(base + 28, 1).putInt(base + 32, sequences);
         b.putInt(base + 44, 1).putInt(base + 48, bones);
+        // A one-entry bone lookup: palette slot 0 names bone 0 (see standSkin()).
+        b.putInt(base + 120, 1).putInt(base + 124, lookup);
         int sequence = base + sequences;
         b.putShort(sequence, (short) 0).putInt(sequence + 4, 1000).putInt(sequence + 12, 0x20);
         int bone = base + bones;
@@ -1233,10 +1236,25 @@ final class RacesServiceTest {
         return b.array();
     }
 
+    /**
+     * The authored SKIN as a client skin for {@link #modelWithStand}: its one section names bone 0
+     * through palette slot 0 of the model's bone lookup, as the vertices do directly.
+     */
+    private static byte[] standSkin() throws Exception {
+        byte[] skin = golden("authored-274.skin");
+        var b = java.nio.ByteBuffer.wrap(skin).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        int properties = b.getInt(24), count = b.getInt(20), section = b.getInt(32);
+        for (int i = 0; i < count; i++) {
+            b.putInt(properties + i * 4, 0);
+        }
+        b.putShort(section + 12, (short) 1).putShort(section + 14, (short) 0);
+        return skin;
+    }
+
     @Test
     void localStandIsPreparedForTheStaticRestSurfaceAndCached() throws Exception {
         var tables = idleTables();
-        byte[] skin = golden("authored-274.skin");
+        byte[] skin = standSkin();
         var files =
                 new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
                         .add(1234, "1".repeat(32), modelWithStand(0x200))
@@ -1314,7 +1332,7 @@ final class RacesServiceTest {
         var files =
                 new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
                         .add(1234, "1".repeat(32), modelWithStand(0x1))
-                        .add(900, "2".repeat(32), golden("authored-274.skin"));
+                        .add(900, "2".repeat(32), standSkin());
         var service = new RacesService(tables, files, null);
         try {
             var idle = service.idle(1, 10, Cancellation.NONE).join();
@@ -1359,7 +1377,7 @@ final class RacesServiceTest {
         for (int i = 0; i < 5; i++) {
             files.add(1234 + i, Integer.toString(i + 1).repeat(32), model);
         }
-        files.add(900, "a".repeat(32), golden("authored-274.skin"));
+        files.add(900, "a".repeat(32), standSkin());
         var service = new RacesService(tables, files, null);
         try {
             for (int i = 0; i < 5; i++) {
@@ -1504,7 +1522,7 @@ final class RacesServiceTest {
     void repeatedPreviewsReuseTheSurfaceAndVariantsUntilTheModelChanges() throws Exception {
         var raw = idleTables();
         var counting = new CountingTables(raw);
-        byte[] skin = golden("authored-274.skin");
+        byte[] skin = standSkin();
         var files = new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS");
         var service = new RacesService(counting.proxy(), files, null);
         try {
@@ -1747,7 +1765,7 @@ final class RacesServiceTest {
         var files =
                 new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
                         .add(1234, "1".repeat(32), modelWithStand(0))
-                        .add(900, "2".repeat(32), golden("authored-274.skin"));
+                        .add(900, "2".repeat(32), standSkin());
         var service = new RacesService(tables, files, null);
         try {
             assertTrue(service.preview(1, 0, 10, Cancellation.NONE).join().mesh() != null);

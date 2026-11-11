@@ -58,6 +58,7 @@ class WorldStandWeightsTest {
         for (int vertex = 0; vertex < 4; vertex++) {
             body.putInt(f.vertices + vertex * 48 + 16, 0);
         }
+        f.syncBoneProperties();
         int played = alias ? 1 : 0;
         int outerTimes = body.position();
         body.position(outerTimes + 16 * count);

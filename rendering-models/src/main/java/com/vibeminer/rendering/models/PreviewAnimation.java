@@ -200,7 +200,13 @@ public final class PreviewAnimation {
     private final long durationMillis;
     private final long[] globalMillis;
     private final List<Bone> bones;
+
+    /** Parent-first bones that move a vertex or parent one; only these are evaluated. */
     private final int[] order;
+
+    /** Bones that neither move a vertex nor parent one: they keep their rest place. */
+    private final int[] idle;
+
     private final float[] rest;
     private final float[] restNormals;
     private final int[] influenceBones;
@@ -262,7 +268,7 @@ public final class PreviewAnimation {
                 throw new IllegalArgumentException("Billboard bones must be leaves");
             }
         }
-        order = order(this.bones);
+        int[] parentFirst = order(this.bones);
         Objects.requireNonNull(restMesh);
         int vertices = restMesh.vertexCount();
         if (restNormals.length != 0 && restNormals.length != vertices * 3
@@ -297,6 +303,19 @@ public final class PreviewAnimation {
             }
             rigidBillboard[v] = billboard;
         }
+        // Rigs carry attachment and effect bones that move no rendered vertex; skip them.
+        boolean[] needed = new boolean[this.bones.size()];
+        for (int i = 0; i < this.influenceBones.length; i++) {
+            if (this.influenceWeights[i] > 0) {
+                for (int at = this.influenceBones[i]; at >= 0 && !needed[at]; ) {
+                    needed[at] = true;
+                    at = this.bones.get(at).parent();
+                }
+            }
+        }
+        int[] all = parentFirst;
+        order = Arrays.stream(all).filter(b -> needed[b]).toArray();
+        idle = Arrays.stream(all).filter(b -> !needed[b]).toArray();
         for (int axis = 0; axis < 3; axis++) {
             frameMin[axis] = restMesh.minimum(axis);
             frameMax[axis] = restMesh.maximum(axis);
@@ -375,7 +394,10 @@ public final class PreviewAnimation {
                 && Arrays.equals(appearance.normals, restNormals);
     }
 
-    /** Evaluates the looping sequence at playback time {@code millis}. */
+    /**
+     * Evaluates the looping sequence at playback time {@code millis}. A bone that neither moves a
+     * vertex nor parents one is not evaluated; its pivot is reported at its rest place.
+     */
     public Pose pose(PreviewMesh restMesh, long millis) {
         if (!matches(restMesh)) {
             throw new IllegalArgumentException("Animation belongs to another rest surface");
@@ -436,6 +458,10 @@ public final class PreviewAnimation {
         long sequence = millis % durationMillis;
         double[] t = new double[4], r = new double[4], s = new double[4], local = new double[12];
         double[] none = {0, 0, 0, 1}, unit = {1, 1, 1, 1};
+        for (int b : idle) {
+            Arrays.fill(out, b * 12, b * 12 + 12, 0);
+            out[b * 12] = out[b * 12 + 5] = out[b * 12 + 10] = 1;
+        }
         for (int b : order) {
             var bone = bones.get(b);
             if (bone.billboard()) {
