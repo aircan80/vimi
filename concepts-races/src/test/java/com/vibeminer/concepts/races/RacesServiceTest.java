@@ -847,14 +847,21 @@ final class RacesServiceTest {
                                 com.vibeminer.formats.AssetSource.bytes(original))
                         .join();
         int base = Math.toIntExact(parsed.baseOffset());
+        int body = Math.toIntExact(parsed.baseBytes());
+        if (base + body != original.length) {
+            throw new AssertionError("The authored body must end the file");
+        }
+        // A one-entry bone lookup (slot 0 names skeleton bone 0, see standSkin()), then SKID.
         var b =
-                java.nio.ByteBuffer.wrap(java.util.Arrays.copyOf(original, original.length + 12))
+                java.nio.ByteBuffer.wrap(java.util.Arrays.copyOf(original, original.length + 16))
                         .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        b.putInt(base - 4, body + 4);
+        b.putInt(base + 120, 1).putInt(base + 124, body);
         int vertices = base + Math.toIntExact(b.getInt(base + 64));
         for (int v = 0; v < b.getInt(base + 60); v++) {
             b.putInt(vertices + v * 48 + 12, 255).putInt(vertices + v * 48 + 16, 0);
         }
-        b.position(original.length);
+        b.position(original.length + 4);
         b.put("SKID".getBytes(java.nio.charset.StandardCharsets.US_ASCII)).putInt(4).putInt(4242);
         return b.array();
     }
@@ -862,7 +869,7 @@ final class RacesServiceTest {
     @Test
     void skeletonModelPlaysTheSkeletonsStandWithoutItsBoneFiles() throws Exception {
         var tables = idleTables();
-        byte[] skin = golden("authored-274.skin");
+        byte[] skin = standSkin();
         var files =
                 new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
                         .add(1234, "1".repeat(32), skeletonModel())
@@ -920,7 +927,7 @@ final class RacesServiceTest {
         var files =
                 new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
                         .add(1234, "1".repeat(32), skeletonModel())
-                        .add(900, "2".repeat(32), golden("authored-274.skin"))
+                        .add(900, "2".repeat(32), standSkin())
                         .add(4242, "3".repeat(32), skeleton);
         var service = new RacesService(tables, files, null);
         try {
@@ -1091,7 +1098,7 @@ final class RacesServiceTest {
         var files =
                 new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
                         .add(1234, "1".repeat(32), withBoneFiles(modelWithStand(0x200), 701, 702))
-                        .add(900, "2".repeat(32), golden("authored-274.skin"));
+                        .add(900, "2".repeat(32), standSkin());
         var service = new RacesService(tables, files, null);
         try {
             var face = service.idle(1, 10, Cancellation.NONE).join();
@@ -1130,7 +1137,7 @@ final class RacesServiceTest {
         var files =
                 new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
                         .add(1234, "1".repeat(32), withBoneFiles(modelWithStand(0x200), 701))
-                        .add(900, "2".repeat(32), golden("authored-274.skin"));
+                        .add(900, "2".repeat(32), standSkin());
         var service = new RacesService(tables, files, null);
         try {
             var idle = service.idle(1, 10, Cancellation.NONE).join();
