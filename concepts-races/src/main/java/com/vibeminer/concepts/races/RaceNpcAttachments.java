@@ -377,6 +377,9 @@ final class RaceNpcAttachments {
                                 }
                                 if (bound.isEmpty()) {
                                     refusal = "none of its surfaces fits the reviewed profile";
+                                } else if (bound.size() > 100) {
+                                    // Part IDs name the attachment with 100 ordinals each.
+                                    refusal = "it has more surfaces than the part IDs can name";
                                 } else if (meshParts.size() + bound.size() > PreviewMesh.MAX_PARTS
                                         || vertexBase + item.mesh().positions().length / 3
                                                 > PreviewMesh.MAX_VERTICES) {
@@ -404,7 +407,7 @@ final class RaceNpcAttachments {
                                                 new PreviewMesh.Part(
                                                         FIRST_PART
                                                                 + piece.attachment() * 100
-                                                                + Math.min(99, ordinal++),
+                                                                + ordinal++,
                                                         indexBase + section.firstIndex(),
                                                         section.indexCount()));
                                         surfaces.add(

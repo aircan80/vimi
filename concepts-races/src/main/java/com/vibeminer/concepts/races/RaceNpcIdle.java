@@ -55,7 +55,7 @@ final class RaceNpcIdle {
         }
         for (int i = 0; i < bones.length; i++) {
             if (bones[i] < 0) {
-                // Item vertices no drawn part uses: they follow the first item's bone unseen.
+                // Item vertices no drawn part uses are never drawn; bone 0 keeps them valid.
                 bones[i] = 0;
             }
         }
