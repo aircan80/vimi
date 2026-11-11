@@ -259,6 +259,21 @@ final class RaceNpcAttachments {
                                     ? ItemModelFiles.componentFile(
                                             ref.files(), raceId, sex, piece.position())
                                     : first(ref.files(), raceId, sex);
+                    boolean sided =
+                            piece.position() < 0
+                                    || ref.files().stream()
+                                            .anyMatch(
+                                                    f ->
+                                                            f.component() != null
+                                                                    && f.component().positionIndex()
+                                                                            != null
+                                                                    && f.component().positionIndex()
+                                                                            == piece.position());
+                    if (file == null && !sided) {
+                        // A single-sided shoulder: the resource has no file for this side at
+                        // all, so nothing is left out.
+                        continue;
+                    }
                     if (file == null) {
                         refusal = "no model file for this race and sex";
                     } else {

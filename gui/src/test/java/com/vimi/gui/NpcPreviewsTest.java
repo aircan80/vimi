@@ -31,6 +31,7 @@ public final class NpcPreviewsTest {
         aClientRecordNeverWaitsOnTheObservedDisplays();
         aFailedObservedLookupIsAFactNotABlank();
         theDisplaySnapshotIsTheNewestCompatibleOneWithCreatureDetails();
+        aTexturedHumanoidPlaysItsFittedStand();
         System.out.println("NPC previews: resolution, creature, humanoid and refusal outcomes passed");
     }
 
@@ -207,6 +208,82 @@ public final class NpcPreviewsTest {
                 DataSourcesService.npcDisplaySnapshot(snapshots, "wowf", "1.60.1.70700", "enUS"));
         assertNull(
                 DataSourcesService.npcDisplaySnapshot(snapshots, "wowf", "1.60.1.70862", "deDE"));
+    }
+
+    static void aTexturedHumanoidPlaysItsFittedStand() throws Exception {
+        var result =
+                new RaceAppearanceTypes.Result(
+                        com.vibeminer.concepts.races.RaceTypes.State.READY,
+                        TEXTURED,
+                        Set.of(0),
+                        List.of(),
+                        List.of(),
+                        false,
+                        null);
+        var bone =
+                new com.vibeminer.rendering.models.PreviewAnimation.Bone(
+                        -1, 0, 0, 0, null, null, null, false);
+        var stand =
+                new com.vibeminer.rendering.models.PreviewAnimation(
+                        "Stand",
+                        1000,
+                        new long[0],
+                        List.of(bone),
+                        TEXTURED.mesh(),
+                        TEXTURED.normals(),
+                        new int[12],
+                        new int[] {255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0});
+        long[] asked = {0};
+        BuildRaces races =
+                new BuildRaces() {
+                    @Override
+                    public CompletableFuture<com.vibeminer.concepts.races.RaceTypes.Catalog>
+                            catalog(Cancellation token) {
+                        throw new UnsupportedOperationException();
+                    }
+
+                    @Override
+                    public CompletableFuture<com.vibeminer.concepts.races.RaceTypes.Overview>
+                            overview(long raceId, Cancellation token) {
+                        throw new UnsupportedOperationException();
+                    }
+
+                    @Override
+                    public CompletableFuture<RaceNpcs.Appearance> npcAppearance(
+                            long extendedDisplayInfoId, Cancellation token) {
+                        return CompletableFuture.completedFuture(
+                                new RaceNpcs.Appearance(result, 0, 0, null, false));
+                    }
+
+                    @Override
+                    public CompletableFuture<com.vibeminer.concepts.races.RaceMediaTypes.Idle>
+                            npcIdle(
+                                    long extendedDisplayInfoId,
+                                    MeshAppearance appearance,
+                                    Cancellation token) {
+                        asked[0] = extendedDisplayInfoId;
+                        return CompletableFuture.completedFuture(
+                                new com.vibeminer.concepts.races.RaceMediaTypes.Idle(
+                                        com.vibeminer.concepts.races.RaceTypes.State.READY,
+                                        new com.vibeminer.concepts.races.RaceMediaTypes.Variant(
+                                                1, 0, 49, 149, 1490),
+                                        stand,
+                                        List.of(),
+                                        List.of(),
+                                        "Stand"));
+                    }
+
+                    @Override
+                    public CompletableFuture<Void> closeAsync() {
+                        return CompletableFuture.completedFuture(null);
+                    }
+                };
+        var previews = previews(9L, races);
+        var outcome = previews.resolve(7, Cancellation.NONE);
+        assertEquals(9L, outcome.extendedDisplayInfoId());
+        var idle = previews.idle(outcome, Cancellation.NONE);
+        assertEquals(9L, asked[0]);
+        assertTrue(idle.animation() == stand);
     }
 
     private static com.vibeminer.eglink.EgLinkTypes.Snapshot snapshot(

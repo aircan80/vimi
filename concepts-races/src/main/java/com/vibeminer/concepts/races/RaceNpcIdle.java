@@ -15,6 +15,14 @@ final class RaceNpcIdle {
 
     static RaceMediaTypes.Idle fit(
             RaceMediaTypes.Idle stand, MeshAppearance appearance, M2Types.Model character) {
+        return fit(stand, appearance, attachment -> bone(character, attachment));
+    }
+
+    /** As above, with the bone of each attachment point (null when the model has none). */
+    static RaceMediaTypes.Idle fit(
+            RaceMediaTypes.Idle stand,
+            MeshAppearance appearance,
+            java.util.function.IntFunction<Integer> boneOfAttachment) {
         var animation = stand.animation();
         if (animation.matches(appearance)) {
             return stand;
@@ -32,7 +40,7 @@ final class RaceNpcIdle {
             if (attachment < 0) {
                 continue;
             }
-            Integer bone = bone(character, attachment);
+            Integer bone = boneOfAttachment.apply(attachment);
             if (bone == null) {
                 return unsupported(
                         stand, "an attached item's attachment point is not on the model");
