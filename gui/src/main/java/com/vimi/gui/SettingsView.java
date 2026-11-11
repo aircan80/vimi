@@ -9,6 +9,7 @@ import javafx.scene.control.Label;
 import javafx.scene.control.ListView;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.TextField;
+import javafx.scene.control.TitledPane;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
@@ -19,7 +20,10 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 
-/** Application settings navigation with durable product visibility controls. */
+/**
+ * Application settings navigation with durable product visibility controls, and the attribution of
+ * third-party data bundled with the application.
+ */
 final class SettingsView extends BorderPane {
     private final SettingsService service;
     private final Runnable changed;
@@ -35,8 +39,9 @@ final class SettingsView extends BorderPane {
         this.service = Objects.requireNonNull(service);
         this.changed = Objects.requireNonNull(changed);
         ListView<String> sections = new ListView<>();
-        sections.getItems().add("Products");
+        sections.getItems().addAll("Products", "Bundled data");
         sections.getSelectionModel().selectFirst();
+        sections.setId("settings-sections");
         sections.setAccessibleText("Settings areas");
         sections.getStyleClass().add("product-menu");
         VBox sidebar = new VBox(16, label("SETTINGS", "eyebrow"), sections);
@@ -84,8 +89,96 @@ final class SettingsView extends BorderPane {
         ScrollPane scroll = new ScrollPane(content);
         scroll.setFitToWidth(true);
         scroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        ScrollPane[] bundled = {null};
         setCenter(scroll);
+        sections.getSelectionModel()
+                .selectedItemProperty()
+                .addListener(
+                        (observable, before, after) -> {
+                            if (!"Bundled data".equals(after)) {
+                                setCenter(scroll);
+                                return;
+                            }
+                            // Built on first view; an unreadable notice shows one line instead.
+                            if (bundled[0] == null) bundled[0] = scroll(bundledDataOrProblem());
+                            setCenter(bundled[0]);
+                        });
         render();
+    }
+
+    /** The attribution lines the Bundled data page shows for the bundled table definitions. */
+    static java.util.List<String> bundledDefinitionsLines() {
+        var attribution = com.vibeminer.formats.definitions.BundledDefinitions.attribution();
+        return java.util.List.of(
+                attribution.name() + " · Table definitions",
+                "By " + attribution.authors(),
+                "Revision " + attribution.revision() + " (pinned)",
+                "License: " + attribution.license() + " · " + attribution.licenseUrl(),
+                "Source: " + attribution.upstream(),
+                "Ships with the application and is verified against its manifest and source"
+                        + " hashes each time it loads. A newer revision comes with an application"
+                        + " update; nothing is downloaded.");
+    }
+
+    private static VBox bundledDataOrProblem() {
+        try {
+            return bundledData();
+        } catch (RuntimeException unreadable) {
+            VBox content =
+                    new VBox(
+                            16,
+                            label("Bundled data", "h1"),
+                            label(
+                                    "The bundled data notice could not be read. The notices are in"
+                                            + " the application's legal folder (THIRD-PARTY.md).",
+                                    "muted"));
+            content.setPadding(new Insets(28));
+            return content;
+        }
+    }
+
+    /** Attribution for third-party data that ships with the application (not a data source). */
+    static VBox bundledData() {
+        var attribution = com.vibeminer.formats.definitions.BundledDefinitions.attribution();
+        var lines = bundledDefinitionsLines();
+        Label name = label(lines.getFirst(), "h2");
+        name.setId("bundled-definitions-name");
+        VBox facts = new VBox(6, name);
+        for (int i = 1; i < lines.size(); i++) {
+            facts.getChildren()
+                    .add(label(lines.get(i), i == 1 || i == lines.size() - 1 ? "muted" : "value"));
+        }
+        facts.getStyleClass().add("source-panel");
+        facts.setPadding(new Insets(14));
+        Label notice = label(attribution.notice(), "muted");
+        notice.setId("bundled-definitions-notice");
+        TitledPane noticePane = new TitledPane("Notice", notice);
+        noticePane.setExpanded(false);
+        VBox content =
+                new VBox(
+                        16,
+                        label("Bundled data", "h1"),
+                        label(
+                                "Third-party data that ships with the application, with its"
+                                        + " license and notice.",
+                                "subtitle"),
+                        facts,
+                        noticePane,
+                        label(
+                                "Notices for the bundled runtime libraries are in the"
+                                        + " application's legal folder (THIRD-PARTY.md).",
+                                "muted"));
+        content.setId("settings-bundled-data");
+        content.setPadding(new Insets(28));
+        content.setMaxWidth(1000);
+        return content;
+    }
+
+    private static ScrollPane scroll(VBox content) {
+        ScrollPane scroll = new ScrollPane(content);
+        scroll.setFitToWidth(true);
+        scroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        return scroll;
     }
 
     private void render() {

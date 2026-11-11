@@ -23,12 +23,12 @@ Seven files at this revision are WoWDBDefs placeholders with no columns
 (Cfg_Languages, Cfg_Realms, GarrMissionReward, MobileStrings, SpellTooltip,
 Treasure and VW_MobileSpell); VibeMiner says those tables aren't described yet.
 
-With the Settings switch "Fetch newer table definitions from WoWDBDefs" on (the
-default), VibeMiner may also download a table's definition file from
-https://github.com/wowdev/WoWDBDefs at runtime when no bundled definition covers a
-file's layout (decision D081). Fetched files are WoWDBDefs contributors' data under
-the same CC BY-SA 4.0 terms, used unmodified, kept with their commit, URL and
-SHA-256 in the app's storage folder, and labelled "Definition from WoWDBDefs".
+The application uses only this bundled revision; it does not download definitions.
+A newer revision arrives with a new application release. (The table library can
+fetch a single definition file from https://github.com/wowdev/WoWDBDefs; such
+files would be WoWDBDefs contributors' data under the same CC BY-SA 4.0
+terms, used unmodified and kept with their commit, URL and SHA-256. The application
+does not enable that.)
 
 This catalogue is community-provided interpretation metadata, not an inventory of
 any selected game build and not Blizzard game data or endorsement. Definitions do

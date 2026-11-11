@@ -389,7 +389,7 @@ public final class PreparedBuildReader implements AutoCloseable {
                                     localObjects,
                                     null,
                                     parts.atlases)
-                            .withSourcePolicy(false, true)
+                            .withSourcePolicy(false)
                             .withPinnedCommunityKeys(com.vibeminer.files.keys.TactKeys.EMPTY);
             var work = parts.work;
             step("metadata", () -> work.metadata(token));

@@ -49,8 +49,8 @@ public final class SourceRefreshUiTest {
                                                         "Ready",
                                                         1),
                                                 new SourceRefresh.Provider(
-                                                        "definitions",
-                                                        "WoWDBDefs (bundled)",
+                                                        "disabled",
+                                                        "Authored disabled source",
                                                         () -> false,
                                                         () ->
                                                                 CompletableFuture.completedFuture(

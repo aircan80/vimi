@@ -249,9 +249,6 @@ public final class FullPreparationLibraryIntegrationTest {
                                     + " table");
                     if (round == 1) {
                         service.dataSources()
-                                .setEnabled(DataSourcesService.Id.DEFINITIONS, false)
-                                .join();
-                        service.dataSources()
                                 .setEnabled(DataSourcesService.Id.LISTFILE, false)
                                 .join();
                         require(
@@ -266,15 +263,12 @@ public final class FullPreparationLibraryIntegrationTest {
                                 disabledSnapshot.ready() == BuildPreparation.Ready.TABLES_READY,
                                 "Disabled optional providers do not block raw build/file opening");
                         require(
-                                disabledSnapshot.tables().isEmpty(),
-                                "Reopened workspace does not restore a table inventory from enabled"
-                                    + " definitions");
+                                !disabledSnapshot.tables().isEmpty(),
+                                "Table definitions stay in use whatever an older library stored");
                         require(
                                 disabledSnapshot.issues().stream()
-                                        .anyMatch(
-                                                issue ->
-                                                        issue.contains("definitions are disabled")),
-                                "Disabled definitions are reported explicitly");
+                                        .noneMatch(issue -> issue.contains("definitions are disabled")),
+                                "No definitions switch is reported");
                     }
                 } catch (Throwable failure) {
                     roundFailure = failure;

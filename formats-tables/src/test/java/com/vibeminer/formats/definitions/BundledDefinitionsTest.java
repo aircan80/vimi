@@ -25,6 +25,25 @@ import org.junit.jupiter.api.Test;
 
 final class BundledDefinitionsTest {
     @Test
+    void attributionNamesTheBundledRevisionLicenseAndNotice() {
+        var attribution = BundledDefinitions.attribution();
+        assertEquals("WoWDBDefs", attribution.name());
+        assertEquals(BundledDefinitions.REVISION, attribution.revision());
+        assertTrue(attribution.revision().startsWith("b9a63096"));
+        assertEquals(
+                "https://github.com/wowdev/WoWDBDefs/tree/" + BundledDefinitions.REVISION,
+                attribution.upstream());
+        assertEquals("CC BY-SA 4.0", attribution.license());
+        assertTrue(attribution.notice().contains("WoWDBDefs contributors"));
+        assertTrue(attribution.notice().contains(BundledDefinitions.REVISION));
+        assertTrue(attribution.notice().contains("CC BY-SA 4.0"));
+        assertEquals(
+                "CC-BY-SA-4.0",
+                BundledDefinitions.open(Cancellation.NONE).join().info().license(),
+                "the same license the provider declares");
+    }
+
+    @Test
     void completePinnedManifestAndReviewedCreatureDefinitionVerify() {
         var provider = BundledDefinitions.open(Cancellation.NONE).join();
         assertEquals(1346, provider.tables().size());
