@@ -588,9 +588,7 @@ final class RaceAppearance {
             if (bindings.isEmpty()) {
                 // A lasting fact of this model and plan (no draw fits the reviewed static
                 // profile): a stated refusal for players and NPCs alike, not a read failure.
-                return failed(
-                        issues,
-                        "No reviewed static one-stage diffuse draw bindings are available.");
+                return failed(issues, RaceAppearancePlan.UNREVIEWED_SURFACES);
             }
             var appearance = new MeshAppearance(mesh, uv, normals, bindings, textures);
             if (complete) {

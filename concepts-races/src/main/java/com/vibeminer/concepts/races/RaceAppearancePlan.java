@@ -70,6 +70,21 @@ final class RaceAppearancePlan {
         return unsettled;
     }
 
+    /** A race without a playable-race customization record (an NPC race or a mount). */
+    static final String NOT_PLAYABLE =
+            "Textures for this race are not supported yet: it has no playable-race customization"
+                    + " record.";
+
+    /** A model whose every surface uses a material setup outside the reviewed profile. */
+    static final String UNREVIEWED_SURFACES =
+            "Textures for this race are not supported yet: its model's surfaces use material"
+                    + " setups that are not reviewed.";
+
+    /** A texture section or layer that lies outside the canvas it is drawn into. */
+    static final String OUTSIDE_CANVAS =
+            "Textures for this race are not supported yet: a recorded texture section lies outside"
+                    + " its canvas.";
+
     /** Undead skin regions cut out to show bone compose as solid black: not shown yet. */
     static final String UNDEAD_REFUSED =
             "Undead character textures are not shown yet: their cut-out skin regions compose as"
@@ -476,6 +491,7 @@ final class RaceAppearancePlan {
             throw new RacesService.Projection(
                     RaceTypes.State.UNSUPPORTED, "Texture recipe exceeds preview bounds.");
         }
+        requireInsideCanvases(canvases, recipe);
         return new Plan(canvases, recipe, items, profile, npc != null);
     }
 
@@ -603,7 +619,14 @@ final class RaceAppearancePlan {
             List<String> issues) {
         var races = media.data("ChrRaces", 512, token, issues);
         races.field("PlayableRaceBit", true);
-        var race = races.rows.stream().filter(row -> row.id() == raceId).findFirst().orElseThrow();
+        var race =
+                races.rows.stream()
+                        .filter(row -> row.id() == raceId)
+                        .findFirst()
+                        .orElseThrow(
+                                () ->
+                                        new RacesService.Projection(
+                                                RaceTypes.State.UNSUPPORTED, NOT_PLAYABLE));
         int bit = integer(races, race, "PlayableRaceBit");
         var loadouts = media.data("CharacterLoadout", 1024, token, issues);
         fields(loadouts, "ChrClassID", "Purpose");
@@ -944,6 +967,42 @@ final class RaceAppearancePlan {
             RacesService.Data data, Db2Types.Row row, String field, int bit) {
         return RaceCustomization.hasRace(
                 data.number(row, field + "[0]"), data.number(row, field + "[1]"), bit);
+    }
+
+    /**
+     * Refuses a plan any of whose layers lies outside its canvas, or whose canvas would take more
+     * layers than the composer admits, so composition never fails on its bounds.
+     */
+    static void requireInsideCanvases(List<Canvas> canvases, List<Layer> layers) {
+        for (var canvas : canvases) {
+            if (canvas.width() < 1
+                    || canvas.height() < 1
+                    || canvas.width() > 2048
+                    || canvas.height() > 2048) {
+                throw new RacesService.Projection(RaceTypes.State.UNSUPPORTED, OUTSIDE_CANVAS);
+            }
+            int count = 0;
+            for (var layer : layers) {
+                if (layer.type() != canvas.type()) {
+                    continue;
+                }
+                count++;
+                if (layer.x() < 0
+                        || layer.y() < 0
+                        || layer.width() < 1
+                        || layer.height() < 1
+                        || layer.x() > canvas.width() - layer.width()
+                        || layer.y() > canvas.height() - layer.height()) {
+                    throw new RacesService.Projection(RaceTypes.State.UNSUPPORTED, OUTSIDE_CANVAS);
+                }
+            }
+            if (count > 64) {
+                throw new RacesService.Projection(
+                        RaceTypes.State.UNSUPPORTED,
+                        "Textures for this race are not supported yet: a canvas takes more than 64"
+                                + " texture layers.");
+            }
+        }
     }
 
     private static Layer layer(

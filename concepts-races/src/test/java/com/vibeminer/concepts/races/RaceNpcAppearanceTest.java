@@ -552,9 +552,16 @@ final class RaceNpcAppearanceTest {
     private static RaceNpcs.Appearance npcAppearance(
             java.util.function.UnaryOperator<com.vibeminer.formats.tables.BuildTables> wrap,
             com.vibeminer.files.MemoryFiles memory) {
+        return npcAppearance(npcFixture(), wrap, memory);
+    }
+
+    private static RaceNpcs.Appearance npcAppearance(
+            List<MemoryTables.FakeTable> fixture,
+            java.util.function.UnaryOperator<com.vibeminer.formats.tables.BuildTables> wrap,
+            com.vibeminer.files.MemoryFiles memory) {
         var raw =
                 new MemoryTables()
-                        .add(BUILD, "enUS", npcFixture())
+                        .add(BUILD, "enUS", fixture)
                         .forBuild(BUILD, "enUS", Cancellation.NONE)
                         .join()
                         .tables();
@@ -569,6 +576,75 @@ final class RaceNpcAppearanceTest {
             raw.closeAsync().join();
             files.close();
         }
+    }
+
+    /** NPC 50 recast as race {@code raceId} with playable-race bit {@code bit}. */
+    private static List<MemoryTables.FakeTable> npcOfRace(long raceId, String bit) {
+        var seed = new ArrayList<>(npcFixture());
+        replace(seed, table("ChrRaces", "4F44C796", "PlayableRaceBit", row(raceId, bit)));
+        replace(
+                seed,
+                RaceNpcsTest.table(
+                        905,
+                        "ChrRaceXChrModel",
+                        List.of(
+                                RaceNpcsTest.reference("ChrRacesID", "ChrRaces"),
+                                RaceNpcsTest.reference("ChrModelID", "ChrModel")),
+                        List.of(RaceNpcsTest.row(1, raceId, 3))));
+        replace(
+                seed,
+                RaceNpcsTest.table(
+                        901,
+                        "CreatureDisplayInfoExtra",
+                        List.of(
+                                RaceNpcsTest.reference("DisplayRaceID", "ChrRaces"),
+                                RaceNpcsTest.number("DisplaySexID"),
+                                RaceNpcsTest.number("DisplayClassID"),
+                                RaceNpcsTest.number("BakeMaterialResourcesID")),
+                        List.of(RaceNpcsTest.row(50, raceId, 0, 1, 4900))));
+        return seed;
+    }
+
+    /** Prepares NPC 50 as race {@code raceId} the way the World's NPC path does. */
+    private static RaceAppearance.Prepared prepareNpcOfRace(
+            long raceId, String bit, RaceMediaTypes.Variant variant) {
+        var tables =
+                new MemoryTables()
+                        .add(BUILD, "enUS", npcOfRace(raceId, bit))
+                        .forBuild(BUILD, "enUS", Cancellation.NONE)
+                        .join()
+                        .tables();
+        var files = placeholder().forBuild(BUILD, "enUS", Cancellation.NONE).join().files();
+        var generated = new com.vibeminer.generated.MemoryGeneratedStore();
+        var service = new RacesService(tables, files, generated);
+        try {
+            var media = new RaceMedia(service, tables, files, generated);
+            var appearance = new RaceAppearance(service, media, tables, files, generated);
+            return appearance.prepareNpc(
+                    new RaceNpcs.Spec(
+                            50, raceId, 0, 1, variant, Map.of(70L, 72L), List.of(), 4900, 4242, 0),
+                    Cancellation.NONE);
+        } finally {
+            service.closeAsync().join();
+            tables.closeAsync().join();
+            files.close();
+        }
+    }
+
+    @Test
+    void anNpcOfANewlyAdmittedRacePassesTheRaceGateAsTheReviewedRacesDo() {
+        // The World's NPC path (prepareNpc) shares the race gate. Past it, preparation reads the
+        // race model, which this fixture does not store: the Orc NPC and a Gnome NPC (race 7,
+        // bit 6) over the same records both get that far and stop there alike.
+        var orc = prepareNpcOfRace(2, "1", ORC_MALE);
+        assertEquals("Model file is UNKNOWN_FILE", orc.finished().message(), String.valueOf(orc));
+        var gnome = prepareNpcOfRace(7, "6", ORC_MALE);
+        assertEquals(
+                "Model file is UNKNOWN_FILE", gnome.finished().message(), String.valueOf(gnome));
+        // An Undead NPC, reviewed and refused, is refused with that reason before any read.
+        var undead = prepareNpcOfRace(5, "4", new RaceMediaTypes.Variant(9, 0, 1, 1, 1));
+        assertTrue(undead.finished() != null, String.valueOf(undead));
+        assertEquals(RaceAppearancePlan.UNDEAD_REFUSED, undead.finished().message());
     }
 
     @Test

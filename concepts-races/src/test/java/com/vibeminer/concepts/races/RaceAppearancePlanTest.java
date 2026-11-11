@@ -979,6 +979,81 @@ final class RaceAppearancePlanTest {
         }
     }
 
+    /** Builds the plan for race {@code raceId}, ChrModel 3 (male), over {@code seed}. */
+    private static RaceAppearancePlan.Plan buildOrc(
+            List<MemoryTables.FakeTable> seed, long raceId) {
+        var tables =
+                new MemoryTables()
+                        .add(BUILD, "enUS", seed)
+                        .forBuild(BUILD, "enUS", Cancellation.NONE)
+                        .join()
+                        .tables();
+        var service = new RacesService(tables);
+        try {
+            return new RaceAppearancePlan(
+                            service, new RaceMedia(service, tables, null, null), tables)
+                    .build(
+                            raceId,
+                            1,
+                            new RaceMediaTypes.Variant(3, 0, 1, 1, 1),
+                            Cancellation.NONE,
+                            new ArrayList<>());
+        } finally {
+            service.closeAsync().join();
+            tables.closeAsync().join();
+        }
+    }
+
+    @Test
+    void aNonPlayableRaceIsRefusedPlainlyAtThePlayableRaceBit() {
+        // A race without a playable-race bit (an NPC race or a mount), and one with no ChrRaces
+        // row at all, are both refused with the plain reason, never an unchecked exception.
+        var seed = orcFixture(3, 105);
+        replace(seed, table("ChrRaces", "4F44C796", "PlayableRaceBit", row(2, "-1")));
+        var refused = assertThrows(RacesService.Projection.class, () -> buildOrc(seed, 2));
+        assertEquals(RaceAppearancePlan.NOT_PLAYABLE, refused.getMessage());
+        var missing =
+                assertThrows(RacesService.Projection.class, () -> buildOrc(orcFixture(3, 105), 7));
+        assertEquals(RaceAppearancePlan.NOT_PLAYABLE, missing.getMessage());
+    }
+
+    @Test
+    void aNewlyAdmittedRaceComposesOrIsRefusedCleanly() {
+        // A playable race outside the former five pairs (Gnome, race 7, bit 6) over the same
+        // records: the plan is built, or refused with a stated reason; nothing else escapes.
+        var seed = orcFixture(3, 105);
+        replace(seed, table("ChrRaces", "4F44C796", "PlayableRaceBit", row(7, "6")));
+        try {
+            var plan = buildOrc(seed, 7);
+            assertFalse(plan.canvases().isEmpty());
+        } catch (RacesService.Projection refused) {
+            assertTrue(refused.getMessage() != null && !refused.getMessage().isBlank());
+        }
+    }
+
+    @Test
+    void aSectionOutsideItsCanvasIsRefusedCleanly() {
+        // The orc section (type 3) moved past the right edge of its 2048-wide canvas.
+        var seed = orcFixture(3, 105);
+        replace(
+                seed,
+                table(
+                        "CharComponentTextureSections",
+                        "2173BA71",
+                        "CharComponentTextureLayoutID,SectionType,X,Y,Width,Height",
+                        row(1, "105", "3", "1800", "0", "512", "256")));
+        var refused = assertThrows(RacesService.Projection.class, () -> buildOrc(seed, 2));
+        assertEquals(RaceAppearancePlan.OUTSIDE_CANVAS, refused.getMessage());
+        assertThrows(
+                RacesService.Projection.class,
+                () ->
+                        RaceAppearancePlan.requireInsideCanvases(
+                                List.of(new RaceAppearancePlan.Canvas(1, 2048, 1024)),
+                                List.of(
+                                        new RaceAppearancePlan.Layer(
+                                                1, 9, 0, 900, 256, 256, 1, 0, "authored"))));
+    }
+
     @Test
     void classClothingUsesPurposeNineExactSexAndReadablePartialDisplayRows() {
         var tables =
