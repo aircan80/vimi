@@ -1011,7 +1011,7 @@ final class RacesServiceTest {
         var files =
                 new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
                         .add(1234, "1".repeat(32), withBoneFiles(modelWithStand(0x200), 701, 702))
-                        .add(900, "2".repeat(32), golden("authored-274.skin"));
+                        .add(900, "2".repeat(32), standSkin());
         var service = new RacesService(counting.proxy(), files, null);
         try {
             var first = service.idle(1, 10, Cancellation.NONE).join();
