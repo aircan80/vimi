@@ -95,6 +95,54 @@ public final class EgLinkTypes {
             String name,
             String json) {}
 
+    /**
+     * One display a creature was observed with: its {@code CreatureDisplayInfo} ID, its relative
+     * weight (EG Link's {@code probability}, recorded as 1, 25, 100 and so on, not as a share) and
+     * the observed scale.
+     */
+    public record CreatureDisplay(long displayId, double probability, double scale) {
+        public CreatureDisplay {
+            if (displayId < 1
+                    || displayId > 0xffffffffL
+                    || !Double.isFinite(probability)
+                    || probability < 0
+                    || probability > 1_000_000
+                    || !Double.isFinite(scale)
+                    || scale <= 0
+                    || scale > 64) {
+                throw new IllegalArgumentException("Invalid EG Link creature display");
+            }
+        }
+    }
+
+    /**
+     * The displays one creature was observed with in one snapshot, with that snapshot's product,
+     * client build and the dataset's last collection date (its provenance).
+     */
+    public record CreatureDisplays(
+            String snapshotId,
+            String product,
+            String build,
+            String collectedOn,
+            long creatureId,
+            List<CreatureDisplay> displays) {
+        public CreatureDisplays {
+            displays = List.copyOf(displays);
+        }
+
+        /** EG Link, its license and the collected build, for the facts shown with a display. */
+        public String provenance() {
+            return "EG Link creature_details ("
+                    + LICENSE
+                    + "), "
+                    + product
+                    + " build "
+                    + build
+                    + ", collected "
+                    + collectedOn;
+        }
+    }
+
     public record Page(List<Record> records, boolean more) {
         public Page {
             records = List.copyOf(records);

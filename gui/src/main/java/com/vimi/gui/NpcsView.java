@@ -21,11 +21,155 @@ final class NpcsView extends ProviderBrowser<NpcCatalog.Npc> {
                         new Column<>("Title", n -> known(n.subname()), 180),
                         new Column<>("Level", n -> known(n.levels()), 90)));
         if (job != null && job.work() instanceof NativePreparationWork work) {
+            previews =
+                    new NpcPreviews(
+                            work::creaturesHandle,
+                            this::displayModels,
+                            work::racesHandle,
+                            NpcPreviews.egLink(sources, job.build(), job.locale()),
+                            job.build().version());
+            this.work = work;
+            model.idleByDefault(true);
+            previewStatus.setWrapText(true);
+            previewStatus.getStyleClass().add("muted");
+            model.setPrefHeight(320);
+            model.setMinHeight(240);
+            attachPreview(previewBox);
             attachLocationMap(new LocationMapView(work::locationMapsHandle,
                     () -> new com.vibeminer.concepts.locations.LocationsService(
                             sources == null ? List.of() : sources.locationInputs(job.build(), job.locale())),
                     work::revision, () -> sources == null ? 0L : sources.revision(), false));
         }
+    }
+
+    private final ModelPreviewView model = new ModelPreviewView();
+    private final javafx.scene.control.Label previewStatus = new javafx.scene.control.Label();
+    private final javafx.scene.layout.VBox previewFacts = new javafx.scene.layout.VBox(4);
+    private final javafx.scene.layout.VBox previewBox =
+            new javafx.scene.layout.VBox(8, model, previewStatus, previewFacts);
+    private final java.util.concurrent.ExecutorService previewWorker =
+            java.util.concurrent.Executors.newSingleThreadExecutor(runnable -> {
+                var thread = new Thread(runnable, "npc-preview");
+                thread.setDaemon(true);
+                return thread;
+            });
+    private NpcPreviews previews;
+    private NativePreparationWork work;
+    private com.vibeminer.concepts.models.BuildDisplayModels displays;
+    private Object displaysRevision;
+    private Cancellation previewToken = new Cancellation();
+    private long previewGeneration;
+
+    /** One display-model component per work revision; replaced when the revision changes. */
+    private synchronized com.vibeminer.concepts.models.BuildDisplayModels displayModels() {
+        if (work == null || work.tablesHandle() == null || work.filesHandle() == null) return null;
+        Object revision = work.revision();
+        if (displays == null || !java.util.Objects.equals(revision, displaysRevision)) {
+            if (displays != null) displays.closeAsync();
+            displays = new com.vibeminer.concepts.models.DisplayModelService(
+                    work.tablesHandle(), work.filesHandle(), work.generatedHandle());
+            displaysRevision = revision;
+        }
+        return displays;
+    }
+
+    @Override
+    void selected(NpcCatalog.Npc row) {
+        if (previews == null) return;
+        previewToken.cancel();
+        previewToken = new Cancellation();
+        long request = ++previewGeneration;
+        previewFacts.getChildren().clear();
+        if (row == null) {
+            model.clear("Select an NPC to preview its model");
+            previewStatus.setText("");
+            return;
+        }
+        var token = previewToken;
+        long npcId = row.id();
+        model.loading("Resolving NPC display…");
+        previewStatus.setText("Resolving the display of NPC " + npcId + "…");
+        java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                    try {
+                        return previews.resolve(npcId, token);
+                    } catch (Exception failure) {
+                        throw new java.util.concurrent.CompletionException(failure);
+                    }
+                }, previewWorker)
+                .whenComplete((outcome, failure) -> javafx.application.Platform.runLater(() -> {
+                    if (request != previewGeneration) return;
+                    if (failure != null || outcome == null) {
+                        model.clear("Model preview unavailable");
+                        previewStatus.setText("Model preview unavailable: "
+                                + (failure == null ? "no result" : rootMessage(failure)));
+                        return;
+                    }
+                    show(outcome, token, request);
+                }));
+    }
+
+    private void show(NpcPreviews.Outcome outcome, Cancellation token, long request) {
+        for (var fact : outcome.facts()) {
+            var label = new javafx.scene.control.Label(fact);
+            label.setWrapText(true);
+            label.getStyleClass().add("muted");
+            previewFacts.getChildren().add(label);
+        }
+        if (outcome.appearance() == null) {
+            model.clear("No model to show");
+            previewStatus.setText(outcome.reason() == null ? "No model to show." : outcome.reason());
+            return;
+        }
+        if (outcome.textured()) {
+            model.setAppearance(outcome.appearance(), outcome.visibleParts(), true);
+            previewStatus.setText(outcome.kind() == NpcPreviews.Kind.HUMANOID
+                    ? "Character appearance with the NPC's recorded choices and clothing."
+                    : "Creature model · display " + outcome.resolution().shown().displayId());
+        } else {
+            // All recorded surfaces, untextured; an idle still plays on this appearance.
+            model.setAppearance(outcome.appearance(), outcome.visibleParts(), false);
+            previewStatus.setText("Untextured model · " + outcome.reason());
+        }
+        Long idleDisplay = outcome.idleDisplay();
+        var models = displayModels();
+        if (idleDisplay == null || models == null) {
+            model.animationUnavailable(outcome.kind() == NpcPreviews.Kind.HUMANOID
+                    ? "Idle animation is not evaluated for character appearances here." : null);
+            return;
+        }
+        models.idle(idleDisplay, token).whenComplete((idle, failure) ->
+                javafx.application.Platform.runLater(() -> {
+                    if (request != previewGeneration) return;
+                    if (failure != null || idle == null) {
+                        model.animationUnavailable(null);
+                        return;
+                    }
+                    switch (idle.state()) {
+                        case AVAILABLE -> model.setAnimation(idle.animation(), idle.message());
+                        case UNSUPPORTED -> model.animationUnavailable(
+                                "Idle animation unavailable: " + idle.message());
+                        case UNAVAILABLE -> model.animationUnavailable(null);
+                    }
+                }));
+    }
+
+    private static String rootMessage(Throwable failure) {
+        Throwable cause = failure;
+        while (cause.getCause() != null) cause = cause.getCause();
+        return cause.getMessage() == null ? cause.getClass().getSimpleName() : cause.getMessage();
+    }
+
+    @Override
+    public void close() {
+        previewToken.cancel();
+        previewGeneration++;
+        previewWorker.shutdownNow();
+        synchronized (this) {
+            if (displays != null) displays.closeAsync();
+            displays = null;
+        }
+        model.close();
+        super.close();
     }
 
     @Override

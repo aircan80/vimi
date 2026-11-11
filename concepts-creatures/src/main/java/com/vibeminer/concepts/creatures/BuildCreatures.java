@@ -25,6 +25,17 @@ public interface BuildCreatures extends AutoCloseable {
                 new UnsupportedOperationException("Data-only detail not supported"));
     }
 
+    /**
+     * The data-only chain of one display ID ({@code CreatureDisplayInfo}, then {@code
+     * CreatureModelData}), as for a declared Creature slot, for a display named outside the
+     * Creature record. Never initiates asset I/O.
+     */
+    default CompletableFuture<CreatureTypes.CreatureDisplayChain> displayChain(
+            long displayId, Priority priority, Cancellation token) {
+        return CompletableFuture.failedFuture(
+                new UnsupportedOperationException("Display chains not supported"));
+    }
+
     default CompletableFuture<com.vibeminer.concepts.core.ConceptWarmup.Result> warmup(
             Priority priority, Cancellation token) {
         return CompletableFuture.failedFuture(
