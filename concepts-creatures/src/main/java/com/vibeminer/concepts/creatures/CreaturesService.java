@@ -403,6 +403,26 @@ public final class CreaturesService implements Creatures {
             return detail(id, priority, token, false);
         }
 
+        @Override
+        public CompletableFuture<CreatureTypes.CreatureDisplayChain> displayChain(
+                long displayId, Priority priority, Cancellation token) {
+            if (displayId < 1 || displayId > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException("Display ID is outside the slot range");
+            }
+            return run(
+                    priority,
+                    token,
+                    () ->
+                            chain(
+                                    new Call(priority, token),
+                                    new CreatureTypes.CreatureDisplaySlot(
+                                            0,
+                                            (int) displayId,
+                                            1f,
+                                            CreatureTypes.CreatureSlotState.DECLARED),
+                                    false));
+        }
+
         private CompletableFuture<CreatureResult> detail(
                 long id, Priority priority, Cancellation token, boolean media) {
             if (id < 0 || id > 0xffffffffL) {
