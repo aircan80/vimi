@@ -70,17 +70,22 @@ final class RaceAppearancePlan {
         return unsettled;
     }
 
-    static final String UNREVIEWED_PAIR =
-            "Static character textures support the narrow Human, Orc, Dwarf, Night Elf and Tauren"
-                    + " model pairs.";
+    /** Undead skin regions cut out to show bone compose as solid black: not shown yet. */
+    static final String UNDEAD_REFUSED =
+            "Undead character textures are not shown yet: their cut-out skin regions compose as"
+                    + " solid black.";
 
-    /** The reviewed race and ChrModel pairs; a pure ID check, so it can refuse before any read. */
-    static boolean reviewedPair(long raceId, long chrModelId) {
-        return raceId == 1 && chrModelId >= 1 && chrModelId <= 2
-                || raceId == 2 && chrModelId >= 3 && chrModelId <= 4
-                || raceId == 3 && chrModelId >= 5 && chrModelId <= 6
-                || raceId == 6 && chrModelId >= 11 && chrModelId <= 12
-                || raceId == 4 && chrModelId >= 7 && chrModelId <= 8;
+    /**
+     * Race and ChrModel pairs whose composed textures were reviewed and found wrong, each with the
+     * reason shown instead. Every other pair is composed, and the deeper gates (the playable-race
+     * bit, the reviewed draw-binding profile) still refuse what they cannot draw.
+     */
+    private static final Map<Long, String> REFUSED_PAIRS =
+            Map.of(5L << 32 | 9, UNDEAD_REFUSED, 5L << 32 | 10, UNDEAD_REFUSED);
+
+    /** Why a race and ChrModel pair's textures are refused before any read, or null. */
+    static String refusedPair(long raceId, long chrModelId) {
+        return REFUSED_PAIRS.get(raceId << 32 | chrModelId);
     }
 
     RaceAppearancePlan(RacesService owner, RaceMedia media, BuildTables tables) {
@@ -187,8 +192,9 @@ final class RaceAppearancePlan {
         if (sample != null) {
             sample.requireContext(media, raceId, classId, variant.chrModelId());
         }
-        if (!reviewedPair(raceId, variant.chrModelId())) {
-            throw new RacesService.Projection(RaceTypes.State.UNSUPPORTED, UNREVIEWED_PAIR);
+        String refused = refusedPair(raceId, variant.chrModelId());
+        if (refused != null) {
+            throw new RacesService.Projection(RaceTypes.State.UNSUPPORTED, refused);
         }
         var models = schema("ChrModel", token, issues, "CharComponentTextureLayoutID");
         var model = get(models, variant.chrModelId(), token);

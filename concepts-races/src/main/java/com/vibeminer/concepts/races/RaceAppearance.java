@@ -243,9 +243,10 @@ final class RaceAppearance {
                 return prepareFailure(
                         issues, "Texture preparation is unavailable for this workspace.");
             }
-            if (!RaceAppearancePlan.reviewedPair(raceId, modelId)) {
-                // Refused before any read, so an unreviewed race's GPU preview is not held back.
-                return prepareFailure(issues, RaceAppearancePlan.UNREVIEWED_PAIR);
+            String refused = RaceAppearancePlan.refusedPair(raceId, modelId);
+            if (refused != null) {
+                // Refused before any read, so a refused race's GPU preview is not held back.
+                return prepareFailure(issues, refused);
             }
             var known = remembered(request, token);
             if (known != null) {
