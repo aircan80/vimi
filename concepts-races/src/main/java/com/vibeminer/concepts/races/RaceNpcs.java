@@ -117,7 +117,14 @@ public final class RaceNpcs {
         long race = extras.number(extra, "DisplayRaceID");
         long sex = extras.number(extra, "DisplaySexID");
         long classId = extras.has("DisplayClassID") ? extras.number(extra, "DisplayClassID") : 0;
-        long bake = extras.number(extra, "BakeMaterialResourcesID");
+        // The character models are the HD ones, whose texture layout the HD bake follows; the
+        // older bake follows the pre-HD layout (its face lands on the HD model's clothing). The
+        // HD bake is used whenever the extra records one.
+        long hdBake =
+                extras.has("HDBakeMaterialResourcesID")
+                        ? extras.number(extra, "HDBakeMaterialResourcesID")
+                        : 0;
+        long bake = hdBake > 0 ? hdBake : extras.number(extra, "BakeMaterialResourcesID");
         if (race <= 0 || sex < 0 || sex > 1) {
             return Resolution.refused("there is no race model for the recorded race and sex");
         }
