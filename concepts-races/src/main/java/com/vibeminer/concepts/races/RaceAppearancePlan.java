@@ -82,6 +82,15 @@ final class RaceAppearancePlan {
     static final String ASSUMED_WEIGHTS =
             "Texture weights stored outside the model are assumed fully opaque.";
 
+    /** A page fact for a race without a playable bit (an NPC race). */
+    static final String NO_LOADOUT =
+            "This race has no new-character loadout; it is shown without starting clothes.";
+
+    /** A model of which nearly every visible surface would keep neutral shading. */
+    static final String MOSTLY_UNREVIEWED_SURFACES =
+            "Textures for this race are not supported yet: nearly all of its model's surfaces use"
+                    + " material setups that are not reviewed.";
+
     /** A model whose every surface uses a material setup outside the reviewed profile. */
     static final String UNREVIEWED_SURFACES =
             "Textures for this race are not supported yet: its model's surfaces use material"
@@ -644,6 +653,11 @@ final class RaceAppearancePlan {
                                         new RacesService.Projection(
                                                 RaceTypes.State.UNSUPPORTED, NOT_PLAYABLE));
         int bit = integer(races, race, "PlayableRaceBit");
+        if (bit < 0) {
+            // New-character loadouts are recorded for playable races only.
+            note(issues, NO_LOADOUT);
+            return;
+        }
         var loadouts = media.data("CharacterLoadout", 1024, token, issues);
         fields(loadouts, "ChrClassID", "Purpose");
         loadouts.field("Racemask", true, 2);

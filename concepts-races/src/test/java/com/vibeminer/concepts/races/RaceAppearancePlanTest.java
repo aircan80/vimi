@@ -982,6 +982,11 @@ final class RaceAppearancePlanTest {
     /** Builds the plan for race {@code raceId}, ChrModel 3 (male), over {@code seed}. */
     private static RaceAppearancePlan.Plan buildOrc(
             List<MemoryTables.FakeTable> seed, long raceId) {
+        return buildOrc(seed, raceId, new ArrayList<>());
+    }
+
+    private static RaceAppearancePlan.Plan buildOrc(
+            List<MemoryTables.FakeTable> seed, long raceId, List<String> issues) {
         var tables =
                 new MemoryTables()
                         .add(BUILD, "enUS", seed)
@@ -997,7 +1002,7 @@ final class RaceAppearancePlanTest {
                             1,
                             new RaceMediaTypes.Variant(3, 0, 1, 1, 1),
                             Cancellation.NONE,
-                            new ArrayList<>());
+                            issues);
         } finally {
             service.closeAsync().join();
             tables.closeAsync().join();
@@ -1005,16 +1010,31 @@ final class RaceAppearancePlanTest {
     }
 
     @Test
-    void aNonPlayableRaceIsRefusedPlainlyAtThePlayableRaceBit() {
-        // A race without a playable-race bit (an NPC race or a mount), and one with no ChrRaces
-        // row at all, are both refused with the plain reason, never an unchecked exception.
-        var seed = orcFixture(3, 105);
-        replace(seed, table("ChrRaces", "4F44C796", "PlayableRaceBit", row(2, "-1")));
-        var refused = assertThrows(RacesService.Projection.class, () -> buildOrc(seed, 2));
-        assertEquals(RaceAppearancePlan.NOT_PLAYABLE, refused.getMessage());
+    void aRaceWithoutAPlayableBitIsSampledFromChoicesThatNameEveryRace() {
+        // A race without a playable-race bit (an NPC race) is sampled like a playable one from
+        // choices whose requirements name every race (here, choices with no requirement), but
+        // has no new-character loadout: the Orc's starting item is masked to playable races. A
+        // race with no ChrRaces row at all is still refused with the plain reason.
+        var npcSeed = orcFixture(3, 105);
+        replace(npcSeed, table("ChrRaces", "4F44C796", "PlayableRaceBit", row(2, "-1")));
+        var notes = new ArrayList<String>();
+        var npc = buildOrc(npcSeed, 2, notes);
+        assertTrue(notes.contains(RaceAppearancePlan.NO_LOADOUT), notes.toString());
+        var orc = buildOrc(orcFixture(3, 105), 2);
+        assertEquals(orc.canvases(), npc.canvases());
+        assertEquals(1, orc.layers().size());
+        assertTrue(orc.layers().getFirst().source().startsWith("Starting item"));
+        assertEquals(List.of(), npc.layers());
         var missing =
                 assertThrows(RacesService.Projection.class, () -> buildOrc(orcFixture(3, 105), 7));
         assertEquals(RaceAppearancePlan.NOT_PLAYABLE, missing.getMessage());
+        // A recorded bit outside the 64 a race mask holds is still refused.
+        var outOfRange = orcFixture(3, 105);
+        replace(outOfRange, table("ChrRaces", "4F44C796", "PlayableRaceBit", row(2, "-2")));
+        assertEquals(
+                RaceAppearancePlan.NOT_PLAYABLE,
+                assertThrows(RacesService.Projection.class, () -> buildOrc(outOfRange, 2))
+                        .getMessage());
     }
 
     @Test
