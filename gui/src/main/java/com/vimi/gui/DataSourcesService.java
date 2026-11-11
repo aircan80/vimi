@@ -246,6 +246,38 @@ public final class DataSourcesService {
         return preferences.get("checked." + id, fallback);
     }
 
+    /**
+     * The prepared EG Link snapshot whose {@code creature_details} serve as the NPC display
+     * fallback for this build (same product, the newest build not after it), or null.
+     */
+    public com.vibeminer.eglink.EgLinkTypes.Snapshot npcDisplaySnapshot(BuildInfo build, String locale) {
+        if (egLink == null || build == null || !policy(Id.EG_LINK).enabled()) return null;
+        return npcDisplaySnapshot(egLinkState.snapshots(), build.product(), build.version(), locale);
+    }
+
+    /**
+     * The prepared snapshot of {@code product} with {@code creature_details.<locale>} whose build is
+     * the newest of the same x.y.z not after {@code version}, or null. Pure.
+     */
+    static com.vibeminer.eglink.EgLinkTypes.Snapshot npcDisplaySnapshot(
+            List<com.vibeminer.eglink.EgLinkTypes.Snapshot> snapshots, String product, String version, String locale) {
+        return snapshots.stream()
+                .filter(v -> v.indexedRecords() != null && v.problem() == null
+                        && v.build().product().equals(product)
+                        && compatibleNpcBuild(v.build().version(), version)
+                        && v.build().datasets().stream().anyMatch(d -> d.name().equals("creature_details." + locale)))
+                .max(java.util.Comparator.comparing(v -> v.build().version(), DataSourcesService::compareNpcBuild))
+                .orElse(null);
+    }
+
+    /** The NPC's observed displays in {@code snapshot}, or empty. Reads local data only. */
+    public java.util.Optional<com.vibeminer.eglink.EgLinkTypes.CreatureDisplays> npcDisplays(
+            com.vibeminer.eglink.EgLinkTypes.Snapshot snapshot, String locale, long npcId,
+            com.vibeminer.network.Cancellation token) {
+        if (egLink == null || snapshot == null) return java.util.Optional.empty();
+        return egLink.creatureDisplays(snapshot.id(), locale, npcId, token).join();
+    }
+
     /** Local prepared snapshots only, frozen for one NPC catalogue load. */
     public List<com.vibeminer.concepts.npcs.NpcCatalog.Input> npcInputs(BuildInfo build, String locale) {
         var result = new java.util.ArrayList<com.vibeminer.concepts.npcs.NpcCatalog.Input>();

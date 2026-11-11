@@ -135,6 +135,14 @@ abstract class ProviderBrowser<T> extends BorderPane implements AutoCloseable {
 
     final void attachLocationMap(LocationMapView view) { locationMap = view; }
 
+    /** A node shown under a selected record's heading, above its facts and map; may be null. */
+    private javafx.scene.Node preview;
+
+    final void attachPreview(javafx.scene.Node node) { preview = node; }
+
+    /** Called on the FX thread when the inspected record changes (null when none is). */
+    void selected(T row) {}
+
     void ensureLoaded() {
         if (closed || job == null || !(job.work() instanceof NativePreparationWork work))
             return;
@@ -312,6 +320,7 @@ abstract class ProviderBrowser<T> extends BorderPane implements AutoCloseable {
     private void show(T row) {
         details.getChildren().clear();
         if (locationMap != null) locationMap.select(row == null ? null : id(row));
+        selected(row);
         var facts =
                 row == null
                         ? List.of(new Fact("Select a record to inspect its sources.", "muted"))
@@ -322,7 +331,8 @@ abstract class ProviderBrowser<T> extends BorderPane implements AutoCloseable {
             label.setWrapText(true);
             label.getStyleClass().add(fact.style());
             details.getChildren().add(label);
-            if (++factIndex == 2 && row != null && locationMap != null) details.getChildren().add(locationMap);
+            if (++factIndex == 2 && row != null && preview != null) details.getChildren().add(preview);
+            if (factIndex == 2 && row != null && locationMap != null) details.getChildren().add(locationMap);
         }
     }
 

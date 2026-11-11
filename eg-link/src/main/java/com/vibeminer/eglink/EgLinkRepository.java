@@ -597,6 +597,96 @@ public final class EgLinkRepository implements AutoCloseable {
                 });
     }
 
+    /** The most displays one creature record may list. */
+    static final int MAX_CREATURE_DISPLAYS = 64;
+
+    /**
+     * The displays the snapshot's {@code creature_details.<locale>} records for one creature, or
+     * empty when the snapshot has no such dataset or record. A record whose displays are malformed
+     * is an error, never a partial list.
+     */
+    public CompletableFuture<Optional<EgLinkTypes.CreatureDisplays>> creatureDisplays(
+            String source, String locale, long creatureId, Cancellation token) {
+        if (creatureId < 0 || creatureId > 0xffffffffL) {
+            throw new IllegalArgumentException("Creature ID is uint32");
+        }
+        String dataset = "creature_details." + bounded(locale, 8);
+        return call(
+                token,
+                () -> {
+                    var manifest = requirePrepared(source);
+                    Build build = build(manifest);
+                    var recorded =
+                            build.datasets().stream()
+                                    .filter(value -> value.name().equals(dataset))
+                                    .findFirst();
+                    if (recorded.isEmpty()) {
+                        return Optional.<EgLinkTypes.CreatureDisplays>empty();
+                    }
+                    Optional<Record> record;
+                    try (var connection =
+                            checkedDatabase(database(source), source, hashUnchecked(manifest))) {
+                        record =
+                                connection.run(
+                                        com.vibeminer.store.Cancellation.NONE,
+                                        false,
+                                        sql ->
+                                                sql
+                                                        .query(
+                                                                "SELECT dataset,collection,id,name,json FROM eg_records WHERE dataset=? AND collection='creatures' AND id=?",
+                                                                dataset,
+                                                                Long.toString(creatureId))
+                                                        .stream()
+                                                        .map(row -> record(source, row))
+                                                        .findFirst());
+                    }
+                    if (record.isEmpty()) {
+                        return Optional.<EgLinkTypes.CreatureDisplays>empty();
+                    }
+                    return Optional.of(
+                            new EgLinkTypes.CreatureDisplays(
+                                    source,
+                                    build.product(),
+                                    build.version(),
+                                    recorded.get().lastCollectedOn(),
+                                    creatureId,
+                                    parseDisplays(record.get().json())));
+                });
+    }
+
+    /** The {@code displays} of one {@code creature_details} creature record, validated. */
+    static List<EgLinkTypes.CreatureDisplay> parseDisplays(String json) throws IOException {
+        Object parsed = EgJson.parse(json.getBytes(StandardCharsets.UTF_8), 1 << 20);
+        if (!(parsed instanceof Map<?, ?> creature)) {
+            throw new IOException("Creature record is not an object");
+        }
+        Object listed = creature.get("displays");
+        if (listed == null) {
+            return List.of();
+        }
+        if (!(listed instanceof List<?> displays) || displays.size() > MAX_CREATURE_DISPLAYS) {
+            throw new IOException("Creature displays are not a bounded list");
+        }
+        var result = new ArrayList<EgLinkTypes.CreatureDisplay>();
+        for (Object value : displays) {
+            if (!(value instanceof Map<?, ?> display)
+                    || !(display.get("displayId") instanceof Number id)
+                    || !(display.get("probability") instanceof Number probability)) {
+                throw new IOException("Creature display lacks its ID or probability");
+            }
+            double scale =
+                    display.get("scale") instanceof Number recorded ? recorded.doubleValue() : 1;
+            try {
+                result.add(
+                        new EgLinkTypes.CreatureDisplay(
+                                EgJson.number(id), probability.doubleValue(), scale));
+            } catch (IllegalArgumentException invalid) {
+                throw new IOException(invalid.getMessage(), invalid);
+            }
+        }
+        return List.copyOf(result);
+    }
+
     public CompletableFuture<Page> search(
             String source,
             String dataset,
