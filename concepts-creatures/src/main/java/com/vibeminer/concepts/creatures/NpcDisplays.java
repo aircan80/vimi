@@ -13,10 +13,10 @@ import java.util.Objects;
  * The display an NPC page shows for one NPC: the client's {@code Creature} record first, then an
  * outside source's observed displays (EG Link) when the record is absent or declares none.
  *
- * <p>Every candidate display is listed with its probability. The one shown is the highest
- * probability, ties broken by the lowest display ID, so the same data always shows the same
- * display. This is a presentation choice for one preview: the World keeps {@link
- * CreatureModelPolicy} (a single declared display only). Pure; performs no I/O.
+ * <p>Every candidate display is listed with its probability (weights of a display listed several
+ * times add up). The one shown is the highest probability, ties broken by the lowest display ID, so
+ * the same data always shows the same display. This is a presentation choice for one preview: the
+ * World keeps {@link CreatureModelPolicy} (a single declared display only). Pure; performs no I/O.
  */
 public final class NpcDisplays {
     /** The rule identity shown with every resolution. */
@@ -95,7 +95,7 @@ public final class NpcDisplays {
                                             ? slot.probability()
                                             : 0,
                                     null),
-                            NpcDisplays::higher);
+                            NpcDisplays::sum);
                 }
             }
             if (!declared.isEmpty()) {
@@ -107,7 +107,7 @@ public final class NpcDisplays {
         if (external != null && !external.candidates().isEmpty()) {
             var listed = new LinkedHashMap<Long, Candidate>();
             for (var candidate : external.candidates()) {
-                listed.merge(candidate.displayId(), candidate, NpcDisplays::higher);
+                listed.merge(candidate.displayId(), candidate, NpcDisplays::sum);
             }
             return chosen(
                     Source.EXTERNAL,
@@ -143,8 +143,12 @@ public final class NpcDisplays {
         return null;
     }
 
-    private static Candidate higher(Candidate left, Candidate right) {
-        return right.probability() > left.probability() ? right : left;
+    /** One display listed twice: its weights add up, as the client's spawn choice would. */
+    private static Candidate sum(Candidate left, Candidate right) {
+        return new Candidate(
+                left.displayId(),
+                left.probability() + right.probability(),
+                left.scale() != null ? left.scale() : right.scale());
     }
 
     private static Resolution chosen(

@@ -126,7 +126,8 @@ final class NpcsView extends ProviderBrowser<NpcCatalog.Npc> {
                     ? "Character appearance with the NPC's recorded choices and clothing."
                     : "Creature model · display " + outcome.resolution().shown().displayId());
         } else {
-            model.setMesh(outcome.appearance().mesh(), outcome.visibleParts(), null);
+            // All recorded surfaces, untextured; an idle still plays on this appearance.
+            model.setAppearance(outcome.appearance(), outcome.visibleParts(), false);
             previewStatus.setText("Untextured model · " + outcome.reason());
         }
         Long idleDisplay = outcome.idleDisplay();

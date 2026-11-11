@@ -252,20 +252,29 @@ public final class DataSourcesService {
      */
     public com.vibeminer.eglink.EgLinkTypes.Snapshot npcDisplaySnapshot(BuildInfo build, String locale) {
         if (egLink == null || build == null || !policy(Id.EG_LINK).enabled()) return null;
-        return egLinkState.snapshots().stream()
+        return npcDisplaySnapshot(egLinkState.snapshots(), build.product(), build.version(), locale);
+    }
+
+    /**
+     * The prepared snapshot of {@code product} with {@code creature_details.<locale>} whose build is
+     * the newest of the same x.y.z not after {@code version}, or null. Pure.
+     */
+    static com.vibeminer.eglink.EgLinkTypes.Snapshot npcDisplaySnapshot(
+            List<com.vibeminer.eglink.EgLinkTypes.Snapshot> snapshots, String product, String version, String locale) {
+        return snapshots.stream()
                 .filter(v -> v.indexedRecords() != null && v.problem() == null
-                        && v.build().product().equals(build.product())
-                        && compatibleNpcBuild(v.build().version(), build.version())
+                        && v.build().product().equals(product)
+                        && compatibleNpcBuild(v.build().version(), version)
                         && v.build().datasets().stream().anyMatch(d -> d.name().equals("creature_details." + locale)))
                 .max(java.util.Comparator.comparing(v -> v.build().version(), DataSourcesService::compareNpcBuild))
                 .orElse(null);
     }
 
-    /** The NPC's observed displays from {@link #npcDisplaySnapshot}, or empty. Reads local data only. */
+    /** The NPC's observed displays in {@code snapshot}, or empty. Reads local data only. */
     public java.util.Optional<com.vibeminer.eglink.EgLinkTypes.CreatureDisplays> npcDisplays(
-            BuildInfo build, String locale, long npcId, com.vibeminer.network.Cancellation token) {
-        var snapshot = npcDisplaySnapshot(build, locale);
-        if (snapshot == null) return java.util.Optional.empty();
+            com.vibeminer.eglink.EgLinkTypes.Snapshot snapshot, String locale, long npcId,
+            com.vibeminer.network.Cancellation token) {
+        if (egLink == null || snapshot == null) return java.util.Optional.empty();
         return egLink.creatureDisplays(snapshot.id(), locale, npcId, token).join();
     }
 

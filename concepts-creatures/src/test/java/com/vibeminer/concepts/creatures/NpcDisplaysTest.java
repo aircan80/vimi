@@ -43,13 +43,19 @@ class NpcDisplaysTest {
     }
 
     @Test
-    void repeatedClientSlotsOfOneDisplayAreOneCandidateAtTheirHighestProbability() {
+    void repeatedDisplaysAreOneCandidateWhoseWeightsAddUp() {
         var resolution =
                 NpcDisplays.resolve(
                         found(new int[] {9, 9}, new float[] {0.25f, 0.75f}), "client", null);
         assertEquals(1, resolution.candidates().size());
-        assertEquals(0.75, resolution.shown().probability(), 1e-6);
+        assertEquals(1.0, resolution.shown().probability(), 1e-6);
         assertEquals("Display 9 (client Creature)", resolution.detail());
+        // A at 0.3 twice outweighs B at 0.4.
+        var summed =
+                NpcDisplays.resolve(
+                        found(new int[] {5, 4, 5}, new float[] {0.3f, 0.4f, 0.3f}), "client", null);
+        assertEquals(5, summed.shown().displayId());
+        assertEquals(0.6, summed.shown().probability(), 1e-6);
     }
 
     @Test

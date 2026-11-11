@@ -28,6 +28,9 @@ public final class NpcPreviewsTest {
         aRefusedHumanoidAppearanceShowsTheUntexturedModelWithItsReason();
         aHumanoidAppearanceIsShownTextured();
         withNoDisplayAnywhereNothingIsDrawnAndTheReasonIsShown();
+        aClientRecordNeverWaitsOnTheObservedDisplays();
+        aFailedObservedLookupIsAFactNotABlank();
+        theDisplaySnapshotIsTheNewestCompatibleOneWithCreatureDetails();
         System.out.println("NPC previews: resolution, creature, humanoid and refusal outcomes passed");
     }
 
@@ -153,12 +156,113 @@ public final class NpcPreviewsTest {
                 outcome.reason());
     }
 
+    static void aClientRecordNeverWaitsOnTheObservedDisplays() throws Exception {
+        var previews =
+                new NpcPreviews(
+                        () -> creatures(declared(31)),
+                        () -> displays(0L),
+                        () -> null,
+                        (npcId, token) -> {
+                            throw new java.io.IOException("malformed EG record");
+                        },
+                        "1.60.1.70862");
+        var outcome = previews.resolve(7, Cancellation.NONE);
+        assertEquals(NpcDisplays.Source.CLIENT, outcome.resolution().source());
+        assertEquals(31L, outcome.resolution().shown().displayId());
+        assertTrue(outcome.appearance() != null);
+        assertFalse(outcome.facts().stream().anyMatch(f -> f.contains("malformed")));
+    }
+
+    static void aFailedObservedLookupIsAFactNotABlank() throws Exception {
+        var previews =
+                new NpcPreviews(
+                        NpcPreviewsTest::absent,
+                        () -> displays(0L),
+                        () -> null,
+                        (npcId, token) -> {
+                            throw new java.io.IOException("malformed EG record");
+                        },
+                        "1.60.1.70862");
+        var outcome = previews.resolve(7, Cancellation.NONE);
+        assertEquals(NpcDisplays.Source.NONE, outcome.resolution().source());
+        assertTrue(
+                outcome.facts().contains("Observed displays could not be read: malformed EG record"),
+                outcome.facts().toString());
+    }
+
+    static void theDisplaySnapshotIsTheNewestCompatibleOneWithCreatureDetails() {
+        var snapshots =
+                List.of(
+                        snapshot("a", "wowf", "1.60.1.70790", true),
+                        snapshot("b", "wowf", "1.60.1.70840", true),
+                        snapshot("c", "wowf", "1.60.1.70888", true), // newer than the build
+                        snapshot("d", "wowf", "1.60.1.70862", false), // no creature_details
+                        snapshot("e", "wow_classic_beta", "1.60.1.70850", true), // other product
+                        snapshot("f", "wowf", "1.61.0.70850", true)); // other x.y.z
+        assertEquals(
+                "b",
+                DataSourcesService.npcDisplaySnapshot(snapshots, "wowf", "1.60.1.70862", "enUS")
+                        .id());
+        assertNull(
+                DataSourcesService.npcDisplaySnapshot(snapshots, "wowf", "1.60.1.70700", "enUS"));
+        assertNull(
+                DataSourcesService.npcDisplaySnapshot(snapshots, "wowf", "1.60.1.70862", "deDE"));
+    }
+
+    private static com.vibeminer.eglink.EgLinkTypes.Snapshot snapshot(
+            String id, String product, String version, boolean details) {
+        var datasets =
+                details
+                        ? List.of(
+                                new com.vibeminer.eglink.EgLinkTypes.Dataset(
+                                        "creature_details.enUS", 1, 1, "2026-11-02"))
+                        : List.of(
+                                new com.vibeminer.eglink.EgLinkTypes.Dataset(
+                                        "hotfixes.enUS", 1, 1, "2026-11-02"));
+        return new com.vibeminer.eglink.EgLinkTypes.Snapshot(
+                id,
+                new com.vibeminer.eglink.EgLinkTypes.Build(
+                        "0".repeat(40), product, version, datasets),
+                java.time.Instant.EPOCH,
+                1,
+                1L,
+                1L,
+                null);
+    }
+
+    private static CreatureTypes.CreatureResult declared(int displayId) {
+        var summary =
+                new CreatureTypes.CreatureSummary(
+                        7,
+                        false,
+                        null,
+                        new CreatureTypes.CreatureName(
+                                CreatureTypes.CreatureNameState.VALID, "Test", null),
+                        List.of(),
+                        List.of(
+                                new CreatureTypes.CreatureDisplaySlot(
+                                        0, displayId, 1, CreatureTypes.CreatureSlotState.DECLARED)));
+        return new CreatureTypes.CreatureResult(
+                CreatureTypes.CreatureResultState.FOUND,
+                new CreatureTypes.CreatureDetail(summary, null, null, List.of()),
+                null,
+                null,
+                null,
+                null);
+    }
+
     private static NpcPreviews previews(long extended, BuildRaces races) {
         return new NpcPreviews(
                 NpcPreviewsTest::absent, () -> displays(extended), () -> races, EG, "1.60.1.70862");
     }
 
     private static BuildCreatures absent() {
+        return creatures(
+                new CreatureTypes.CreatureResult(
+                        CreatureTypes.CreatureResultState.ABSENT, null, null, null, null, null));
+    }
+
+    private static BuildCreatures creatures(CreatureTypes.CreatureResult answer) {
         return new BuildCreatures() {
             @Override
             public com.vibeminer.builds.BuildTypes.BuildRef build() {
@@ -187,14 +291,7 @@ public final class NpcPreviewsTest {
             @Override
             public CompletableFuture<CreatureTypes.CreatureResult> getData(
                     long id, TableTypes.Priority priority, Cancellation token) {
-                return CompletableFuture.completedFuture(
-                        new CreatureTypes.CreatureResult(
-                                CreatureTypes.CreatureResultState.ABSENT,
-                                null,
-                                null,
-                                null,
-                                null,
-                                null));
+                return CompletableFuture.completedFuture(answer);
             }
 
             @Override

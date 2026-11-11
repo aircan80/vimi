@@ -94,12 +94,25 @@ final class NpcPreviews {
                         ? null
                         : handle.getData(npcId, TableTypes.Priority.INTERACTIVE, token).join();
         token.check();
-        var external = observed.displays(npcId, token).orElse(null);
-        token.check();
-        var resolution =
-                NpcDisplays.resolve(client, "client Creature record, build " + build, external);
+        String clientProvenance = "client Creature record, build " + build;
         var facts = new ArrayList<String>();
-        facts.add(resolution.detail());
+        // The client first: the outside source is read only when the client supplies no display,
+        // so its failure never hides an NPC the client describes.
+        var resolution = NpcDisplays.resolve(client, clientProvenance, null);
+        if (resolution.source() != NpcDisplays.Source.CLIENT) {
+            NpcDisplays.External external = null;
+            try {
+                external = observed.displays(npcId, token).orElse(null);
+            } catch (java.util.concurrent.CancellationException canceled) {
+                throw canceled;
+            } catch (Exception failure) {
+                token.check();
+                facts.add("Observed displays could not be read: " + rootMessage(failure));
+            }
+            token.check();
+            resolution = NpcDisplays.resolve(client, clientProvenance, external);
+        }
+        facts.add(0, resolution.detail());
         double total =
                 resolution.candidates().stream()
                         .mapToDouble(NpcDisplays.Candidate::probability)
@@ -136,6 +149,25 @@ final class NpcPreviews {
                     facts);
         }
         long displayId = resolution.shown().displayId();
+        if (handle != null) {
+            try {
+                var chain =
+                        handle.displayChain(displayId, TableTypes.Priority.INTERACTIVE, token)
+                                .join();
+                facts.add(
+                        "Display "
+                                + displayId
+                                + (chain.modelId() == null
+                                        ? ""
+                                        : " → CreatureModelData " + chain.modelId())
+                                + (chain.modelFileDataId() == null
+                                        ? " · " + chain.state()
+                                        : " → FileDataID " + chain.modelFileDataId()));
+            } catch (RuntimeException unavailable) {
+                token.check();
+                facts.add("The display's model chain could not be read: " + rootMessage(unavailable));
+            }
+        }
         var preview = models.preview(displayId, token).join();
         token.check();
         Long extended =
@@ -231,6 +263,7 @@ final class NpcPreviews {
      * group's first value ({@code x01}) and group 32, without groups 12, 17 and 35 (the races
      * page's reviewed default convention).
      */
+    // TODO: share RaceMedia's default-surface rule (and its group-32 fix in #694) once #694 merges.
     static Set<Integer> defaultCharacterParts(com.vibeminer.rendering.models.PreviewMesh mesh) {
         var visible = new java.util.HashSet<Integer>();
         for (var part : mesh.parts()) {
@@ -245,16 +278,23 @@ final class NpcPreviews {
         return visible;
     }
 
+    private static String rootMessage(Throwable failure) {
+        Throwable cause = failure;
+        while (cause.getCause() != null) cause = cause.getCause();
+        return cause.getMessage() == null ? cause.getClass().getSimpleName() : cause.getMessage();
+    }
+
     /** The EG Link lookup of the NPCs page: its display fallback snapshot, read locally. */
     @SuppressWarnings("try")
     static Observed egLink(DataSourcesService sources, BuildInfo build, String locale) {
         return (npcId, token) -> {
             if (sources == null) return Optional.empty();
+            // Chosen once: the provenance and the displays come from the same snapshot.
             var snapshot = sources.npcDisplaySnapshot(build, locale);
             if (snapshot == null) return Optional.empty();
             var network = new com.vibeminer.network.Cancellation();
             try (var registration = token.onCancel(network::cancel)) {
-                var recorded = sources.npcDisplays(build, locale, npcId, network);
+                var recorded = sources.npcDisplays(snapshot, locale, npcId, network);
                 if (recorded.isEmpty()) {
                     // The snapshot applies but records no such creature: said so, not hidden.
                     return Optional.of(
