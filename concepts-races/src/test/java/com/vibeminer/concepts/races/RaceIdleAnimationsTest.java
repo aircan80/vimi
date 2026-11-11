@@ -6,23 +6,16 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.vibeminer.access.Cancellation;
-import com.vibeminer.formats.AssetSource;
-import com.vibeminer.formats.models.BuildModelTypes.BoneFileRead;
 import com.vibeminer.formats.models.BuildModelTypes.IdleRead;
 import com.vibeminer.formats.models.BuildModelTypes.ReadState;
 import com.vibeminer.formats.models.BuildModelTypes.StandRead;
-import com.vibeminer.formats.models.M2BoneFile;
 import com.vibeminer.formats.models.M2IdleAnimation;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CancellationException;
 import org.junit.jupiter.api.Test;
 
-/** Bone files are authored in code; Stand reads are supplied as reader results. */
+/** Stand reads are supplied as reader results; no game data. */
 final class RaceIdleAnimationsTest {
     private static final StandRead STAND_IN_MODEL =
             new StandRead(
@@ -31,71 +24,21 @@ final class RaceIdleAnimationsTest {
                     null,
                     null);
 
-    private static M2BoneFile.Bones bones(int... ids) {
-        var b =
-                ByteBuffer.allocate(4 + 8 + ids.length * 2 + 8 + ids.length * 64)
-                        .order(ByteOrder.LITTLE_ENDIAN);
-        b.putInt(1).put("BIDA".getBytes(StandardCharsets.US_ASCII)).putInt(ids.length * 2);
-        for (int id : ids) {
-            b.putShort((short) id);
-        }
-        b.put("BOMT".getBytes(StandardCharsets.US_ASCII)).putInt(ids.length * 64);
-        for (int i = 0; i < ids.length * 16; i++) {
-            b.putFloat(i % 16 % 5 == 0 ? 1 : 0);
-        }
-        return M2BoneFile.read(AssetSource.bytes(b.array()), 64, Cancellation.NONE).join();
-    }
-
-    private static BoneFileRead valid(long id, int... bones) {
-        return new BoneFileRead(ReadState.READ, id, "k" + id, bones(bones), null, null);
-    }
+    private static final String BONE_FACT = "Bone files (BFID): 2 declared, none applied.";
 
     @Test
-    void boneFilesAreReadValidatedAndStillRefuseStand() {
-        var reads =
-                Map.of(
-                        11L,
-                        valid(11, 50, 52, 54),
-                        12L,
-                        valid(12, 50, 60),
-                        13L,
-                        new BoneFileRead(ReadState.NEEDS_NETWORK, 13, null, null, null, "absent"),
-                        14L,
-                        new BoneFileRead(
-                                ReadState.REJECTED,
-                                14,
-                                "k14",
-                                null,
-                                "MODEL_INVALID",
-                                "names bone 99"));
-        var asked = new ArrayList<Long>();
+    void boneFilesAreNotAReasonAndOnlyAddAFact() {
         var result =
                 RaceIdleAnimations.explain(
-                        0,
-                        true,
-                        List.of(11L, 0L, 12L, 13L, 14L),
-                        id -> {
-                            asked.add(id);
-                            return reads.get(id);
-                        },
-                        () -> STAND_IN_MODEL,
-                        Cancellation.NONE);
-        assertEquals(List.of(11L, 12L, 13L, 14L), asked);
-        assertEquals(1, result.reasons().size());
-        String reason = result.reasons().getFirst();
-        assertTrue(reason.startsWith("The model declares 4 external bone files (BFID): 2 read"));
-        assertTrue(reason.contains("(2–3 bone matrices each, 4 distinct bones)"));
-        assertTrue(reason.contains("1 refused (FileDataID 14: names bone 99)"));
-        assertTrue(reason.contains("1 not readable (NEEDS_NETWORK)"));
-        assertTrue(reason.contains("are not reviewed"));
+                        0, true, BONE_FACT, () -> STAND_IN_MODEL, Cancellation.NONE);
+        assertTrue(result.reasons().isEmpty());
         assertEquals(
                 List.of(
-                        "Bone files: 2 of 4 validated; they name bones 50–60.",
                         "Stand (plays sequence 0, 2667 ms) is stored in the model: 120 step/linear keys"
-                                + " on 12 bones."),
+                                + " on 12 bones.",
+                        BONE_FACT),
                 result.facts());
-        // An unreadable source is reassessed rather than cached.
-        assertFalse(result.complete());
+        assertTrue(result.complete());
     }
 
     @Test
@@ -109,19 +52,13 @@ final class RaceIdleAnimationsTest {
                         null);
         var result =
                 RaceIdleAnimations.explain(
-                        77,
-                        true,
-                        List.of(11L),
-                        id -> valid(id, 1),
-                        () -> refusedStand,
-                        Cancellation.NONE);
-        assertEquals(3, result.reasons().size());
+                        77, true, BONE_FACT, () -> refusedStand, Cancellation.NONE);
         assertEquals(
-                "The model names external skeleton FileDataID 77 (SKID), which is not read.",
-                result.reasons().get(0));
-        assertTrue(result.reasons().get(1).contains("1 read and validated (1 bone matrices"));
-        assertEquals(
-                "Stand: A Stand bone track uses curve interpolation 2.", result.reasons().get(2));
+                List.of(
+                        "The model names external skeleton FileDataID 77 (SKID), which is not read.",
+                        "Stand: A Stand bone track uses curve interpolation 2."),
+                result.reasons());
+        assertEquals(List.of(BONE_FACT), result.facts());
         assertTrue(result.complete());
     }
 
@@ -131,10 +68,7 @@ final class RaceIdleAnimationsTest {
                 RaceIdleAnimations.explain(
                         77,
                         false,
-                        List.of(),
-                        id -> {
-                            throw new AssertionError("no bone files are declared");
-                        },
+                        null,
                         () -> {
                             throw new AssertionError("Stand must not be read");
                         },
@@ -151,8 +85,7 @@ final class RaceIdleAnimationsTest {
     @Test
     void localStandHasNoBlockerSoItCanBeBound() {
         var result =
-                RaceIdleAnimations.explain(
-                        0, true, List.of(), id -> null, () -> STAND_IN_MODEL, Cancellation.NONE);
+                RaceIdleAnimations.explain(0, true, null, () -> STAND_IN_MODEL, Cancellation.NONE);
         assertTrue(result.reasons().isEmpty());
         assertEquals(
                 List.of(
@@ -164,8 +97,7 @@ final class RaceIdleAnimationsTest {
                 RaceIdleAnimations.explain(
                         0,
                         true,
-                        List.of(),
-                        id -> null,
+                        null,
                         () -> new StandRead(ReadState.NEEDS_NETWORK, null, null, "absent"),
                         Cancellation.NONE);
         assertEquals(
@@ -175,34 +107,48 @@ final class RaceIdleAnimationsTest {
     }
 
     @Test
-    void boneFileCountIsBoundedAndCancellationStops() {
-        var many = new ArrayList<Long>();
-        for (long id = 1; id <= RaceIdleAnimations.MAX_BONE_FILES + 1; id++) {
-            many.add(id);
-        }
-        var bounded =
-                RaceIdleAnimations.explain(
-                        0,
-                        true,
-                        many,
-                        id -> {
-                            throw new AssertionError("over-budget files are not opened");
-                        },
-                        () -> STAND_IN_MODEL,
-                        Cancellation.NONE);
-        assertTrue(bounded.reasons().getFirst().contains("at most 64 are assessed"));
+    void cancellationStopsTheAssessment() {
         var token = new Cancellation();
         token.cancel();
         assertThrows(
                 CancellationException.class,
-                () ->
-                        RaceIdleAnimations.explain(
-                                0,
-                                true,
-                                List.of(1L),
-                                id -> valid(id, 1),
-                                () -> STAND_IN_MODEL,
-                                token));
+                () -> RaceIdleAnimations.explain(0, true, null, () -> STAND_IN_MODEL, token));
+    }
+
+    @Test
+    void boneFileChoiceIsTheFirstRecordedChoiceOfTheFirstSelectingOption() {
+        // Option 10 'Face' has choices 20-22 (each with a bone file); option 11 has choice 30
+        // with one; option 12 has none.
+        Map<Long, Long> choiceOption =
+                Map.of(20L, 10L, 21L, 10L, 22L, 10L, 30L, 11L, 40L, 12L, 41L, 12L);
+        Map<Long, String> names = Map.of(10L, "Face", 11L, "Jaw");
+        var choice =
+                RaceIdleAnimations.boneFileChoice(
+                        choiceOption, names, Map.of(21L, 501L, 20L, 500L, 22L, 502L, 30L, 600L));
+        assertEquals(new RaceIdleAnimations.BoneFileChoice(10, "Face", 20, 500, 4), choice);
+        assertEquals(
+                "Bone files (BFID): 22 declared, none applied; Stand plays on the base rig, and the"
+                        + " face keeps the base rig's shape, as in the static preview. 4"
+                        + " customization choices select one; the first recorded 'Face' (option 10)"
+                        + " choice, 20, selects bone file 500, which is not applied.",
+                RaceIdleAnimations.boneFileFact(22, choice, null));
+        // The first recorded choice may select none.
+        var later = RaceIdleAnimations.boneFileChoice(choiceOption, Map.of(), Map.of(22L, 502L));
+        assertEquals(new RaceIdleAnimations.BoneFileChoice(10, null, 20, 0, 1), later);
+        assertTrue(
+                RaceIdleAnimations.boneFileFact(3, later, null)
+                        .endsWith(
+                                "1 customization choices select one; the first recorded option 10"
+                                        + " choice, 20, selects none."));
+        assertEquals(null, RaceIdleAnimations.boneFileChoice(choiceOption, names, Map.of()));
+        assertTrue(
+                RaceIdleAnimations.boneFileFact(14, null, null)
+                        .endsWith("No customization choice of this model selects one."));
+        assertTrue(
+                RaceIdleAnimations.boneFileFact(14, null, "which choice could not be read: x")
+                        .endsWith(
+                                "Bone files are customization choices; which choice could not be"
+                                        + " read: x"));
     }
 
     @Test
