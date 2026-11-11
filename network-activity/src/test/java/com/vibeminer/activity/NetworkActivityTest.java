@@ -45,7 +45,7 @@ final class NetworkActivityTest {
     void concurrentTerminalAndPositiveReadCountExactlyOnce() throws Exception {
         var meter = new NetworkActivity();
         for (int i = 0; i < 100; i++) {
-            var attempt = meter.begin(TransferObserver.Kind.DEFINITIONS);
+            var attempt = meter.begin(TransferObserver.Kind.LISTFILE);
             Thread read =
                     Thread.startVirtualThread(
                             () -> {

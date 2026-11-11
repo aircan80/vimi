@@ -165,9 +165,7 @@ final class TableCommitScenario implements AutoCloseable {
                                         Map.of(
                                                 "11223344",
                                                 new BundledDefinitions.Definition(
-                                                        "a".repeat(64), "fixture", definition))),
-                                null,
-                                null),
+                                                        "a".repeat(64), "fixture", definition)))),
                         tableStore,
                         new TablesOptions(
                                         (build, token) ->

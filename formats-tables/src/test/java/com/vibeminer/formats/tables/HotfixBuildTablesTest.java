@@ -133,9 +133,7 @@ class HotfixBuildTablesTest {
                                 Map.of(
                                         hex,
                                         new BundledDefinitions.Definition(
-                                                "a".repeat(64), "authored", document))),
-                        null,
-                        null);
+                                                "a".repeat(64), "authored", document))));
         var index =
                 HotfixCacheReader.inspect(
                                 source, 4, new HotfixCacheReader.Limits(), Cancellation.NONE)
@@ -212,8 +210,7 @@ class HotfixBuildTablesTest {
                                             : "int ID\nint Value",
                                     "$id,noninline$ID<u32>\nValue<u32>")));
         }
-        var definitions =
-                new TableDefinitions(BundledDefinitions.of(tables, documents), null, null);
+        var definitions = new TableDefinitions(BundledDefinitions.of(tables, documents));
         var index =
                 HotfixCacheReader.inspect(
                                 source, 4, new HotfixCacheReader.Limits(), Cancellation.NONE)
@@ -829,8 +826,7 @@ class HotfixBuildTablesTest {
         var service =
                 new TablesService(
                         files,
-                        new TableDefinitions(
-                                BundledDefinitions.of(definitionList, definitions), null, null),
+                        new TableDefinitions(BundledDefinitions.of(definitionList, definitions)),
                         new GeneratedTables(new MemoryGeneratedStore()),
                         options);
         try (var tables =

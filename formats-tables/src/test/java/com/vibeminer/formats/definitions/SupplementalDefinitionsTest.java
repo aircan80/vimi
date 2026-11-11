@@ -25,7 +25,7 @@ class SupplementalDefinitionsTest {
     @Test
     void exactSupplementIsOptInAndRetainsIndependentProvenance() {
         var bundled = BundledDefinitions.open(TOKEN).join();
-        var original = new TableDefinitions(bundled, null, null);
+        var original = new TableDefinitions(bundled);
         assertEquals(
                 TableDefinitions.State.FETCHING_OFF,
                 resolve(original, "1.60.1.70755", "4FDF0951").state());
@@ -71,7 +71,7 @@ class SupplementalDefinitionsTest {
     @Test
     void wrongBuildLayoutAndManifestBindingNeverSelectTheSupplement() {
         var bundled = BundledDefinitions.open(TOKEN).join();
-        var enabled = new TableDefinitions(bundled, null, null).withSupplementalDefinitions();
+        var enabled = new TableDefinitions(bundled).withSupplementalDefinitions();
         // Builds the pinned document or the build list does not name stay without a definition.
         for (String unlisted : List.of("1.60.1.70754", "1.60.1.70800", "1.60.2.70790")) {
             assertEquals(
@@ -91,8 +91,7 @@ class SupplementalDefinitionsTest {
         assertEquals(
                 TableDefinitions.State.FETCHING_OFF,
                 resolve(
-                                new TableDefinitions(wrong, null, null)
-                                        .withSupplementalDefinitions(),
+                                new TableDefinitions(wrong).withSupplementalDefinitions(),
                                 "1.60.1.70755",
                                 "4FDF0951")
                         .state());

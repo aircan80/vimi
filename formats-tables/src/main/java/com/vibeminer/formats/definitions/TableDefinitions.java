@@ -7,7 +7,11 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Function;
 
-/** Exact bundled build first, exact fetched build next, then same-major layout fallback. */
+/**
+ * Exact bundled build first, then a pinned supplemental profile, then same-major layout fallback.
+ * Definitions are never fetched: a table no bundled definition covers resolves as {@link
+ * State#FETCHING_OFF}, its historical name, with problem reading "off".
+ */
 public final class TableDefinitions {
     public enum Source {
         BUNDLED,
@@ -37,8 +41,7 @@ public final class TableDefinitions {
             String sha256,
             String sourceUrl,
             String revision,
-            DbdDocument document,
-            FetchedDefinitions.Info fetched) {}
+            DbdDocument document) {}
 
     public record Resolution(
             State state,
@@ -53,11 +56,6 @@ public final class TableDefinitions {
             String definitionFetch,
             boolean asked,
             Boolean bundledFallback) {}
-
-    @FunctionalInterface
-    public interface FetchSwitch {
-        CompletableFuture<Boolean> fetchEnabled(Cancellation token);
-    }
 
     public static final class FetchBudget {
         private boolean asked;
@@ -95,51 +93,24 @@ public final class TableDefinitions {
     }
 
     private final BundledDefinitions bundled;
-    private final FetchedDefinitions fetched;
-    private final FetchSwitch fetchSwitch;
     private final boolean supplemental;
 
-    public TableDefinitions(
-            BundledDefinitions bundled, FetchedDefinitions fetched, FetchSwitch fetchSwitch) {
-        this(bundled, fetched, fetchSwitch, false);
+    public TableDefinitions(BundledDefinitions bundled) {
+        this(bundled, false);
     }
 
-    private TableDefinitions(
-            BundledDefinitions bundled,
-            FetchedDefinitions fetched,
-            FetchSwitch fetchSwitch,
-            boolean supplemental) {
+    private TableDefinitions(BundledDefinitions bundled, boolean supplemental) {
         this.supplemental = supplemental;
         this.bundled = java.util.Objects.requireNonNull(bundled);
-        this.fetched = fetched;
-        this.fetchSwitch = fetchSwitch;
     }
 
     /** Enables only separately pinned exact supplemental profiles; performs no network fetch. */
     public TableDefinitions withSupplementalDefinitions() {
-        return new TableDefinitions(bundled, fetched, fetchSwitch, true);
+        return new TableDefinitions(bundled, true);
     }
 
     public List<DefinitionTable> tables() {
         return bundled.tables();
-    }
-
-    public CompletableFuture<Boolean> fetchEnabled(Cancellation token) {
-        if (fetched == null || fetchSwitch == null) {
-            return CompletableFuture.completedFuture(false);
-        }
-        try {
-            return fetchSwitch
-                    .fetchEnabled(token)
-                    .handle(
-                            (value, error) -> {
-                                token.check();
-                                return error == null && Boolean.TRUE.equals(value);
-                            });
-        } catch (RuntimeException e) {
-            token.check();
-            return CompletableFuture.completedFuture(false);
-        }
     }
 
     public CompletableFuture<Resolution> resolve(
@@ -164,8 +135,8 @@ public final class TableDefinitions {
             WowLocale locale,
             Lookup lookup,
             Cancellation token) {
-        boolean enabled = fetchEnabled(token).join();
-        String reading = enabled ? "on" : "off";
+        token.check();
+        String reading = "off";
         var table = tables().stream().filter(t -> t.tableId().equals(id)).findFirst().orElse(null);
         if (table == null) {
             return failure(
@@ -192,86 +163,34 @@ public final class TableDefinitions {
                         pinned.definition().sha256(),
                         pinned.definition().sourceUrl(),
                         BundledDefinitions.REVISION,
-                        pinned.definition().document(),
-                        null);
-        Definition chosen = null, other = null;
-        DefinitionException fetchFailure = null;
-        boolean asked = false;
+                        pinned.definition().document());
+        Definition chosen = null;
         var supplement =
                 supplemental ? SupplementalDefinitions.lookup(table, build, layout, token) : null;
         if (exact(own.document(), build, layout, token)) {
             chosen = own;
         } else if (supplement != null) {
             chosen = supplement;
-        } else {
-            if (enabled && fetched != null && table.name() != null) {
-                FetchedDefinitions.Definition found;
-                if (lookup.budget() == null || lookup.progress() == null) {
-                    found = fetched.cached(id, table.name(), token).join();
-                } else if (lookup.budget().asked()) {
-                    found = fetched.cached(id, table.name(), token).join();
-                    fetchFailure = lookup.budget().failure();
-                } else {
-                    var outcome =
-                            fetched.ensure(
-                                            id,
-                                            table.name(),
-                                            d -> exact(d, build, layout, token),
-                                            lookup.progress(),
-                                            token,
-                                            lookup.deliberate())
-                                    .join();
-                    found = outcome.definition();
-                    fetchFailure = outcome.failure();
-                    asked = outcome.asked();
-                    if (asked) {
-                        lookup.budget().record(fetchFailure);
-                    }
-                }
-                if (found != null) {
-                    other =
-                            new Definition(
-                                    Source.FETCHED,
-                                    found.sha256(),
-                                    found.sourceUrl(),
-                                    found.revision(),
-                                    found.document(),
-                                    found.info());
-                }
-            }
-            if (other != null && exact(other.document(), build, layout, token)) {
-                chosen = other;
-            } else if (byLayout(own.document(), build, layout, token)) {
-                chosen = own;
-            } else if (other != null && byLayout(other.document(), build, layout, token)) {
-                chosen = other;
-            }
+        } else if (byLayout(own.document(), build, layout, token)) {
+            chosen = own;
         }
         if (chosen == null) {
-            State state =
-                    !enabled
-                            ? State.FETCHING_OFF
-                            : fetchFailure != null ? State.FETCH_FAILED : State.NO_MATCH;
-            String code =
-                    fetchFailure != null
-                            ? fetchFailure.code()
-                            : layout == null ? "SCHEMA_BUILD_NOT_LISTED" : "DB2_SCHEMA_MISSING";
             return new Resolution(
-                    state,
+                    State.FETCHING_OFF,
                     table,
                     null,
                     null,
-                    other,
+                    null,
                     null,
                     null,
                     new DefinitionException(
-                            code,
+                            layout == null ? "SCHEMA_BUILD_NOT_LISTED" : "DB2_SCHEMA_MISSING",
                             "No definition covers this build/layout",
-                            fetchFailure != null && fetchFailure.retryable(),
+                            false,
                             new DefinitionException.Problem(id, reading)),
-                    fetchFailure,
+                    null,
                     reading,
-                    asked,
+                    false,
                     null);
         }
         boolean listed = chosen.document().listsBuild(build, token);
@@ -285,34 +204,22 @@ public final class TableDefinitions {
                         : selection.match().equals("layout")
                                 ? SchemaMatch.LAYOUT
                                 : SchemaMatch.BUILD;
-        FetchedBecause because =
-                chosen.source() != Source.FETCHED
-                        ? null
-                        : own.document().listsBuild(build, token)
-                                ? FetchedBecause.LAYOUT_NOT_BUNDLED
-                                : match == SchemaMatch.LAYOUT
-                                        ? FetchedBecause.LAYOUT_MATCH
-                                        : FetchedBecause.EXACT_BUILD;
-        Boolean fallback =
-                chosen.source() == Source.FETCHED && layout != null
-                        ? byLayout(own.document(), build, layout, token)
-                        : null;
         if (selection != null && selection.blocks().size() != 1) {
             return new Resolution(
                     State.AMBIGUOUS,
                     table,
                     chosen,
-                    because,
-                    other,
+                    null,
+                    null,
                     match,
                     null,
                     new DefinitionException(
                                     "DEFINITION_AMBIGUOUS", "Several definition blocks match")
                             .withDefinition(id, reading),
-                    fetchFailure,
+                    null,
                     reading,
-                    asked,
-                    fallback);
+                    false,
+                    null);
         }
         try {
             var schema =
@@ -323,84 +230,30 @@ public final class TableDefinitions {
                     State.RESOLVED,
                     table,
                     chosen,
-                    because,
-                    other,
+                    null,
+                    null,
                     match,
                     schema,
                     null,
-                    fetchFailure,
+                    null,
                     reading,
-                    asked,
-                    fallback);
+                    false,
+                    null);
         } catch (DefinitionException e) {
             return new Resolution(
                     State.BLOCK_UNSUPPORTED,
                     table,
                     chosen,
-                    because,
-                    other,
+                    null,
+                    null,
                     match,
                     null,
                     e.withDefinition(id, reading),
-                    fetchFailure,
+                    null,
                     reading,
-                    asked,
-                    fallback);
+                    false,
+                    null);
         }
-    }
-
-    public CompletableFuture<Boolean> refreshDue(
-            String id, String build, String layout, Cancellation token) {
-        check(build, layout);
-        var table =
-                tables().stream()
-                        .filter(t -> t.tableId().equals(id) && t.name() != null)
-                        .findFirst()
-                        .orElse(null);
-        var pinned = bundled.tryGet(id);
-        if (fetched == null
-                || table == null
-                || pinned.definition() == null
-                || exact(pinned.definition().document(), build, layout, token)) {
-            return CompletableFuture.completedFuture(false);
-        }
-        return fetchEnabled(token)
-                .thenCompose(
-                        enabled ->
-                                enabled
-                                        ? fetched.refreshDue(
-                                                id,
-                                                table.name(),
-                                                d -> exact(d, build, layout, token),
-                                                token)
-                                        : CompletableFuture.completedFuture(false));
-    }
-
-    public CompletableFuture<FetchedDefinitions.Check> lastCheck(
-            String id, String build, String layout, Cancellation token) {
-        check(build, layout);
-        var table =
-                tables().stream()
-                        .filter(t -> t.tableId().equals(id) && t.name() != null)
-                        .findFirst()
-                        .orElse(null);
-        var pinned = bundled.tryGet(id);
-        if (fetched == null
-                || table == null
-                || pinned.definition() == null
-                || exact(pinned.definition().document(), build, layout, token)) {
-            return CompletableFuture.completedFuture(null);
-        }
-        return fetchEnabled(token)
-                .thenCompose(
-                        enabled ->
-                                enabled
-                                        ? fetched.lastCheck(
-                                                id,
-                                                table.name(),
-                                                d -> exact(d, build, layout, token),
-                                                token)
-                                        : CompletableFuture.completedFuture(null));
     }
 
     public static boolean exact(DbdDocument d, String build, String layout, Cancellation token) {

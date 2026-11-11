@@ -120,9 +120,7 @@ public final class AuthoredNativeMap implements AutoCloseable {
                                 Map.of(
                                         "11223344",
                                         new BundledDefinitions.Definition(
-                                                "a".repeat(64), "authored", document))),
-                        null,
-                        null);
+                                                "a".repeat(64), "authored", document))));
         var options =
                 new TablesOptions(
                         (ignored, token) -> CompletableFuture.completedFuture("1.2.3.4"),

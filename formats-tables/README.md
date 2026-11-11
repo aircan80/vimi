@@ -2,8 +2,9 @@
 
 This module ports the table side of the pinned C# `VibeMiner.Formats` design at
 `4fd92d2a36add50c9b82e1c92bf72706e8d0df2b`. Assets live in the separate
-`formats-assets` module. Table reads consume layer 4 `Files`; fetched definitions
-consume layer 2 observations/history. Derived rows use the layer 1 generated-store
+`formats-assets` module. Table reads consume layer 4 `Files`; definitions are the
+bundled WoWDBDefs revision (plus pinned supplemental profiles) and are never fetched.
+Derived rows use the layer 1 generated-store
 contract and its portable record files, as in the reference.
 
 ## Components
@@ -20,10 +21,9 @@ contract and its portable record files, as in the reference.
   range. Holes remain named unavailable ranges. Closing clears cached plaintext.
 - `definitions`: strict bounded DBD parsing, exact build and same-major layout
   selection, typed schemas, all 15 locales, the complete pinned WoWDBDefs provider,
-  local/fetched precedence and structured failure provenance. Fetched definitions
-  remain in observation history, retain the first date/revision of unchanged
-  bytes and use 24-hour refresh/15-minute minimum-gap defaults. A table handle
-  serializes asking and shares one fetch budget across its operations.
+  supplemental and layout fallbacks, and structured failure provenance. A table that
+  no bundled definition covers resolves as `FETCHING_OFF` (the state's historical
+  name) with problem reading "off".
 - `generated`: resolved-field/options identities, key-fingerprint dependency
   graphs, shared independently canceled builds and encrypted encoding scopes.
   Rows stream through portable record files in bounded pages; raw text evidence

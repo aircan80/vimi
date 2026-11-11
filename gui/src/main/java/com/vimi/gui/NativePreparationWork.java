@@ -587,7 +587,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
     private TablesService tablesService(Cancellation token, TableRole role) {
         // Bundled definitions are verified as they load (manifest, source and stream hashes).
         var definitions =
-                new TableDefinitions(BundledDefinitions.open(token).join(), null, null)
+                new TableDefinitions(BundledDefinitions.open(token).join())
                         .withSupplementalDefinitions();
         var available = effectiveKeys();
         var status = new TactKeyStatus(available.fingerprints());

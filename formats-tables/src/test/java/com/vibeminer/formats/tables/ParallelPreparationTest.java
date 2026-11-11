@@ -119,7 +119,7 @@ final class ParallelPreparationTest {
                                         "a".repeat(64), "fixture", definition)));
         return new TablesService(
                 files,
-                new TableDefinitions(provider, null, null),
+                new TableDefinitions(provider),
                 new GeneratedTables(store),
                 new TablesOptions((build, token) -> CompletableFuture.completedFuture("1.2.3.4"))
                         .withLocalDefinitionsOnly());

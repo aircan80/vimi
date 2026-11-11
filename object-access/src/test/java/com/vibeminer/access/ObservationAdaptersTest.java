@@ -2,7 +2,6 @@ package com.vibeminer.access;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -10,7 +9,6 @@ import com.vibeminer.access.SourceTypes.ObservationKind;
 import com.vibeminer.access.SourceTypes.ObservationRequest;
 import com.vibeminer.network.CdnException;
 import com.vibeminer.network.ListfileClient;
-import com.vibeminer.network.NetworkTypes.DefinitionReply;
 import com.vibeminer.network.NetworkTypes.Failure;
 import com.vibeminer.network.NetworkTypes.ListfilePart;
 import com.vibeminer.network.NetworkTypes.ListfileReply;
@@ -79,61 +77,6 @@ final class ObservationAdaptersTest {
                                         Cancellation.NONE)
                                 .join());
         assertEquals(4, calls.get());
-    }
-
-    @Test
-    void definitionRequestsValidateBeforeCallingClientAndPreserveCommitUrl() {
-        AtomicInteger calls = new AtomicInteger();
-        ObservationSource source =
-                ObservationAdapters.definitions(
-                        (table, token) -> {
-                            calls.incrementAndGet();
-                            return CompletableFuture.completedFuture(
-                                    new DefinitionReply(
-                                            table,
-                                            REVISION,
-                                            SourceUrls.definition(REVISION, table),
-                                            NOW,
-                                            new byte[] {3}));
-                        });
-        ObservationRequest request =
-                new ObservationRequest(
-                        ObservationKind.DEFINITION, "12345678", "wowdbdefs", "Item", false);
-        var result = source.fetch(request, Cancellation.NONE).join();
-        assertEquals("12345678", result.product());
-        assertEquals(SourceUrls.definition(REVISION, "Item"), result.url());
-        assertArrayEquals(new byte[] {3}, result.bytes());
-        for (ObservationRequest invalid :
-                List.of(
-                        new ObservationRequest(ObservationKind.VERSIONS, "wow", "us"),
-                        new ObservationRequest(
-                                ObservationKind.DEFINITION, "invalid", "wowdbdefs", "Item", true),
-                        new ObservationRequest(
-                                ObservationKind.DEFINITION,
-                                "12345678",
-                                "wowdbdefs",
-                                "../Item",
-                                true))) {
-            assertThrows(
-                    CompletionException.class,
-                    () -> source.fetch(invalid, Cancellation.NONE).join());
-        }
-        assertEquals(1, calls.get());
-    }
-
-    @Test
-    void exactDefinitionRevisionHelperRejectsOtherIdentities() {
-        String url = ObservationAdapters.definitionUrl(REVISION, "Item");
-        assertEquals(REVISION, ObservationAdapters.definitionRevision(url, "Item"));
-        for (String invalid :
-                List.of(
-                        url + "?token=x",
-                        url + "#x",
-                        url.replace("raw.githubusercontent.com", "evil.test"),
-                        url.replace(REVISION, REVISION.toUpperCase(java.util.Locale.ROOT)),
-                        url.replace("Item.dbd", "Other.dbd"))) {
-            assertNull(ObservationAdapters.definitionRevision(invalid, "Item"));
-        }
     }
 
     private static ListfileClient client(ListfilePart part, AtomicInteger calls) {
@@ -269,24 +212,5 @@ final class ObservationAdaptersTest {
                 source.fetch(new ObservationRequest(ObservationKind.VERSIONS, "wow", "us"), token)
                         .handle((v, e) -> e instanceof java.util.concurrent.CancellationException)
                         .join());
-        IllegalStateException expected = new IllegalStateException("scripted");
-        ObservationSource broken =
-                ObservationAdapters.definitions(
-                        (table, t) -> CompletableFuture.failedFuture(expected));
-        assertTrue(
-                assertThrows(
-                                        CompletionException.class,
-                                        () ->
-                                                broken.fetch(
-                                                                new ObservationRequest(
-                                                                        ObservationKind.DEFINITION,
-                                                                        "12345678",
-                                                                        "wowdbdefs",
-                                                                        "Item",
-                                                                        true),
-                                                                Cancellation.NONE)
-                                                        .join())
-                                .getCause()
-                        == expected);
     }
 }

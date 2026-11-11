@@ -1,7 +1,6 @@
 package com.vibeminer.network;
 
 import com.vibeminer.network.NetworkTypes.Attempt;
-import com.vibeminer.network.NetworkTypes.DefinitionReply;
 import com.vibeminer.network.NetworkTypes.DocumentKind;
 import com.vibeminer.network.NetworkTypes.Failure;
 import com.vibeminer.network.NetworkTypes.ListfilePart;
@@ -24,15 +23,13 @@ import java.util.function.Supplier;
 /**
  * Consumer fake: in-memory replies and scripted host failures; no HTTP implementation is invoked.
  */
-public final class MemorySources
-        implements CdnClient, VersionClient, DefinitionClient, ListfileClient {
+public final class MemorySources implements CdnClient, VersionClient, ListfileClient {
     private record Address(ObjectKind kind, CdnKey key) {}
 
     private final Map<Address, byte[]> objects = new HashMap<>();
     private final Map<String, Failure> failures = new HashMap<>();
     private final Map<URI, byte[]> documents = new HashMap<>();
     private final Map<URI, Failure> sourceFailures = new HashMap<>();
-    private final Map<String, DefinitionReply> definitions = new HashMap<>();
     private final Map<String, byte[]> assets = new HashMap<>();
     private final NetworkOptions options;
     private final List<URI> requested = new ArrayList<>();
@@ -87,17 +84,6 @@ public final class MemorySources
     public synchronized void version(
             String product, String region, DocumentKind kind, byte[] bytes) {
         documents.put(SourceUrls.version(product, region, kind), bytes.clone());
-    }
-
-    public synchronized void definition(String table, String revision, byte[] bytes) {
-        definitions.put(
-                table,
-                new DefinitionReply(
-                        table,
-                        revision,
-                        SourceUrls.definition(revision, table),
-                        options.clock().instant(),
-                        bytes));
     }
 
     public synchronized void release(byte[] bytes) {
@@ -266,29 +252,6 @@ public final class MemorySources
                             options.clock().instant(),
                             bytes,
                             Duration.ZERO);
-                });
-    }
-
-    @Override
-    public synchronized CompletableFuture<DefinitionReply> fetch(String table, Cancellation token) {
-        URI uri = SourceUrls.commits(table);
-        return call(
-                () -> {
-                    token.check();
-                    requested.add(uri);
-                    sourceFailure(uri);
-                    DefinitionReply reply = definitions.get(table);
-                    if (reply == null) {
-                        throw missing(uri);
-                    }
-                    sourceFailure(reply.url());
-                    bound(
-                            reply.url(),
-                            reply.bytes(),
-                            SourceUrls.DOCUMENT_BYTES,
-                            Failure.TOO_LARGE,
-                            true);
-                    return reply;
                 });
     }
 

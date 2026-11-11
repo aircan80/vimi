@@ -1,8 +1,8 @@
 # Layer 1 network clients
 
 Port of the pinned C# `VibeMiner.Cdn` primitives. Public boundaries are `CdnClient`,
-`VersionClient`, `DefinitionClient` and `ListfileClient`; `NetworkClients` implements
-all four. Public values contain keys, bytes, URLs and timestamps. There is no
+`VersionClient` and `ListfileClient`; `NetworkClients` implements all three. Table
+definitions are bundled with the application and never fetched. Public values contain keys, bytes, URLs and timestamps. There is no
 object-store dependency, build interpretation, cache selection or observation
 persistence. Those decisions belong to layer 2.
 
@@ -85,19 +85,14 @@ not C#'s absolute pooled-connection lifetime.
   1 MiB maximum, no redirects/encoding/ranges; one total header-time budget covers
   the complete document. `VersionTable` separately parses strict UTF-8 pipe tables
   (64 columns, 10,000 rows, 16,384 characters per line) and extracts usable CDN routes.
-- WoWDBDefs: latest commit changing `definitions/{table}.dbd`, then raw bytes at
-  that exact lower-case 40-hex commit. Commit JSON is limited to 256 KiB and depth
-  64; definitions to 1 MiB. Both hops share a 30-second total budget. Empty history
-  is NotFound; malformed/oversized commit JSON is Protocol. At most two fetches run.
 - Wow-listfile: raw latest-release response (1 MiB) or 8 MiB parts of an asset no
   larger than 512 MiB. A part may follow exactly one HTTPS redirect to either
   approved GitHub asset host, on the default port with no user info. Every range
   and part size is checked. Provenance remains the canonical github.com asset URL.
   One fetch runs at a time; every hop/body shares a five-minute total budget.
 
-The clients do not parse `.dbd` definitions, release JSON or listfile CSV into
-application models. Raw empty definitions/releases are retained as the reference
-does; downstream parsers decide whether they are usable.
+The clients do not parse release JSON or listfile CSV into application models. Raw
+empty releases are retained as the reference does; downstream parsers decide whether they are usable.
 
 `RangePlanner` is pure: it deduplicates object declarations, selects archive
 locations in configured archive order, refuses inconsistent sizes and overlaps,

@@ -69,7 +69,7 @@ final class ItemsPipelineTest {
                 Tables service =
                         new TablesService(
                                 fixture.files,
-                                new TableDefinitions(provider, null, null),
+                                new TableDefinitions(provider),
                                 new GeneratedTables(generated),
                                 new TablesOptions(
                                         (build, token) ->

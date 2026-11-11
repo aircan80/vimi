@@ -122,7 +122,7 @@ final class TableFactoryCancellationTest {
         var service =
                 new TablesService(
                         files,
-                        new TableDefinitions(provider, null, null),
+                        new TableDefinitions(provider),
                         generated,
                         new TablesOptions(
                                 (ref, token) -> CompletableFuture.completedFuture("1.2.3.4")));

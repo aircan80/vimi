@@ -204,7 +204,7 @@ public final class AuthoredNativeLiquids implements AutoCloseable {
                         null,
                         files,
                         "1.60.1.70755",
-                        new TableDefinitions(bundled, null, null),
+                        new TableDefinitions(bundled),
                         generated,
                         options,
                         new BackgroundBuilds(),
