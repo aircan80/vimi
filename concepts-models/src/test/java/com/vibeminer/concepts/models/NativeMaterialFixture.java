@@ -110,6 +110,17 @@ final class NativeMaterialFixture {
         return out.array();
     }
 
+    /**
+     * Writes each vertex's bone indices as its skin palette slots, for tests that rebind vertices.
+     * The palette is the identity (bone lookup 0, 1, 2 from slot 0), so the skin names the same
+     * bones as the vertices, as client skins do.
+     */
+    void syncBoneProperties() {
+        for (int vertex = 0; vertex < 4; vertex++) {
+            skin.putInt(76 + vertex * 4, body.getInt(vertices + vertex * 48 + 16));
+        }
+    }
+
     Parsed parse() {
         byte[] bytes = modelBytes();
         var source = AssetSource.bytes(bytes);

@@ -241,7 +241,7 @@ final class RaceIdleAnimations {
                     animation =
                             DisplayIdleAnimations.admit(
                                     model,
-                                    skin.skin().vertexLookup(),
+                                    skin.skin(),
                                     tracks[0],
                                     surface.mesh(),
                                     surface.normals(),

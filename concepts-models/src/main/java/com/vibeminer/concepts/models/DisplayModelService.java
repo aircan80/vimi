@@ -321,16 +321,11 @@ public final class DisplayModelService implements BuildDisplayModels {
             var admitted =
                     world
                             ? DisplayIdleAnimations.admitWorld(
-                                    m,
-                                    geometry.vertexLookup(),
-                                    idle,
-                                    surface.mesh(),
-                                    surface.normals(),
-                                    token)
+                                    m, geometry, idle, surface.mesh(), surface.normals(), token)
                             : new DisplayIdleAnimations.WorldStand(
                                     DisplayIdleAnimations.admit(
                                             m,
-                                            geometry.vertexLookup(),
+                                            geometry,
                                             idle,
                                             surface.mesh(),
                                             surface.normals(),

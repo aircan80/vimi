@@ -37,7 +37,8 @@ public final class M2RestDrawSkinReader {
                                     model,
                                     skin.vertexLookup(),
                                     skin.triangleLookup(),
-                                    skin.sections()),
+                                    skin.sections(),
+                                    skin.boneProperties()),
                             skin.batches());
                 });
     }
