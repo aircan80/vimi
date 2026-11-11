@@ -915,6 +915,40 @@ final class RaceNpcAppearanceTest {
         return b.array();
     }
 
+    /**
+     * {@link #withWeight} whose sequence is moved to an external skeleton the model names (SKID
+     * 555): the model keeps no sequences, and the skeleton file is not in the build.
+     */
+    private static byte[] withSkeletonWeight() throws Exception {
+        byte[] model = withWeight(false);
+        var b = java.nio.ByteBuffer.wrap(model).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        b.putInt(40 + 0x1c, 0);
+        byte[] extended = java.util.Arrays.copyOf(model, model.length + 12);
+        var chunk = java.nio.ByteBuffer.wrap(extended).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        chunk.put(model.length, "SKID".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+        chunk.putInt(model.length + 4, 4).putInt(model.length + 8, 555);
+        return extended;
+    }
+
+    @Test
+    void aWeightWhoseSkeletonCannotBeReadIsNeitherProvenNorAssumed() throws Exception {
+        var variant = new RaceMediaTypes.Variant(3, 0, 1, 1, 1234);
+        var files =
+                new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
+                        .add(1234, "1".repeat(32), withSkeletonWeight())
+                        .add(900, "2".repeat(32), golden("authored-274.skin"))
+                        .add(100, "3".repeat(32), bake());
+        var preview =
+                render(
+                        files,
+                        variant,
+                        false,
+                        new com.vibeminer.generated.MemoryGeneratedStore(),
+                        RaceAppearance.appearanceKey("skeletal", false));
+        assertEquals(null, preview.appearance());
+        assertEquals(RaceAppearancePlan.UNREVIEWED_SURFACES, preview.message());
+    }
+
     private static com.vibeminer.formats.AssetFilesFixture weighted(boolean external)
             throws Exception {
         return new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")

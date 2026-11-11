@@ -137,14 +137,27 @@ public final class M2Appearance {
 
     public static CompletableFuture<ModelFacts> readModel(
             AssetSource source, Model model, Cancellation token) {
-        return AssetTasks.run(() -> readModelCore(source, model, token));
+        return readModel(source, model, null, token);
+    }
+
+    /**
+     * As {@link #readModel(AssetSource, Model, Cancellation)}, with the model's external skeleton
+     * (SKID) when it keeps no sequences of its own. The skeleton's sequence flags then say where
+     * each weight slice's keys are: in the model (0x20), read and proven, or in an animation file.
+     * Without a skeleton, or with one that keeps no sequences of its own, such a model's weight
+     * slices stay unproven.
+     */
+    public static CompletableFuture<ModelFacts> readModel(
+            AssetSource source, Model model, M2SkeletonFile.Skeleton skeleton, Cancellation token) {
+        return AssetTasks.run(() -> readModelCore(source, model, skeleton, token));
     }
 
     private record SliceKey(long count, long offset, boolean global) {}
 
     private record KeysKey(long count, long offset) {}
 
-    private static ModelFacts readModelCore(AssetSource source, Model model, Cancellation token) {
+    private static ModelFacts readModelCore(
+            AssetSource source, Model model, M2SkeletonFile.Skeleton skeleton, Cancellation token) {
         token.check();
         M2Input input = new M2Input(source, model.limits(), token);
         if (input.length != model.sourceBytes()) {
@@ -165,6 +178,14 @@ public final class M2Appearance {
                         model.baseBytes(),
                         header),
                 (row, i) -> flags.add(u32(row, 12)));
+        if (flags.isEmpty() && model.skeletonFileDataId() != 0 && skeleton != null) {
+            // The model's sequences are its skeleton's own (SKS1), in the same order, whether or
+            // not it names a parent skeleton. One without sequences of its own leaves the
+            // model's weight slices unproven.
+            for (var sequence : skeleton.sequences()) {
+                flags.add(sequence.flags() & 0xffffffffL);
+            }
+        }
         ArrayDeclaration weightTracks = declaration(model, "weights");
         long globals = declaration(model, "globalSequences").count();
         List<long[]> tracks = new ArrayList<>();
@@ -225,12 +246,6 @@ public final class M2Appearance {
                         continue;
                     }
                     if (global < 0 && i >= flags.size()) {
-                        if (flags.isEmpty() && model.skeletonFileDataId() != 0) {
-                            // The model keeps no sequences: they, and so this slice's keys as
-                            // far as the model shows, are in its skeleton file (SKID).
-                            external = true;
-                            continue;
-                        }
                         // A slice with no sequence: nothing says where its keys are stored.
                         result = false;
                         break;

@@ -76,11 +76,25 @@ final class M2AppearanceTest {
      * of one key. Only the first {@code flags.length} slices have a sequence, whose flags they are.
      */
     private static M2Appearance.ModelFacts weights(int[] flags, int[] keys) {
-        return weights(flags, keys, false);
+        return weights(flags, keys, false, null);
     }
 
-    /** With {@code skeleton}, the model also names a skeleton file (SKID). */
-    private static M2Appearance.ModelFacts weights(int[] flags, int[] keys, boolean skeleton) {
+    /** A skeleton file's facts: its parent and its sequences' flags. */
+    private static M2SkeletonFile.Skeleton skeleton(long parent, int... flags) {
+        var sequences = new java.util.ArrayList<M2SkeletonFile.Sequence>();
+        for (int i = 0; i < flags.length; i++) {
+            sequences.add(new M2SkeletonFile.Sequence(0, i, 1000, flags[i], 0));
+        }
+        return new M2SkeletonFile.Skeleton(
+                0, 0, List.of(), parent, List.of(), sequences, List.of(), List.of(), List.of());
+    }
+
+    /**
+     * With {@code skid}, the model also names a skeleton file (SKID), read as {@code skeleton}
+     * (null: not readable).
+     */
+    private static M2Appearance.ModelFacts weights(
+            int[] flags, int[] keys, boolean skid, M2SkeletonFile.Skeleton skeleton) {
         byte[] simple = parsed("simple").modelBytes;
         var in = java.nio.ByteBuffer.wrap(simple).order(java.nio.ByteOrder.LITTLE_ENDIAN);
         int md = 8, size = in.getInt(4), end = md + size;
@@ -105,7 +119,7 @@ final class M2AppearanceTest {
             b.putInt(md + slices + i * 8, 1).putInt(md + slices + i * 8 + 4, keyAt + i * 2);
             b.putShort(md + keyAt + i * 2, (short) keys[i]);
         }
-        if (skeleton) {
+        if (skid) {
             int length = model.length;
             model = java.util.Arrays.copyOf(model, length + 12);
             var chunk = java.nio.ByteBuffer.wrap(model).order(java.nio.ByteOrder.LITTLE_ENDIAN);
@@ -113,7 +127,8 @@ final class M2AppearanceTest {
             chunk.putInt(length + 4, 4).putInt(length + 8, 123456);
         }
         var parsedModel = M2ModelReader.read(AssetSource.bytes(model)).join();
-        return M2Appearance.readModel(AssetSource.bytes(model), parsedModel, Cancellation.NONE)
+        return M2Appearance.readModel(
+                        AssetSource.bytes(model), parsedModel, skeleton, Cancellation.NONE)
                 .join();
     }
 
@@ -143,12 +158,42 @@ final class M2AppearanceTest {
         assertEquals(List.of(false), none.externalWeights());
         // Even beside a skeleton file, a model that keeps some sequences of its own says nothing
         // about a slice past them.
-        var past = weights(new int[] {0x20}, new int[] {32767, 32767}, true);
+        var past = weights(new int[] {0x20}, new int[] {32767, 32767}, true, skeleton(0, 0, 0));
+        assertEquals(List.of(false), past.staticWeights());
         assertEquals(List.of(false), past.externalWeights());
-        // A model that keeps no sequences and names a skeleton file: the keys are in that file.
-        var skeletal = weights(new int[] {}, new int[] {32767}, true);
-        assertEquals(List.of(false), skeletal.staticWeights());
-        assertEquals(List.of(true), skeletal.externalWeights());
+    }
+
+    @Test
+    void aModelWhoseSequencesAreInItsSkeletonReadsWhereTheSkeletonSaysItsKeysAre() {
+        int[] none = {};
+        // Flagged 0x20 in the skeleton: the key is in the model, read and proven.
+        var partial = weights(none, new int[] {0}, true, skeleton(0, 0x20));
+        assertEquals(List.of(false), partial.staticWeights());
+        assertEquals(List.of(false), partial.externalWeights());
+        var full = weights(none, new int[] {32767}, true, skeleton(0, 0x20));
+        assertEquals(List.of(true), full.staticWeights());
+        assertEquals(List.of(false), full.externalWeights());
+        // Not flagged: the keys are in an animation file.
+        var external = weights(none, new int[] {32767}, true, skeleton(0, 0));
+        assertEquals(List.of(false), external.staticWeights());
+        assertEquals(List.of(true), external.externalWeights());
+        // A skeleton with a parent still has its own sequences, and they are the model's.
+        var child = weights(none, new int[] {32767}, true, skeleton(77, 0x20));
+        assertEquals(List.of(true), child.staticWeights());
+        var childPartial = weights(none, new int[] {0}, true, skeleton(77, 0x20));
+        assertEquals(List.of(false), childPartial.staticWeights());
+        assertEquals(List.of(false), childPartial.externalWeights());
+        // Past the skeleton's sequences, an unreadable skeleton, one with no sequences of its own
+        // (a parent's are not read), or a skeleton the model does not name: unproven.
+        for (var unproven :
+                List.of(
+                        weights(none, new int[] {32767, 32767}, true, skeleton(0, 0x20)),
+                        weights(none, new int[] {32767}, true, null),
+                        weights(none, new int[] {32767}, true, skeleton(77)),
+                        weights(none, new int[] {32767}, false, skeleton(0, 0x20)))) {
+            assertEquals(List.of(false), unproven.staticWeights());
+            assertEquals(List.of(false), unproven.externalWeights());
+        }
     }
 
     @Test

@@ -11,6 +11,7 @@ import com.vibeminer.formats.models.BuildModelTypes;
 import com.vibeminer.formats.models.BuildModels;
 import com.vibeminer.formats.models.M2Appearance;
 import com.vibeminer.formats.models.M2RestDrawSkinReader;
+import com.vibeminer.formats.models.M2SkeletonFile;
 import com.vibeminer.formats.models.M2Types;
 import com.vibeminer.formats.tables.BuildTables;
 import com.vibeminer.generated.GeneratedKey;
@@ -521,6 +522,17 @@ final class RaceAppearance {
             var mesh = surface.mesh();
             float[] uv = surface.uv(), normals = surface.normals();
             M2Appearance.ModelFacts facts = null;
+            // A model that keeps its sequences in an external skeleton: their flags say where its
+            // weight keys are. Not readable whole now, the weights stay unproven this time.
+            boolean[] skeletonLater = {false};
+            var skeleton = weightSkeleton(model.model(), skeletonLater, token);
+            if (skeletonLater[0]) {
+                if (plan.npc()) {
+                    throw new RacesService.Unreadable(
+                            "The NPC model's skeleton cannot be read whole yet.");
+                }
+                complete = false;
+            }
             var open =
                     files.openRead(FileTypes.FileRef.id(base.variant().modelFileDataId()), token)
                             .join();
@@ -531,7 +543,10 @@ final class RaceAppearance {
                     if (open.state() == FileTypes.FileReadState.COMPLETE && !holes) {
                         facts =
                                 M2Appearance.readModel(
-                                                AssetSources.file(stream), model.model(), token)
+                                                AssetSources.file(stream),
+                                                model.model(),
+                                                skeleton,
+                                                token)
                                         .join();
                     }
                 }
@@ -632,8 +647,40 @@ final class RaceAppearance {
         }
     }
 
+    /**
+     * The model's external skeleton (SKID) for its weight proof, or null: none is named, the file
+     * is not readable whole now ({@code later[0]} is then set), or it is not a valid skeleton.
+     */
+    private M2SkeletonFile.Skeleton weightSkeleton(
+            M2Types.Model model, boolean[] later, Cancellation token) {
+        long id = model.skeletonFileDataId();
+        if (id == 0) {
+            return null;
+        }
+        var open = files.openRead(FileTypes.FileRef.id(id), token).join();
+        if (open.stream() == null) {
+            later[0] = retryable(open.state());
+            return null;
+        }
+        try (var stream = open.stream()) {
+            if (open.state() != FileTypes.FileReadState.COMPLETE || !stream.holes().isEmpty()) {
+                later[0] = true;
+                return null;
+            }
+            return M2SkeletonFile.read(AssetSources.file(stream), token).join();
+        } catch (java.util.concurrent.CompletionException failure) {
+            if (failure.getCause() instanceof java.util.concurrent.CancellationException canceled) {
+                throw canceled;
+            }
+            if (failure.getCause() instanceof com.vibeminer.formats.models.ModelFormatException) {
+                return null;
+            }
+            throw failure;
+        }
+    }
+
     /** Names the external-weight assumption in the key of every composite that may make it. */
-    static final String ASSUMED_WEIGHTS_IDENTITY = "\nexternal-weights-assumed-opaque-v1";
+    static final String ASSUMED_WEIGHTS_IDENTITY = "\nexternal-weights-assumed-opaque-v2";
 
     /**
      * The generated-store key of a composite. A preview composite may draw a weight track assumed
