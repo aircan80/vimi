@@ -74,11 +74,6 @@ final class DataSourcesView extends BorderPane {
                                 "File names",
                                 "Manage the community names used when browsing WoW files.",
                                 "github.com/wowdev/wow-listfile"),
-                        new Source(
-                                "WoWDBDefs",
-                                "Table definitions",
-                                "Manage the definitions used to interpret WoW database tables.",
-                                "github.com/wowdev/WoWDBDefs"),
                         new Source("TACTKeys", "Decryption keys",
                                 "Public WoW keys used to read encrypted files and table sections.",
                                 "github.com/wowdev/TACTKeys"),
@@ -143,8 +138,7 @@ final class DataSourcesView extends BorderPane {
                         ? DataSourcesService.Id.LISTFILE
                         : selectedSource.name().equals("TACTKeys") ? DataSourcesService.Id.TACT_KEYS
                         : selectedSource.name().equals("EG Link") ? DataSourcesService.Id.EG_LINK
-                        : selectedSource.name().equals("Polestar") ? DataSourcesService.Id.POLESTAR
-                        : DataSourcesService.Id.DEFINITIONS;
+                        : DataSourcesService.Id.POLESTAR;
     }
 
     private void render() {
@@ -222,63 +216,33 @@ final class DataSourcesView extends BorderPane {
         else if (id == DataSourcesService.Id.TACT_KEYS) liveTactKeys(page);
         else if (id == DataSourcesService.Id.EG_LINK) liveEgLink(page);
         else if (id == DataSourcesService.Id.POLESTAR) livePolestar(page);
-        else {
-            var definitions = service.definitions();
-            if (definitions != null)
-                page.getChildren()
-                        .addAll(
-                                metrics(
-                                        metric(
-                                                "DEFINITIONS",
-                                                Long.toString(definitions.tables()),
-                                                "In the bundled provider"),
-                                        metric("SOURCE", "Bundled", "Included with this app"),
-                                        metric(
-                                                "REVISION",
-                                                definitions.revision().substring(0, 12),
-                                                definitions.license())),
-                                panel(
-                                        "Definition settings",
-                                        text(
-                                                "The app uses its pinned bundled definitions."
-                                                        + " Updating the app can provide a new"
-                                                        + " revision.",
-                                                "muted")),
-                                text(
-                                        "Disabling definitions affects new schema-backed tables and"
-                                            + " research. Build metadata and file browsing remain"
-                                            + " available.",
-                                        "muted"));
-        }
-        if (id != DataSourcesService.Id.DEFINITIONS) {
-            var checks = new ComboBox<DataSourcesService.Checks>();
-            checks.getItems().setAll(DataSourcesService.Checks.MANUAL, DataSourcesService.Checks.DAILY);
-            checks.setValue(policy.checks() == DataSourcesService.Checks.STARTUP ? DataSourcesService.Checks.MANUAL : policy.checks());
-            checks.getStyleClass().add("build-choice");
-            checks.setConverter(
-                    new javafx.util.StringConverter<>() {
-                        public String toString(DataSourcesService.Checks value) {
-                            return value == null
-                                    ? ""
-                                    : switch (value) {
-                                        case MANUAL -> "No extra checks";
-                                        case STARTUP -> "No extra checks";
-                                        case DAILY -> "Daily";
-                                    };
-                        }
+        var checks = new ComboBox<DataSourcesService.Checks>();
+        checks.getItems().setAll(DataSourcesService.Checks.MANUAL, DataSourcesService.Checks.DAILY);
+        checks.setValue(policy.checks() == DataSourcesService.Checks.STARTUP ? DataSourcesService.Checks.MANUAL : policy.checks());
+        checks.getStyleClass().add("build-choice");
+        checks.setConverter(
+                new javafx.util.StringConverter<>() {
+                    public String toString(DataSourcesService.Checks value) {
+                        return value == null
+                                ? ""
+                                : switch (value) {
+                                    case MANUAL -> "No extra checks";
+                                    case STARTUP -> "No extra checks";
+                                    case DAILY -> "Daily";
+                                };
+                    }
 
-                        public DataSourcesService.Checks fromString(String value) {
-                            throw new UnsupportedOperationException();
-                        }
-                    });
-            checks.setOnAction(event -> command(service.setChecks(id, checks.getValue())));
-            page.getChildren()
-                    .add(
-                            settings(
-                                    "Additional scheduled updates",
-                                    checks,
-                                    "Enabled sources update at startup and from Refresh sources. Last successful check: " + checkedDate(id)));
-        }
+                    public DataSourcesService.Checks fromString(String value) {
+                        throw new UnsupportedOperationException();
+                    }
+                });
+        checks.setOnAction(event -> command(service.setChecks(id, checks.getValue())));
+        page.getChildren()
+                .add(
+                        settings(
+                                "Additional scheduled updates",
+                                checks,
+                                "Enabled sources update at startup and from Refresh sources. Last successful check: " + checkedDate(id)));
         var provenance =
                 new TitledPane(
                         "Source & provenance",

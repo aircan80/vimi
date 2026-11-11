@@ -54,7 +54,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
     private com.vibeminer.files.keys.TactKeys communityKeys = com.vibeminer.files.keys.TactKeys.EMPTY;
     private boolean communityKeysAllowed;
     private DataSourcesService sourcePolicies;
-    private boolean listfileAllowed = true, definitionsAllowed = true;
+    private boolean listfileAllowed = true;
     private ClientHotfixStore hotfixImports;
     private CompletableFuture<ClientHotfixStore.Snapshot> hotfixLoad;
     private Cancellation hotfixCancellation;
@@ -188,15 +188,14 @@ public final class NativePreparationWork implements BuildPreparation.Work {
         load.completeExceptionally(error);
     }
 
-    NativePreparationWork withSourcePolicy(boolean listfile, boolean definitions) {
-        listfileAllowed = listfile; definitionsAllowed = definitions; return this;
+    NativePreparationWork withSourcePolicy(boolean listfile) {
+        listfileAllowed = listfile; return this;
     }
 
     NativePreparationWork withSourcePolicies(DataSourcesService sources) {
         sourcePolicies = sources;
         communityKeysAllowed = sources != null && sources.policy(DataSourcesService.Id.TACT_KEYS).enabled();
-        return withSourcePolicy(sources == null || sources.policy(DataSourcesService.Id.LISTFILE).enabled(),
-                sources == null || sources.policy(DataSourcesService.Id.DEFINITIONS).enabled());
+        return withSourcePolicy(sources == null || sources.policy(DataSourcesService.Id.LISTFILE).enabled());
     }
 
     /** Immutable local comparison key snapshot; never requests a source refresh. */
@@ -214,7 +213,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
     /** Restore only the exact existing prepareKnown publication; never prepares missing tables. */
     CachedTableInventory cachedTableInventory(Cancellation token) {
         token.check();
-        if (!definitionsAllowed || opened == null || fileHandle == null) return null;
+        if (opened == null || fileHandle == null) return null;
         String identity = tableCacheIdentity();
         var result = new com.vibeminer.formats.tables.PreparedTablesCache(generated)
                 .restore(identity, ignored -> {}, token).join();
@@ -586,8 +585,10 @@ public final class NativePreparationWork implements BuildPreparation.Work {
     }
 
     private TablesService tablesService(Cancellation token, TableRole role) {
-        var definitions = new TableDefinitions(definitionsAllowed ? BundledDefinitions.open(token).join() : BundledDefinitions.of(List.of(), java.util.Map.of()), null, null);
-        if (definitionsAllowed) definitions = definitions.withSupplementalDefinitions();
+        // Bundled definitions are verified as they load (manifest, source and stream hashes).
+        var definitions =
+                new TableDefinitions(BundledDefinitions.open(token).join(), null, null)
+                        .withSupplementalDefinitions();
         var available = effectiveKeys();
         var status = new TactKeyStatus(available.fingerprints());
         var options = tablesOptions(status, role);
@@ -645,10 +646,6 @@ public final class NativePreparationWork implements BuildPreparation.Work {
             var problem = sourcePolicies.activity(DataSourcesService.Id.TACT_KEYS).problem();
             if (problem != null) issues.add("Community TACT keys: " + problem);
         }
-        if (!definitionsAllowed) {
-            issues.add("Table definitions are disabled for this workspace");
-            return List.copyOf(issues);
-        }
         try (var bootstrap = openTables(tablesService(token, TableRole.PREPARATION), token)) {
             var found = BuildTactKeys.load(bootstrap, TableTypes.Priority.BACKGROUND, token).join();
             applyBuildKeys(withDeliveredKeys(bootstrap, found, token), issues, token);
@@ -683,10 +680,6 @@ public final class NativePreparationWork implements BuildPreparation.Work {
     /** Cached generated key graphs only; never invokes normal table preparation or source refresh. */
     public List<String> keysPreparedLocal(Cancellation token) {
         var issues = new ArrayList<String>();
-        if (!definitionsAllowed) {
-            issues.add("Table definitions are disabled for this workspace");
-            return List.copyOf(issues);
-        }
         try (var bootstrap = openTables(tablesService(token, TableRole.LOCAL_BASE), token)) {
             var found = BuildTactKeys.loadPreparedLocal(bootstrap, token).join();
             // No delivered keys here: LOCAL_BASE has no hotfix overlay and this path never
@@ -799,7 +792,6 @@ public final class NativePreparationWork implements BuildPreparation.Work {
 
     /** Caller owns this dedicated local table handle and closes it before this work context. */
     public BuildTables openLocalTablesForComparison(Cancellation token) {
-        if (!definitionsAllowed) throw new IllegalStateException("Table definitions are disabled");
         token.check();
         return openTables(tablesService(token, TableRole.LOCAL_BASE), token);
     }
@@ -885,7 +877,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
         String keyFingerprint = available.fingerprint();
         String identity = String.join(
                 "\n",
-                definitionsAllowed ? "native-table-policy-v1" : "native-table-policy-definitions-disabled-v1",
+                "native-table-policy-v1",
                 ref.product(),
                 ref.buildConfig(),
                 ref.cdnConfig(),
@@ -897,7 +889,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
                 BundledDefinitions.REVISION,
                 BundledDefinitions.MANIFEST_SHA256,
                 BundledDefinitions.SOURCES_SHA256,
-                definitionsAllowed ? com.vibeminer.formats.definitions.SupplementalDefinitions.IDENTITY : "supplemental-disabled",
+                com.vibeminer.formats.definitions.SupplementalDefinitions.IDENTITY,
                 new com.vibeminer.formats.db2.Db2Types.Limits().toString(),
                 keyFingerprint);
         // The known-table inventory holds base DB2 outcomes; the hotfix overlay is applied on
@@ -1232,11 +1224,11 @@ public final class NativePreparationWork implements BuildPreparation.Work {
         var inputs =
                 new ArrayList<Object>(
                         List.of(
-                                definitionsAllowed ? "native-item-catalog-v1" : "native-item-catalog-definitions-disabled-v1",
+                                "native-item-catalog-v1",
                                 BundledDefinitions.REVISION,
                                 BundledDefinitions.MANIFEST_SHA256,
                                 BundledDefinitions.SOURCES_SHA256,
-                                definitionsAllowed ? com.vibeminer.formats.definitions.SupplementalDefinitions.IDENTITY : "supplemental-disabled",
+                                com.vibeminer.formats.definitions.SupplementalDefinitions.IDENTITY,
                                 opened.metadata().rootContentKey().hex(),
                                 opened.metadata().encodingContentKey().hex(),
                                 fingerprints));

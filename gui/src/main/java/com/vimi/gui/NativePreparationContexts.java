@@ -119,19 +119,17 @@ final class NativePreparationContexts implements BuildPreparation.Factory {
     @Override
     public synchronized NativePreparationWork create(
             BuildInfo info, BuildInfo.RegionEvidence evidence, String locale) {
-        return createWork(info, evidence, locale, false, true,
-                com.vibeminer.files.keys.TactKeys.EMPTY);
+        return createWork(info, evidence, locale, false, com.vibeminer.files.keys.TactKeys.EMPTY);
     }
 
     synchronized NativePreparationWork createLocalComparison(BuildInfo info,
-            BuildInfo.RegionEvidence evidence, String locale, boolean definitions,
+            BuildInfo.RegionEvidence evidence, String locale,
             com.vibeminer.files.keys.TactKeys pinnedKeys) {
-        return createWork(info, evidence, locale, true, definitions, pinnedKeys);
+        return createWork(info, evidence, locale, true, pinnedKeys);
     }
 
     private NativePreparationWork createWork(BuildInfo info, BuildInfo.RegionEvidence evidence,
-            String locale, boolean localOnly, boolean definitions,
-            com.vibeminer.files.keys.TactKeys pinnedKeys) {
+            String locale, boolean localOnly, com.vibeminer.files.keys.TactKeys pinnedKeys) {
         if (closing) {
             throw new IllegalStateException("Preparation contexts closed");
         }
@@ -159,7 +157,7 @@ final class NativePreparationContexts implements BuildPreparation.Factory {
                                     terrainAtlases)
                             .withLifecycle(() -> context.closeAsync().join());
             if (localOnly) {
-                work.withSourcePolicy(false, definitions).withPinnedCommunityKeys(pinnedKeys);
+                work.withSourcePolicy(false).withPinnedCommunityKeys(pinnedKeys);
             } else {
                 if (hotfixImports != null) work.withHotfixImports(hotfixImports);
                 work.withSourcePolicies(sourcePolicies).withHistory(history).withAccounting(accounting)

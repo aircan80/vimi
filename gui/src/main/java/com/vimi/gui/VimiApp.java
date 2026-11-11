@@ -429,7 +429,7 @@ public final class VimiApp extends Application {
             if (sources != null) for (var id : DataSourcesService.Id.values()) {
                 String name = switch (id) {
                     case QUESTIE -> "QuestieDB"; case LISTFILE -> "Community listfile";
-                    case DEFINITIONS -> "WoWDBDefs (bundled)"; case TACT_KEYS -> "TACTKeys"; case EG_LINK -> "EG Link"; case POLESTAR -> "Polestar";
+                    case TACT_KEYS -> "TACTKeys"; case EG_LINK -> "EG Link"; case POLESTAR -> "Polestar";
                 };
                 providers.add(new SourceRefresh.Provider(id.name(), name, () -> sources.policy(id).enabled(),
                         () -> sources.sync(id), () -> {

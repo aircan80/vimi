@@ -233,7 +233,7 @@ final class WorldMeasurementOpen implements AutoCloseable {
                             : com.vibeminer.files.keys.TactKeys.EMPTY;
             work =
                     contexts.createLocalComparison(
-                            selection.build(), evidence, receipt.locale(), true, pinned);
+                            selection.build(), evidence, receipt.locale(), pinned);
             var token = Cancellation.NONE;
             work.metadata(token);
             work.openFilesForMeasurement(token);
