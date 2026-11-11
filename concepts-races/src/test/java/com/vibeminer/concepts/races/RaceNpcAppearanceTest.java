@@ -34,7 +34,10 @@ final class RaceNpcAppearanceTest {
                         "GeosetGroupOverride,GeosetGroup:6,ModelResourcesID:2",
                         row(600, "0", "2", "0", "0", "0", "0", "0", "0", "0"),
                         row(601, "0", "0", "0", "0", "0", "0", "0", "55", "0"),
-                        row(602, "0", "0", "0", "1", "0", "0", "0", "0", "0")));
+                        row(602, "0", "0", "0", "1", "0", "0", "0", "0", "0"),
+                        // 673605 on 70862: GeosetGroup -1 leaves groups 22 and 28 alone.
+                        row(603, "0", "0", "0", "0", "-1", "-1", "0", "0", "0"),
+                        row(604, "0", "0", "0", "0", "-2", "0", "0", "0", "0")));
         replace(
                 seed,
                 table(
@@ -135,6 +138,37 @@ final class RaceNpcAppearanceTest {
                     plan.items().getFirst().inventoryType(),
                     "slot 3 is a robe only when its display sets the robe group");
         }
+    }
+
+    @Test
+    void geosetGroupMinusOneKeepsTheNpcAndOnlyLowerValuesAreRefused() throws Exception {
+        var keep = new RaceAppearancePlan.Npc(List.of(new RaceNpcs.Item(3, 603)), 4242);
+        var plan =
+                with(
+                        (service, media, plans) ->
+                                plans.build(
+                                        2,
+                                        1,
+                                        ORC_MALE,
+                                        Cancellation.NONE,
+                                        new ArrayList<>(),
+                                        null,
+                                        keep));
+        assertEquals(List.of(0, 0, 0, -1, -1, 0), plan.items().getFirst().geosets());
+        var refused = new RaceAppearancePlan.Npc(List.of(new RaceNpcs.Item(3, 604)), 4242);
+        assertThrows(
+                RacesService.Projection.class,
+                () ->
+                        with(
+                                (service, media, plans) ->
+                                        plans.build(
+                                                2,
+                                                1,
+                                                ORC_MALE,
+                                                Cancellation.NONE,
+                                                new ArrayList<>(),
+                                                null,
+                                                refused)));
     }
 
     @Test

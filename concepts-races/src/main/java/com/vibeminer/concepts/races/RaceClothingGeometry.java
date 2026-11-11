@@ -45,7 +45,13 @@ final class RaceClothingGeometry {
                 }
                 case 8 -> {
                     set(visible, mesh, 5, robe ? 1 : 1 + g.get(0), robe);
-                    set(visible, mesh, 20, g.get(1) == 0 ? 2 : g.get(1));
+                    set(
+                            visible,
+                            mesh,
+                            20,
+                            g.get(1) == RaceAppearancePlan.KEEP_GROUP
+                                    ? 0
+                                    : g.get(1) == 0 ? 2 : g.get(1));
                 }
                 case 6 -> set(visible, mesh, 18, 1 + g.get(0));
                 case 10 -> {
@@ -64,8 +70,15 @@ final class RaceClothingGeometry {
         set(visible, mesh, group, variant, false);
     }
 
+    /**
+     * A variant at or below 0 comes from ItemDisplayInfo GeosetGroup -1 ({@link
+     * RaceAppearancePlan#KEEP_GROUP}) and leaves the group as it is.
+     */
     private static void set(
             Set<Integer> visible, PreviewMesh mesh, int group, int variant, boolean force) {
+        if (variant <= 0) {
+            return;
+        }
         if (!force
                 && variant == 1
                 && visible.stream().anyMatch(id -> id / 100 == group && id % 100 > 1)) {

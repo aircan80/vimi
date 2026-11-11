@@ -1,5 +1,6 @@
 package com.vibeminer.concepts.races;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -98,5 +99,80 @@ final class RaceClothingGeometryTest {
         assertTrue(shown.contains(502));
         assertTrue(shown.contains(1301));
         assertFalse(shown.contains(1302));
+    }
+
+    private static PreviewMesh mesh(int... ids) {
+        return new PreviewMesh(
+                new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0},
+                new int[] {0, 1, 2},
+                java.util.stream.IntStream.of(ids)
+                        .mapToObj(id -> new PreviewMesh.Part(id, 0, 3))
+                        .toList());
+    }
+
+    @Test
+    void faceGroupDrawsOneFullFaceNeverItsAlternativesTogether() {
+        // Human: a recessed cap (3201) and three coincident full faces.
+        assertEquals(
+                Set.of(0, 101, 3202),
+                RaceMedia.defaultParts(mesh(0, 101, 102, 3201, 3202, 3203, 3204)));
+        // Most models: the cap and one full face.
+        assertEquals(Set.of(0, 3202), RaceMedia.defaultParts(mesh(0, 3201, 3202)));
+        // A model with only the cap keeps it.
+        assertEquals(Set.of(0, 3201), RaceMedia.defaultParts(mesh(0, 3201)));
+        // Group 12, 17 and 35 still show only when chosen.
+        assertEquals(Set.of(0), RaceMedia.defaultParts(mesh(0, 1201, 1701, 3501)));
+    }
+
+    @Test
+    void aFaceChoiceReplacesTheDefaultFace() {
+        var defaults = RaceMedia.defaultParts(mesh(0, 3201, 3202, 3203, 3204));
+        assertEquals(
+                Set.of(0, 3204),
+                RaceMedia.applyCustomizationParts(defaults, Set.of(32), Set.of(3204)));
+    }
+
+    @Test
+    void customizationGeosetMinusOneHidesItsOwnGroupAndNeverReadsAsTheGroupBelow() {
+        // Breechcloth choice 28271 (model 89) uses row 12028: type 14, GeosetID -1.
+        assertEquals(Set.of(), RaceMedia.customizationPart(14, -1).show());
+        assertEquals(Set.of(14), RaceMedia.customizationPart(14, -1).groups());
+        var visible =
+                RaceMedia.applyCustomizationParts(Set.of(0, 1301, 1401), Set.of(14), Set.of());
+        assertEquals(Set.of(0, 1301), visible);
+        // A chest's default robe group still applies: nothing reads as variant 1399.
+        var shown =
+                RaceClothingGeometry.apply(
+                        mesh(0, 1301, 1302, 1401),
+                        visible,
+                        List.of(new RaceAppearancePlan.Item(1, 5, 1, List.of(0, 0, 0, 0, 0, 0))));
+        assertEquals(Set.of(0, 1301), shown);
+        // Values outside 0..99 (garbage such as 1818453348 on 70862) are ignored outright.
+        assertEquals(null, RaceMedia.customizationPart(45, 1818453348));
+        assertEquals(null, RaceMedia.customizationPart(14, -2));
+        assertEquals(null, RaceMedia.customizationPart(14, 100));
+        assertEquals(Set.of(1407), RaceMedia.customizationPart(14, 7).show());
+    }
+
+    @Test
+    void itemGeosetGroupMinusOneLeavesTheGroupAsItIs() {
+        var mesh = mesh(0, 801, 802, 1001, 1301, 1302, 2002, 2201, 2202, 2801, 2802, 501, 502);
+        var sample = Set.of(0, 801, 1001, 1301, 2201, 2801, 501);
+        // 680059: a chest whose robe, tabard and group 28 values are all -1.
+        var chest =
+                RaceClothingGeometry.apply(
+                        mesh,
+                        sample,
+                        List.of(
+                                new RaceAppearancePlan.Item(
+                                        1, 5, 1, List.of(1, 0, -1, -1, -1, 0))));
+        assertEquals(Set.of(0, 802, 1001, 1301, 2201, 2801, 501), chest);
+        // Boots whose group 20 value is -1 keep the bare feet the body already shows.
+        var boots =
+                RaceClothingGeometry.apply(
+                        mesh,
+                        sample,
+                        List.of(new RaceAppearancePlan.Item(2, 8, 2, List.of(1, -1, 0, 0, 0, 0))));
+        assertEquals(Set.of(0, 801, 1001, 1301, 2201, 2801, 502), boots);
     }
 }
