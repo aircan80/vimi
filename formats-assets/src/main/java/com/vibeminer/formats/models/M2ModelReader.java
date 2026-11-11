@@ -301,6 +301,25 @@ public final class M2ModelReader {
         input.records(
                 spans.get("bones"),
                 (row, i) -> bones.add(M2Input.bone(row, i, boneCount, "model")));
+        int attachmentCount = spans.get("attachments").count();
+        budget.add(attachmentCount, 24);
+        List<M2Types.Attachment> attachments = new ArrayList<>();
+        input.records(
+                spans.get("attachments"),
+                (row, i) -> {
+                    int bone = u16(row, 4);
+                    if (bone >= boneCount) {
+                        throw error("INVALID", "An attachment names a bone the model lacks.");
+                    }
+                    attachments.add(
+                            new M2Types.Attachment(
+                                    (int) u32(row),
+                                    bone,
+                                    new M2Types.Vec3(
+                                            M2Input.f(row, 8),
+                                            M2Input.f(row, 12),
+                                            M2Input.f(row, 16))));
+                });
         List<Integer> combos = words("textureCombos", input, spans, budget),
                 coordWords = words("textureCoordinates", input, spans, budget);
         budget.add(coordWords.size(), 2);
@@ -367,6 +386,7 @@ public final class M2ModelReader {
                 textures,
                 materials,
                 bones,
+                attachments,
                 combos,
                 coordinates,
                 weights,

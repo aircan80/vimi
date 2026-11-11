@@ -678,6 +678,11 @@ public final class RacesService implements BuildRaces {
         return new Data(name, result.columns(), result.schema(), List.of(), result.table());
     }
 
+    /** The build's tables, for readers shared with other concepts (item model files). */
+    BuildTables tables() {
+        return tables;
+    }
+
     /**
      * One row by ID; null when the table records it as absent. A row the store cannot answer for
      * now is unreadable, never a refusal.

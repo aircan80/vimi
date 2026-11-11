@@ -252,31 +252,13 @@ final class NpcPreviews {
                 resolution,
                 Kind.HUMANOID,
                 untextured,
-                defaultCharacterParts(untextured.mesh()),
+                com.vibeminer.concepts.races.RaceMediaTypes.defaultCharacterParts(
+                        untextured.mesh()),
                 false,
                 reason,
                 facts);
     }
 
-    /**
-     * The character surfaces a race preview shows before any choice: the body ({@code 0}), each
-     * group's first value ({@code x01}) and group 32, without groups 12, 17 and 35 (the races
-     * page's reviewed default convention).
-     */
-    // TODO: share RaceMedia's default-surface rule (and its group-32 fix in #694) once #694 merges.
-    static Set<Integer> defaultCharacterParts(com.vibeminer.rendering.models.PreviewMesh mesh) {
-        var visible = new java.util.HashSet<Integer>();
-        for (var part : mesh.parts()) {
-            int id = part.id(), group = id / 100;
-            if ((id == 0 || id % 100 == 1 || group == 32)
-                    && group != 17
-                    && group != 35
-                    && group != 12) {
-                visible.add(id);
-            }
-        }
-        return visible;
-    }
 
     private static String rootMessage(Throwable failure) {
         Throwable cause = failure;

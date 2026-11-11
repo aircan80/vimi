@@ -227,7 +227,7 @@ public final class RaceNpcs {
      * The rows of {@code data} whose {@code column} is {@code key}, through the component's reverse
      * relation index. More rows than {@code bound} is outside the reviewed profile.
      */
-    private static List<Db2Types.Row> related(
+    static List<Db2Types.Row> related(
             RelationIndexes relations,
             RacesService.Data data,
             String column,
