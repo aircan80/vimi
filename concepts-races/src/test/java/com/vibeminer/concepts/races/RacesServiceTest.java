@@ -1822,17 +1822,21 @@ final class RacesServiceTest {
                         true);
                 assertFalse(appearance.render(unsettled, Cancellation.NONE).restored());
             }
-            // A preview's key names the weight assumption: a derivative saved under the key the
-            // same identity had before is not restored by it. An NPC's key is unchanged.
+            // Keys name the weight proof (and a preview's, the assumption): a derivative saved
+            // under the key the same identity had before is restored by neither.
             generated.delete(List.of(key)).join();
             storeDerivative(generated, key, 1234, 900, "2".repeat(32), stored);
-            assertEquals(key, RaceAppearance.appearanceKey("authored-derivative", true));
-            var previewKey = RaceAppearance.appearanceKey("authored-derivative", false);
-            assertNotEquals(key, previewKey);
-            var renamed =
-                    new RaceAppearance.Prepared(
-                            base, plan, previewKey, List.of(), null, request, null);
-            assertFalse(appearance.render(renamed, Cancellation.NONE).restored());
+            for (boolean npc : new boolean[] {false, true}) {
+                var renamedKey = RaceAppearance.appearanceKey("authored-derivative", npc);
+                assertNotEquals(key, renamedKey);
+                var renamed =
+                        new RaceAppearance.Prepared(
+                                base, plan, renamedKey, List.of(), null, request, null);
+                assertFalse(appearance.render(renamed, Cancellation.NONE).restored());
+            }
+            assertNotEquals(
+                    RaceAppearance.appearanceKey("authored-derivative", true),
+                    RaceAppearance.appearanceKey("authored-derivative", false));
         } finally {
             service.closeAsync().join();
             tables.closeAsync().join();

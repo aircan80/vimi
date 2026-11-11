@@ -145,7 +145,8 @@ public final class M2Appearance {
      * (SKID) when it keeps no sequences of its own. The skeleton's sequence flags then say where
      * each weight slice's keys are: in the model (0x20), read and proven, or in an animation file.
      * Without a skeleton, or with one that keeps no sequences of its own, such a model's weight
-     * slices stay unproven.
+     * slices stay unproven. A skeleton that names a parent proves its 0x20 slices, but leaves its
+     * other slices unproven rather than external.
      */
     public static CompletableFuture<ModelFacts> readModel(
             AssetSource source, Model model, M2SkeletonFile.Skeleton skeleton, Cancellation token) {
@@ -178,7 +179,9 @@ public final class M2Appearance {
                         model.baseBytes(),
                         header),
                 (row, i) -> flags.add(u32(row, 12)));
+        boolean childSkeleton = false;
         if (flags.isEmpty() && model.skeletonFileDataId() != 0 && skeleton != null) {
+            childSkeleton = skeleton.parentFileDataId() != 0;
             // The model's sequences are its skeleton's own (SKS1), in the same order, whether or
             // not it names a parent skeleton. One without sequences of its own leaves the
             // model's weight slices unproven.
@@ -247,6 +250,12 @@ public final class M2Appearance {
                     }
                     if (global < 0 && i >= flags.size()) {
                         // A slice with no sequence: nothing says where its keys are stored.
+                        result = false;
+                        break;
+                    }
+                    if (global < 0 && (flags.get(i) & 0x20) == 0 && childSkeleton) {
+                        // A child skeleton's sequences may line up with the model's slices
+                        // differently: a key this one says is elsewhere is not assumed so.
                         result = false;
                         break;
                     }

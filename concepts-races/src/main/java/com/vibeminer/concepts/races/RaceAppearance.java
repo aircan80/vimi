@@ -122,13 +122,26 @@ final class RaceAppearance {
     }
 
     void remember(Prepared prepared, RaceAppearanceTypes.Result result) {
+        remember(prepared, result, 0, null);
+    }
+
+    /** As above, with the model's skeleton among the sources when {@code skeleton} is not 0. */
+    private void remember(
+            Prepared prepared,
+            RaceAppearanceTypes.Result result,
+            long skeleton,
+            String skeletonContent) {
         long bytes = bytes(result.appearance());
         if (prepared.request() == null
                 || prepared.sources().isEmpty()
                 || bytes > MAX_REMEMBERED_BYTES) {
             return;
         }
-        var entry = new Remembered(result, prepared.sources());
+        var sources = new java.util.TreeMap<>(prepared.sources());
+        if (skeleton != 0) {
+            sources.put(skeleton, skeletonContent);
+        }
+        var entry = new Remembered(result, sources);
         synchronized (remembered) {
             var replaced = remembered.put(prepared.request(), entry);
             if (replaced != null) {
@@ -382,7 +395,7 @@ final class RaceAppearance {
                 }
                 var result = result(restored.appearance(), base.visibleParts(), plan, issues, true);
                 token.check();
-                remember(prepared, result);
+                remember(prepared, result, restored.skeleton(), restored.skeletonContent());
                 return result;
             }
             var images = new BlpImages(generated);
@@ -525,6 +538,19 @@ final class RaceAppearance {
             // A model that keeps its sequences in an external skeleton: their flags say where its
             // weight keys are. Not readable whole now, the weights stay unproven this time.
             boolean[] skeletonLater = {false};
+            long skeletonId = model.model().skeletonFileDataId();
+            String skeletonContent = null;
+            if (skeletonId != 0) {
+                var skeletonStat = files.stat(FileTypes.FileRef.id(skeletonId), token).join();
+                if (skeletonStat.state() == FileTypes.FileLookupState.FOUND
+                        && skeletonStat.file() != null) {
+                    skeletonContent = skeletonStat.file().contentKey();
+                } else {
+                    // Without its content key, a skeleton that appears later could not
+                    // invalidate this composite: it is shown but not saved or remembered.
+                    complete = false;
+                }
+            }
             var skeleton = weightSkeleton(model.model(), skeletonLater, token);
             if (skeletonLater[0]) {
                 if (plan.npc()) {
@@ -628,6 +654,8 @@ final class RaceAppearance {
                         base.variant().modelFileDataId(),
                         skin.fileDataId(),
                         skin.file().contentKey(),
+                        skeletonId,
+                        skeletonContent,
                         appearance,
                         assumedWeights,
                         token,
@@ -636,7 +664,7 @@ final class RaceAppearance {
             var result = result(appearance, base.visibleParts(), plan, issues, false);
             if (complete) {
                 token.check();
-                remember(prepared, result);
+                remember(prepared, result, skeletonId, skeletonContent);
             }
             return result;
         } catch (RacesService.Projection unavailable) {
@@ -685,13 +713,20 @@ final class RaceAppearance {
     /**
      * The generated-store key of a composite. A preview composite may draw a weight track assumed
      * opaque, so its key names that assumption: a composite saved without it is never restored
-     * here, nor one saved under it by code that does not make it. An NPC's key is unchanged.
+     * here, nor one saved under it by code that does not make it. Every key also names the skeleton
+     * weight proof.
      */
     static GeneratedKey appearanceKey(String identity, boolean npc) {
         return GeneratedKey.hash(
-                (npc ? identity : identity + ASSUMED_WEIGHTS_IDENTITY)
+                (identity + SKELETON_WEIGHTS_IDENTITY + (npc ? "" : ASSUMED_WEIGHTS_IDENTITY))
                         .getBytes(StandardCharsets.UTF_8));
     }
+
+    /**
+     * Names the weight proof read through the model's external skeleton, in every composite's key:
+     * composites saved before it are reassessed, NPCs' too.
+     */
+    static final String SKELETON_WEIGHTS_IDENTITY = "\nweights-through-skeleton-v1";
 
     /**
      * Whether this render may treat a texture-weight track whose keys are stored outside the model
@@ -793,7 +828,15 @@ final class RaceAppearance {
     /** A composite whose draws include a weight track assumed opaque (see {@link #render}). */
     private static final int ASSUMED_MAGIC = 0x56414332;
 
-    private record Restored(MeshAppearance appearance, boolean assumedWeights) {}
+    /** As {@link #MAGIC} and {@link #ASSUMED_MAGIC}, for a model with an external skeleton. */
+    private static final int SKELETON_MAGIC = 0x56414333, SKELETON_ASSUMED_MAGIC = 0x56414334;
+
+    /** A restored composite; {@code skeleton} is 0 for a model without an external one. */
+    private record Restored(
+            MeshAppearance appearance,
+            boolean assumedWeights,
+            long skeleton,
+            String skeletonContent) {}
 
     @SuppressWarnings("try")
     private Restored restore(GeneratedKey key, long modelId, Cancellation token) {
@@ -802,7 +845,7 @@ final class RaceAppearance {
             var size = generated.readRange(key, 0, 0, lower).join();
             if (size.state() != GeneratedTypes.ReadState.PRESENT
                     || size.length() < 40
-                    || size.length() > 40L + MeshAppearanceCodec.MAX_BYTES) {
+                    || size.length() > 64L + MeshAppearanceCodec.MAX_BYTES) {
                 return null;
             }
             var saved = generated.read(key, lower).join();
@@ -812,12 +855,32 @@ final class RaceAppearance {
             }
             var bytes = ByteBuffer.wrap(saved.bytes()).order(ByteOrder.LITTLE_ENDIAN);
             int magic = bytes.getInt();
-            if (magic != MAGIC && magic != ASSUMED_MAGIC || bytes.getLong() != modelId) {
+            boolean skeletal = magic == SKELETON_MAGIC || magic == SKELETON_ASSUMED_MAGIC;
+            if (magic != MAGIC && magic != ASSUMED_MAGIC && !skeletal
+                    || bytes.getLong() != modelId) {
                 return null;
             }
             long skin = bytes.getLong();
             byte[] content = new byte[16];
             bytes.get(content);
+            long skeleton = 0;
+            String skeletonContent = null;
+            if (skeletal) {
+                skeleton = bytes.getLong();
+                byte[] skeletonKey = new byte[16];
+                bytes.get(skeletonKey);
+                skeletonContent = HexFormat.of().formatHex(skeletonKey);
+                if (skeleton < 1 || skeleton > 0xffffffffL) {
+                    return null;
+                }
+                // The weights were proven through this skeleton: a changed one is reassessed.
+                var skeletonStat = files.stat(FileTypes.FileRef.id(skeleton), token).join();
+                if (skeletonStat.state() != FileTypes.FileLookupState.FOUND
+                        || skeletonStat.file() == null
+                        || !skeletonStat.file().contentKey().equals(skeletonContent)) {
+                    return null;
+                }
+            }
             int length = bytes.getInt();
             if (length != bytes.remaining() || skin < 1 || skin > 0xffffffffL) {
                 return null;
@@ -830,7 +893,11 @@ final class RaceAppearance {
             }
             byte[] payload = new byte[length];
             bytes.get(payload);
-            return new Restored(MeshAppearanceCodec.decode(payload), magic == ASSUMED_MAGIC);
+            return new Restored(
+                    MeshAppearanceCodec.decode(payload),
+                    magic == ASSUMED_MAGIC || magic == SKELETON_ASSUMED_MAGIC,
+                    skeleton,
+                    skeletonContent);
         } catch (java.util.concurrent.CancellationException canceled) {
             throw canceled;
         } catch (RuntimeException invalid) {
@@ -845,6 +912,8 @@ final class RaceAppearance {
             long modelId,
             long skinId,
             String content,
+            long skeleton,
+            String skeletonContent,
             MeshAppearance appearance,
             boolean assumedWeights,
             Cancellation token,
@@ -852,13 +921,19 @@ final class RaceAppearance {
         var lower = new com.vibeminer.generated.Cancellation();
         try (var registration = token.onCancel(lower::cancel)) {
             byte[] payload = MeshAppearanceCodec.encode(appearance);
-            var bytes = ByteBuffer.allocate(40 + payload.length).order(ByteOrder.LITTLE_ENDIAN);
-            bytes.putInt(assumedWeights ? ASSUMED_MAGIC : MAGIC)
+            int header = skeleton == 0 ? 40 : 64;
+            var bytes = ByteBuffer.allocate(header + payload.length).order(ByteOrder.LITTLE_ENDIAN);
+            bytes.putInt(
+                            skeleton == 0
+                                    ? assumedWeights ? ASSUMED_MAGIC : MAGIC
+                                    : assumedWeights ? SKELETON_ASSUMED_MAGIC : SKELETON_MAGIC)
                     .putLong(modelId)
                     .putLong(skinId)
-                    .put(HexFormat.of().parseHex(content))
-                    .putInt(payload.length)
-                    .put(payload);
+                    .put(HexFormat.of().parseHex(content));
+            if (skeleton != 0) {
+                bytes.putLong(skeleton).put(HexFormat.of().parseHex(skeletonContent));
+            }
+            bytes.putInt(payload.length).put(payload);
             generated.delete(List.of(key), lower).join();
             generated.put(List.of(new GeneratedTypes.Put(key, bytes.array())), lower).join();
         } catch (java.util.concurrent.CancellationException canceled) {

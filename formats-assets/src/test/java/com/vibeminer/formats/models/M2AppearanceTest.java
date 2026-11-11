@@ -183,6 +183,10 @@ final class M2AppearanceTest {
         var childPartial = weights(none, new int[] {0}, true, skeleton(77, 0x20));
         assertEquals(List.of(false), childPartial.staticWeights());
         assertEquals(List.of(false), childPartial.externalWeights());
+        // But a child skeleton's unflagged sequence is unproven, not external.
+        var childExternal = weights(none, new int[] {32767}, true, skeleton(77, 0));
+        assertEquals(List.of(false), childExternal.staticWeights());
+        assertEquals(List.of(false), childExternal.externalWeights());
         // Past the skeleton's sequences, an unreadable skeleton, one with no sequences of its own
         // (a parent's are not read), or a skeleton the model does not name: unproven.
         for (var unproven :
