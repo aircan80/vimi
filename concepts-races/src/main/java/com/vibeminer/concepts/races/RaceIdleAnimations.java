@@ -175,9 +175,8 @@ final class RaceIdleAnimations {
                                                     ? state
                                                     : idle.read().message());
                         }
-                        if (state == BuildModelTypes.ReadState.READ) {
-                            parentSkeleton[0] = idle.parentFileDataId();
-                        }
+                        // A refused Stand still says that the parent was not read.
+                        parentSkeleton[0] = idle.parentFileDataId();
                         tracks[0] = idle.read().idle();
                         return standOf(idle.read());
                     };

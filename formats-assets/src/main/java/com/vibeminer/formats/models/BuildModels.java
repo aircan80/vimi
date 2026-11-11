@@ -295,7 +295,9 @@ public final class BuildModels {
                             new BuildModelTypes.IdleRead(
                                     outcome.state, outcome.value, outcome.code, outcome.message),
                             boneFiles.isEmpty() ? List.of() : boneFiles.getFirst(),
-                            outcome.state == ReadState.READ ? parent[0] : 0);
+                            // Known once the skeleton parsed, whether or not its Stand was
+                            // admitted.
+                            parent[0]);
                 });
     }
 

@@ -982,6 +982,56 @@ final class RacesServiceTest {
     }
 
     @Test
+    void aRefusedSkeletonStillNamesItsParent() throws Exception {
+        // Own bones beside a parent, but no Stand: refused, and the parent is still named.
+        withSkeletonModel(
+                skeleton(2, 4, 777, true),
+                (service, files) -> {
+                    var idle = service.idle(1, 10, Cancellation.NONE).join();
+                    assertEquals(RaceTypes.State.UNSUPPORTED, idle.state());
+                    assertTrue(
+                            idle.facts()
+                                    .contains("Parent skeleton FileDataID 777 (SKPD) is not read."),
+                            idle.facts().toString());
+                });
+    }
+
+    @Test
+    void unreadableCustomizationTablesAreAskedAgainRatherThanCached() throws Exception {
+        var raw = sharedModelTables(false, 1234);
+        var counting = new CountingTables(raw);
+        counting.failAllPagesOf = "ChrCustomizationBoneSet";
+        var files =
+                new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
+                        .add(1234, "1".repeat(32), withBoneFiles(modelWithStand(0x200), 701, 702))
+                        .add(900, "2".repeat(32), golden("authored-274.skin"));
+        var service = new RacesService(counting.proxy(), files, null);
+        try {
+            var first = service.idle(1, 10, Cancellation.NONE).join();
+            assertEquals(RaceTypes.State.READY, first.state(), first.message());
+            assertTrue(
+                    first.facts().get(1).contains("could not be read: ChrCustomizationBoneSet"),
+                    first.facts().get(1));
+            // Not cached: the next request reads the model and the table again.
+            int opens = files.opens.get();
+            service.idle(1, 10, Cancellation.NONE).join();
+            assertTrue(files.opens.get() > opens, "An unreadable fact is reassessed");
+            // Once the table reads, the fact names the choice and the result is cached.
+            counting.failAllPagesOf = null;
+            var readable = service.idle(1, 10, Cancellation.NONE).join();
+            assertTrue(
+                    readable.facts().get(1).contains("selects bone file 701"),
+                    readable.facts().get(1));
+            opens = files.opens.get();
+            assertEquals(readable.facts(), service.idle(1, 10, Cancellation.NONE).join().facts());
+            assertEquals(opens, files.opens.get());
+        } finally {
+            service.closeAsync().join();
+            raw.closeAsync().join();
+        }
+    }
+
+    @Test
     void skeletonWithoutAStandIsRefused() throws Exception {
         withSkeletonModel(
                 skeleton(2, 4, 0, true),
@@ -1416,6 +1466,9 @@ final class RacesServiceTest {
                 rows = new java.util.concurrent.atomic.AtomicInteger();
         volatile String failPagesOf;
 
+        /** Every page of this table, filtered or not, is unreadable while set. */
+        volatile String failAllPagesOf;
+
         CountingTables(com.vibeminer.formats.tables.BuildTables delegate) {
             this.delegate = delegate;
         }
@@ -1435,7 +1488,9 @@ final class RacesServiceTest {
                 pages.incrementAndGet();
                 var request = (TableTypes.PageRequest) args[0];
                 if (request.table().equals(TableTypes.Ref.forName(String.valueOf(failPagesOf)))
-                        && !request.filters().isEmpty()) {
+                                && !request.filters().isEmpty()
+                        || request.table()
+                                .equals(TableTypes.Ref.forName(String.valueOf(failAllPagesOf)))) {
                     return java.util.concurrent.CompletableFuture.completedFuture(
                             new TableTypes.Page(
                                     null,
