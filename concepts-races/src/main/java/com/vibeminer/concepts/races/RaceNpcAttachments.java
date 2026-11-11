@@ -28,8 +28,16 @@ import java.util.TreeMap;
  * Weapons and shields are server-side NPC equipment and are not in client data.
  */
 final class RaceNpcAttachments {
-    /** Part IDs of attached item surfaces start here, above every character geoset. */
+    /**
+     * Part IDs of attached item surfaces start here, above every character geoset: {@code
+     * FIRST_PART + attachment * 100 + ordinal}, so a part names the attachment point it follows.
+     */
     static final int FIRST_PART = 20000;
+
+    /** The attachment ID an attached item part follows, or -1 for a character part. */
+    static int attachmentOf(int partId) {
+        return partId >= FIRST_PART ? (partId - FIRST_PART) / 100 : -1;
+    }
 
     /** NPC item slots with models: 0 the head, 1 the shoulders. */
     static final int HEAD_SLOT = 0, SHOULDER_SLOT = 1;
@@ -312,12 +320,15 @@ final class RaceNpcAttachments {
                                         itemIndices[i] += vertexBase;
                                     }
                                     indices.add(itemIndices);
+                                    int ordinal = 0;
                                     for (int[] b : bound) {
                                         var section = item.mesh().parts().get(b[0]);
                                         int sectionIndex = meshParts.size();
                                         meshParts.add(
                                                 new PreviewMesh.Part(
-                                                        FIRST_PART + sectionIndex,
+                                                        FIRST_PART
+                                                                + piece.attachment() * 100
+                                                                + Math.min(99, ordinal++),
                                                         indexBase + section.firstIndex(),
                                                         section.indexCount()));
                                         surfaces.add(
