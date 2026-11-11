@@ -153,21 +153,31 @@ final class RaceIdleAnimationsTest {
                         + " face keeps the base rig's shape, as in the static preview. 4"
                         + " customization choices select one; the first recorded 'Face' (option 10)"
                         + " choice, 20, selects bone file 500, which is not applied.",
-                RaceIdleAnimations.boneFileFact(22, choice, null));
+                RaceIdleAnimations.boneFileFact(22, choice, null, true));
         // The first recorded choice may select none.
         var later = RaceIdleAnimations.boneFileChoice(choiceOption, Map.of(), Map.of(22L, 502L));
         assertEquals(new RaceIdleAnimations.BoneFileChoice(10, null, 20, 0, 1), later);
         assertTrue(
-                RaceIdleAnimations.boneFileFact(3, later, null)
+                RaceIdleAnimations.boneFileFact(3, later, null, true)
                         .endsWith(
                                 "1 customization choices select one; the first recorded option 10"
                                         + " choice, 20, selects none."));
         assertEquals(null, RaceIdleAnimations.boneFileChoice(choiceOption, names, Map.of()));
         assertTrue(
-                RaceIdleAnimations.boneFileFact(14, null, null)
+                RaceIdleAnimations.boneFileFact(14, null, null, true)
                         .endsWith("No customization choice of this model selects one."));
+        // Tables read only in part do not establish that no choice selects one.
         assertTrue(
-                RaceIdleAnimations.boneFileFact(14, null, "which choice could not be read: x")
+                RaceIdleAnimations.boneFileFact(14, null, null, false)
+                        .endsWith(
+                                "the customization tables could not be fully read, so which choice"
+                                        + " selects one is not known."));
+        // A found choice is still named when a table is partial.
+        assertTrue(
+                RaceIdleAnimations.boneFileFact(22, choice, null, false)
+                        .endsWith("selects bone file 500, which is not applied."));
+        assertTrue(
+                RaceIdleAnimations.boneFileFact(14, null, "which choice could not be read: x", true)
                         .endsWith(
                                 "Bone files are customization choices; which choice could not be"
                                         + " read: x"));

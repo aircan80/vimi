@@ -136,10 +136,15 @@ public final class BuildModelTypes {
     /**
      * The base rig's Stand read from a model's external skeleton, with the skeleton file's content
      * key (null when it could not be looked up) and the bone files its BFID chunk declares (empty
-     * unless the skeleton was parsed).
+     * unless the skeleton was parsed), and its parent skeleton (SKPD; 0 when it names none or was
+     * not parsed), which is not read.
      */
     public record SkeletonIdleRead(
-            long skeletonFileDataId, String contentKey, IdleRead read, List<Long> boneFileDataIds) {
+            long skeletonFileDataId,
+            String contentKey,
+            IdleRead read,
+            List<Long> boneFileDataIds,
+            long parentFileDataId) {
         public SkeletonIdleRead {
             java.util.Objects.requireNonNull(read);
             boneFileDataIds = List.copyOf(boneFileDataIds);

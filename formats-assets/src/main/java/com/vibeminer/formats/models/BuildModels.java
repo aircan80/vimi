@@ -272,15 +272,18 @@ public final class BuildModels {
                                         null,
                                         null,
                                         "The skeleton file is " + stat.state() + "."),
-                                List.of());
+                                List.of(),
+                                0);
                     }
                     var boneFiles = new ArrayList<List<Long>>(1);
+                    long[] parent = {0};
                     FileOutcome<M2IdleAnimation.Idle> outcome =
                             readFile(
                                     id,
                                     source -> {
                                         var skeleton = M2SkeletonFile.read(source, token).join();
                                         boneFiles.add(skeleton.boneFileDataIds());
+                                        parent[0] = skeleton.parentFileDataId();
                                         return M2IdleAnimation.readSkeleton(
                                                         source, skeleton, model, token)
                                                 .join();
@@ -291,7 +294,8 @@ public final class BuildModels {
                             file.contentKey(),
                             new BuildModelTypes.IdleRead(
                                     outcome.state, outcome.value, outcome.code, outcome.message),
-                            boneFiles.isEmpty() ? List.of() : boneFiles.getFirst());
+                            boneFiles.isEmpty() ? List.of() : boneFiles.getFirst(),
+                            outcome.state == ReadState.READ ? parent[0] : 0);
                 });
     }
 

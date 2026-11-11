@@ -99,7 +99,14 @@ final class RaceIdleAnimations {
         if (stat.state() != FileTypes.FileLookupState.FOUND || stat.file() == null) {
             return RaceMediaTypes.Idle.unavailable(variant, "Model file is " + stat.state() + ".");
         }
-        String key = variant.modelFileDataId() + "\n" + stat.file().contentKey();
+        // The bone-file fact depends on the ChrModel, so one M2 shared by two ChrModels is two
+        // entries.
+        String key =
+                variant.chrModelId()
+                        + "\n"
+                        + variant.modelFileDataId()
+                        + "\n"
+                        + stat.file().contentKey();
         var hit = cached.get(key);
         if (hit != null && unchanged(hit.sourceKeys(), token)) {
             var known = hit.result();
@@ -135,6 +142,10 @@ final class RaceIdleAnimations {
         var boneFiles = new java.util.LinkedHashSet<Long>();
         model.boneFileDataIds().stream().filter(id -> id != 0).forEach(boneFiles::add);
         M2IdleAnimation.Idle[] tracks = {null};
+        // Set when the skeleton could not be read: the result is unavailable, not a refusal.
+        String[] skeletonUnread = {null};
+        long[] parentSkeleton = {0};
+        boolean[] factComplete = {true};
         Supplier<BuildModelTypes.StandRead> standRead;
         if (skeleton == 0) {
             standRead =
@@ -153,6 +164,20 @@ final class RaceIdleAnimations {
                         idle.boneFileDataIds().stream()
                                 .filter(id -> id != 0)
                                 .forEach(boneFiles::add);
+                        var state = idle.read().state();
+                        if (state != BuildModelTypes.ReadState.READ
+                                && state != BuildModelTypes.ReadState.REJECTED) {
+                            skeletonUnread[0] =
+                                    "The external skeleton FileDataID "
+                                            + skeleton
+                                            + " could not be read: "
+                                            + (idle.read().message() == null
+                                                    ? state
+                                                    : idle.read().message());
+                        }
+                        if (state == BuildModelTypes.ReadState.READ) {
+                            parentSkeleton[0] = idle.parentFileDataId();
+                        }
                         tracks[0] = idle.read().idle();
                         return standOf(idle.read());
                     };
@@ -175,14 +200,19 @@ final class RaceIdleAnimations {
                 explain(
                         skeleton,
                         modelBones,
-                        () ->
-                                boneFiles.isEmpty()
-                                        ? null
-                                        : boneFileFact(
-                                                variant.chrModelId(),
-                                                variant.modelFileDataId(),
-                                                List.copyOf(boneFiles),
-                                                token),
+                        () -> {
+                            if (boneFiles.isEmpty()) {
+                                return null;
+                            }
+                            var fact =
+                                    boneFileFact(
+                                            variant.chrModelId(),
+                                            variant.modelFileDataId(),
+                                            List.copyOf(boneFiles),
+                                            token);
+                            factComplete[0] = fact.complete();
+                            return fact.text();
+                        },
                         standRead,
                         token);
         if (!sources.containsKey(key)) {
@@ -190,10 +220,14 @@ final class RaceIdleAnimations {
         }
         var reasons = new ArrayList<>(assessed.reasons());
         var facts = new ArrayList<>(assessed.facts());
-        boolean complete = assessed.complete();
+        if (parentSkeleton[0] != 0) {
+            facts.add("Parent skeleton FileDataID " + parentSkeleton[0] + " (SKPD) is not read.");
+        }
+        // A fact whose tables could not be read now is asked again rather than cached.
+        boolean complete = assessed.complete() && factComplete[0];
         PreviewAnimation animation = null;
-        String unread = null;
-        if (reasons.isEmpty()) {
+        String unread = skeletonUnread[0];
+        if (unread == null && reasons.isEmpty()) {
             if (tracks[0] == null) {
                 throw new IllegalStateException("An admitted Stand carries no tracks");
             }
@@ -389,6 +423,9 @@ final class RaceIdleAnimations {
         return new Assessment(List.copyOf(reasons), List.copyOf(facts), complete);
     }
 
+    /** A bone-file fact; {@code complete} is false when its tables could not be read now. */
+    record Fact(String text, boolean complete) {}
+
     /**
      * Says which customization choice of {@code chrModelId} selects a bone file for model {@code
      * modelFileDataId}; bone files are not applied. A bone file reshapes the face (and sometimes
@@ -397,10 +434,11 @@ final class RaceIdleAnimations {
      * Stand plays on the base rig, which is also the shape the static preview shows. Unreadable
      * tables only make the fact less specific.
      */
-    private String boneFileFact(
+    private Fact boneFileFact(
             long chrModelId, long modelFileDataId, List<Long> boneFiles, Cancellation token) {
         var issues = new ArrayList<String>();
         BoneFileChoice choice;
+        boolean whole;
         try {
             var options = media.data("ChrCustomizationOption", 4096, token, issues);
             var choices = media.data("ChrCustomizationChoice", 40000, token, issues);
@@ -412,6 +450,11 @@ final class RaceIdleAnimations {
             elements.field("ChrCustomizationBoneSetID", true);
             sets.field("BoneFileDataID", true);
             sets.field("ModelFileDataID", true);
+            whole =
+                    options.complete()
+                            && choices.complete()
+                            && elements.complete()
+                            && sets.complete();
             var optionIds = new java.util.HashSet<Long>();
             var optionNames = new java.util.HashMap<Long, String>();
             for (var option : options.rows) {
@@ -445,13 +488,16 @@ final class RaceIdleAnimations {
             }
             choice = boneFileChoice(choiceOption, optionNames, selecting);
         } catch (RacesService.Projection unreadable) {
-            return boneFileFact(
-                    boneFiles.size(),
-                    null,
-                    "which customization choice selects them could not be read: "
-                            + unreadable.getMessage());
+            return new Fact(
+                    boneFileFact(
+                            boneFiles.size(),
+                            null,
+                            "which customization choice selects them could not be read: "
+                                    + unreadable.getMessage(),
+                            true),
+                    !(unreadable instanceof RacesService.Unreadable));
         }
-        return boneFileFact(boneFiles.size(), choice, null);
+        return new Fact(boneFileFact(boneFiles.size(), choice, null, whole), true);
     }
 
     private static String optionName(RacesService.Data options, Db2Types.Row option) {
@@ -498,7 +544,11 @@ final class RaceIdleAnimations {
                 selecting.size());
     }
 
-    static String boneFileFact(int declared, BoneFileChoice choice, String unread) {
+    /**
+     * @param whole false when a customization table was read only in part, so the absence of a
+     *     selecting choice is not established
+     */
+    static String boneFileFact(int declared, BoneFileChoice choice, String unread, boolean whole) {
         var text =
                 new StringBuilder("Bone files (BFID): ")
                         .append(declared)
@@ -506,6 +556,10 @@ final class RaceIdleAnimations {
                         .append(" face keeps the base rig's shape, as in the static preview. ");
         if (unread != null) {
             text.append("Bone files are customization choices; ").append(unread);
+        } else if (choice == null && !whole) {
+            text.append(
+                    "Bone files are customization choices; the customization tables could not be"
+                            + " fully read, so which choice selects one is not known.");
         } else if (choice == null) {
             text.append("No customization choice of this model selects one.");
         } else {
