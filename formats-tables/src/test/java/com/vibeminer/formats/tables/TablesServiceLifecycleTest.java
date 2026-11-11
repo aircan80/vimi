@@ -4,10 +4,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.vibeminer.access.Cancellation;
-import com.vibeminer.access.MemoryObjectSource;
-import com.vibeminer.access.ObservationAdapters;
-import com.vibeminer.access.ObservationSource;
-import com.vibeminer.access.SourceTypes;
 import com.vibeminer.files.BuildFiles;
 import com.vibeminer.files.FileTypes;
 import com.vibeminer.files.Files;
@@ -15,17 +11,12 @@ import com.vibeminer.files.MemoryFiles;
 import com.vibeminer.files.names.FileNames;
 import com.vibeminer.formats.db2.Db2Fixture;
 import com.vibeminer.formats.definitions.BundledDefinitions;
-import com.vibeminer.formats.definitions.FetchedDefinitions;
 import com.vibeminer.formats.definitions.TableDefinitions;
 import com.vibeminer.formats.generated.GeneratedTables;
 import com.vibeminer.generated.MemoryGeneratedStore;
 import java.lang.reflect.Proxy;
-import java.net.URI;
-import java.nio.charset.StandardCharsets;
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
@@ -142,91 +133,13 @@ final class TablesServiceLifecycleTest {
             var service =
                     new TablesService(
                             tracked,
-                            new TableDefinitions(provider(), null, null),
+                            new TableDefinitions(provider()),
                             new GeneratedTables(new MemoryGeneratedStore()),
                             options);
             assertThrows(
                     java.util.concurrent.CompletionException.class,
                     () -> service.forBuild(TablesContract.BUILD, "enUS", Cancellation.NONE).join());
             assertEquals(1, closed.get());
-        }
-    }
-
-    @Test
-    void oneHandleSerializesAndSharesOneDefinitionFetchBudget() {
-        var calls = new AtomicInteger();
-        var started = new CompletableFuture<Void>();
-        var release = new CompletableFuture<Void>();
-        byte[] bytes =
-                "COLUMNS\nint ID\nint Value\n\nLAYOUT 01020304\nBUILD 1.2.3.4\n$id,noninline$ID<u32>\nValue<u32>"
-                        .getBytes(StandardCharsets.UTF_8);
-        var source =
-                new MemoryObjectSource(
-                        List.of(
-                                new ObservationSource() {
-                                    @Override
-                                    public Set<SourceTypes.ObservationKind> kinds() {
-                                        return Set.of(SourceTypes.ObservationKind.DEFINITION);
-                                    }
-
-                                    @Override
-                                    public CompletableFuture<SourceTypes.Observation> fetch(
-                                            SourceTypes.ObservationRequest request,
-                                            Cancellation token) {
-                                        calls.incrementAndGet();
-                                        started.complete(null);
-                                        return release.thenApply(
-                                                ignored ->
-                                                        new SourceTypes.Observation(
-                                                                request.kind(),
-                                                                request.product(),
-                                                                request.region(),
-                                                                URI.create(
-                                                                        ObservationAdapters
-                                                                                .definitionUrl(
-                                                                                        "c"
-                                                                                                .repeat(
-                                                                                                        40),
-                                                                                        request
-                                                                                                .name())),
-                                                                Instant.EPOCH,
-                                                                bytes));
-                                    }
-                                }));
-        var definitions =
-                new TableDefinitions(
-                        provider(),
-                        new FetchedDefinitions(source),
-                        token -> CompletableFuture.completedFuture(true));
-        var service =
-                new TablesService(
-                        files(),
-                        definitions,
-                        new GeneratedTables(new MemoryGeneratedStore()),
-                        new TablesOptions(
-                                (build, token) -> CompletableFuture.completedFuture("1.2.3.5")));
-        var handle =
-                service.forBuild(TablesContract.BUILD, "enUS", Cancellation.NONE).join().tables();
-        try {
-            var first =
-                    handle.check(
-                            TableTypes.Ref.id(100),
-                            TableTypes.Priority.INTERACTIVE,
-                            Cancellation.NONE);
-            started.join();
-            var second =
-                    handle.check(
-                            TableTypes.Ref.id(101),
-                            TableTypes.Priority.INTERACTIVE,
-                            Cancellation.NONE);
-            release.complete(null);
-            assertEquals(TableTypes.State.READY, first.join().state());
-            assertEquals(TableTypes.State.READY, second.join().state());
-            handle.check(TableTypes.Ref.id(101), TableTypes.Priority.INTERACTIVE, Cancellation.NONE)
-                    .join();
-            assertEquals(1, calls.get());
-        } finally {
-            handle.close();
         }
     }
 
@@ -264,7 +177,7 @@ final class TablesServiceLifecycleTest {
         var service =
                 new TablesService(
                         files,
-                        new TableDefinitions(provider, null, null),
+                        new TableDefinitions(provider),
                         new GeneratedTables(new MemoryGeneratedStore()),
                         new TablesOptions(
                                 (build, token) -> CompletableFuture.completedFuture("1.2.3.4")));

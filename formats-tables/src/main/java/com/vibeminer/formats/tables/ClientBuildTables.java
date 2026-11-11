@@ -734,15 +734,10 @@ final class ClientBuildTables implements BuildTables {
                                 content,
                                 limits,
                                 encodingScope());
-                if (options.localDefinitionsOnly()
-                        || !definitions
-                                .refreshDue(manifest.get(id).tableId(), version, layout, token)
-                                .join()) {
-                    var hit = openPreferred(source, keys, token, false, nativeOnly);
-                    if (hit != null) {
-                        backgroundBuilds.stored(source);
-                        return checked(id, content, definition, hit, null, null, hit.identity());
-                    }
+                var hit = openPreferred(source, keys, token, false, nativeOnly);
+                if (hit != null) {
+                    backgroundBuilds.stored(source);
+                    return checked(id, content, definition, hit, null, null, hit.identity());
                 }
             }
         }

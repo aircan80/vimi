@@ -147,20 +147,17 @@ final class HttpActivityTest {
     void everyClientFamilyLabelsActualMetadataBodyBytes() throws Exception {
         var meter = new NetworkActivity();
         String commit = "a".repeat(40);
-        String commits = "[{\"sha\":\"" + commit + "\"}]";
         var dispatcher =
                 new Dispatcher() {
                     @Override
                     public MockResponse dispatch(RecordedRequest request) {
-                        return new MockResponse()
-                                .setBody(request.getPath().contains("/commits?") ? commits : "abc");
+                        return new MockResponse().setBody("abc");
                     }
                 };
         try (var fixture = new LoopbackSources(new NetworkOptions(), dispatcher, false, meter)) {
             var clients = fixture.clients();
             clients.fetch("wow", "us", NetworkTypes.DocumentKind.VERSIONS, Cancellation.NONE)
                     .join();
-            clients.fetch("Item", Cancellation.NONE).join();
             clients.fetchTactKeys(Cancellation.NONE).join();
             clients.fetchEgLinkHead(Cancellation.NONE).join();
             clients.fetchEgLinkFile(commit, "data/index.json", Cancellation.NONE).join();
@@ -172,7 +169,6 @@ final class HttpActivityTest {
                 long expected =
                         switch (category.kind()) {
                             case BUILD_METADATA, TACT_KEYS, LISTFILE -> 3;
-                            case DEFINITIONS -> commits.length() + 3L;
                             case EG_LINK, POLESTAR -> 6;
                             case CDN, QUESTIE -> 0;
                         };

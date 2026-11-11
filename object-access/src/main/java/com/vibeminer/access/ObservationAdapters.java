@@ -4,7 +4,6 @@ import com.vibeminer.access.SourceTypes.Observation;
 import com.vibeminer.access.SourceTypes.ObservationKind;
 import com.vibeminer.access.SourceTypes.ObservationRequest;
 import com.vibeminer.network.CdnException;
-import com.vibeminer.network.DefinitionClient;
 import com.vibeminer.network.ListfileClient;
 import com.vibeminer.network.NetworkTypes.Attempt;
 import com.vibeminer.network.NetworkTypes.DocumentKind;
@@ -67,36 +66,6 @@ public final class ObservationAdapters {
                                                             request.kind(),
                                                             reply.product(),
                                                             reply.region(),
-                                                            reply.url(),
-                                                            reply.observedAt(),
-                                                            reply.bytes()));
-                        });
-            }
-        };
-    }
-
-    public static ObservationSource definitions(DefinitionClient client) {
-        Objects.requireNonNull(client);
-        return new ObservationSource() {
-            @Override
-            public Set<ObservationKind> kinds() {
-                return Set.of(ObservationKind.DEFINITION);
-            }
-
-            @Override
-            public CompletableFuture<Observation> fetch(
-                    ObservationRequest request, Cancellation cancellation) {
-                return call(
-                        () -> {
-                            require(request, Set.of(ObservationKind.DEFINITION));
-                            cancellation.check();
-                            return client.fetch(request.name(), cancellation.networkToken())
-                                    .thenApply(
-                                            reply ->
-                                                    new Observation(
-                                                            ObservationKind.DEFINITION,
-                                                            request.product(),
-                                                            request.region(),
                                                             reply.url(),
                                                             reply.observedAt(),
                                                             reply.bytes()));
@@ -188,32 +157,6 @@ public final class ObservationAdapters {
                         });
             }
         };
-    }
-
-    public static String definitionUrl(String revision, String tableName) {
-        return SourceUrls.definition(revision, tableName).toString();
-    }
-
-    /**
-     * Exact raw-file identity only: redirects, queries, fragments and other revisions do not match.
-     */
-    public static String definitionRevision(String url, String tableName) {
-        Objects.requireNonNull(url);
-        Objects.requireNonNull(tableName);
-        String prefix = "https://raw.githubusercontent.com/wowdev/WoWDBDefs/",
-                suffix = "/definitions/" + tableName + ".dbd";
-        if (!url.startsWith(prefix) || url.length() != prefix.length() + 40 + suffix.length()) {
-            return null;
-        }
-        String revision = url.substring(prefix.length(), prefix.length() + 40);
-        if (!revision.matches("[0-9a-f]{40}")) {
-            return null;
-        }
-        try {
-            return url.equals(definitionUrl(revision, tableName)) ? revision : null;
-        } catch (IllegalArgumentException invalid) {
-            return null;
-        }
     }
 
     private static void require(ObservationRequest request, Set<ObservationKind> kinds) {

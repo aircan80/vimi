@@ -146,18 +146,6 @@ public final class NetworkTypes {
         }
     }
 
-    public record DefinitionReply(
-            String tableName, String revision, URI url, Instant observedAt, byte[] bytes) {
-        public DefinitionReply {
-            bytes = bytes.clone();
-        }
-
-        @Override
-        public byte[] bytes() {
-            return bytes.clone();
-        }
-    }
-
     public record EgLinkReply(URI url, Instant observedAt, byte[] bytes) {
         public EgLinkReply {
             bytes = bytes.clone();

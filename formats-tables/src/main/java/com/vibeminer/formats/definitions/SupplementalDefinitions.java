@@ -43,7 +43,7 @@ public final class SupplementalDefinitions {
                     "DEFINITION_CORRUPT", "Supplement does not cover its declared profile");
         }
         return new TableDefinitions.Definition(
-                TableDefinitions.Source.SUPPLEMENTAL, SHA256, SOURCE_URL, REVISION, document, null);
+                TableDefinitions.Source.SUPPLEMENTAL, SHA256, SOURCE_URL, REVISION, document);
     }
 
     static DbdDocument verify(byte[] bytes) {

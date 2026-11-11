@@ -267,7 +267,7 @@ public abstract class SourceContracts {
     }
 
     @Test
-    void versionsDefinitionsAndListfileRepliesPreserveRawBytesAndSourceIdentity() {
+    void versionsAndListfileRepliesPreserveRawBytesAndSourceIdentity() {
         byte[] document =
                 "Name!STRING:0|BuildId!DEC:4\nus|12345\n".getBytes(StandardCharsets.UTF_8);
         scenario.version("wow", "us", DocumentKind.VERSIONS, document);
@@ -278,12 +278,6 @@ public abstract class SourceContracts {
         assertArrayEquals(document, version.bytes());
         assertEquals(SourceUrls.version("wow", "us", DocumentKind.VERSIONS), version.url());
         assertEquals(NOW, version.observedAt());
-        byte[] definition = "COLUMNS\nint ID\n".getBytes(StandardCharsets.UTF_8);
-        scenario.definition("Item", definition);
-        var def = scenario.definitions().fetch("Item", Cancellation.NONE).join();
-        assertArrayEquals(definition, def.bytes());
-        assertEquals(SourceScenario.REVISION, def.revision());
-        assertEquals(SourceUrls.definition(SourceScenario.REVISION, "Item"), def.url());
         byte[] release = "{\"tag_name\":\"2026-11-01\"}".getBytes(StandardCharsets.UTF_8);
         scenario.release(release);
         assertArrayEquals(
@@ -318,11 +312,6 @@ public abstract class SourceContracts {
                                                         Cancellation.NONE)
                                                 .join())
                         .overall());
-        scenario.definition("Item", oversized);
-        assertEquals(
-                Failure.TOO_LARGE,
-                failure(() -> scenario.definitions().fetch("Item", Cancellation.NONE).join())
-                        .overall());
         scenario.release(oversized);
         assertEquals(
                 Failure.PROTOCOL,
@@ -331,7 +320,7 @@ public abstract class SourceContracts {
     }
 
     @Test
-    void emptyVersionIsRefusedWhileRawDefinitionAndReleaseCanBeEmpty() {
+    void emptyVersionIsRefusedWhileRawReleaseCanBeEmpty() {
         scenario.version("wow", "us", DocumentKind.VERSIONS, new byte[0]);
         assertEquals(
                 Failure.SIZE_CONFLICT,
@@ -345,10 +334,6 @@ public abstract class SourceContracts {
                                                         Cancellation.NONE)
                                                 .join())
                         .overall());
-        scenario.definition("Item", new byte[0]);
-        assertArrayEquals(
-                new byte[0],
-                scenario.definitions().fetch("Item", Cancellation.NONE).join().bytes());
         scenario.release(new byte[0]);
         assertArrayEquals(
                 new byte[0], scenario.listfile().fetchRelease(Cancellation.NONE).join().bytes());
@@ -363,7 +348,6 @@ public abstract class SourceContracts {
                         scenario.cdn()
                                 .fetch(ROUTE, Request.whole(ObjectKind.DATA, key(1)), canceled),
                         scenario.versions().fetch("wow", "us", DocumentKind.VERSIONS, canceled),
-                        scenario.definitions().fetch("Item", canceled),
                         scenario.listfile().fetchRelease(canceled),
                         scenario.listfile().fetchPart("release-1", 0, canceled));
         for (var future : futures) {

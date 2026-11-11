@@ -2,17 +2,12 @@ package com.vibeminer.network;
 
 import static com.vibeminer.network.HttpEngine.fault;
 
-import com.fasterxml.jackson.core.JsonFactory;
-import com.fasterxml.jackson.core.JsonParser;
-import com.fasterxml.jackson.core.JsonToken;
-import com.fasterxml.jackson.core.StreamReadConstraints;
 import com.vibeminer.activity.TransferObserver;
 import com.vibeminer.activity.TransferObserver.Kind;
 import com.vibeminer.network.HttpEngine.Budget;
 import com.vibeminer.network.HttpEngine.Exchange;
 import com.vibeminer.network.HttpEngine.Fault;
 import com.vibeminer.network.NetworkTypes.Attempt;
-import com.vibeminer.network.NetworkTypes.DefinitionReply;
 import com.vibeminer.network.NetworkTypes.DocumentKind;
 import com.vibeminer.network.NetworkTypes.Failure;
 import com.vibeminer.network.NetworkTypes.ListfilePart;
@@ -22,7 +17,6 @@ import com.vibeminer.network.NetworkTypes.Request;
 import com.vibeminer.network.NetworkTypes.Sink;
 import com.vibeminer.network.NetworkTypes.VersionReply;
 import java.io.ByteArrayOutputStream;
-import java.io.IOException;
 import java.net.URI;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -41,7 +35,6 @@ import java.util.regex.Pattern;
 public final class NetworkClients
         implements CdnClient,
                 VersionClient,
-                DefinitionClient,
                 ListfileClient,
                 TactKeyClient,
                 EgLinkClient,
@@ -383,53 +376,6 @@ public final class NetworkClients
     }
 
     @Override
-    public CompletableFuture<DefinitionReply> fetch(String tableName, Cancellation token) {
-        URI first = SourceUrls.commits(tableName);
-        return definitions.queue.submit(
-                token,
-                () -> {
-                    URI[] at = {first};
-                    Budget budget = new Budget(options.timeouts().definitions());
-                    try {
-                        byte[] json;
-                        try (Exchange e =
-                                definitions.send(
-                                        first,
-                                        githubHeaders(true),
-                                        token,
-                                        budget,
-                                        true,
-                                        Kind.DEFINITIONS)) {
-                            checkGithub(e);
-                            noEncoding(e);
-                            json = e.bytes(SourceUrls.COMMIT_BYTES, Failure.PROTOCOL, true);
-                        }
-                        String revision = revision(json);
-                        at[0] = SourceUrls.definition(revision, tableName);
-                        try (Exchange e =
-                                definitions.send(
-                                        at[0],
-                                        githubHeaders(false),
-                                        token,
-                                        budget,
-                                        true,
-                                        Kind.DEFINITIONS)) {
-                            checkGithub(e);
-                            noEncoding(e);
-                            return new DefinitionReply(
-                                    tableName,
-                                    revision,
-                                    at[0],
-                                    e.observedAt,
-                                    e.bytes(SourceUrls.DOCUMENT_BYTES, Failure.TOO_LARGE, true));
-                        }
-                    } catch (Fault failure) {
-                        throw definitions.failure(at[0], failure);
-                    }
-                });
-    }
-
-    @Override
     public CompletableFuture<NetworkTypes.TactKeyReply> fetchTactKeys(Cancellation token) {
         URI url = SourceUrls.TACT_KEYS;
         return definitions.queue.submit(
@@ -548,58 +494,6 @@ public final class NetworkClients
         }
         if (status < 200 || status >= 300) {
             throw fault(Failure.HTTP_STATUS, "GitHub HTTP " + status, status);
-        }
-    }
-
-    private static String revision(byte[] json) {
-        JsonFactory factory =
-                JsonFactory.builder()
-                        .streamReadConstraints(
-                                StreamReadConstraints.builder()
-                                        .maxNestingDepth(64)
-                                        .maxStringLength(SourceUrls.COMMIT_BYTES)
-                                        .build())
-                        .build();
-        try (JsonParser parser = factory.createParser(json)) {
-            if (parser.nextToken() != JsonToken.START_ARRAY) {
-                throw fault(Failure.PROTOCOL, "Commit response is not an array", null);
-            }
-            JsonToken first = parser.nextToken();
-            if (first == JsonToken.END_ARRAY) {
-                if (parser.nextToken() != null) {
-                    throw fault(Failure.PROTOCOL, "Trailing JSON content", null);
-                }
-                throw fault(Failure.NOT_FOUND, "No commit changes this definition", null);
-            }
-            if (first != JsonToken.START_OBJECT) {
-                throw fault(Failure.PROTOCOL, "Commit response has no object", null);
-            }
-            String revision = null;
-            while (parser.nextToken() != JsonToken.END_OBJECT) {
-                if (parser.currentToken() != JsonToken.FIELD_NAME) {
-                    throw fault(Failure.PROTOCOL, "Malformed commit object", null);
-                }
-                String name = parser.currentName();
-                JsonToken value = parser.nextToken();
-                if ("sha".equals(name)) {
-                    revision = value == JsonToken.VALUE_STRING ? parser.getText() : null;
-                }
-                parser.skipChildren();
-            }
-            while (parser.nextToken() != JsonToken.END_ARRAY) {
-                if (parser.currentToken() == null) {
-                    throw fault(Failure.PROTOCOL, "Truncated commits array", null);
-                }
-                parser.skipChildren();
-            }
-            if (parser.nextToken() != null
-                    || revision == null
-                    || !revision.matches("[0-9a-f]{40}")) {
-                throw fault(Failure.PROTOCOL, "Invalid definition commit SHA", null);
-            }
-            return revision;
-        } catch (IOException e) {
-            throw fault(Failure.PROTOCOL, "Unreadable commit response", null);
         }
     }
 

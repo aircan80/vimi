@@ -6,10 +6,7 @@ import java.util.Set;
 
 /** Fixed sources from the pinned seven-layer reference. No caller-supplied download host. */
 public final class SourceUrls {
-    public static final int DOCUMENT_BYTES = 1 << 20,
-            COMMIT_BYTES = 256 << 10,
-            PART_BYTES = 8 << 20,
-            MAX_PARTS = 64;
+    public static final int DOCUMENT_BYTES = 1 << 20, PART_BYTES = 8 << 20, MAX_PARTS = 64;
     public static final long MAX_ASSET_BYTES = 512L << 20;
     public static final String ASSET_NAME = "community-listfile-withcapitals.csv";
     public static final URI TACT_KEYS =
@@ -87,32 +84,6 @@ public final class SourceUrls {
                                         + product
                                         + "/"
                                         + kind.name().toLowerCase(java.util.Locale.ROOT)));
-    }
-
-    public static String table(String name) {
-        if (name == null || !name.matches("[A-Za-z0-9_-]{1,128}")) {
-            throw new IllegalArgumentException("Invalid definition table name");
-        }
-        return name;
-    }
-
-    public static URI commits(String table) {
-        return URI.create(
-                "https://api.github.com/repos/wowdev/WoWDBDefs/commits?path=definitions/"
-                        + table(table)
-                        + ".dbd&sha=master&per_page=1");
-    }
-
-    public static URI definition(String revision, String table) {
-        if (revision == null || !revision.matches("[0-9a-f]{40}")) {
-            throw new IllegalArgumentException("Invalid definition commit");
-        }
-        return URI.create(
-                "https://raw.githubusercontent.com/wowdev/WoWDBDefs/"
-                        + revision
-                        + "/definitions/"
-                        + table(table)
-                        + ".dbd");
     }
 
     public static URI asset(String tag) {

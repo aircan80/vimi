@@ -475,56 +475,6 @@ final class HttpProtocolTest {
     }
 
     @Test
-    void definitionsRequireAStrictCommitResponseAndNeverFetchAnUntrustedRevision()
-            throws Exception {
-        for (String json :
-                List.of(
-                        "{}",
-                        "[{\"sha\":\"bad\"}]",
-                        "[{\"sha\":1}]",
-                        "[{\"sha\":\"" + "A".repeat(40) + "\"}]",
-                        "[{\"sha\":\"" + SourceScenario.REVISION + "\"}] {}",
-                        "[".repeat(65) + "]".repeat(65))) {
-            try (LoopbackSources fixture =
-                    new LoopbackSources(
-                            new NetworkOptions(), answer(r -> new MockResponse().setBody(json)))) {
-                assertEquals(
-                        Failure.PROTOCOL,
-                        failed(() -> fixture.clients().fetch("Item", Cancellation.NONE)).overall());
-                assertEquals(1, fixture.requestCount());
-            }
-        }
-        try (LoopbackSources fixture =
-                new LoopbackSources(
-                        new NetworkOptions(), answer(r -> new MockResponse().setBody("[]")))) {
-            assertEquals(
-                    Failure.NOT_FOUND,
-                    failed(() -> fixture.clients().fetch("Item", Cancellation.NONE)).overall());
-        }
-    }
-
-    @Test
-    void definitionsShareOneTotalBudgetAcrossCommitAndRawFile() throws Exception {
-        try (LoopbackSources fixture =
-                new LoopbackSources(
-                        fast(2000, 2000, 300),
-                        answer(
-                                r ->
-                                        new MockResponse()
-                                                .setBody(
-                                                        r.getPath().contains("api.github.com")
-                                                                ? "[{\"sha\":\""
-                                                                        + SourceScenario.REVISION
-                                                                        + "\"}]"
-                                                                : "definition")
-                                                .setHeadersDelay(200, TimeUnit.MILLISECONDS)))) {
-            assertEquals(
-                    Failure.TIMEOUT,
-                    failed(() -> fixture.clients().fetch("Item", Cancellation.NONE)).overall());
-        }
-    }
-
-    @Test
     void sourceSpecificByteLimitsAndStatusFailuresArePreserved() throws Exception {
         try (LoopbackSources fixture =
                 new LoopbackSources(
@@ -548,9 +498,6 @@ final class HttpProtocolTest {
             assertEquals(
                     Failure.PROTOCOL,
                     failed(() -> fixture.clients().fetchRelease(Cancellation.NONE)).overall());
-            assertEquals(
-                    Failure.PROTOCOL,
-                    failed(() -> fixture.clients().fetch("Item", Cancellation.NONE)).overall());
         }
         for (int status : new int[] {403, 404, 429, 500}) {
             try (LoopbackSources fixture =
@@ -781,18 +728,13 @@ final class HttpProtocolTest {
                                     } finally {
                                         active.decrementAndGet();
                                     }
-                                    return new MockResponse()
-                                            .setBody(
-                                                    r.getPath().contains("api.github.com")
-                                                            ? "[{\"sha\":\""
-                                                                    + SourceScenario.REVISION
-                                                                    + "\"}]"
-                                                            : "definition");
+                                    return new MockResponse().setBody("keys");
                                 }))) {
             java.util.ArrayList<CompletableFuture<?>> tasks = new java.util.ArrayList<>();
             try {
                 for (int i = 0; i < 4; i++) {
-                    tasks.add(fixture.clients().fetch("Item" + i, Cancellation.NONE));
+                    // TACT keys share the bounded GitHub engine (two at a time).
+                    tasks.add(fixture.clients().fetchTactKeys(Cancellation.NONE));
                 }
                 assertTrue(entered.await(5, TimeUnit.SECONDS));
                 assertEquals(2, fixture.requestCount());

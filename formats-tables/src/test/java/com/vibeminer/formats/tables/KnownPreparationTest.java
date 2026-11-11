@@ -58,7 +58,7 @@ final class KnownPreparationTest {
                                         "a".repeat(64), "fixture", definition)));
         return new TablesService(
                 files,
-                new TableDefinitions(provider, null, null),
+                new TableDefinitions(provider),
                 new GeneratedTables(new MemoryGeneratedStore()),
                 new TablesOptions((build, token) -> CompletableFuture.completedFuture("1.2.3.4"))
                         .withLocalDefinitionsOnly());
@@ -278,7 +278,7 @@ final class KnownPreparationTest {
         var source =
                 new TablesService(
                         held,
-                        new TableDefinitions(provider, null, null),
+                        new TableDefinitions(provider),
                         new GeneratedTables(new MemoryGeneratedStore()),
                         new TablesOptions(
                                 (build, token) -> CompletableFuture.completedFuture("1.2.3.4")));
@@ -342,7 +342,7 @@ final class KnownPreparationTest {
                                         "a".repeat(64), "fixture", definition)));
         return new TablesService(
                 files,
-                new TableDefinitions(provider, null, null),
+                new TableDefinitions(provider),
                 new GeneratedTables(store),
                 localDefinitionsOnly
                         ? new TablesOptions(
