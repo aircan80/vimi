@@ -262,18 +262,25 @@ public final class M2Types {
     }
 
     /**
-     * Position/topology proof only; bone palettes, materials, visibility and pose are not
-     * evaluated.
+     * Position/topology proof only; materials, visibility and pose are not evaluated. {@code
+     * boneProperties} holds, per lookup vertex, its four section-local bone palette indices (one
+     * byte each), which name bones through the model's bone lookup from the section's {@code
+     * boneStart}.
      */
     public record RestSkin(
             Model model,
             List<Integer> vertexLookup,
             List<Integer> triangleLookup,
-            List<Section> sections) {
+            List<Section> sections,
+            List<Long> boneProperties) {
         public RestSkin {
             vertexLookup = List.copyOf(vertexLookup);
             triangleLookup = List.copyOf(triangleLookup);
             sections = List.copyOf(sections);
+            boneProperties = List.copyOf(boneProperties);
+            if (boneProperties.size() != vertexLookup.size()) {
+                throw new IllegalArgumentException("One bone-property record per lookup vertex");
+            }
         }
     }
 

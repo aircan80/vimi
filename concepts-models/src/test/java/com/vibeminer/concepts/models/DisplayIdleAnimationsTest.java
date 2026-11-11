@@ -28,6 +28,7 @@ class DisplayIdleAnimationsTest {
             for (int vertex = 0; vertex < 2; vertex++) {
                 fixture.body.putInt(fixture.vertices + vertex * 48 + 16, 0);
             }
+            fixture.syncBoneProperties();
             int sequences = fixture.body.position();
             fixture.declaration(28, 1, sequences);
             fixture.body.position(sequences + 64);
@@ -122,7 +123,7 @@ class DisplayIdleAnimationsTest {
             var animation =
                     DisplayIdleAnimations.admit(
                             parsed.model(),
-                            parsed.rest().surface().vertexLookup(),
+                            parsed.rest().surface(),
                             idle,
                             surface.mesh(),
                             surface.normals(),
@@ -252,7 +253,7 @@ class DisplayIdleAnimationsTest {
                         .join();
         return DisplayIdleAnimations.admitWorld(
                 parsed.model(),
-                parsed.rest().surface().vertexLookup(),
+                parsed.rest().surface(),
                 idle,
                 surface.mesh(),
                 surface.normals(),
@@ -356,6 +357,7 @@ class DisplayIdleAnimationsTest {
         // the billboard bone 1.
         var descendant = new Authored().translate(0).parent(2, 1);
         descendant.fixture.body.putInt(descendant.fixture.vertices + 3 * 48 + 16, 2);
+        descendant.fixture.syncBoneProperties();
         assertArrayEquals(new int[] {2, 3}, admitWorld(descendant).leftOut());
         // A cylindrical billboard (0x40) is left out the same way.
         assertArrayEquals(
@@ -462,7 +464,7 @@ class DisplayIdleAnimationsTest {
         var animation =
                 DisplayIdleAnimations.admit(
                         model,
-                        rest.surface().vertexLookup(),
+                        rest.surface(),
                         idle,
                         surface.mesh(),
                         surface.normals(),
@@ -474,6 +476,100 @@ class DisplayIdleAnimationsTest {
             // Bone 1 follows its parent, bone 0, which lifts by 2 at half time.
             assertEquals(before[vertex * 3 + 2] + 2, after[vertex * 3 + 2], 1e-5);
         }
+    }
+
+    @Test
+    void aSkinPaletteThatDiffersFromTheVertexIndicesIsRefused() throws Exception {
+        // The bone lookup swaps bones 1 and 2: the section's palette slot 1 names bone 2, while
+        // the vertices name bone 1 directly.
+        unsupported(
+                "Skin section 0 names bones through a palette that differs",
+                authored -> {
+                    int lookup = authored.fixture.body.getInt(124);
+                    authored.fixture.body.putShort(lookup + 2, (short) 2);
+                    authored.fixture.body.putShort(lookup + 4, (short) 1);
+                });
+    }
+
+    /**
+     * A skeleton of {@code bones} bones: bone 0 a root translating (0,0,0)-(0,0,4), every other
+     * bone a keyless child of bone 0.
+     */
+    static byte[] skeleton(int bones) {
+        var s = java.nio.ByteBuffer.allocate(32 + 64).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        s.putInt(8, 1).putInt(12, 32);
+        s.putInt(32 + 4, 1000).putInt(32 + 12, 0x20);
+        var b =
+                java.nio.ByteBuffer.allocate(16 + bones * 88 + 48)
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        b.putInt(0, bones).putInt(4, 16);
+        for (int bone = 0; bone < bones; bone++) {
+            int row = 16 + bone * 88;
+            b.putInt(row, -1).putInt(row + 4, 512).putShort(row + 8, (short) (bone == 0 ? -1 : 0));
+            for (int track : new int[] {16, 36, 56}) {
+                b.putShort(row + track + 2, (short) -1);
+            }
+        }
+        int data = 16 + bones * 88, row = 16 + TRACK_TRANSLATION;
+        b.putShort(row, (short) 1).putInt(row + 4, 1).putInt(row + 8, data);
+        b.putInt(row + 12, 1).putInt(row + 16, data + 8);
+        b.putInt(data, 2).putInt(data + 4, data + 16);
+        b.putInt(data + 8, 2).putInt(data + 12, data + 24);
+        b.putInt(data + 16, 0).putInt(data + 20, 1000);
+        b.putFloat(data + 24 + 20, 4);
+        var out = new java.io.ByteArrayOutputStream();
+        out.writeBytes(chunk("SKL1", new byte[16]));
+        out.writeBytes(chunk("SKS1", s.array()));
+        out.writeBytes(chunk("SKB1", b.array()));
+        return out.toByteArray();
+    }
+
+    @Test
+    void rigsOfMoreThan256BonesBindThroughAnIdentityPalette() throws Exception {
+        var fixture = skeletonFixture();
+        var model =
+                com.vibeminer.formats.models.M2ModelReader.read(
+                                AssetSource.bytes(skeletonModel(fixture)))
+                        .join();
+        var rest =
+                com.vibeminer.formats.models.M2RestDrawSkinReader.read(
+                                AssetSource.bytes(
+                                        java.util.Arrays.copyOf(
+                                                fixture.skin.array(), fixture.skin.position())),
+                                model,
+                                null,
+                                Cancellation.NONE)
+                        .join();
+        var surface = DisplayModelService.restSurface(model, rest.surface(), Cancellation.NONE);
+        var source = AssetSource.bytes(skeleton(300));
+        var skeleton =
+                com.vibeminer.formats.models.M2SkeletonFile.read(source, Cancellation.NONE).join();
+        var idle = M2IdleAnimation.readSkeleton(source, skeleton, model, Cancellation.NONE).join();
+        assertEquals(300, idle.rig().size());
+        var animation =
+                DisplayIdleAnimations.admit(
+                        model,
+                        rest.surface(),
+                        idle,
+                        surface.mesh(),
+                        surface.normals(),
+                        Cancellation.NONE);
+        assertEquals(300, animation.boneCount());
+        float[] before = surface.mesh().positions();
+        float[] after = animation.pose(surface.mesh(), 500).mesh().positions();
+        for (int vertex = 0; vertex < surface.mesh().vertexCount(); vertex++) {
+            assertEquals(before[vertex * 3 + 2] + 2, after[vertex * 3 + 2], 1e-5);
+        }
+        var world =
+                DisplayIdleAnimations.admitWorld(
+                        model,
+                        rest.surface(),
+                        idle,
+                        surface.mesh(),
+                        surface.normals(),
+                        Cancellation.NONE);
+        assertEquals(300, world.animation().boneCount());
+        assertEquals(0, world.leftOut().length);
     }
 
     /** The material fixture with no bones of its own; its vertices name bone 1. */

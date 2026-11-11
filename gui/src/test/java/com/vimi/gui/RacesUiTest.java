@@ -35,6 +35,10 @@ public final class RacesUiTest {
     private static final CompletableFuture<Void> modelRetirementChecks = new CompletableFuture<>();
     private static final CompletableFuture<Void> standChecks = new CompletableFuture<>();
     private static final CompletableFuture<Void> standMismatchChecks = new CompletableFuture<>();
+    private static final CompletableFuture<Void> heldSurfaceChecks = new CompletableFuture<>();
+    private static final CompletableFuture<Void> heldTexturedChecks = new CompletableFuture<>();
+    private static final CompletableFuture<Void> heldFallbackChecks = new CompletableFuture<>();
+    private static final CompletableFuture<Void> heldReleaseChecks = new CompletableFuture<>();
 
     public static void main(String[] args) throws Exception {
         var done = new CompletableFuture<Void>();
@@ -48,6 +52,11 @@ public final class RacesUiTest {
                         modelRetirementFeedback();
                         standOffered(false, standChecks);
                         standOffered(true, standMismatchChecks);
+                        idleDefaultsAndRememberedChoice();
+                        texturesArePreparedBehindALoadingState(heldSurfaceChecks);
+                        heldSurfaceShowsTheTexturedFrameFirst(heldTexturedChecks);
+                        aFailedTexturedFrameFallsBackToTheHeldSurface(heldFallbackChecks);
+                        anotherModelReleasesTheHeldSurface(heldReleaseChecks);
                         var human = new RaceTypes.Race(1, "Authored Human", 1, 2);
                         var internal = new RaceTypes.Race(99, "Internal record", 99, 0);
                         var pending = new CompletableFuture<RaceTypes.Overview>();
@@ -270,7 +279,7 @@ public final class RacesUiTest {
                                                                                 value ->
                                                                                         value
                                                                                                 .contains(
-                                                                                                        "preparing"
+                                                                                                        "Preparing"
                                                                                                             + " textures"
                                                                                                             + " and starting"
                                                                                                             + " clothing")),
@@ -579,6 +588,10 @@ public final class RacesUiTest {
             modelRetirementChecks.get(5, TimeUnit.SECONDS);
             standChecks.get(5, TimeUnit.SECONDS);
             standMismatchChecks.get(5, TimeUnit.SECONDS);
+            heldSurfaceChecks.get(5, TimeUnit.SECONDS);
+            heldTexturedChecks.get(5, TimeUnit.SECONDS);
+            heldFallbackChecks.get(5, TimeUnit.SECONDS);
+            heldReleaseChecks.get(5, TimeUnit.SECONDS);
             System.out.println(
                     "Races UI: partial data, icons, internal-record filter, stale selection and"
                             + " borrowed lifetime passed");
@@ -1132,10 +1145,298 @@ public final class RacesUiTest {
                                                                     "Idle animation"
                                                                             + " unavailable")),
                             "Race Stand is offered with its status and facts: " + labels(panel));
+                    var toggle =
+                            (javafx.scene.control.CheckBox)
+                                    panel.lookup("#model-idle-animation");
+                    require(toggle.isSelected(), "Races play an offered Stand by default");
+                    toggle.fire();
+                    require(!toggle.isSelected(), "The user can still stop the idle");
                     panel.close();
                     checks.complete(null);
                 },
                 checks);
+    }
+
+    /** A one-triangle surface and a one-bone Stand prepared for it. */
+    private static com.vibeminer.rendering.models.PreviewMesh triangle() {
+        return new com.vibeminer.rendering.models.PreviewMesh(
+                new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0},
+                new int[] {0, 1, 2},
+                List.of(new com.vibeminer.rendering.models.PreviewMesh.Part(0, 0, 3)));
+    }
+
+    private static com.vibeminer.rendering.models.PreviewAnimation stand(
+            com.vibeminer.rendering.models.PreviewMesh mesh) {
+        var bone =
+                new com.vibeminer.rendering.models.PreviewAnimation.Bone(
+                        -1,
+                        0,
+                        0,
+                        0,
+                        new com.vibeminer.rendering.models.PreviewAnimation.Track(
+                                com.vibeminer.rendering.models.PreviewAnimation.Interpolation
+                                        .LINEAR,
+                                -1,
+                                3,
+                                new int[] {0, 1000},
+                                new float[] {0, 0, 0, 0, 0, 1}),
+                        null,
+                        null,
+                        false);
+        return new com.vibeminer.rendering.models.PreviewAnimation(
+                "Stand",
+                1000,
+                new long[0],
+                List.of(bone),
+                mesh,
+                new float[0],
+                new int[12],
+                new int[] {255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0});
+    }
+
+    /**
+     * An offered idle starts only in a view that plays by default (races), and the user's last
+     * choice is kept for the next model's idle; other views (mounts) stay opt-in.
+     */
+    private static void idleDefaultsAndRememberedChoice() {
+        var mesh = triangle();
+        var plain = new ModelPreviewView();
+        plain.setMesh(mesh, java.util.Set.of(0));
+        plain.setAnimation(stand(mesh), "Stand idle");
+        var plainToggle =
+                (javafx.scene.control.CheckBox) plain.lookup("#model-idle-animation");
+        require(plainToggle.isVisible() && !plainToggle.isSelected(),
+                "A view that does not ask keeps idle opt-in");
+        plain.close();
+        var races = new ModelPreviewView();
+        races.idleByDefault(true);
+        races.setMesh(mesh, java.util.Set.of(0));
+        races.setAnimation(stand(mesh), "Stand idle");
+        var toggle = (javafx.scene.control.CheckBox) races.lookup("#model-idle-animation");
+        require(toggle.isSelected(), "An offered Stand plays by default");
+        toggle.fire();
+        races.setAnimation(stand(mesh), "Stand idle");
+        require(!toggle.isSelected(), "The next model keeps the user's choice to stop it");
+        toggle.fire();
+        races.setAnimation(stand(mesh), "Stand idle");
+        require(toggle.isSelected(), "and the choice to play it again");
+        races.close();
+    }
+
+    /**
+     * While a model's textures are prepared the page shows a neutral loading state, never the
+     * untextured surface; once they are refused, the untextured model appears with the reason, its
+     * Stand playing by default.
+     */
+    private static void texturesArePreparedBehindALoadingState(CompletableFuture<Void> checks) {
+        var variant = new com.vibeminer.concepts.races.RaceMediaTypes.Variant(1, 0, 1, 1, 1);
+        var mesh = triangle();
+        var animation = stand(mesh);
+        var textures =
+                new CompletableFuture<com.vibeminer.concepts.races.RaceAppearanceTypes.Result>();
+        BuildRaces surface =
+                new BuildRaces() {
+                    public CompletableFuture<RaceTypes.Catalog> catalog(Cancellation token) {
+                        return new CompletableFuture<>();
+                    }
+
+                    public CompletableFuture<RaceTypes.Overview> overview(
+                            long id, Cancellation token) {
+                        return new CompletableFuture<>();
+                    }
+
+                    public CompletableFuture<com.vibeminer.concepts.races.RaceMediaTypes.Variants>
+                            modelVariants(long id, Cancellation token) {
+                        return CompletableFuture.completedFuture(
+                                new com.vibeminer.concepts.races.RaceMediaTypes.Variants(
+                                        RaceTypes.State.READY, List.of(variant), List.of(), null));
+                    }
+
+                    public CompletableFuture<com.vibeminer.concepts.races.RaceMediaTypes.Preview>
+                            preview(long race, long playerClass, long model, Cancellation token) {
+                        return CompletableFuture.completedFuture(
+                                new com.vibeminer.concepts.races.RaceMediaTypes.Preview(
+                                        RaceTypes.State.READY,
+                                        variant,
+                                        mesh,
+                                        java.util.Set.of(0),
+                                        List.of(),
+                                        false,
+                                        null));
+                    }
+
+                    public CompletableFuture<
+                                    com.vibeminer.concepts.races.RaceAppearanceTypes.Result>
+                            appearance(
+                                    long race, long playerClass, long model, Cancellation token) {
+                        return textures;
+                    }
+
+                    public CompletableFuture<com.vibeminer.concepts.races.RaceMediaTypes.Idle>
+                            idle(long raceId, long modelId, Cancellation token) {
+                        return CompletableFuture.completedFuture(
+                                new com.vibeminer.concepts.races.RaceMediaTypes.Idle(
+                                        RaceTypes.State.READY,
+                                        variant,
+                                        animation,
+                                        List.of(),
+                                        List.of(),
+                                        "Stand idle · 1000 ms loop · 1 bones evaluated in"
+                                                + " software."));
+                    }
+
+                    public CompletableFuture<Void> closeAsync() {
+                        return CompletableFuture.completedFuture(null);
+                    }
+                };
+        var panel = new RaceModelPanel(surface, () -> surface, () -> 1, 1, 1, List.of());
+        new Scene(panel, 800, 600);
+        panel.applyCss();
+        panel.layout();
+        afterFx(
+                () -> panel.lookup("#model-idle-animation").isVisible(),
+                () -> {
+                    var shown = labels(panel);
+                    require(
+                            shown.contains("Preparing textures and starting clothing…")
+                                    && activityCount(panel) > 0,
+                            "Textures are prepared behind a loading state: " + shown);
+                    require(
+                            shown.stream()
+                                    .noneMatch(
+                                            text ->
+                                                    text.startsWith("Drag to rotate")
+                                                            || text.startsWith("Rendering")
+                                                            || text.startsWith(
+                                                                    "Static model preview")),
+                            "The untextured surface is not shown meanwhile: " + shown);
+                    textures.complete(
+                            new com.vibeminer.concepts.races.RaceAppearanceTypes.Result(
+                                    RaceTypes.State.UNAVAILABLE,
+                                    null,
+                                    java.util.Set.of(),
+                                    List.of(),
+                                    List.of(),
+                                    false,
+                                    "Authored texture refusal."));
+                    afterFx(
+                            () ->
+                                    labels(panel).stream()
+                                            .anyMatch(
+                                                    text ->
+                                                            text.startsWith("Drag to rotate")
+                                                                    && text.contains(
+                                                                            "idle · software")),
+                            () -> {
+                                require(
+                                        labels(panel)
+                                                .contains(
+                                                        "Static model preview · Authored texture"
+                                                                + " refusal."),
+                                        "A refusal shows the untextured model with its reason: "
+                                                + labels(panel));
+                                panel.close();
+                                checks.complete(null);
+                            },
+                            checks);
+                },
+                checks);
+    }
+
+    /** A one-texel red appearance of the triangle surface. */
+    private static com.vibeminer.rendering.models.MeshAppearance redTriangle(
+            com.vibeminer.rendering.models.PreviewMesh mesh) {
+        return new com.vibeminer.rendering.models.MeshAppearance(
+                mesh,
+                new float[] {0, 0, 1, 0, 0, 1},
+                List.of(
+                        new com.vibeminer.rendering.models.MeshAppearance.Surface(
+                                0, 0, false, false, false)),
+                List.of(
+                        new com.vibeminer.rendering.models.MeshAppearance.Texture(
+                                1, 1, new int[] {0xffff0000})));
+    }
+
+    /** A model preview in a laid-out scene, with every status text it shows recorded. */
+    private static ModelPreviewView shownView(List<String> statuses) {
+        var view = new ModelPreviewView();
+        new Scene(view, 640, 480);
+        view.applyCss();
+        view.layout();
+        for (var node : view.lookupAll(".label"))
+            if (node instanceof Label label)
+                label.textProperty().addListener((property, before, now) -> statuses.add(now));
+        return view;
+    }
+
+    private static boolean rendered(List<String> statuses) {
+        return statuses.stream().anyMatch(text -> text != null && text.startsWith("Drag to rotate"));
+    }
+
+    /** A held surface shows its textured frame first: no untextured frame is rendered before. */
+    private static void heldSurfaceShowsTheTexturedFrameFirst(CompletableFuture<Void> checks) {
+        var statuses = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        var view = shownView(statuses);
+        var mesh = triangle();
+        view.setMeshBehindAppearance(mesh, java.util.Set.of(0), "Preparing textures…");
+        var accepted = new java.util.concurrent.atomic.AtomicReference<Boolean>();
+        var pause = new javafx.animation.PauseTransition(javafx.util.Duration.millis(150));
+        pause.setOnFinished(event -> {
+            try {
+                require(!rendered(statuses), "Nothing is rendered while textures are prepared");
+                view.presentAppearance(redTriangle(mesh), java.util.Set.of(0), accepted::set);
+                afterFx(() -> accepted.get() != null, () -> {
+                    require(accepted.get(), "The textured frame is accepted");
+                    view.close();
+                    checks.complete(null);
+                }, checks);
+            } catch (Throwable failure) {
+                checks.completeExceptionally(failure);
+            }
+        });
+        pause.play();
+    }
+
+    /** A textured frame that fails to render falls back to the never-shown untextured surface. */
+    private static void aFailedTexturedFrameFallsBackToTheHeldSurface(
+            CompletableFuture<Void> checks) {
+        var statuses = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        var view = shownView(statuses);
+        view.softwareRenderSeam = appearance -> {
+            if (appearance != null) throw new IllegalStateException("authored textured failure");
+        };
+        var mesh = triangle();
+        view.setMeshBehindAppearance(mesh, java.util.Set.of(0), "Preparing textures…");
+        var accepted = new java.util.concurrent.atomic.AtomicReference<Boolean>();
+        view.presentAppearance(redTriangle(mesh), java.util.Set.of(0), accepted::set);
+        afterFx(() -> accepted.get() != null && rendered(statuses), () -> {
+            require(!accepted.get(), "The textured frame is reported failed");
+            require(
+                    statuses.stream()
+                            .anyMatch(text -> text != null && text.startsWith("Drag to rotate")
+                                    && text.endsWith("static rest surface")),
+                    "The untextured surface is shown instead of an empty view: " + statuses);
+            view.close();
+            checks.complete(null);
+        }, checks);
+    }
+
+    /** Another model taking the view mid-load releases the hold, and it renders. */
+    private static void anotherModelReleasesTheHeldSurface(CompletableFuture<Void> checks) {
+        var statuses = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        var view = shownView(statuses);
+        view.setMeshBehindAppearance(triangle(), java.util.Set.of(0), "Preparing textures…");
+        view.loading("Loading model…");
+        view.setMesh(
+                new com.vibeminer.rendering.models.PreviewMesh(
+                        new float[] {0, 0, 0, 2, 0, 0, 0, 2, 0},
+                        new int[] {0, 1, 2},
+                        List.of(new com.vibeminer.rendering.models.PreviewMesh.Part(0, 0, 3))),
+                java.util.Set.of(0));
+        afterFx(() -> rendered(statuses), () -> {
+            view.close();
+            checks.complete(null);
+        }, checks);
     }
 
     private static void voiceRetirementFeedback() {

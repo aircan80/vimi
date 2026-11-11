@@ -7,7 +7,6 @@ import com.vibeminer.rendering.models.PreviewAnimation;
 import com.vibeminer.rendering.models.PreviewMesh;
 import java.util.ArrayList;
 import java.util.BitSet;
-import java.util.List;
 
 /**
  * Admits one reader-qualified Stand sequence for the compact preview surface.
@@ -39,19 +38,19 @@ public final class DisplayIdleAnimations {
     }
 
     /**
-     * Binds {@code idle} to the rest surface built from {@code vertexLookup}.
+     * Binds {@code idle} to the rest surface built from {@code skin}.
      *
      * @throws Unsupported for a readable source outside the admitted profile
      * @throws IllegalArgumentException when the inputs do not belong together
      */
     public static PreviewAnimation admit(
             M2Types.Model model,
-            List<Integer> vertexLookup,
+            M2Types.RestSkin skin,
             M2IdleAnimation.Idle idle,
             PreviewMesh mesh,
             float[] normals,
             Cancellation token) {
-        return admit(model, vertexLookup, idle, mesh, normals, false, token).animation();
+        return admit(model, skin, idle, mesh, normals, false, token).animation();
     }
 
     /** A World admission: the animation and the rest-surface vertices the World leaves out. */
@@ -69,25 +68,67 @@ public final class DisplayIdleAnimations {
      */
     public static WorldStand admitWorld(
             M2Types.Model model,
-            List<Integer> vertexLookup,
+            M2Types.RestSkin skin,
             M2IdleAnimation.Idle idle,
             PreviewMesh mesh,
             float[] normals,
             Cancellation token) {
-        return admit(model, vertexLookup, idle, mesh, normals, true, token);
+        return admit(model, skin, idle, mesh, normals, true, token);
+    }
+
+    /**
+     * Vertex bone indices are bound as direct rig indices. A skin section can instead route its
+     * vertices through a palette: section-local indices into the model's bone lookup from the
+     * section's {@code boneStart}. Binding is admitted only when both name the same bone for every
+     * weighted influence of every section vertex, so a palette that differs is refused rather than
+     * posed with the wrong bones.
+     *
+     * @throws Unsupported naming the first section whose palette differs
+     */
+    static void requireDirectPalettes(
+            M2Types.Model model, M2Types.RestSkin skin, Cancellation token) {
+        var lookup = model.boneLookup();
+        var properties = skin.boneProperties();
+        for (var section : skin.sections()) {
+            token.check();
+            int end = section.vertexStart() + section.vertexCount();
+            for (int v = section.vertexStart(); v < end; v++) {
+                var vertex = model.vertices().get(skin.vertexLookup().get(v));
+                long local = properties.get(v);
+                for (int k = 0; k < 4; k++) {
+                    if ((vertex.boneWeights() >>> (k * 8) & 255) == 0) {
+                        continue;
+                    }
+                    int bone = (int) (vertex.boneIndices() >>> (k * 8) & 255);
+                    int slot = (int) (local >>> (k * 8) & 255);
+                    long palette = (long) section.boneStart() + slot;
+                    if (slot >= section.boneCount()
+                            || palette >= lookup.size()
+                            || lookup.get((int) palette) != bone) {
+                        throw new Unsupported(
+                                "Skin section "
+                                        + section.id()
+                                        + " names bones through a palette that differs from the"
+                                        + " vertex bone indices; idle evaluation binds vertex"
+                                        + " indices directly.");
+                    }
+                }
+            }
+        }
     }
 
     private static WorldStand admit(
             M2Types.Model model,
-            List<Integer> vertexLookup,
+            M2Types.RestSkin skin,
             M2IdleAnimation.Idle idle,
             PreviewMesh mesh,
             float[] normals,
             boolean world,
             Cancellation token) {
-        if (idle.model() != model) {
+        if (idle.model() != model || skin.model() != model) {
             throw new IllegalArgumentException("Idle facts belong to another parsed model");
         }
+        var vertexLookup = skin.vertexLookup();
         if (vertexLookup.size() != mesh.vertexCount()) {
             throw new IllegalArgumentException("Idle influences differ from the preview surface");
         }
@@ -119,6 +160,7 @@ public final class DisplayIdleAnimations {
                 weights[v * 4 + k] = weight;
             }
         }
+        requireDirectPalettes(model, skin, token);
         var chain = new BitSet(boneCount);
         for (int bone = influencing.nextSetBit(0);
                 bone >= 0;

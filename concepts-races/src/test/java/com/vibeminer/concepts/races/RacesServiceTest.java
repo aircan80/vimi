@@ -715,7 +715,7 @@ final class RacesServiceTest {
     @Test
     void boneFileModelPlaysTheBaseRigStandWithoutOpeningItsBoneFiles() throws Exception {
         var tables = idleTables();
-        byte[] skin = golden("authored-274.skin");
+        byte[] skin = standSkin();
         byte[] plain = modelWithStand(0x200);
         // Bone files 701 and 702 are declared but not stored: nothing asks for them.
         var files =
@@ -775,6 +775,447 @@ final class RacesServiceTest {
         }
     }
 
+    private static byte[] chunk(String id, byte[] payload) {
+        return java.nio.ByteBuffer.allocate(8 + payload.length)
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                .put(id.getBytes(java.nio.charset.StandardCharsets.US_ASCII))
+                .putInt(payload.length)
+                .put(payload)
+                .array();
+    }
+
+    /**
+     * An authored skeleton: one Stand (1000 ms, keys in the skeleton); bone 0 a root translating
+     * (0, 0, 0) to (0, 0, 4), bone 1 its child; a BFID chunk naming bone files 801 and 802.
+     */
+    private static byte[] skeleton() {
+        return skeleton(2, 0, 0, true);
+    }
+
+    /**
+     * An authored skeleton with {@code bones} bones (bone 0 a root translating (0, 0, 0) to (0, 0,
+     * 4), every other bone a child of bone 0), one sequence with ID {@code sequenceId} (1000 ms,
+     * keys in the skeleton), a BFID chunk naming bone files 801 and 802 and, when {@code parent} is
+     * not 0, an SKPD chunk naming it; without {@code ownRig} it has no SKS1 or SKB1 chunk.
+     */
+    private static byte[] skeleton(int bones, int sequenceId, long parent, boolean ownRig) {
+        var s = java.nio.ByteBuffer.allocate(32 + 64).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        s.putInt(8, 1).putInt(12, 32);
+        s.putShort(32, (short) sequenceId).putInt(32 + 4, 1000).putInt(32 + 12, 0x20);
+        var b =
+                java.nio.ByteBuffer.allocate(16 + bones * 88 + 48)
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        b.putInt(0, bones).putInt(4, 16);
+        for (int bone = 0; bone < bones; bone++) {
+            int row = 16 + bone * 88;
+            b.putInt(row, -1).putInt(row + 4, 512).putShort(row + 8, (short) (bone == 0 ? -1 : 0));
+            for (int track : new int[] {16, 36, 56}) {
+                b.putShort(row + track + 2, (short) -1);
+            }
+        }
+        int data = 16 + bones * 88, row = 16 + 16;
+        b.putShort(row, (short) 1).putInt(row + 4, 1).putInt(row + 8, data);
+        b.putInt(row + 12, 1).putInt(row + 16, data + 8);
+        b.putInt(data, 2).putInt(data + 4, data + 16);
+        b.putInt(data + 8, 2).putInt(data + 12, data + 24);
+        b.putInt(data + 16, 0).putInt(data + 20, 1000);
+        b.putFloat(data + 24 + 20, 4);
+        var ids = java.nio.ByteBuffer.allocate(8).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        ids.putInt(801).putInt(802);
+        var out = new java.io.ByteArrayOutputStream();
+        out.writeBytes(chunk("SKL1", new byte[16]));
+        if (parent != 0) {
+            var p = java.nio.ByteBuffer.allocate(12).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+            p.putInt(8, (int) parent);
+            out.writeBytes(chunk("SKPD", p.array()));
+        }
+        if (ownRig) {
+            out.writeBytes(chunk("SKS1", s.array()));
+            out.writeBytes(chunk("SKB1", b.array()));
+        }
+        out.writeBytes(chunk("BFID", ids.array()));
+        return out.toByteArray();
+    }
+
+    /**
+     * The authored 274 model with no bones of its own, every vertex rigidly bound to bone 0, and a
+     * SKID chunk naming skeleton 4242.
+     */
+    private static byte[] skeletonModel() throws Exception {
+        byte[] original = golden("authored-274.m2");
+        var parsed =
+                com.vibeminer.formats.models.M2ModelReader.read(
+                                com.vibeminer.formats.AssetSource.bytes(original))
+                        .join();
+        int base = Math.toIntExact(parsed.baseOffset());
+        int body = Math.toIntExact(parsed.baseBytes());
+        if (base + body != original.length) {
+            throw new AssertionError("The authored body must end the file");
+        }
+        // A one-entry bone lookup (slot 0 names skeleton bone 0, see standSkin()), then SKID.
+        var b =
+                java.nio.ByteBuffer.wrap(java.util.Arrays.copyOf(original, original.length + 16))
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        b.putInt(base - 4, body + 4);
+        b.putInt(base + 120, 1).putInt(base + 124, body);
+        int vertices = base + Math.toIntExact(b.getInt(base + 64));
+        for (int v = 0; v < b.getInt(base + 60); v++) {
+            b.putInt(vertices + v * 48 + 12, 255).putInt(vertices + v * 48 + 16, 0);
+        }
+        b.position(original.length + 4);
+        b.put("SKID".getBytes(java.nio.charset.StandardCharsets.US_ASCII)).putInt(4).putInt(4242);
+        return b.array();
+    }
+
+    @Test
+    void skeletonModelPlaysTheSkeletonsStandWithoutItsBoneFiles() throws Exception {
+        var tables = idleTables();
+        byte[] skin = standSkin();
+        var files =
+                new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
+                        .add(1234, "1".repeat(32), skeletonModel())
+                        .add(900, "2".repeat(32), skin);
+        var service = new RacesService(tables, files, null);
+        try {
+            // The skeleton is not stored yet: the Stand is unavailable, not refused, and the
+            // result is not cached.
+            var absent = service.idle(1, 10, Cancellation.NONE).join();
+            assertEquals(RaceTypes.State.UNAVAILABLE, absent.state());
+            assertEquals(
+                    "The external skeleton FileDataID 4242 could not be read: The skeleton file is"
+                            + " UNKNOWN_FILE.",
+                    absent.message());
+            files.add(4242, "3".repeat(32), skeleton());
+            var idle = service.idle(1, 10, Cancellation.NONE).join();
+            assertEquals(RaceTypes.State.READY, idle.state(), idle.message());
+            assertEquals(2, idle.animation().boneCount());
+            assertEquals(
+                    "Stand (plays sequence 0, 1000 ms) is stored in external skeleton FileDataID"
+                            + " 4242: 2 step/linear keys on 1 bones.",
+                    idle.facts().get(0));
+            // The skeleton's bone files are named but neither opened nor applied.
+            assertTrue(
+                    idle.facts().get(1).startsWith("Bone files (BFID): 2 declared, none applied"),
+                    idle.facts().get(1));
+            var preview = service.preview(1, 0, 10, Cancellation.NONE).join();
+            assertTrue(idle.animation().matches(preview.mesh()), preview.message());
+            float[] still = preview.mesh().positions();
+            float[] posed = idle.animation().pose(preview.mesh(), 500).mesh().positions();
+            for (int i = 2; i < still.length; i += 3) {
+                assertEquals(still[i] + 2, posed[i], 1e-5);
+            }
+            // Cached; a changed skeleton is reassessed.
+            int opens = files.opens.get();
+            assertTrue(
+                    service.idle(1, 10, Cancellation.NONE).join().animation() == idle.animation());
+            assertEquals(opens, files.opens.get());
+            files.add(4242, "4".repeat(32), skeleton());
+            service.idle(1, 10, Cancellation.NONE).join();
+            assertTrue(files.opens.get() > opens, "Changed skeleton is reassessed");
+        } finally {
+            service.closeAsync().join();
+            tables.closeAsync().join();
+        }
+    }
+
+    /** Runs {@code check} on the idle of an authored skeleton model whose skeleton is given. */
+    private static void withSkeletonModel(
+            byte[] skeleton,
+            java.util.function.BiConsumer<RacesService, com.vibeminer.formats.AssetFilesFixture>
+                    check)
+            throws Exception {
+        var tables = idleTables();
+        var files =
+                new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
+                        .add(1234, "1".repeat(32), skeletonModel())
+                        .add(900, "2".repeat(32), standSkin())
+                        .add(4242, "3".repeat(32), skeleton);
+        var service = new RacesService(tables, files, null);
+        try {
+            check.accept(service, files);
+        } finally {
+            service.closeAsync().join();
+            tables.closeAsync().join();
+        }
+    }
+
+    @Test
+    void skeletonOverTheBoneLimitIsRefusedCachedAndRevalidated() throws Exception {
+        int bones = com.vibeminer.formats.models.M2IdleAnimation.MAX_BONES + 1;
+        withSkeletonModel(
+                skeleton(bones, 0, 0, true),
+                (service, files) -> {
+                    var idle = service.idle(1, 10, Cancellation.NONE).join();
+                    assertEquals(RaceTypes.State.UNSUPPORTED, idle.state());
+                    assertTrue(
+                            idle.message().contains("The skeleton has " + bones + " bones"),
+                            idle.message());
+                    int opens = files.opens.get();
+                    assertEquals(
+                            idle.message(),
+                            service.idle(1, 10, Cancellation.NONE).join().message());
+                    assertEquals(opens, files.opens.get());
+                    files.add(4242, "4".repeat(32), skeleton(2, 0, 0, true));
+                    var renewed = service.idle(1, 10, Cancellation.NONE).join();
+                    assertTrue(files.opens.get() > opens, "Changed skeleton is reassessed");
+                    assertEquals(RaceTypes.State.READY, renewed.state(), renewed.message());
+                });
+    }
+
+    @Test
+    void skeletonParentIsNamedButNotRead() throws Exception {
+        // Bones kept only in the parent: refused with the parent-specific reason.
+        withSkeletonModel(
+                skeleton(2, 0, 777, false),
+                (service, files) -> {
+                    var idle = service.idle(1, 10, Cancellation.NONE).join();
+                    assertEquals(RaceTypes.State.UNSUPPORTED, idle.state());
+                    assertTrue(
+                            idle.message()
+                                    .contains(
+                                            "keeps its bones or sequences in its parent skeleton"),
+                            idle.message());
+                });
+        // Own bones and Stand beside a parent: plays, and says the parent is not read.
+        withSkeletonModel(
+                skeleton(2, 0, 777, true),
+                (service, files) -> {
+                    var idle = service.idle(1, 10, Cancellation.NONE).join();
+                    assertEquals(RaceTypes.State.READY, idle.state(), idle.message());
+                    assertTrue(
+                            idle.facts()
+                                    .contains("Parent skeleton FileDataID 777 (SKPD) is not read."),
+                            idle.facts().toString());
+                });
+    }
+
+    @Test
+    void aRefusedSkeletonStillNamesItsParent() throws Exception {
+        // Own bones beside a parent, but no Stand: refused, and the parent is still named.
+        withSkeletonModel(
+                skeleton(2, 4, 777, true),
+                (service, files) -> {
+                    var idle = service.idle(1, 10, Cancellation.NONE).join();
+                    assertEquals(RaceTypes.State.UNSUPPORTED, idle.state());
+                    assertTrue(
+                            idle.facts()
+                                    .contains("Parent skeleton FileDataID 777 (SKPD) is not read."),
+                            idle.facts().toString());
+                });
+    }
+
+    @Test
+    void unreadableCustomizationTablesAreAskedAgainRatherThanCached() throws Exception {
+        var raw = sharedModelTables(false, 1234);
+        var counting = new CountingTables(raw);
+        counting.failAllPagesOf = "ChrCustomizationBoneSet";
+        var files =
+                new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
+                        .add(1234, "1".repeat(32), withBoneFiles(modelWithStand(0x200), 701, 702))
+                        .add(900, "2".repeat(32), standSkin());
+        var service = new RacesService(counting.proxy(), files, null);
+        try {
+            var first = service.idle(1, 10, Cancellation.NONE).join();
+            assertEquals(RaceTypes.State.READY, first.state(), first.message());
+            assertTrue(
+                    first.facts().get(1).contains("could not be read: ChrCustomizationBoneSet"),
+                    first.facts().get(1));
+            // Not cached: the next request reads the model and the table again.
+            int opens = files.opens.get();
+            service.idle(1, 10, Cancellation.NONE).join();
+            assertTrue(files.opens.get() > opens, "An unreadable fact is reassessed");
+            // Once the table reads, the fact names the choice and the result is cached.
+            counting.failAllPagesOf = null;
+            var readable = service.idle(1, 10, Cancellation.NONE).join();
+            assertTrue(
+                    readable.facts().get(1).contains("selects bone file 701"),
+                    readable.facts().get(1));
+            opens = files.opens.get();
+            assertEquals(readable.facts(), service.idle(1, 10, Cancellation.NONE).join().facts());
+            assertEquals(opens, files.opens.get());
+        } finally {
+            service.closeAsync().join();
+            raw.closeAsync().join();
+        }
+    }
+
+    @Test
+    void skeletonWithoutAStandIsRefused() throws Exception {
+        withSkeletonModel(
+                skeleton(2, 4, 0, true),
+                (service, files) -> {
+                    var idle = service.idle(1, 10, Cancellation.NONE).join();
+                    assertEquals(RaceTypes.State.UNSUPPORTED, idle.state());
+                    assertEquals(
+                            List.of(
+                                    "Stand: The skeleton records no Stand sequence (ID 0, variation"
+                                            + " 0)."),
+                            idle.reasons());
+                });
+    }
+
+    /**
+     * Race 1 → ChrModels 10 and 11, both on M2 FileDataID 1234, with customization options whose
+     * choices select bone sets 5 (bone file 701) and 6 (bone file 702) for model {@code setModel}.
+     * {@code partialSets} declares one more bone-set row than it can read.
+     */
+    private static com.vibeminer.formats.tables.BuildTables sharedModelTables(
+            boolean partialSets, long setModel) {
+        var setTable =
+                table(
+                        109,
+                        "ChrCustomizationBoneSet",
+                        List.of(number("BoneFileDataID"), number("ModelFileDataID")),
+                        List.of(
+                                row(5, "701", Long.toString(setModel)),
+                                row(6, "702", Long.toString(setModel))));
+        if (partialSets) {
+            var entry = setTable.entry();
+            setTable =
+                    new MemoryTables.FakeTable(
+                            new TableTypes.Entry(
+                                    entry.fileDataId(),
+                                    entry.name(),
+                                    entry.state(),
+                                    entry.checked(),
+                                    entry.reason(),
+                                    new TableTypes.Counts(3, 2, 0, 0, "fixture", "0FC0F0D5"),
+                                    entry.contentKey()),
+                            setTable.columns(),
+                            setTable.rows(),
+                            setTable.schema(),
+                            setTable.protectedIds(),
+                            setTable.generated());
+        }
+        var sets = setTable;
+        return new MemoryTables()
+                .add(
+                        BUILD,
+                        "enUS",
+                        List.of(
+                                table(
+                                        101,
+                                        "ChrRaceXChrModel",
+                                        List.of(
+                                                reference("ChrRacesID", "ChrRaces"),
+                                                reference("ChrModelID", "ChrModel")),
+                                        List.of(row(1, "1", "10"), row(2, "1", "11"))),
+                                table(
+                                        102,
+                                        "ChrModel",
+                                        List.of(
+                                                reference("DisplayID", "CreatureDisplayInfo"),
+                                                number("Sex")),
+                                        List.of(row(10, "20", "0"), row(11, "21", "1"))),
+                                table(
+                                        103,
+                                        "CreatureDisplayInfo",
+                                        List.of(reference("ModelID", "CreatureModelData")),
+                                        List.of(row(20, "30"), row(21, "30"))),
+                                table(
+                                        104,
+                                        "CreatureModelData",
+                                        List.of(number("FileDataID")),
+                                        List.of(row(30, "1234"))),
+                                table(
+                                        106,
+                                        "ChrCustomizationOption",
+                                        List.of(text("Name_lang"), number("ChrModelID")),
+                                        List.of(row(100, "Face", "10"), row(110, "Jaw", "11"))),
+                                table(
+                                        107,
+                                        "ChrCustomizationChoice",
+                                        List.of(number("ChrCustomizationOptionID")),
+                                        List.of(
+                                                row(1000, "100"),
+                                                row(1001, "100"),
+                                                row(1100, "110"))),
+                                table(
+                                        108,
+                                        "ChrCustomizationElement",
+                                        List.of(
+                                                number("ChrCustomizationChoiceID"),
+                                                number("ChrCustomizationBoneSetID")),
+                                        List.of(row(1, "1000", "5"), row(2, "1100", "6"))),
+                                sets))
+                .forBuild(BUILD, "enUS", Cancellation.NONE)
+                .join()
+                .tables();
+    }
+
+    @Test
+    void oneModelSharedByTwoChrModelsKeepsEachModelsBoneFileFact() throws Exception {
+        var tables = sharedModelTables(false, 1234);
+        var files =
+                new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
+                        .add(1234, "1".repeat(32), withBoneFiles(modelWithStand(0x200), 701, 702))
+                        .add(900, "2".repeat(32), standSkin());
+        var service = new RacesService(tables, files, null);
+        try {
+            var face = service.idle(1, 10, Cancellation.NONE).join();
+            var jaw = service.idle(1, 11, Cancellation.NONE).join();
+            assertEquals(RaceTypes.State.READY, face.state(), face.message());
+            assertEquals(RaceTypes.State.READY, jaw.state(), jaw.message());
+            assertTrue(
+                    face.facts()
+                            .get(1)
+                            .endsWith(
+                                    "1 customization choices select one; the first recorded 'Face'"
+                                            + " (option 100) choice, 1000, selects bone file 701, which is"
+                                            + " not applied."),
+                    face.facts().get(1));
+            assertTrue(
+                    jaw.facts()
+                            .get(1)
+                            .endsWith(
+                                    "1 customization choices select one; the first recorded 'Jaw'"
+                                            + " (option 110) choice, 1100, selects bone file 702, which is"
+                                            + " not applied."),
+                    jaw.facts().get(1));
+            // Each stays its own cached result.
+            assertEquals(face.facts(), service.idle(1, 10, Cancellation.NONE).join().facts());
+            assertEquals(jaw.facts(), service.idle(1, 11, Cancellation.NONE).join().facts());
+        } finally {
+            service.closeAsync().join();
+            tables.closeAsync().join();
+        }
+    }
+
+    @Test
+    void partlyReadCustomizationTablesDoNotClaimThatNoChoiceSelectsABoneFile() throws Exception {
+        // The readable bone sets are for another model; one row of the table is unreadable.
+        var tables = sharedModelTables(true, 9999);
+        var files =
+                new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
+                        .add(1234, "1".repeat(32), withBoneFiles(modelWithStand(0x200), 701))
+                        .add(900, "2".repeat(32), standSkin());
+        var service = new RacesService(tables, files, null);
+        try {
+            var idle = service.idle(1, 10, Cancellation.NONE).join();
+            assertEquals(RaceTypes.State.READY, idle.state(), idle.message());
+            String fact = idle.facts().get(1);
+            assertTrue(fact.contains("could not be fully read"), fact);
+            assertFalse(fact.contains("No customization choice"), fact);
+        } finally {
+            service.closeAsync().join();
+            tables.closeAsync().join();
+        }
+        // The same tables read whole say that no choice selects one.
+        var whole = sharedModelTables(false, 9999);
+        var again = new RacesService(whole, files, null);
+        try {
+            var idle = again.idle(1, 10, Cancellation.NONE).join();
+            assertTrue(
+                    idle.facts()
+                            .get(1)
+                            .endsWith("No customization choice of this model selects one."),
+                    idle.facts().get(1));
+        } finally {
+            again.closeAsync().join();
+            whole.closeAsync().join();
+        }
+    }
+
     @Test
     void boneFileModelWithAnUnsupportedStandIsStillRefused() throws Exception {
         var tables = idleTables();
@@ -820,13 +1261,16 @@ final class RacesServiceTest {
         if (base + body != original.length) {
             throw new AssertionError("The authored body must end the file");
         }
-        int sequences = body, bones = sequences + 64, track = bones + 88, extra = 64 + 88 + 48;
+        int sequences = body, bones = sequences + 64, track = bones + 88;
+        int lookup = track + 48, extra = 64 + 88 + 48 + 4;
         var b =
                 java.nio.ByteBuffer.wrap(java.util.Arrays.copyOf(original, original.length + extra))
                         .order(java.nio.ByteOrder.LITTLE_ENDIAN);
         b.putInt(base - 4, body + extra);
         b.putInt(base + 28, 1).putInt(base + 32, sequences);
         b.putInt(base + 44, 1).putInt(base + 48, bones);
+        // A one-entry bone lookup: palette slot 0 names bone 0 (see standSkin()).
+        b.putInt(base + 120, 1).putInt(base + 124, lookup);
         int sequence = base + sequences;
         b.putShort(sequence, (short) 0).putInt(sequence + 4, 1000).putInt(sequence + 12, 0x20);
         int bone = base + bones;
@@ -850,10 +1294,25 @@ final class RacesServiceTest {
         return b.array();
     }
 
+    /**
+     * The authored SKIN as a client skin for {@link #modelWithStand}: its one section names bone 0
+     * through palette slot 0 of the model's bone lookup, as the vertices do directly.
+     */
+    private static byte[] standSkin() throws Exception {
+        byte[] skin = golden("authored-274.skin");
+        var b = java.nio.ByteBuffer.wrap(skin).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        int properties = b.getInt(24), count = b.getInt(20), section = b.getInt(32);
+        for (int i = 0; i < count; i++) {
+            b.putInt(properties + i * 4, 0);
+        }
+        b.putShort(section + 12, (short) 1).putShort(section + 14, (short) 0);
+        return skin;
+    }
+
     @Test
     void localStandIsPreparedForTheStaticRestSurfaceAndCached() throws Exception {
         var tables = idleTables();
-        byte[] skin = golden("authored-274.skin");
+        byte[] skin = standSkin();
         var files =
                 new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
                         .add(1234, "1".repeat(32), modelWithStand(0x200))
@@ -931,7 +1390,7 @@ final class RacesServiceTest {
         var files =
                 new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
                         .add(1234, "1".repeat(32), modelWithStand(0x1))
-                        .add(900, "2".repeat(32), golden("authored-274.skin"));
+                        .add(900, "2".repeat(32), standSkin());
         var service = new RacesService(tables, files, null);
         try {
             var idle = service.idle(1, 10, Cancellation.NONE).join();
@@ -976,7 +1435,7 @@ final class RacesServiceTest {
         for (int i = 0; i < 5; i++) {
             files.add(1234 + i, Integer.toString(i + 1).repeat(32), model);
         }
-        files.add(900, "a".repeat(32), golden("authored-274.skin"));
+        files.add(900, "a".repeat(32), standSkin());
         var service = new RacesService(tables, files, null);
         try {
             for (int i = 0; i < 5; i++) {
@@ -1033,6 +1492,9 @@ final class RacesServiceTest {
                 rows = new java.util.concurrent.atomic.AtomicInteger();
         volatile String failPagesOf;
 
+        /** Every page of this table, filtered or not, is unreadable while set. */
+        volatile String failAllPagesOf;
+
         CountingTables(com.vibeminer.formats.tables.BuildTables delegate) {
             this.delegate = delegate;
         }
@@ -1052,7 +1514,9 @@ final class RacesServiceTest {
                 pages.incrementAndGet();
                 var request = (TableTypes.PageRequest) args[0];
                 if (request.table().equals(TableTypes.Ref.forName(String.valueOf(failPagesOf)))
-                        && !request.filters().isEmpty()) {
+                                && !request.filters().isEmpty()
+                        || request.table()
+                                .equals(TableTypes.Ref.forName(String.valueOf(failAllPagesOf)))) {
                     return java.util.concurrent.CompletableFuture.completedFuture(
                             new TableTypes.Page(
                                     null,
@@ -1121,7 +1585,7 @@ final class RacesServiceTest {
     void repeatedPreviewsReuseTheSurfaceAndVariantsUntilTheModelChanges() throws Exception {
         var raw = idleTables();
         var counting = new CountingTables(raw);
-        byte[] skin = golden("authored-274.skin");
+        byte[] skin = standSkin();
         var files = new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS");
         var service = new RacesService(counting.proxy(), files, null);
         try {
@@ -1390,7 +1854,7 @@ final class RacesServiceTest {
         var files =
                 new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
                         .add(1234, "1".repeat(32), modelWithStand(0))
-                        .add(900, "2".repeat(32), golden("authored-274.skin"));
+                        .add(900, "2".repeat(32), standSkin());
         var service = new RacesService(tables, files, null);
         try {
             assertTrue(service.preview(1, 0, 10, Cancellation.NONE).join().mesh() != null);

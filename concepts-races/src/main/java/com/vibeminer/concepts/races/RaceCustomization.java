@@ -256,6 +256,31 @@ final class RaceCustomization {
                     note(issues, UNVERIFIED_SAMPLE);
                 }
             }
+            if (match.isEmpty() && !overrides.containsKey(option.id())) {
+                // No choice is known to be eligible. A choice whose requirements only cannot be
+                // checked here (an account, archive or prerequisite term), never one refused for
+                // this race or class, still shows the option rather than leaving its texture
+                // region empty: the first such recorded choice is the sample.
+                match =
+                        candidates.stream()
+                                .filter(
+                                        row ->
+                                                choices.number(row, "ChrCustomizationVisReqID") == 0
+                                                        && eligibility(
+                                                                        choices.number(
+                                                                                row,
+                                                                                "ChrCustomizationReqID"),
+                                                                        classId,
+                                                                        (int) bit,
+                                                                        requirements,
+                                                                        prerequisites,
+                                                                        new java.util.ArrayList<>())
+                                                                == Eligibility.UNKNOWN)
+                                .findFirst();
+                if (match.isPresent()) {
+                    note(issues, UNVERIFIED_SAMPLE);
+                }
+            }
             if (match.isPresent()) {
                 selected.put(option.id(), match.get().id());
             } else {
