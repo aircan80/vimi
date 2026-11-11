@@ -233,6 +233,19 @@ final class RaceAppearanceProfilesTest {
     }
 
     @Test
+    void onlyEnvironmentEffectZeroWithTwoTexturesIsDrawnByItsFirstStage() {
+        assertTrue(RaceAppearanceProfiles.environmentFirstStage(twoTextures(2, 0x8000)));
+        assertFalse(RaceAppearanceProfiles.environmentFirstStage(twoTextures(1, 0x8000)));
+        assertFalse(RaceAppearanceProfiles.environmentFirstStage(twoTextures(3, 0x8000)));
+        assertFalse(RaceAppearanceProfiles.environmentFirstStage(twoTextures(2, 0x8001)));
+        assertFalse(RaceAppearanceProfiles.environmentFirstStage(twoTextures(2, 0)));
+    }
+
+    private static M2Types.Batch twoTextures(int count, int shader) {
+        return new M2Types.Batch(16, 0, shader, 0, 0, -1, 0, 0, count, 0, 65535, 0, 0);
+    }
+
+    @Test
     void admittedMaleHairCutoutDiscards127WithoutDepthAndAccepts128BeforeBody() throws Exception {
         var hair = fixture(true, false, 272, 4, 1, 3, 65535, false);
         var body = fixture(false, false, 272, 0, 0, 0, 65535, false);

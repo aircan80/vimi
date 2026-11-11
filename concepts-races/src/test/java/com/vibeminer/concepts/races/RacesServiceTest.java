@@ -1740,6 +1740,117 @@ final class RacesServiceTest {
     }
 
     @Test
+    void everySavedHeaderRestoresExactlyItsFacts() {
+        // VAC1 plain, VAC2 assumed weights, VAC3/VAC4 the same with a skeleton, and VAC5 to
+        // VAC8 each of those leaving out an environment-reflection stage.
+        var tables = idleTables();
+        var files =
+                new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
+                        .add(1234, "1".repeat(32), new byte[] {1})
+                        .add(900, "2".repeat(32), new byte[] {2})
+                        .add(555, "5".repeat(32), new byte[] {5});
+        var generated = new com.vibeminer.generated.MemoryGeneratedStore();
+        var service = new RacesService(tables);
+        var appearance =
+                new RaceAppearance(
+                        service,
+                        new RaceMedia(service, tables, files, generated),
+                        tables,
+                        files,
+                        generated);
+        try {
+            var stored = composed(false).appearance();
+            var key =
+                    com.vibeminer.generated.GeneratedKey.hash(
+                            "headers".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            var base =
+                    new RaceMediaTypes.Preview(
+                            RaceTypes.State.PARTIAL,
+                            new RaceMediaTypes.Variant(1, 0, 1, 1, 1234),
+                            stored.mesh(),
+                            Set.of(0),
+                            List.of(),
+                            true,
+                            null);
+            var plan =
+                    new RaceAppearancePlan.Plan(
+                            List.of(new RaceAppearancePlan.Canvas(1, 2, 2)),
+                            List.of(
+                                    new RaceAppearancePlan.Layer(
+                                            1, 1234, 0, 0, 2, 2, 1, 0, "Authored base")),
+                            List.of(),
+                            RaceAppearanceProfiles.Profile.LEGACY);
+            var prepared =
+                    new RaceAppearance.Prepared(
+                            base,
+                            plan,
+                            key,
+                            List.of(),
+                            null,
+                            RaceAppearance.request(1, 0, 1, Map.of()),
+                            null);
+            for (int version = 1; version <= 8; version++) {
+                boolean assumed = version % 2 == 0;
+                boolean skeletal = version == 3 || version == 4 || version == 7 || version == 8;
+                boolean environment = version >= 5;
+                byte[] payload = com.vibeminer.rendering.models.MeshAppearanceCodec.encode(stored);
+                var bytes =
+                        java.nio.ByteBuffer.allocate((skeletal ? 64 : 40) + payload.length)
+                                .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                                .putInt(0x56414330 + version)
+                                .putLong(1234)
+                                .putLong(900)
+                                .put(java.util.HexFormat.of().parseHex("2".repeat(32)));
+                if (skeletal) {
+                    bytes.putLong(555).put(java.util.HexFormat.of().parseHex("5".repeat(32)));
+                }
+                bytes.putInt(payload.length).put(payload);
+                generated.delete(List.of(key)).join();
+                generated
+                        .put(
+                                List.of(
+                                        new com.vibeminer.generated.GeneratedTypes.Put(
+                                                key, bytes.array())))
+                        .join();
+                var result = appearance.render(prepared, Cancellation.NONE);
+                assertTrue(result.restored(), "VAC" + version + " " + result.message());
+                assertEquals(
+                        assumed,
+                        result.issues().contains(RaceAppearancePlan.ASSUMED_WEIGHTS),
+                        "VAC" + version);
+                assertEquals(
+                        environment,
+                        result.issues().contains(RaceAppearancePlan.ENVIRONMENT_NOT_DRAWN),
+                        "VAC" + version);
+            }
+            // Past VAC8 is not a header this code writes: not restored.
+            generated.delete(List.of(key)).join();
+            byte[] payload = com.vibeminer.rendering.models.MeshAppearanceCodec.encode(stored);
+            generated
+                    .put(
+                            List.of(
+                                    new com.vibeminer.generated.GeneratedTypes.Put(
+                                            key,
+                                            java.nio.ByteBuffer.allocate(40 + payload.length)
+                                                    .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                                                    .putInt(0x56414339)
+                                                    .putLong(1234)
+                                                    .putLong(900)
+                                                    .put(
+                                                            java.util.HexFormat.of()
+                                                                    .parseHex("2".repeat(32)))
+                                                    .putInt(payload.length)
+                                                    .put(payload)
+                                                    .array())))
+                    .join();
+            assertFalse(appearance.render(prepared, Cancellation.NONE).restored());
+        } finally {
+            service.closeAsync().join();
+            tables.closeAsync().join();
+        }
+    }
+
+    @Test
     void renderRemembersRestoredAppearancesOnlyWhenTheirSourcesAreSettled() {
         var tables = idleTables();
         var files =

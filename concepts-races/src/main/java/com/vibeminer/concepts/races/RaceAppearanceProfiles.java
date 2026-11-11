@@ -103,6 +103,16 @@ final class RaceAppearanceProfiles {
                 || assumeExternal && facts.externalWeights().get(weight);
     }
 
+    /**
+     * A two-texture draw with shader effect 0 ({@code 0x8000}: {@code
+     * Combiners_Opaque_Mod2xNA_Alpha} over {@code Diffuse_T1_Env}). Its first stage is the UV0
+     * diffuse, which the static preview draws; its second, a sphere-mapped environment reflection
+     * weighted by the diffuse alpha, is not drawn. Earthen bodies use it.
+     */
+    static boolean environmentFirstStage(M2Types.Batch batch) {
+        return batch.textureCount() == 2 && batch.shaderId() == 0x8000;
+    }
+
     static MeshAppearance.Surface surface(
             M2Types.Batch batch,
             M2Types.Material material,

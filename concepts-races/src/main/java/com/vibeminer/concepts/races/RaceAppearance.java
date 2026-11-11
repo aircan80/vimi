@@ -341,7 +341,8 @@ final class RaceAppearance {
                             .append('\n')
                             .append(stat.file().contentKey())
                             .append('\n')
-                            .append("choice-vector-v1\nmostly-neutral-refused-v1\n")
+                            .append(
+                                    "choice-vector-v1\nmostly-neutral-refused-v1\nenvironment-first-stage-v2\n")
                             .append(selection.byOption())
                             .append('\n')
                             .append(plan)
@@ -392,6 +393,9 @@ final class RaceAppearance {
             if (restored != null) {
                 if (restored.assumedWeights()) {
                     note(issues, RaceAppearancePlan.ASSUMED_WEIGHTS);
+                }
+                if (restored.environmentNotDrawn()) {
+                    note(issues, RaceAppearancePlan.ENVIRONMENT_NOT_DRAWN);
                 }
                 var result = result(restored.appearance(), base.visibleParts(), plan, issues, true);
                 token.check();
@@ -594,6 +598,7 @@ final class RaceAppearance {
             var seen = new java.util.HashSet<Integer>();
             boolean assumeExternal = assumesExternalWeights(plan);
             boolean assumedWeights = false;
+            boolean environmentNotDrawn = false;
             var sectionBatches = new HashMap<Integer, Integer>();
             for (var batch : skin.skin().batches()) {
                 sectionBatches.merge(batch.sectionIndex(), 1, Integer::sum);
@@ -610,8 +615,15 @@ final class RaceAppearance {
                                 assumeExternal)) {
                     continue;
                 }
-                if (batch.textureCount() != 1
-                        || !contextual && batch.shaderId() != 0
+                // The static character preview only, like the weight assumption: an NPC (and so a
+                // World creature) is unchanged.
+                boolean firstStage =
+                        !contextual
+                                && !plan.npc()
+                                && RaceAppearanceProfiles.environmentFirstStage(batch);
+                if (!firstStage
+                                && (batch.textureCount() != 1
+                                        || !contextual && batch.shaderId() != 0)
                         || batch.colorIndex() != -1) {
                     continue;
                 }
@@ -635,6 +647,7 @@ final class RaceAppearance {
                     continue;
                 }
                 bindings.add(RaceAppearanceProfiles.surface(batch, material, texture, mapped));
+                environmentNotDrawn |= firstStage;
                 if (weight != 65535 && !facts.staticWeights().get(weight)) {
                     assumedWeights = true;
                 }
@@ -652,6 +665,9 @@ final class RaceAppearance {
             if (assumedWeights) {
                 note(issues, RaceAppearancePlan.ASSUMED_WEIGHTS);
             }
+            if (environmentNotDrawn) {
+                note(issues, RaceAppearancePlan.ENVIRONMENT_NOT_DRAWN);
+            }
             var appearance = new MeshAppearance(mesh, uv, normals, bindings, textures);
             if (complete) {
                 save(
@@ -663,6 +679,7 @@ final class RaceAppearance {
                         skeletonContent,
                         appearance,
                         assumedWeights,
+                        environmentNotDrawn,
                         token,
                         issues);
             }
@@ -865,10 +882,17 @@ final class RaceAppearance {
     /** As {@link #MAGIC} and {@link #ASSUMED_MAGIC}, for a model with an external skeleton. */
     private static final int SKELETON_MAGIC = 0x56414333, SKELETON_ASSUMED_MAGIC = 0x56414334;
 
+    /**
+     * Added to any of the magics above for a composite that leaves out some surfaces'
+     * environment-reflection stage ({@code VAC5} to {@code VAC8}), so its page fact is restored.
+     */
+    private static final int ENVIRONMENT_MAGIC_OFFSET = 4;
+
     /** A restored composite; {@code skeleton} is 0 for a model without an external one. */
     private record Restored(
             MeshAppearance appearance,
             boolean assumedWeights,
+            boolean environmentNotDrawn,
             long skeleton,
             String skeletonContent) {}
 
@@ -888,7 +912,11 @@ final class RaceAppearance {
                 return null;
             }
             var bytes = ByteBuffer.wrap(saved.bytes()).order(ByteOrder.LITTLE_ENDIAN);
-            int magic = bytes.getInt();
+            int stored = bytes.getInt();
+            boolean environment =
+                    stored > SKELETON_ASSUMED_MAGIC
+                            && stored <= SKELETON_ASSUMED_MAGIC + ENVIRONMENT_MAGIC_OFFSET;
+            int magic = environment ? stored - ENVIRONMENT_MAGIC_OFFSET : stored;
             boolean skeletal = magic == SKELETON_MAGIC || magic == SKELETON_ASSUMED_MAGIC;
             if (magic != MAGIC && magic != ASSUMED_MAGIC && !skeletal
                     || bytes.getLong() != modelId) {
@@ -930,6 +958,7 @@ final class RaceAppearance {
             return new Restored(
                     MeshAppearanceCodec.decode(payload),
                     magic == ASSUMED_MAGIC || magic == SKELETON_ASSUMED_MAGIC,
+                    environment,
                     skeleton,
                     skeletonContent);
         } catch (java.util.concurrent.CancellationException canceled) {
@@ -950,6 +979,7 @@ final class RaceAppearance {
             String skeletonContent,
             MeshAppearance appearance,
             boolean assumedWeights,
+            boolean environmentNotDrawn,
             Cancellation token,
             List<String> issues) {
         var lower = new com.vibeminer.generated.Cancellation();
@@ -958,9 +988,12 @@ final class RaceAppearance {
             int header = skeleton == 0 ? 40 : 64;
             var bytes = ByteBuffer.allocate(header + payload.length).order(ByteOrder.LITTLE_ENDIAN);
             bytes.putInt(
-                            skeleton == 0
-                                    ? assumedWeights ? ASSUMED_MAGIC : MAGIC
-                                    : assumedWeights ? SKELETON_ASSUMED_MAGIC : SKELETON_MAGIC)
+                            (skeleton == 0
+                                            ? assumedWeights ? ASSUMED_MAGIC : MAGIC
+                                            : assumedWeights
+                                                    ? SKELETON_ASSUMED_MAGIC
+                                                    : SKELETON_MAGIC)
+                                    + (environmentNotDrawn ? ENVIRONMENT_MAGIC_OFFSET : 0))
                     .putLong(modelId)
                     .putLong(skinId)
                     .put(HexFormat.of().parseHex(content));

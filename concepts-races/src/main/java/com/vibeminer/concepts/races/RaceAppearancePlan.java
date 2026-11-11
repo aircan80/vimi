@@ -106,6 +106,10 @@ final class RaceAppearancePlan {
             "Textures for this race are not supported yet: nearly all of its model's surfaces use"
                     + " material setups that are not reviewed.";
 
+    /** A page fact: some drawn surfaces' environment-reflection stage is left out. */
+    static final String ENVIRONMENT_NOT_DRAWN =
+            "Environment reflections on some surfaces are not drawn; their base texture is.";
+
     /** A model whose every surface uses a material setup outside the reviewed profile. */
     static final String UNREVIEWED_SURFACES =
             "Textures for this race are not supported yet: its model's surfaces use material"

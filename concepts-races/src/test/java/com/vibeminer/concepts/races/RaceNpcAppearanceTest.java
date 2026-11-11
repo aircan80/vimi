@@ -932,6 +932,11 @@ final class RaceNpcAppearanceTest {
      * on a sequence whose keys are stored outside the model ({@code external}) or in it.
      */
     private static byte[] withWeight(boolean external) throws Exception {
+        return withWeight(external, 32767);
+    }
+
+    /** As {@link #withWeight(boolean)}, with the one weight key {@code key}. */
+    private static byte[] withWeight(boolean external, int key) throws Exception {
         byte[] authored = golden("authored-274.m2");
         var in = java.nio.ByteBuffer.wrap(authored).order(java.nio.ByteOrder.LITTLE_ENDIAN);
         assertEquals(0x3132444d, in.getInt(32), "MD21 is the third chunk");
@@ -947,7 +952,7 @@ final class RaceNpcAppearanceTest {
         b.putInt(md + at + 12, external ? 0 : 0x20).putShort(md + at + 60, (short) -1);
         b.putShort(md + at + 66, (short) -1).putInt(md + at + 76, 1).putInt(md + at + 80, at + 84);
         b.putInt(md + at + 84, 1).putInt(md + at + 88, at + 92);
-        b.putShort(md + at + 92, (short) 32767);
+        b.putShort(md + at + 92, (short) key);
         int combos = in.getInt(md + 0x94);
         assertEquals(1, in.getInt(md + 0x90));
         b.putShort(md + combos, (short) 0);
@@ -1194,6 +1199,110 @@ final class RaceNpcAppearanceTest {
                         new com.vibeminer.generated.MemoryGeneratedStore(),
                         RaceAppearance.appearanceKey("weighted", true));
         assertTrue(provenNpc.appearance() != null, provenNpc.message());
+    }
+
+    /**
+     * The authored model and SKIN with the one draw made a two-texture draw of shader {@code
+     * shader}: the body skin (texture 0, made type 1) then the model's second texture.
+     */
+    private static com.vibeminer.formats.AssetFilesFixture twoStage(int shader) throws Exception {
+        return twoStage(shader, golden("authored-274.m2"));
+    }
+
+    /** As {@link #twoStage(int)}, over {@code authored} model bytes (MD21 its last chunk). */
+    private static com.vibeminer.formats.AssetFilesFixture twoStage(int shader, byte[] authored)
+            throws Exception {
+        var in = java.nio.ByteBuffer.wrap(authored).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        int md = 40, size = in.getInt(36);
+        assertEquals(authored.length, md + size, "MD21 is the last chunk");
+        int at = (size + 3) & ~3;
+        var b =
+                java.nio.ByteBuffer.wrap(java.util.Arrays.copyOf(authored, md + at + 12))
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        b.putInt(36, at + 12);
+        b.putInt(md + in.getInt(md + 0x54), 1);
+        // Two-entry texture, coordinate and transform lookups for the two stages.
+        b.putShort(md + at, (short) 0).putShort(md + at + 2, (short) 1);
+        b.putShort(md + at + 4, (short) 0).putShort(md + at + 6, (short) 0);
+        b.putShort(md + at + 8, (short) -1).putShort(md + at + 10, (short) -1);
+        b.putInt(md + 0x80, 2).putInt(md + 0x84, at);
+        b.putInt(md + 0x88, 2).putInt(md + 0x8c, at + 4);
+        b.putInt(md + 0x98, 2).putInt(md + 0x9c, at + 8);
+        byte[] skin = golden("authored-274.skin");
+        var k = java.nio.ByteBuffer.wrap(skin).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        int batch = k.getInt(4 + 36);
+        k.putShort(batch + 2, (short) shader).putShort(batch + 14, (short) 2);
+        return new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
+                .add(1234, "1".repeat(32), b.array())
+                .add(900, "2".repeat(32), skin)
+                .add(100, "3".repeat(32), bake());
+    }
+
+    @Test
+    void anEnvironmentDrawShowsItsBaseTextureAndSaysTheReflectionIsLeftOut() throws Exception {
+        var variant = new RaceMediaTypes.Variant(3, 0, 1, 1, 1234);
+        // Shader effect 0 (0x8000): the first stage, the body skin, is drawn.
+        var drawn =
+                render(
+                        twoStage(0x8000),
+                        variant,
+                        false,
+                        new com.vibeminer.generated.MemoryGeneratedStore(),
+                        RaceAppearance.appearanceKey("environment", false));
+        assertTrue(drawn.appearance() != null, drawn.message());
+        assertEquals(1, drawn.appearance().surfaces().size());
+        assertTrue(
+                drawn.issues().contains(RaceAppearancePlan.ENVIRONMENT_NOT_DRAWN),
+                drawn.issues().toString());
+        // Saved with the header that brings the fact back on restore.
+        var generated = new com.vibeminer.generated.MemoryGeneratedStore();
+        var key = RaceAppearance.appearanceKey("environment-saved", false);
+        render(twoStage(0x8000), variant, false, generated, key);
+        assertEquals(0x56414335, savedMagic(generated, key));
+        var restored = render(twoStage(0x8000), variant, false, generated, key);
+        assertTrue(restored.restored());
+        assertTrue(
+                restored.issues().contains(RaceAppearancePlan.ENVIRONMENT_NOT_DRAWN),
+                restored.issues().toString());
+        // Any other two-texture shader stays outside the reviewed profile.
+        var other =
+                render(
+                        twoStage(0x8001),
+                        variant,
+                        false,
+                        new com.vibeminer.generated.MemoryGeneratedStore(),
+                        RaceAppearance.appearanceKey("environment-1", false));
+        assertEquals(null, other.appearance());
+        assertEquals(RaceAppearancePlan.UNREVIEWED_SURFACES, other.message());
+        // An NPC (and so a World creature) never draws a first stage alone.
+        var npc =
+                render(
+                        twoStage(0x8000),
+                        variant,
+                        true,
+                        new com.vibeminer.generated.MemoryGeneratedStore(),
+                        RaceAppearance.appearanceKey("environment-npc", true));
+        assertEquals(null, npc.appearance());
+        assertEquals(RaceAppearancePlan.UNREVIEWED_SURFACES, npc.message());
+        // A first stage whose weight track is proven partial stays refused.
+        var partial =
+                render(
+                        twoStage(0x8000, withWeight(false, 0)),
+                        variant,
+                        false,
+                        new com.vibeminer.generated.MemoryGeneratedStore(),
+                        RaceAppearance.appearanceKey("environment-partial", false));
+        assertEquals(null, partial.appearance());
+        assertEquals(RaceAppearancePlan.UNREVIEWED_SURFACES, partial.message());
+        // The same draw with a full-opacity weight is drawn: the refusal is the weight's.
+        var full =
+                render(
+                        twoStage(0x8000, withWeight(false, 32767)),
+                        variant,
+                        false,
+                        new com.vibeminer.generated.MemoryGeneratedStore(),
+                        RaceAppearance.appearanceKey("environment-full", false));
+        assertTrue(full.appearance() != null, full.message());
     }
 
     @Test
