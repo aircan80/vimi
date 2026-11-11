@@ -11,6 +11,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.vibeminer.store.StoreTypes.Kind;
 import com.vibeminer.store.StoreTypes.Options;
 import com.vibeminer.store.StoreTypes.PutObject;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.util.ArrayList;
@@ -133,8 +134,31 @@ final class ReadAdmissionTest {
             var failure = assertThrows(CompletionException.class, read::join);
             assertEquals("OBJECT_STORE_CLOSED", ((StoreException) failure.getCause()).code());
         }
-        closing.get(20, TimeUnit.SECONDS);
+        closeOrDumpThreads(closing);
         store = null;
+    }
+
+    /**
+     * Waits for {@code closing}. This close has hung, rarely (Linux CI once, and once locally on
+     * one CPU); a hang prints every thread, virtual ones included, so the next one can be
+     * diagnosed.
+     */
+    private static void closeOrDumpThreads(CompletableFuture<Void> closing) throws Exception {
+        try {
+            closing.get(20, TimeUnit.SECONDS);
+        } catch (java.util.concurrent.TimeoutException hung) {
+            Path dump = Files.createTempFile("read-admission-close-", ".txt");
+            Files.delete(dump);
+            java.lang.management.ManagementFactory.getPlatformMXBean(
+                            com.sun.management.HotSpotDiagnosticMXBean.class)
+                    .dumpThreads(
+                            dump.toString(),
+                            com.sun.management.HotSpotDiagnosticMXBean.ThreadDumpFormat.TEXT_PLAIN);
+            System.err.println("Store close did not finish; threads:");
+            System.err.println(Files.readString(dump));
+            Files.deleteIfExists(dump);
+            throw hung;
+        }
     }
 
     @Test

@@ -658,15 +658,26 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
                                 var posedMesh = work.mesh();
                                 var posedAppearance = work.appearance();
                                 if (work.animation() != null) {
+                                    // Camera-facing bones are posed for this frame's camera, so a
+                                    // camera move re-poses them; other animations ignore the view.
+                                    var camera =
+                                            com.vibeminer.rendering.models.PreviewAnimation.View
+                                                    .orbit(work.view().yaw(), work.view().pitch());
                                     if (posedAppearance != null) {
                                         posedAppearance =
                                                 work.animation()
-                                                        .pose(posedAppearance, work.animationMillis());
+                                                        .pose(
+                                                                posedAppearance,
+                                                                work.animationMillis(),
+                                                                camera);
                                         posedMesh = posedAppearance.mesh();
                                     } else {
                                         posedMesh =
                                                 work.animation()
-                                                        .pose(posedMesh, work.animationMillis())
+                                                        .pose(
+                                                                posedMesh,
+                                                                work.animationMillis(),
+                                                                camera)
                                                         .mesh();
                                     }
                                 }

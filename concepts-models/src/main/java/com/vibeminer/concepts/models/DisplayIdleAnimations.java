@@ -19,6 +19,10 @@ import java.util.BitSet;
  * camera orients the card. Flags of bones that move no rendered vertex (attachments, effect
  * emitters) do not matter.
  *
+ * <p>For a consumer that poses per camera ({@link #admitFacingCamera}), a billboard bone is instead
+ * a camera-facing bone ({@link PreviewAnimation.Facing}): it may have children, which turn with it,
+ * and its vertices may be blended with other bones by weight. Its rotation keys are still refused.
+ *
  * <p>Public so Races previews admit their Stand through the same bone-flag profile as Mounts.
  */
 public final class DisplayIdleAnimations {
@@ -50,7 +54,35 @@ public final class DisplayIdleAnimations {
             PreviewMesh mesh,
             float[] normals,
             Cancellation token) {
-        return admit(model, skin, idle, mesh, normals, false, token).animation();
+        return admit(model, skin, idle, mesh, normals, Profile.CARDS, token).animation();
+    }
+
+    /** Which consumer an admission is for. */
+    private enum Profile {
+        /** A static card renderer orients rigid leaf billboards. */
+        CARDS,
+        /** The consumer poses per camera view: billboards are camera-facing bones. */
+        CAMERA,
+        /** The World draws no camera-facing parts. */
+        WORLD
+    }
+
+    /**
+     * As {@link #admit}, for a consumer that poses the result per camera view ({@link
+     * PreviewAnimation#pose(PreviewMesh, long, PreviewAnimation.View)}): billboard bones with
+     * children or with partly weighted vertices are admitted as camera-facing bones.
+     *
+     * @throws Unsupported for a readable source outside the admitted profile
+     * @throws IllegalArgumentException when the inputs do not belong together
+     */
+    public static PreviewAnimation admitFacingCamera(
+            M2Types.Model model,
+            M2Types.RestSkin skin,
+            M2IdleAnimation.Idle idle,
+            PreviewMesh mesh,
+            float[] normals,
+            Cancellation token) {
+        return admit(model, skin, idle, mesh, normals, Profile.CAMERA, token).animation();
     }
 
     /** A World admission: the animation and the rest-surface vertices the World leaves out. */
@@ -73,7 +105,7 @@ public final class DisplayIdleAnimations {
             PreviewMesh mesh,
             float[] normals,
             Cancellation token) {
-        return admit(model, skin, idle, mesh, normals, true, token);
+        return admit(model, skin, idle, mesh, normals, Profile.WORLD, token);
     }
 
     /**
@@ -123,8 +155,9 @@ public final class DisplayIdleAnimations {
             M2IdleAnimation.Idle idle,
             PreviewMesh mesh,
             float[] normals,
-            boolean world,
+            Profile profile,
             Cancellation token) {
+        boolean world = profile == Profile.WORLD, camera = profile == Profile.CAMERA;
         if (idle.model() != model || skin.model() != model) {
             throw new IllegalArgumentException("Idle facts belong to another parsed model");
         }
@@ -198,6 +231,7 @@ public final class DisplayIdleAnimations {
             var tracks = idle.bones().get(index);
             long flags = bone.flags() & (INHERITANCE | SPHERICAL | CYLINDRICAL);
             boolean billboard = false;
+            var facing = PreviewAnimation.Facing.NONE;
             if (chain.get(index) && flags != 0 && !billboardTree.get(index)) {
                 if (flags != SPHERICAL && flags != CYLINDRICAL_Z && flags != CYLINDRICAL_Y) {
                     throw new Unsupported(
@@ -208,7 +242,7 @@ public final class DisplayIdleAnimations {
                                     + Long.toHexString(flags)
                                     + " that idle evaluation does not implement.");
                 }
-                if (parents[index]) {
+                if (parents[index] && !camera) {
                     throw new Unsupported(
                             "Billboard bone "
                                     + index
@@ -222,7 +256,16 @@ public final class DisplayIdleAnimations {
                                     + " has rotation keys, which turn its card in the screen"
                                     + " plane; idle evaluation does not evaluate them.");
                 }
-                billboard = true;
+                if (camera) {
+                    facing =
+                            flags == SPHERICAL
+                                    ? PreviewAnimation.Facing.SPHERICAL
+                                    : flags == CYLINDRICAL_Z
+                                            ? PreviewAnimation.Facing.CYLINDRICAL_Z
+                                            : PreviewAnimation.Facing.CYLINDRICAL_Y;
+                } else {
+                    billboard = true;
+                }
             }
             result.add(
                     new PreviewAnimation.Bone(
@@ -231,9 +274,12 @@ public final class DisplayIdleAnimations {
                             bone.pivot().y(),
                             bone.pivot().z(),
                             track(tracks.translation()),
-                            billboard ? null : track(tracks.rotation()),
+                            billboard || facing != PreviewAnimation.Facing.NONE
+                                    ? null
+                                    : track(tracks.rotation()),
                             track(tracks.scale()),
-                            billboard));
+                            billboard,
+                            facing));
         }
         int[] leftOut = new int[0];
         if (!billboardTree.isEmpty()) {
