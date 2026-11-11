@@ -891,6 +891,11 @@ final class RaceNpcAppearanceTest {
      * on a sequence whose keys are stored outside the model ({@code external}) or in it.
      */
     private static byte[] withWeight(boolean external) throws Exception {
+        return withWeight(external, 32767);
+    }
+
+    /** As {@link #withWeight(boolean)}, with the one weight key {@code key}. */
+    private static byte[] withWeight(boolean external, int key) throws Exception {
         byte[] authored = golden("authored-274.m2");
         var in = java.nio.ByteBuffer.wrap(authored).order(java.nio.ByteOrder.LITTLE_ENDIAN);
         assertEquals(0x3132444d, in.getInt(32), "MD21 is the third chunk");
@@ -906,7 +911,7 @@ final class RaceNpcAppearanceTest {
         b.putInt(md + at + 12, external ? 0 : 0x20).putShort(md + at + 60, (short) -1);
         b.putShort(md + at + 66, (short) -1).putInt(md + at + 76, 1).putInt(md + at + 80, at + 84);
         b.putInt(md + at + 84, 1).putInt(md + at + 88, at + 92);
-        b.putShort(md + at + 92, (short) 32767);
+        b.putShort(md + at + 92, (short) key);
         int combos = in.getInt(md + 0x94);
         assertEquals(1, in.getInt(md + 0x90));
         b.putShort(md + combos, (short) 0);
@@ -1160,7 +1165,12 @@ final class RaceNpcAppearanceTest {
      * shader}: the body skin (texture 0, made type 1) then the model's second texture.
      */
     private static com.vibeminer.formats.AssetFilesFixture twoStage(int shader) throws Exception {
-        byte[] authored = golden("authored-274.m2");
+        return twoStage(shader, golden("authored-274.m2"));
+    }
+
+    /** As {@link #twoStage(int)}, over {@code authored} model bytes (MD21 its last chunk). */
+    private static com.vibeminer.formats.AssetFilesFixture twoStage(int shader, byte[] authored)
+            throws Exception {
         var in = java.nio.ByteBuffer.wrap(authored).order(java.nio.ByteOrder.LITTLE_ENDIAN);
         int md = 40, size = in.getInt(36);
         assertEquals(authored.length, md + size, "MD21 is the last chunk");
@@ -1223,6 +1233,35 @@ final class RaceNpcAppearanceTest {
                         RaceAppearance.appearanceKey("environment-1", false));
         assertEquals(null, other.appearance());
         assertEquals(RaceAppearancePlan.UNREVIEWED_SURFACES, other.message());
+        // An NPC (and so a World creature) never draws a first stage alone.
+        var npc =
+                render(
+                        twoStage(0x8000),
+                        variant,
+                        true,
+                        new com.vibeminer.generated.MemoryGeneratedStore(),
+                        RaceAppearance.appearanceKey("environment-npc", true));
+        assertEquals(null, npc.appearance());
+        assertEquals(RaceAppearancePlan.UNREVIEWED_SURFACES, npc.message());
+        // A first stage whose weight track is proven partial stays refused.
+        var partial =
+                render(
+                        twoStage(0x8000, withWeight(false, 0)),
+                        variant,
+                        false,
+                        new com.vibeminer.generated.MemoryGeneratedStore(),
+                        RaceAppearance.appearanceKey("environment-partial", false));
+        assertEquals(null, partial.appearance());
+        assertEquals(RaceAppearancePlan.UNREVIEWED_SURFACES, partial.message());
+        // The same draw with a full-opacity weight is drawn: the refusal is the weight's.
+        var full =
+                render(
+                        twoStage(0x8000, withWeight(false, 32767)),
+                        variant,
+                        false,
+                        new com.vibeminer.generated.MemoryGeneratedStore(),
+                        RaceAppearance.appearanceKey("environment-full", false));
+        assertTrue(full.appearance() != null, full.message());
     }
 
     @Test

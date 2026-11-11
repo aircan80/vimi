@@ -614,8 +614,12 @@ final class RaceAppearance {
                                 assumeExternal)) {
                     continue;
                 }
+                // The static character preview only, like the weight assumption: an NPC (and so a
+                // World creature) is unchanged.
                 boolean firstStage =
-                        !contextual && RaceAppearanceProfiles.environmentFirstStage(batch);
+                        !contextual
+                                && !plan.npc()
+                                && RaceAppearanceProfiles.environmentFirstStage(batch);
                 if (!firstStage
                                 && (batch.textureCount() != 1
                                         || !contextual && batch.shaderId() != 0)
