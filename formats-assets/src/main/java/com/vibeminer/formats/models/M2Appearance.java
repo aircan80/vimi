@@ -83,18 +83,38 @@ public final class M2Appearance {
     public static final class ModelFacts {
         private final Model model;
         private final List<Boolean> staticWeights;
+        private final List<Boolean> externalWeights;
 
         ModelFacts(Model model, List<Boolean> weights) {
+            this(model, weights, java.util.Collections.nCopies(weights.size(), false));
+        }
+
+        ModelFacts(Model model, List<Boolean> weights, List<Boolean> external) {
+            if (external.size() != weights.size()) {
+                throw new IllegalArgumentException("One external fact per weight track");
+            }
             this.model = model;
             this.staticWeights = List.copyOf(weights);
+            this.externalWeights = List.copyOf(external);
         }
 
         public Model model() {
             return model;
         }
 
+        /** Per weight track: proven constant full opacity. */
         public List<Boolean> staticWeights() {
             return staticWeights;
+        }
+
+        /**
+         * Per weight track: not proven only because some of its keys are stored outside the model
+         * (in a sequence's external animation file), every key stored in the model being full
+         * opacity. False for a track proven full, proven partial, or unprovable for another reason.
+         * Only a caller that states the assumption may treat such a track as opaque.
+         */
+        public List<Boolean> externalWeights() {
+            return externalWeights;
         }
     }
 
@@ -117,14 +137,28 @@ public final class M2Appearance {
 
     public static CompletableFuture<ModelFacts> readModel(
             AssetSource source, Model model, Cancellation token) {
-        return AssetTasks.run(() -> readModelCore(source, model, token));
+        return readModel(source, model, null, token);
+    }
+
+    /**
+     * As {@link #readModel(AssetSource, Model, Cancellation)}, with the model's external skeleton
+     * (SKID) when it keeps no sequences of its own. The skeleton's sequence flags then say where
+     * each weight slice's keys are: in the model (0x20), read and proven, or in an animation file.
+     * Without a skeleton, or with one that keeps no sequences of its own, such a model's weight
+     * slices stay unproven. A skeleton that names a parent proves its 0x20 slices, but leaves its
+     * other slices unproven rather than external.
+     */
+    public static CompletableFuture<ModelFacts> readModel(
+            AssetSource source, Model model, M2SkeletonFile.Skeleton skeleton, Cancellation token) {
+        return AssetTasks.run(() -> readModelCore(source, model, skeleton, token));
     }
 
     private record SliceKey(long count, long offset, boolean global) {}
 
     private record KeysKey(long count, long offset) {}
 
-    private static ModelFacts readModelCore(AssetSource source, Model model, Cancellation token) {
+    private static ModelFacts readModelCore(
+            AssetSource source, Model model, M2SkeletonFile.Skeleton skeleton, Cancellation token) {
         token.check();
         M2Input input = new M2Input(source, model.limits(), token);
         if (input.length != model.sourceBytes()) {
@@ -145,6 +179,16 @@ public final class M2Appearance {
                         model.baseBytes(),
                         header),
                 (row, i) -> flags.add(u32(row, 12)));
+        boolean childSkeleton = false;
+        if (flags.isEmpty() && model.skeletonFileDataId() != 0 && skeleton != null) {
+            childSkeleton = skeleton.parentFileDataId() != 0;
+            // The model's sequences are its skeleton's own (SKS1), in the same order, whether or
+            // not it names a parent skeleton. One without sequences of its own leaves the
+            // model's weight slices unproven.
+            for (var sequence : skeleton.sequences()) {
+                flags.add(sequence.flags() & 0xffffffffL);
+            }
+        }
         ArrayDeclaration weightTracks = declaration(model, "weights");
         long globals = declaration(model, "globalSequences").count();
         List<long[]> tracks = new ArrayList<>();
@@ -160,8 +204,10 @@ public final class M2Appearance {
                         header),
                 (row, i) -> tracks.add(new long[] {i16(row, 2), u32(row, 12), u32(row, 16)}));
         List<Boolean> proofs = new ArrayList<>();
+        List<Boolean> externals = new ArrayList<>();
         int slicesLeft = 65536, keysLeft = 65536;
         Map<SliceKey, Boolean> sliceArrays = new HashMap<>();
+        Map<SliceKey, Boolean> sliceExternal = new HashMap<>();
         Map<KeysKey, Boolean> keyArrays = new HashMap<>();
         for (long[] track : tracks) {
             token.check();
@@ -169,14 +215,18 @@ public final class M2Appearance {
             long count = track[1], offset = track[2];
             if (global >= globals) {
                 proofs.add(false);
+                externals.add(false);
                 continue;
             }
             SliceKey key = new SliceKey(count, count == 0 ? 0 : offset, global >= 0);
             if (sliceArrays.containsKey(key)) {
                 proofs.add(sliceArrays.get(key));
+                externals.add(sliceExternal.get(key));
                 continue;
             }
             boolean result = false;
+            // Keys stored outside the model: the track is then unproven, opaque or not.
+            boolean external = false;
             if (count <= slicesLeft) {
                 slicesLeft -= (int) count;
                 result = true;
@@ -198,9 +248,22 @@ public final class M2Appearance {
                     if (keyCount == 0) {
                         continue;
                     }
-                    if (global < 0 && (i >= flags.size() || (flags.get(i) & 0x20) == 0)) {
+                    if (global < 0 && i >= flags.size()) {
+                        // A slice with no sequence: nothing says where its keys are stored.
                         result = false;
                         break;
+                    }
+                    if (global < 0 && (flags.get(i) & 0x20) == 0 && childSkeleton) {
+                        // A child skeleton's sequences may line up with the model's slices
+                        // differently: a key this one says is elsewhere is not assumed so.
+                        result = false;
+                        break;
+                    }
+                    if (global < 0 && (flags.get(i) & 0x20) == 0) {
+                        // Read on: a key stored in the model that is not full opacity still
+                        // proves the track partial, external keys or not.
+                        external = true;
+                        continue;
                     }
                     KeysKey k = new KeysKey(keyCount, keyOffset);
                     if (keyArrays.containsKey(k)) {
@@ -232,11 +295,15 @@ public final class M2Appearance {
                     result = full[0];
                 }
             }
+            boolean externalOnly = result && external;
+            result &= !external;
             sliceArrays.put(key, result);
+            sliceExternal.put(key, externalOnly);
             proofs.add(result);
+            externals.add(externalOnly);
         }
         input.finish();
-        return new ModelFacts(model, proofs);
+        return new ModelFacts(model, proofs, externals);
     }
 
     public static CompletableFuture<Plan> admit(

@@ -6,6 +6,7 @@ import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 
@@ -192,7 +193,7 @@ final class RaceCustomization {
                             .sorted(Comparator.comparingLong(Db2Types.Row::id))
                             .toList();
             candidates.forEach(row -> all.add(row.id()));
-            var match =
+            var eligibleRows =
                     candidates.stream()
                             .filter(
                                     row ->
@@ -205,13 +206,55 @@ final class RaceCustomization {
                                                             requirements,
                                                             prerequisites,
                                                             issues))
-                            .filter(
-                                    row ->
-                                            !overrides.containsKey(option.id())
-                                                    || row.id() == overrides.get(option.id()))
-                            .findFirst();
-            if (overrides.containsKey(option.id()) && match.isEmpty()) {
-                throw options.unsupported("Requested choice is not a known eligible option member");
+                            .toList();
+            Optional<Db2Types.Row> fallback = Optional.empty();
+            if (eligibleRows.isEmpty()) {
+                // No choice is known to be eligible. A choice whose requirements only cannot be
+                // checked here (an account, archive or prerequisite term), never one refused for
+                // this race or class, still shows the option rather than leaving its texture
+                // region empty: the first such recorded choice is the sample. The catalog lists it
+                // as the default, so it may also be requested.
+                fallback =
+                        candidates.stream()
+                                .filter(
+                                        row ->
+                                                choices.number(row, "ChrCustomizationVisReqID") == 0
+                                                        && eligibility(
+                                                                        choices.number(
+                                                                                row,
+                                                                                "ChrCustomizationReqID"),
+                                                                        classId,
+                                                                        (int) bit,
+                                                                        requirements,
+                                                                        prerequisites,
+                                                                        new java.util.ArrayList<>())
+                                                                == Eligibility.UNKNOWN)
+                                .findFirst();
+            }
+            Optional<Db2Types.Row> match;
+            if (overrides.containsKey(option.id())) {
+                long requestedChoice = overrides.get(option.id());
+                match =
+                        eligibleRows.stream()
+                                .filter(row -> row.id() == requestedChoice)
+                                .findFirst();
+                if (match.isEmpty()
+                        && fallback.isPresent()
+                        && fallback.get().id() == requestedChoice) {
+                    match = fallback;
+                    note(issues, UNVERIFIED_SAMPLE);
+                }
+                if (match.isEmpty()) {
+                    throw options.unsupported(
+                            "Requested choice is not a known eligible option member");
+                }
+            } else if (!eligibleRows.isEmpty()) {
+                match = Optional.of(eligibleRows.getFirst());
+            } else {
+                match = fallback;
+                if (match.isPresent()) {
+                    note(issues, UNVERIFIED_SAMPLE);
+                }
             }
             if (match.isEmpty() && !overrides.containsKey(option.id())) {
                 // No choice is known to be eligible. A choice whose requirements only cannot be

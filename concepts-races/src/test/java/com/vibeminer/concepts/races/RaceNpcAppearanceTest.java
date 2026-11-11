@@ -5,6 +5,7 @@ import static com.vibeminer.concepts.races.RaceAppearancePlanTest.replace;
 import static com.vibeminer.concepts.races.RaceAppearancePlanTest.row;
 import static com.vibeminer.concepts.races.RaceAppearancePlanTest.table;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -360,6 +361,25 @@ final class RaceNpcAppearanceTest {
     /** Renders the four-texel NPC bake plan (layer file 100) over {@code variant}'s model. */
     private static RaceAppearanceTypes.Result renderNpc(
             com.vibeminer.files.BuildFiles files, RaceMediaTypes.Variant variant) {
+        return render(
+                files,
+                variant,
+                true,
+                new com.vibeminer.generated.MemoryGeneratedStore(),
+                com.vibeminer.generated.GeneratedKey.hash(
+                        "npc-bake".getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+    }
+
+    /**
+     * Renders the four-texel plan (layer file 100) over {@code variant}'s model, as an NPC's or as
+     * the static character preview's, saving into {@code generated} under {@code key}.
+     */
+    private static RaceAppearanceTypes.Result render(
+            com.vibeminer.files.BuildFiles files,
+            RaceMediaTypes.Variant variant,
+            boolean npc,
+            com.vibeminer.generated.GeneratedStore generated,
+            com.vibeminer.generated.GeneratedKey key) {
         var build = BUILD;
         var tables =
                 new MemoryTables()
@@ -367,7 +387,6 @@ final class RaceNpcAppearanceTest {
                         .forBuild(build, "enUS", Cancellation.NONE)
                         .join()
                         .tables();
-        var generated = new com.vibeminer.generated.MemoryGeneratedStore();
         var service = new RacesService(tables, files, generated);
         try {
             var mesh =
@@ -392,17 +411,9 @@ final class RaceNpcAppearanceTest {
                                             1, 100, 0, 0, 4, 4, 1, 0, "NPC bake #100")),
                             List.of(),
                             RaceAppearanceProfiles.Profile.LEGACY,
-                            true);
+                            npc);
             var prepared =
-                    new RaceAppearance.Prepared(
-                            base,
-                            plan,
-                            com.vibeminer.generated.GeneratedKey.hash(
-                                    "npc-bake".getBytes(java.nio.charset.StandardCharsets.UTF_8)),
-                            List.of(),
-                            null,
-                            null,
-                            null);
+                    new RaceAppearance.Prepared(base, plan, key, List.of(), null, null, null);
             return new RaceAppearance(
                             service,
                             new RaceMedia(service, tables, files, generated),
@@ -873,6 +884,275 @@ final class RaceNpcAppearanceTest {
                             : file,
                     token);
         }
+    }
+
+    /**
+     * The authored model with its one draw bound to a texture-weight track of one full-opacity key,
+     * on a sequence whose keys are stored outside the model ({@code external}) or in it.
+     */
+    private static byte[] withWeight(boolean external) throws Exception {
+        byte[] authored = golden("authored-274.m2");
+        var in = java.nio.ByteBuffer.wrap(authored).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        assertEquals(0x3132444d, in.getInt(32), "MD21 is the third chunk");
+        int md = 40, size = in.getInt(36);
+        assertEquals(authored.length, md + size, "MD21 is the last chunk");
+        int at = (size + 3) & ~3;
+        var b =
+                java.nio.ByteBuffer.wrap(java.util.Arrays.copyOf(authored, md + at + 96))
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        b.putInt(36, at + 96);
+        b.putInt(md + 0x1c, 1).putInt(md + 0x20, at);
+        b.putInt(md + 0x58, 1).putInt(md + 0x5c, at + 64);
+        b.putInt(md + at + 12, external ? 0 : 0x20).putShort(md + at + 60, (short) -1);
+        b.putShort(md + at + 66, (short) -1).putInt(md + at + 76, 1).putInt(md + at + 80, at + 84);
+        b.putInt(md + at + 84, 1).putInt(md + at + 88, at + 92);
+        b.putShort(md + at + 92, (short) 32767);
+        int combos = in.getInt(md + 0x94);
+        assertEquals(1, in.getInt(md + 0x90));
+        b.putShort(md + combos, (short) 0);
+        // Its one texture is the body skin the plan's canvas composes.
+        b.putInt(md + in.getInt(md + 0x54), 1);
+        return b.array();
+    }
+
+    /**
+     * {@link #withWeight} whose sequence is moved to an external skeleton the model names (SKID
+     * 555): the model keeps no sequences, and the skeleton file is not in the build.
+     */
+    private static byte[] withSkeletonWeight() throws Exception {
+        return withSkeleton(true);
+    }
+
+    /** As {@link #withSkeletonWeight}; without {@code weighted}, the draw has no weight track. */
+    private static byte[] withSkeleton(boolean weighted) throws Exception {
+        byte[] model = withWeight(false);
+        var b = java.nio.ByteBuffer.wrap(model).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        b.putInt(40 + 0x1c, 0);
+        if (!weighted) {
+            b.putShort(40 + b.getInt(40 + 0x94), (short) -1);
+        }
+        byte[] extended = java.util.Arrays.copyOf(model, model.length + 12);
+        var chunk = java.nio.ByteBuffer.wrap(extended).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        chunk.put(model.length, "SKID".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+        chunk.putInt(model.length + 4, 4).putInt(model.length + 8, 555);
+        return extended;
+    }
+
+    /** A skeleton file (SKL1, SKS1) of one sequence with {@code flags}. */
+    private static byte[] skeletonFile(int flags) {
+        var b =
+                java.nio.ByteBuffer.allocate(12 + 8 + 32 + 64)
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        b.put("SKL1".getBytes(java.nio.charset.StandardCharsets.US_ASCII)).putInt(4).putInt(0);
+        b.put("SKS1".getBytes(java.nio.charset.StandardCharsets.US_ASCII)).putInt(32 + 64);
+        int at = b.position();
+        b.putInt(at + 8, 1).putInt(at + 12, 32);
+        b.putInt(at + 32 + 12, flags).putShort(at + 32 + 60, (short) -1);
+        return b.array();
+    }
+
+    /** Authored files over a SKID model whose skeleton (555) is {@code skeleton}, or absent. */
+    private static com.vibeminer.formats.AssetFilesFixture skeletal(
+            boolean weighted, byte[] skeleton, char skeletonKey) throws Exception {
+        var files =
+                new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
+                        .add(1234, "1".repeat(32), withSkeleton(weighted))
+                        .add(900, "2".repeat(32), golden("authored-274.skin"))
+                        .add(100, "3".repeat(32), bake());
+        if (skeleton != null) {
+            files.add(555, String.valueOf(skeletonKey).repeat(32), skeleton);
+        }
+        return files;
+    }
+
+    /** Authored files whose skeleton (555) is only partly stored. */
+    private static final class PartialSkeleton extends com.vibeminer.formats.AssetFilesFixture {
+        PartialSkeleton() throws Exception {
+            super(BUILD, "enUS");
+            add(1234, "1".repeat(32), withSkeleton(false));
+            add(900, "2".repeat(32), golden("authored-274.skin"));
+            add(100, "3".repeat(32), bake());
+            add(555, "5".repeat(32), skeletonFile(0x20));
+        }
+
+        @Override
+        public java.util.concurrent.CompletableFuture<com.vibeminer.files.FileTypes.FileOpen>
+                openRead(
+                        com.vibeminer.files.FileTypes.FileRef file,
+                        com.vibeminer.access.Cancellation token) {
+            if (file.equals(com.vibeminer.files.FileTypes.FileRef.id(555))) {
+                return java.util.concurrent.CompletableFuture.completedFuture(
+                        new com.vibeminer.files.FileTypes.FileOpen(
+                                com.vibeminer.files.FileTypes.FileReadState.PARTIAL,
+                                null,
+                                "FILES_PARTIAL",
+                                "part of the file is not stored yet",
+                                null));
+            }
+            return super.openRead(file, token);
+        }
+    }
+
+    private static boolean saved(
+            com.vibeminer.generated.GeneratedStore generated,
+            com.vibeminer.generated.GeneratedKey key) {
+        return generated.read(key, new com.vibeminer.generated.Cancellation()).join().state()
+                == com.vibeminer.generated.GeneratedTypes.ReadState.PRESENT;
+    }
+
+    @Test
+    void aWeightIsProvenThroughTheSkeletonWhichThenGuardsTheSavedComposite() throws Exception {
+        var variant = new RaceMediaTypes.Variant(3, 0, 1, 1, 1234);
+        var key = RaceAppearance.appearanceKey("skeletal", false);
+        var generated = new com.vibeminer.generated.MemoryGeneratedStore();
+        // Flag 0x20: the full key in the model proves the track; nothing is assumed.
+        var proven =
+                render(skeletal(true, skeletonFile(0x20), '5'), variant, false, generated, key);
+        assertTrue(proven.appearance() != null, proven.message());
+        assertFalse(proven.issues().contains(RaceAppearancePlan.ASSUMED_WEIGHTS));
+        assertEquals(0x56414333, savedMagic(generated, key));
+        // The same skeleton restores it; a changed one is reassessed.
+        assertTrue(
+                render(skeletal(true, skeletonFile(0x20), '5'), variant, false, generated, key)
+                        .restored());
+        assertFalse(
+                render(skeletal(true, skeletonFile(0x20), '6'), variant, false, generated, key)
+                        .restored());
+        // Unflagged: the keys are in an animation file, assumed opaque in the preview only.
+        var assumed =
+                render(
+                        skeletal(true, skeletonFile(0), '5'),
+                        variant,
+                        false,
+                        new com.vibeminer.generated.MemoryGeneratedStore(),
+                        key);
+        assertTrue(assumed.issues().contains(RaceAppearancePlan.ASSUMED_WEIGHTS));
+    }
+
+    @Test
+    void aSkeletonNotReadableNowIsNotSavedAndAnNpcIsAskedAgain() throws Exception {
+        var variant = new RaceMediaTypes.Variant(3, 0, 1, 1, 1234);
+        var key = RaceAppearance.appearanceKey("partial-skeleton", false);
+        var generated = new com.vibeminer.generated.MemoryGeneratedStore();
+        var preview = render(new PartialSkeleton(), variant, false, generated, key);
+        assertTrue(preview.appearance() != null, preview.message());
+        assertFalse(saved(generated, key));
+        var unreadable =
+                assertThrows(
+                        RacesService.Unreadable.class,
+                        () ->
+                                render(
+                                        new PartialSkeleton(),
+                                        variant,
+                                        true,
+                                        new com.vibeminer.generated.MemoryGeneratedStore(),
+                                        RaceAppearance.appearanceKey("partial-skeleton", true)));
+        assertTrue(unreadable.getMessage().contains("skeleton"), unreadable.getMessage());
+        // A skeleton missing from the build: shown, but not saved.
+        var missing = new com.vibeminer.generated.MemoryGeneratedStore();
+        assertTrue(
+                render(skeletal(false, null, '5'), variant, false, missing, key).appearance()
+                        != null);
+        assertFalse(saved(missing, key));
+    }
+
+    @Test
+    void anInvalidSkeletonIsSavedWithItsWeightsUnproven() throws Exception {
+        var variant = new RaceMediaTypes.Variant(3, 0, 1, 1, 1234);
+        var key = RaceAppearance.appearanceKey("invalid-skeleton", false);
+        byte[] invalid = "SKL1\0\0\0\0".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        // A lasting fact: the composite is saved, guarded by the skeleton's content.
+        var generated = new com.vibeminer.generated.MemoryGeneratedStore();
+        var plain = render(skeletal(false, invalid, '7'), variant, false, generated, key);
+        assertTrue(plain.appearance() != null, plain.message());
+        assertEquals(0x56414333, savedMagic(generated, key));
+        // Its weight track is unproven, never assumed: the weighted surface is refused.
+        var weighted =
+                render(
+                        skeletal(true, invalid, '7'),
+                        variant,
+                        false,
+                        new com.vibeminer.generated.MemoryGeneratedStore(),
+                        key);
+        assertEquals(null, weighted.appearance());
+        assertEquals(RaceAppearancePlan.UNREVIEWED_SURFACES, weighted.message());
+    }
+
+    @Test
+    void aWeightWhoseSkeletonCannotBeReadIsNeitherProvenNorAssumed() throws Exception {
+        var variant = new RaceMediaTypes.Variant(3, 0, 1, 1, 1234);
+        var files =
+                new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
+                        .add(1234, "1".repeat(32), withSkeletonWeight())
+                        .add(900, "2".repeat(32), golden("authored-274.skin"))
+                        .add(100, "3".repeat(32), bake());
+        var preview =
+                render(
+                        files,
+                        variant,
+                        false,
+                        new com.vibeminer.generated.MemoryGeneratedStore(),
+                        RaceAppearance.appearanceKey("skeletal", false));
+        assertEquals(null, preview.appearance());
+        assertEquals(RaceAppearancePlan.UNREVIEWED_SURFACES, preview.message());
+    }
+
+    private static com.vibeminer.formats.AssetFilesFixture weighted(boolean external)
+            throws Exception {
+        return new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
+                .add(1234, "1".repeat(32), withWeight(external))
+                .add(900, "2".repeat(32), golden("authored-274.skin"))
+                .add(100, "3".repeat(32), bake());
+    }
+
+    private static int savedMagic(
+            com.vibeminer.generated.GeneratedStore generated,
+            com.vibeminer.generated.GeneratedKey key) {
+        var saved = generated.read(key, new com.vibeminer.generated.Cancellation()).join();
+        assertEquals(com.vibeminer.generated.GeneratedTypes.ReadState.PRESENT, saved.state());
+        return java.nio.ByteBuffer.wrap(saved.bytes())
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                .getInt();
+    }
+
+    @Test
+    void onlyThePreviewDrawsAnExternallyStoredWeightAsOpaqueAndItSaysSoWhenSaved()
+            throws Exception {
+        var variant = new RaceMediaTypes.Variant(3, 0, 1, 1, 1234);
+        var key = RaceAppearance.appearanceKey("weighted", false);
+        // The preview assumes the external track opaque, draws it, states it, and saves the
+        // composite with the header that brings the fact back on restore.
+        var generated = new com.vibeminer.generated.MemoryGeneratedStore();
+        var preview = render(weighted(true), variant, false, generated, key);
+        assertTrue(preview.appearance() != null, preview.message());
+        assertTrue(
+                preview.issues().contains(RaceAppearancePlan.ASSUMED_WEIGHTS),
+                preview.issues().toString());
+        assertEquals(0x56414332, savedMagic(generated, key));
+        // An NPC render of the same model never assumes it: its one surface is refused.
+        var npc =
+                render(
+                        weighted(true),
+                        variant,
+                        true,
+                        new com.vibeminer.generated.MemoryGeneratedStore(),
+                        RaceAppearance.appearanceKey("weighted", true));
+        assertEquals(null, npc.appearance());
+        assertEquals(RaceAppearancePlan.UNREVIEWED_SURFACES, npc.message());
+        // A track proven full needs no assumption: both draw it, with no fact, saved plainly.
+        var proven = new com.vibeminer.generated.MemoryGeneratedStore();
+        var plain = render(weighted(false), variant, false, proven, key);
+        assertTrue(plain.appearance() != null, plain.message());
+        assertFalse(plain.issues().contains(RaceAppearancePlan.ASSUMED_WEIGHTS));
+        assertEquals(0x56414331, savedMagic(proven, key));
+        var provenNpc =
+                render(
+                        weighted(false),
+                        variant,
+                        true,
+                        new com.vibeminer.generated.MemoryGeneratedStore(),
+                        RaceAppearance.appearanceKey("weighted", true));
+        assertTrue(provenNpc.appearance() != null, provenNpc.message());
     }
 
     @Test

@@ -36,6 +36,17 @@ final class RaceAppearanceProfiles {
             M2Types.Batch batch,
             M2Appearance.ModelFacts facts,
             int sectionBatches) {
+        return reviewedDraw(profile, model, batch, facts, sectionBatches, false);
+    }
+
+    /** As above; {@code assumeExternal} is passed to {@link #opaqueWeight}. */
+    static boolean reviewedDraw(
+            Profile profile,
+            M2Types.Model model,
+            M2Types.Batch batch,
+            M2Appearance.ModelFacts facts,
+            int sectionBatches,
+            boolean assumeExternal) {
         if ((profile != Profile.DWARF_MALE && profile != Profile.DWARF_FEMALE && !nightElf(profile))
                 || model.version() != 272
                 || sectionBatches != 1
@@ -59,8 +70,7 @@ final class RaceAppearanceProfiles {
         int weight = model.textureWeights().get(batch.textureWeightComboIndex());
         if (!index(textureIndex, model.textures().size())
                 || model.textureTransforms().get(batch.textureTransformComboIndex()) != 65535
-                || !index(weight, facts.staticWeights().size())
-                || !facts.staticWeights().get(weight)) {
+                || !opaqueWeight(facts, weight, assumeExternal)) {
             return false;
         }
         var texture = model.textures().get(textureIndex);
@@ -77,6 +87,20 @@ final class RaceAppearanceProfiles {
                 && (profile == Profile.DWARF_MALE
                         ? batch.shaderId() == 16 && material.blendMode() == 1
                         : batch.shaderId() == 0 && material.blendMode() == 0);
+    }
+
+    /**
+     * Whether a texture-weight track counts as full opacity. A track proven constant full always
+     * does. With {@code assumeExternal}, so does one left unproven only because some of its keys
+     * are stored outside the model (in a sequence's external animation file), every key stored in
+     * the model being full opacity. A track proven partial never does.
+     */
+    static boolean opaqueWeight(M2Appearance.ModelFacts facts, int weight, boolean assumeExternal) {
+        if (facts == null || !index(weight, facts.staticWeights().size())) {
+            return false;
+        }
+        return facts.staticWeights().get(weight)
+                || assumeExternal && facts.externalWeights().get(weight);
     }
 
     static MeshAppearance.Surface surface(

@@ -2,6 +2,7 @@ package com.vibeminer.concepts.races;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -1712,11 +1713,23 @@ final class RacesServiceTest {
             long skin,
             String skinContent,
             com.vibeminer.rendering.models.MeshAppearance appearance) {
+        storeDerivative(store, key, model, skin, skinContent, appearance, false);
+    }
+
+    /** With {@code assumedWeights}, the derivative drew a weight track assumed opaque. */
+    private static void storeDerivative(
+            com.vibeminer.generated.GeneratedStore store,
+            com.vibeminer.generated.GeneratedKey key,
+            long model,
+            long skin,
+            String skinContent,
+            com.vibeminer.rendering.models.MeshAppearance appearance,
+            boolean assumedWeights) {
         byte[] payload = com.vibeminer.rendering.models.MeshAppearanceCodec.encode(appearance);
         var bytes =
                 java.nio.ByteBuffer.allocate(40 + payload.length)
                         .order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                        .putInt(0x56414331)
+                        .putInt(assumedWeights ? 0x56414332 : 0x56414331)
                         .putLong(model)
                         .putLong(skin)
                         .put(java.util.HexFormat.of().parseHex(skinContent))
@@ -1787,6 +1800,43 @@ final class RacesServiceTest {
             assertTrue(restored.restored(), restored.message());
             assertEquals(1, appearance.rememberedCount());
             assertTrue(appearance.prepare(1, 0, 1, Cancellation.NONE).finished() == restored);
+            assertFalse(restored.issues().contains(RaceAppearancePlan.ASSUMED_WEIGHTS));
+            // A derivative that drew a weight track assumed opaque says so when restored too.
+            generated.delete(List.of(key)).join();
+            storeDerivative(generated, key, 1234, 900, "2".repeat(32), stored, true);
+            var assumed = appearance.render(unsettled, Cancellation.NONE);
+            assertTrue(assumed.restored(), assumed.message());
+            assertTrue(
+                    assumed.issues().contains(RaceAppearancePlan.ASSUMED_WEIGHTS),
+                    assumed.issues().toString());
+            // A marked derivative for another model or another SKIN is not restored either.
+            for (int variant = 0; variant < 2; variant++) {
+                generated.delete(List.of(key)).join();
+                storeDerivative(
+                        generated,
+                        key,
+                        variant == 0 ? 999 : 1234,
+                        900,
+                        (variant == 0 ? "2" : "4").repeat(32),
+                        stored,
+                        true);
+                assertFalse(appearance.render(unsettled, Cancellation.NONE).restored());
+            }
+            // Keys name the weight proof (and a preview's, the assumption): a derivative saved
+            // under the key the same identity had before is restored by neither.
+            generated.delete(List.of(key)).join();
+            storeDerivative(generated, key, 1234, 900, "2".repeat(32), stored);
+            for (boolean npc : new boolean[] {false, true}) {
+                var renamedKey = RaceAppearance.appearanceKey("authored-derivative", npc);
+                assertNotEquals(key, renamedKey);
+                var renamed =
+                        new RaceAppearance.Prepared(
+                                base, plan, renamedKey, List.of(), null, request, null);
+                assertFalse(appearance.render(renamed, Cancellation.NONE).restored());
+            }
+            assertNotEquals(
+                    RaceAppearance.appearanceKey("authored-derivative", true),
+                    RaceAppearance.appearanceKey("authored-derivative", false));
         } finally {
             service.closeAsync().join();
             tables.closeAsync().join();

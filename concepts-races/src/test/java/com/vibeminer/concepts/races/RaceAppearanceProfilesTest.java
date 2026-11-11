@@ -42,8 +42,36 @@ final class RaceAppearanceProfilesTest {
             int transform,
             boolean coordinates)
             throws Exception {
+        return fixture(
+                hair,
+                partial,
+                version,
+                materialFlags,
+                blend,
+                textureFlags,
+                transform,
+                coordinates,
+                false);
+    }
+
+    /** With {@code external}, the one sequence's keys are marked stored outside the model. */
+    private static Fixture fixture(
+            boolean hair,
+            boolean partial,
+            int version,
+            int materialFlags,
+            int blend,
+            int textureFlags,
+            int transform,
+            boolean coordinates,
+            boolean external)
+            throws Exception {
         var raw = bytes(partial);
         var b = ByteBuffer.wrap(raw).order(ByteOrder.LITTLE_ENDIAN);
+        if (external) {
+            int sequence = b.getInt(8 + 32) + 8;
+            b.putInt(sequence + 12, b.getInt(sequence + 12) & ~0x20);
+        }
         b.putInt(12, version);
         int tex = b.getInt(8 + 84) + 8;
         b.putInt(tex, hair ? 6 : 1);
@@ -159,6 +187,49 @@ final class RaceAppearanceProfilesTest {
                         batch(0),
                         hair.facts(),
                         1));
+    }
+
+    @Test
+    void externallyStoredWeightsAreOpaqueOnlyWhereTheAssumptionIsStated() throws Exception {
+        var profile = RaceAppearanceProfiles.Profile.NIGHT_ELF_MALE;
+        var external = fixture(true, false, 272, 4, 0, 3, 65535, false, true);
+        assertEquals(List.of(false), external.facts().staticWeights());
+        assertEquals(List.of(true), external.facts().externalWeights());
+        assertFalse(
+                RaceAppearanceProfiles.reviewedDraw(
+                        profile, external.model(), batch(0), external.facts(), 1));
+        assertFalse(
+                RaceAppearanceProfiles.reviewedDraw(
+                        profile, external.model(), batch(0), external.facts(), 1, false));
+        assertTrue(
+                RaceAppearanceProfiles.reviewedDraw(
+                        profile, external.model(), batch(0), external.facts(), 1, true));
+        assertTrue(RaceAppearanceProfiles.opaqueWeight(external.facts(), 0, true));
+        assertFalse(RaceAppearanceProfiles.opaqueWeight(external.facts(), 0, false));
+        assertFalse(RaceAppearanceProfiles.opaqueWeight(external.facts(), 1, true));
+        assertFalse(RaceAppearanceProfiles.opaqueWeight(null, 0, true));
+        // A track proven partial by a key stored in the model is never assumed opaque.
+        var partial = fixture(true, true, 272, 4, 0, 3, 65535, false);
+        assertEquals(List.of(false), partial.facts().externalWeights());
+        assertFalse(
+                RaceAppearanceProfiles.reviewedDraw(
+                        profile, partial.model(), batch(0), partial.facts(), 1, true));
+        // A proven full track needs no assumption.
+        var proven = fixture(true, false, 272, 4, 0, 3, 65535, false);
+        assertTrue(RaceAppearanceProfiles.opaqueWeight(proven.facts(), 0, false));
+        // The static character preview states the assumption; an NPC plan never does.
+        var preview =
+                new RaceAppearancePlan.Plan(
+                        List.of(), List.of(), List.of(), RaceAppearanceProfiles.Profile.LEGACY);
+        var npc =
+                new RaceAppearancePlan.Plan(
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        RaceAppearanceProfiles.Profile.LEGACY,
+                        true);
+        assertTrue(RaceAppearance.assumesExternalWeights(preview));
+        assertFalse(RaceAppearance.assumesExternalWeights(npc));
     }
 
     @Test

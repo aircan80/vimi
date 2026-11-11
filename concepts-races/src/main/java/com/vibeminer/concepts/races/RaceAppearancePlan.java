@@ -75,6 +75,13 @@ final class RaceAppearancePlan {
             "Textures for this race are not supported yet: it has no playable-race customization"
                     + " record.";
 
+    /**
+     * A page fact: some drawn surface has a texture-weight track whose keys are stored outside the
+     * model, so its opacity can't be checked here.
+     */
+    static final String ASSUMED_WEIGHTS =
+            "Texture weights stored outside the model are assumed fully opaque.";
+
     /** A model whose every surface uses a material setup outside the reviewed profile. */
     static final String UNREVIEWED_SURFACES =
             "Textures for this race are not supported yet: its model's surfaces use material"
