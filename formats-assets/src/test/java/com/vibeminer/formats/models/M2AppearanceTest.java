@@ -76,6 +76,11 @@ final class M2AppearanceTest {
      * of one key. Only the first {@code flags.length} slices have a sequence, whose flags they are.
      */
     private static M2Appearance.ModelFacts weights(int[] flags, int[] keys) {
+        return weights(flags, keys, false);
+    }
+
+    /** With {@code skeleton}, the model also names a skeleton file (SKID). */
+    private static M2Appearance.ModelFacts weights(int[] flags, int[] keys, boolean skeleton) {
         byte[] simple = parsed("simple").modelBytes;
         var in = java.nio.ByteBuffer.wrap(simple).order(java.nio.ByteOrder.LITTLE_ENDIAN);
         int md = 8, size = in.getInt(4), end = md + size;
@@ -99,6 +104,13 @@ final class M2AppearanceTest {
         for (int i = 0; i < keys.length; i++) {
             b.putInt(md + slices + i * 8, 1).putInt(md + slices + i * 8 + 4, keyAt + i * 2);
             b.putShort(md + keyAt + i * 2, (short) keys[i]);
+        }
+        if (skeleton) {
+            int length = model.length;
+            model = java.util.Arrays.copyOf(model, length + 12);
+            var chunk = java.nio.ByteBuffer.wrap(model).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+            chunk.put(length, "SKID".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+            chunk.putInt(length + 4, 4).putInt(length + 8, 123456);
         }
         var parsedModel = M2ModelReader.read(AssetSource.bytes(model)).join();
         return M2Appearance.readModel(AssetSource.bytes(model), parsedModel, Cancellation.NONE)
@@ -126,6 +138,17 @@ final class M2AppearanceTest {
         var orphan = weights(new int[] {0x20}, new int[] {32767, 32767});
         assertEquals(List.of(false), orphan.staticWeights());
         assertEquals(List.of(false), orphan.externalWeights());
+        var none = weights(new int[] {}, new int[] {32767});
+        assertEquals(List.of(false), none.staticWeights());
+        assertEquals(List.of(false), none.externalWeights());
+        // Even beside a skeleton file, a model that keeps some sequences of its own says nothing
+        // about a slice past them.
+        var past = weights(new int[] {0x20}, new int[] {32767, 32767}, true);
+        assertEquals(List.of(false), past.externalWeights());
+        // A model that keeps no sequences and names a skeleton file: the keys are in that file.
+        var skeletal = weights(new int[] {}, new int[] {32767}, true);
+        assertEquals(List.of(false), skeletal.staticWeights());
+        assertEquals(List.of(true), skeletal.externalWeights());
     }
 
     @Test

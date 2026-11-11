@@ -225,6 +225,12 @@ public final class M2Appearance {
                         continue;
                     }
                     if (global < 0 && i >= flags.size()) {
+                        if (flags.isEmpty() && model.skeletonFileDataId() != 0) {
+                            // The model keeps no sequences: they, and so this slice's keys as
+                            // far as the model shows, are in its skeleton file (SKID).
+                            external = true;
+                            continue;
+                        }
                         // A slice with no sequence: nothing says where its keys are stored.
                         result = false;
                         break;
