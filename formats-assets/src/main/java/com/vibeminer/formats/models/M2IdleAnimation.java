@@ -26,10 +26,25 @@ import java.util.concurrent.CompletableFuture;
 public final class M2IdleAnimation {
     public static final String REVISION = "m2-idle-local-stand-v1";
     public static final int STAND = 0;
-    public static final int MAX_BONES = 256;
+
+    /**
+     * A budget for software evaluation, not an index width. Vertex bone indices are 8-bit and name
+     * rig bones directly, so only bones 0–255 bind vertices; on 70862 the LOD0 skin's bone lookup
+     * is the identity from 0 in every section of the largest rigs (345 and 260 bones), whose
+     * vertices name bones up to 253. Bones above 255 (attachment and effect bones) are evaluated
+     * like any other.
+     */
+    public static final int MAX_BONES = 1024;
+
     public static final int MAX_SEQUENCES = 4096;
     public static final int MAX_GLOBAL_SEQUENCES = 1024;
-    public static final int MAX_KEYS_PER_TRACK = 4096;
+
+    /**
+     * Keys of one track; {@link #MAX_TOTAL_KEYS} bounds the whole Stand. A long global loop can key
+     * one bone densely (18,029 keys on one track of a 260-bone mount on 70862).
+     */
+    public static final int MAX_KEYS_PER_TRACK = 65_536;
+
     public static final int MAX_TOTAL_KEYS = 262_144;
     public static final long MAX_DURATION_MILLIS = 600_000;
 
@@ -241,7 +256,7 @@ public final class M2IdleAnimation {
                             + rig.size()
                             + " bones; idle evaluation admits at most "
                             + MAX_BONES
-                            + " directly indexed bones.");
+                            + " bones.");
         }
         if (skeleton.sequences().size() > MAX_SEQUENCES
                 || skeleton.globalSequenceMillis().size() > MAX_GLOBAL_SEQUENCES) {
@@ -375,7 +390,7 @@ public final class M2IdleAnimation {
                             + model.bones().size()
                             + " bones; idle evaluation admits at most "
                             + MAX_BONES
-                            + " directly indexed bones.");
+                            + " bones.");
         }
         var input = new M2Input(source, model.limits(), token);
         if (input.length != model.sourceBytes()) {

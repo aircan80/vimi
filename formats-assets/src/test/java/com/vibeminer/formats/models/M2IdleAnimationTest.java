@@ -877,13 +877,11 @@ class M2IdleAnimationTest {
                 skeleton(s -> {}, b -> b.putInt(228, 100).putInt(224, 900), 0));
     }
 
-    @ParameterizedTest
-    @ValueSource(ints = {272, 274})
-    void skeletonStandAdmitsAtMost256Bones(int version) {
-        // 257 root bones without tracks, and one Stand.
-        var b = ByteBuffer.allocate(16 + 257 * 88).order(ByteOrder.LITTLE_ENDIAN);
-        b.putInt(0, 257).putInt(4, 16);
-        for (int bone = 0; bone < 257; bone++) {
+    /** A skeleton of {@code count} root bones without tracks, and one Stand. */
+    private static byte[] rootBonesSkeleton(int count) {
+        var b = ByteBuffer.allocate(16 + count * 88).order(ByteOrder.LITTLE_ENDIAN);
+        b.putInt(0, count).putInt(4, 16);
+        for (int bone = 0; bone < count; bone++) {
             int row = 16 + bone * 88;
             b.putInt(row, -1).putShort(row + 8, (short) -1);
             for (int track : new int[] {16, 36, 56}) {
@@ -896,12 +894,65 @@ class M2IdleAnimationTest {
         out.writeBytes(skeletonChunk("SKL1", new byte[16]));
         out.writeBytes(skeletonChunk("SKS1", s.array()));
         out.writeBytes(skeletonChunk("SKB1", b.array()));
+        return out.toByteArray();
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {272, 274})
+    void skeletonStandAdmitsBonesUpToTheEvaluationBudget(int version) {
+        int over = M2IdleAnimation.MAX_BONES + 1;
         skeletonRefused(
                 version,
                 "MODEL_UNSUPPORTED",
-                "The skeleton has 257 bones; idle evaluation admits at most 256 directly indexed"
+                "The skeleton has "
+                        + over
+                        + " bones; idle evaluation admits at most "
+                        + M2IdleAnimation.MAX_BONES
                         + " bones.",
-                out.toByteArray());
+                rootBonesSkeleton(over));
+        // More bones than an 8-bit vertex index can name: the rig is still read whole.
+        var idle = readSkeleton(version, rootBonesSkeleton(345));
+        assertEquals(345, idle.rig().size());
+        assertEquals(345, idle.bones().size());
+    }
+
+    /** One root bone whose Stand translation (10 s) has {@code keys} linear keys, 1 ms apart. */
+    private static byte[] denseTrackSkeleton(int keys) {
+        int data = 16 + 88, times = data + 16, values = times + keys * 4;
+        var b = ByteBuffer.allocate(values + keys * 12).order(ByteOrder.LITTLE_ENDIAN);
+        b.putInt(0, 1).putInt(4, 16);
+        b.putInt(16, -1).putShort(16 + 8, (short) -1);
+        for (int track : new int[] {16, 36, 56}) {
+            b.putShort(16 + track + 2, (short) -1);
+        }
+        skeletonTrack(b, 16 + 16, 1, -1, 1, data, data + 8);
+        b.putInt(data, keys).putInt(data + 4, times);
+        b.putInt(data + 8, keys).putInt(data + 12, values);
+        for (int k = 0; k < keys; k++) {
+            b.putInt(times + k * 4, k);
+            b.putFloat(values + k * 12 + 8, k * 0.001f);
+        }
+        var s = ByteBuffer.allocate(32 + 64).order(ByteOrder.LITTLE_ENDIAN);
+        s.putInt(8, 1).putInt(12, 32).putInt(32 + 4, 100_000).putInt(32 + 12, 0x20);
+        var out = new java.io.ByteArrayOutputStream();
+        out.writeBytes(skeletonChunk("SKL1", new byte[16]));
+        out.writeBytes(skeletonChunk("SKS1", s.array()));
+        out.writeBytes(skeletonChunk("SKB1", b.array()));
+        return out.toByteArray();
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {272, 274})
+    void oneDenselyKeyedTrackIsReadUpToTheTrackBudget(int version) {
+        // Above the former 4,096-key track bound.
+        var idle = readSkeleton(version, denseTrackSkeleton(18_029));
+        assertEquals(18_029, idle.keyCount());
+        assertEquals(18_029, idle.bones().getFirst().translation().keyCount());
+        skeletonRefused(
+                version,
+                "MODEL_LIMIT",
+                "Stand bone keys exceed the idle evaluation budget.",
+                denseTrackSkeleton(M2IdleAnimation.MAX_KEYS_PER_TRACK + 1));
     }
 
     @ParameterizedTest

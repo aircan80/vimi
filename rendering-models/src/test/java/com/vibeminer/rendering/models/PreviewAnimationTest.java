@@ -76,6 +76,60 @@ class PreviewAnimationTest {
     }
 
     @Test
+    void rigsBeyondAnEightBitIndexEvaluateOnlyBonesThatMoveVertices() {
+        // 300 bones: a translating root, bone 299 under it moving vertex 1, and 298 bones that
+        // move nothing (one of them keyed, and pivoted away from its rest place if evaluated).
+        var bones = new java.util.ArrayList<Bone>();
+        bones.add(new Bone(-1, 0, 0, 0, constant(3, 0, 0, 1), null, null, false));
+        for (int b = 1; b < 300; b++) {
+            bones.add(
+                    new Bone(
+                            0,
+                            b,
+                            0,
+                            0,
+                            b == 7 ? constant(3, 5, 5, 5) : b == 299 ? constant(3, 0, 1, 0) : null,
+                            null,
+                            null,
+                            false));
+        }
+        var rest = mesh(0, 0, 0, 1, 0, 0, 2, 0, 0);
+        var animation =
+                new PreviewAnimation(
+                        "Stand",
+                        1000,
+                        new long[0],
+                        bones,
+                        rest,
+                        new float[0],
+                        rigid(0, 299, 0),
+                        full(3));
+        assertEquals(300, animation.boneCount());
+        var pose = animation.pose(rest, 0);
+        near(new float[] {0, 0, 1}, pose.mesh().positions(), 0);
+        near(new float[] {1, 1, 1}, pose.mesh().positions(), 1);
+        // Bone 299 is evaluated under its root; bone 7 moves no vertex and keeps its rest place.
+        assertEquals(new MeshAppearance.Vec3(299, 1, 1), round(pose.pivots().get(299)));
+        assertEquals(new MeshAppearance.Vec3(7, 0, 0), round(pose.pivots().get(7)));
+        var tooMany = new java.util.ArrayList<>(bones);
+        while (tooMany.size() <= PreviewAnimation.MAX_BONES) {
+            tooMany.add(new Bone(-1, 0, 0, 0, null, null, null, false));
+        }
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        new PreviewAnimation(
+                                "Stand",
+                                1000,
+                                new long[0],
+                                tooMany,
+                                rest,
+                                new float[0],
+                                rigid(0, 299, 0),
+                                full(3)));
+    }
+
+    @Test
     void parentsMayFollowChildrenInStorageOrder() {
         var child = new Bone(1, 1, 0, 0, constant(3, 0, 0, 1), null, null, false);
         var root = new Bone(-1, 0, 0, 0, null, constant(4, 0, 0, S, S), null, false);

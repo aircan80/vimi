@@ -33,7 +33,11 @@ public final class M2RestSkinReader {
                                     token);
                     core.input().finish();
                     return new M2Types.RestSkin(
-                            model, core.lookup(), core.triangles(), core.sections());
+                            model,
+                            core.lookup(),
+                            core.triangles(),
+                            core.sections(),
+                            core.properties());
                 });
     }
 }
