@@ -38,7 +38,13 @@ public final class M2IdleAnimation {
 
     public static final int MAX_SEQUENCES = 4096;
     public static final int MAX_GLOBAL_SEQUENCES = 1024;
-    public static final int MAX_KEYS_PER_TRACK = 4096;
+
+    /**
+     * Keys of one track; {@link #MAX_TOTAL_KEYS} bounds the whole Stand. A long global loop can key
+     * one bone densely (18,029 keys on one track of a 260-bone mount on 70862).
+     */
+    public static final int MAX_KEYS_PER_TRACK = 65_536;
+
     public static final int MAX_TOTAL_KEYS = 262_144;
     public static final long MAX_DURATION_MILLIS = 600_000;
 

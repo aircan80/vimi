@@ -916,6 +916,45 @@ class M2IdleAnimationTest {
         assertEquals(345, idle.bones().size());
     }
 
+    /** One root bone whose Stand translation (10 s) has {@code keys} linear keys, 1 ms apart. */
+    private static byte[] denseTrackSkeleton(int keys) {
+        int data = 16 + 88, times = data + 16, values = times + keys * 4;
+        var b = ByteBuffer.allocate(values + keys * 12).order(ByteOrder.LITTLE_ENDIAN);
+        b.putInt(0, 1).putInt(4, 16);
+        b.putInt(16, -1).putShort(16 + 8, (short) -1);
+        for (int track : new int[] {16, 36, 56}) {
+            b.putShort(16 + track + 2, (short) -1);
+        }
+        skeletonTrack(b, 16 + 16, 1, -1, 1, data, data + 8);
+        b.putInt(data, keys).putInt(data + 4, times);
+        b.putInt(data + 8, keys).putInt(data + 12, values);
+        for (int k = 0; k < keys; k++) {
+            b.putInt(times + k * 4, k);
+            b.putFloat(values + k * 12 + 8, k * 0.001f);
+        }
+        var s = ByteBuffer.allocate(32 + 64).order(ByteOrder.LITTLE_ENDIAN);
+        s.putInt(8, 1).putInt(12, 32).putInt(32 + 4, 100_000).putInt(32 + 12, 0x20);
+        var out = new java.io.ByteArrayOutputStream();
+        out.writeBytes(skeletonChunk("SKL1", new byte[16]));
+        out.writeBytes(skeletonChunk("SKS1", s.array()));
+        out.writeBytes(skeletonChunk("SKB1", b.array()));
+        return out.toByteArray();
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {272, 274})
+    void oneDenselyKeyedTrackIsReadUpToTheTrackBudget(int version) {
+        // Above the former 4,096-key track bound.
+        var idle = readSkeleton(version, denseTrackSkeleton(18_029));
+        assertEquals(18_029, idle.keyCount());
+        assertEquals(18_029, idle.bones().getFirst().translation().keyCount());
+        skeletonRefused(
+                version,
+                "MODEL_LIMIT",
+                "Stand bone keys exceed the idle evaluation budget.",
+                denseTrackSkeleton(M2IdleAnimation.MAX_KEYS_PER_TRACK + 1));
+    }
+
     @ParameterizedTest
     @ValueSource(ints = {272, 274})
     void skeletonStandNeedsAModelWithoutBonesAndTheMatchingSource(int version) {
