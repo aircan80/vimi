@@ -80,23 +80,27 @@ final class RaceAppearancePlan {
             "Textures for this race are not supported yet: its model's surfaces use material"
                     + " setups that are not reviewed.";
 
+    /**
+     * A customization refusal restated for the texture path: the playable-race refusal gains its
+     * texture wording; any other refusal is returned as it is.
+     */
+    static RacesService.Projection asTextureRefusal(RacesService.Projection refused) {
+        return RaceCustomization.NOT_PLAYABLE.equals(refused.getMessage())
+                ? new RacesService.Projection(RaceTypes.State.UNSUPPORTED, NOT_PLAYABLE)
+                : refused;
+    }
+
     /** A texture section or layer that lies outside the canvas it is drawn into. */
     static final String OUTSIDE_CANVAS =
             "Textures for this race are not supported yet: a recorded texture section lies outside"
                     + " its canvas.";
-
-    /** Undead skin regions cut out to show bone compose as solid black: not shown yet. */
-    static final String UNDEAD_REFUSED =
-            "Undead character textures are not shown yet: their cut-out skin regions compose as"
-                    + " solid black.";
 
     /**
      * Race and ChrModel pairs whose composed textures were reviewed and found wrong, each with the
      * reason shown instead. Every other pair is composed, and the deeper gates (the playable-race
      * bit, the reviewed draw-binding profile) still refuse what they cannot draw.
      */
-    private static final Map<Long, String> REFUSED_PAIRS =
-            Map.of(5L << 32 | 9, UNDEAD_REFUSED, 5L << 32 | 10, UNDEAD_REFUSED);
+    private static final Map<Long, String> REFUSED_PAIRS = Map.of();
 
     /** Why a race and ChrModel pair's textures are refused before any read, or null. */
     static String refusedPair(long raceId, long chrModelId) {
@@ -316,11 +320,16 @@ final class RaceAppearancePlan {
                         > 8_388_608L) {
             throw materials.unsupported("Texture canvas memory exceeds preview bounds");
         }
-        var selectedSample =
-                sample != null
-                        ? sample
-                        : new RaceCustomization(media)
-                                .select(raceId, classId, variant.chrModelId(), token, issues);
+        RaceCustomization.Selection selectedSample;
+        try {
+            selectedSample =
+                    sample != null
+                            ? sample
+                            : new RaceCustomization(media)
+                                    .select(raceId, classId, variant.chrModelId(), token, issues);
+        } catch (RacesService.Projection customizationRefused) {
+            throw asTextureRefusal(customizationRefused);
+        }
         var elements = media.data("ChrCustomizationElement", 200000, token, issues);
         fields(
                 elements,

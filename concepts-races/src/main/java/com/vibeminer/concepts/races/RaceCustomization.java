@@ -70,9 +70,9 @@ final class RaceCustomization {
         if ((req.type() & 1) == 0) {
             return Eligibility.DENIED;
         }
-        if (req.type() != 1 && req.type() != 3) {
-            return Eligibility.UNKNOWN;
-        }
+        // A class or race mask that excludes this context denies, whatever else the requirement
+        // holds: checked before any term that only makes it unknown, so a choice refused for
+        // this race or class is never sampled as merely unchecked.
         long mask = req.classMask() & 0xffffffffL;
         if (mask != 0
                 && mask != 0xffffffffL
@@ -81,6 +81,9 @@ final class RaceCustomization {
         }
         if (!hasRace(req.raceLow(), req.raceHigh(), raceBit)) {
             return Eligibility.DENIED;
+        }
+        if (req.type() != 1 && req.type() != 3) {
+            return Eligibility.UNKNOWN;
         }
         if (req.region() != 0
                 || req.achievement() != 0
@@ -158,13 +161,11 @@ final class RaceCustomization {
                         .orElseThrow(
                                 () ->
                                         new RacesService.Projection(
-                                                RaceTypes.State.UNSUPPORTED,
-                                                RaceAppearancePlan.NOT_PLAYABLE));
+                                                RaceTypes.State.UNSUPPORTED, NOT_PLAYABLE));
         long bit = races.number(race, "PlayableRaceBit");
         if (bit < 0 || bit > 63) {
             // Stated plainly to the user, without the table name the data refusal prefixes.
-            throw new RacesService.Projection(
-                    RaceTypes.State.UNSUPPORTED, RaceAppearancePlan.NOT_PLAYABLE);
+            throw new RacesService.Projection(RaceTypes.State.UNSUPPORTED, NOT_PLAYABLE);
         }
         var selected = new TreeMap<Long, Long>();
         var all = new HashSet<Long>();
@@ -211,6 +212,31 @@ final class RaceCustomization {
                             .findFirst();
             if (overrides.containsKey(option.id()) && match.isEmpty()) {
                 throw options.unsupported("Requested choice is not a known eligible option member");
+            }
+            if (match.isEmpty() && !overrides.containsKey(option.id())) {
+                // No choice is known to be eligible. A choice whose requirements only cannot be
+                // checked here (an account, archive or prerequisite term), never one refused for
+                // this race or class, still shows the option rather than leaving its texture
+                // region empty: the first such recorded choice is the sample.
+                match =
+                        candidates.stream()
+                                .filter(
+                                        row ->
+                                                choices.number(row, "ChrCustomizationVisReqID") == 0
+                                                        && eligibility(
+                                                                        choices.number(
+                                                                                row,
+                                                                                "ChrCustomizationReqID"),
+                                                                        classId,
+                                                                        (int) bit,
+                                                                        requirements,
+                                                                        prerequisites,
+                                                                        new java.util.ArrayList<>())
+                                                                == Eligibility.UNKNOWN)
+                                .findFirst();
+                if (match.isPresent()) {
+                    note(issues, UNVERIFIED_SAMPLE);
+                }
             }
             if (match.isPresent()) {
                 selected.put(option.id(), match.get().id());
@@ -332,6 +358,20 @@ final class RaceCustomization {
                 members.add(
                         new RaceCustomizationTypes.Choice(choice.id(), "Choice #" + choice.id()));
             }
+            if (members.stream().noneMatch(member -> member.id() == defaultChoice)) {
+                // The sampled default when no member is known to be eligible: one whose
+                // requirements only cannot be checked here. It is listed, and said so.
+                if (members.size() == 64) {
+                    throw choices.unsupported("Skin Color choices exceed preview bounds");
+                }
+                members.add(
+                        0,
+                        new RaceCustomizationTypes.Choice(
+                                defaultChoice, "Choice #" + defaultChoice));
+                if (issues.size() < 32 && !issues.contains(UNVERIFIED_SAMPLE)) {
+                    issues.add(UNVERIFIED_SAMPLE);
+                }
+            }
             String label = options.text(optionRows.getFirst(), "Name_lang");
             if (label == null || label.isBlank() || label.length() > 256) {
                 throw options.unsupported("Skin Color option label is unavailable");
@@ -383,6 +423,18 @@ final class RaceCustomization {
         return Map.copyOf(result);
     }
 
+    /**
+     * A race without a playable-race customization record (an NPC race or a mount). Shown by the
+     * geoset sample of the untextured preview too, so it says nothing about textures; the texture
+     * path states its own reason ({@link RaceAppearancePlan#NOT_PLAYABLE}).
+     */
+    static final String NOT_PLAYABLE = "This race has no playable-race customization record.";
+
+    /** The issue a sample choice with uncheckable requirements adds. */
+    static final String UNVERIFIED_SAMPLE =
+            "Some sample choices have requirements that cannot be checked here; the first recorded"
+                    + " choice is shown.";
+
     private static boolean eligible(
             long id,
             long classId,
@@ -390,8 +442,20 @@ final class RaceCustomization {
             RacesService.Data reqs,
             RacesService.Data prerequisites,
             List<String> issues) {
+        return eligibility(id, classId, raceBit, reqs, prerequisites, issues)
+                == Eligibility.ALLOWED;
+    }
+
+    /** {@link #evaluate} for requirement {@code id}; DENIED when its row is unavailable. */
+    private static Eligibility eligibility(
+            long id,
+            long classId,
+            int raceBit,
+            RacesService.Data reqs,
+            RacesService.Data prerequisites,
+            List<String> issues) {
         if (id == 0) {
-            return true;
+            return Eligibility.ALLOWED;
         }
         var row =
                 reqs.rows.stream()
@@ -400,7 +464,7 @@ final class RaceCustomization {
                         .orElse(null);
         if (row == null) {
             note(issues, "Some customization requirements are unavailable.");
-            return false;
+            return Eligibility.DENIED;
         }
         var requirement =
                 new Requirement(
@@ -427,7 +491,7 @@ final class RaceCustomization {
                     issues,
                     "Unknown account, region, archive or prerequisite requirements are omitted from the sample.");
         }
-        return outcome == Eligibility.ALLOWED;
+        return outcome;
     }
 
     private static void note(List<String> issues, String text) {
