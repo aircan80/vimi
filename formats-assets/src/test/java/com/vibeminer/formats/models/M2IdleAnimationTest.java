@@ -877,13 +877,11 @@ class M2IdleAnimationTest {
                 skeleton(s -> {}, b -> b.putInt(228, 100).putInt(224, 900), 0));
     }
 
-    @ParameterizedTest
-    @ValueSource(ints = {272, 274})
-    void skeletonStandAdmitsAtMost256Bones(int version) {
-        // 257 root bones without tracks, and one Stand.
-        var b = ByteBuffer.allocate(16 + 257 * 88).order(ByteOrder.LITTLE_ENDIAN);
-        b.putInt(0, 257).putInt(4, 16);
-        for (int bone = 0; bone < 257; bone++) {
+    /** A skeleton of {@code count} root bones without tracks, and one Stand. */
+    private static byte[] rootBonesSkeleton(int count) {
+        var b = ByteBuffer.allocate(16 + count * 88).order(ByteOrder.LITTLE_ENDIAN);
+        b.putInt(0, count).putInt(4, 16);
+        for (int bone = 0; bone < count; bone++) {
             int row = 16 + bone * 88;
             b.putInt(row, -1).putShort(row + 8, (short) -1);
             for (int track : new int[] {16, 36, 56}) {
@@ -896,12 +894,26 @@ class M2IdleAnimationTest {
         out.writeBytes(skeletonChunk("SKL1", new byte[16]));
         out.writeBytes(skeletonChunk("SKS1", s.array()));
         out.writeBytes(skeletonChunk("SKB1", b.array()));
+        return out.toByteArray();
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {272, 274})
+    void skeletonStandAdmitsBonesUpToTheEvaluationBudget(int version) {
+        int over = M2IdleAnimation.MAX_BONES + 1;
         skeletonRefused(
                 version,
                 "MODEL_UNSUPPORTED",
-                "The skeleton has 257 bones; idle evaluation admits at most 256 directly indexed"
+                "The skeleton has "
+                        + over
+                        + " bones; idle evaluation admits at most "
+                        + M2IdleAnimation.MAX_BONES
                         + " bones.",
-                out.toByteArray());
+                rootBonesSkeleton(over));
+        // More bones than an 8-bit vertex index can name: the rig is still read whole.
+        var idle = readSkeleton(version, rootBonesSkeleton(345));
+        assertEquals(345, idle.rig().size());
+        assertEquals(345, idle.bones().size());
     }
 
     @ParameterizedTest

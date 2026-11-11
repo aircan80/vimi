@@ -16,7 +16,9 @@ import java.util.Objects;
  * IK, blending between sequences, attachments, particles or material tracks are evaluated.
  */
 public final class PreviewAnimation {
-    public static final int MAX_BONES = 256;
+    /** A software evaluation budget; see {@code M2IdleAnimation.MAX_BONES}. */
+    public static final int MAX_BONES = 1024;
+
     public static final int MAX_KEYS = 262_144;
     public static final long MAX_DURATION_MILLIS = 600_000;
 
