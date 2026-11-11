@@ -873,29 +873,38 @@ public final class NativePreparationWork implements BuildPreparation.Work {
     }
 
     private String tableCacheIdentity() {
-        var available = effectiveKeys();
-        String keyFingerprint = available.fingerprint();
-        String identity = String.join(
+        // The known-table inventory holds base DB2 outcomes; the hotfix overlay is applied on
+        // top of it when the workspace opens. Keys delivered by a hotfix already change the
+        // key fingerprint, so a new cache snapshot never forces a full re-assessment.
+        return tableCacheIdentity(ref.product(), ref.buildConfig(), ref.cdnConfig(), ref.region(),
+                locale, info.version(), opened.metadata().rootContentKey().hex(),
+                opened.metadata().encodingContentKey().hex(), effectiveKeys().fingerprint());
+    }
+
+    /**
+     * The prepared table inventory's cache identity. Every line is part of the key: changing any
+     * of them, the policy and definition lines included, invalidates every prepared inventory.
+     */
+    static String tableCacheIdentity(String product, String buildConfig, String cdnConfig,
+            String region, String locale, String version, String root, String encoding,
+            String keyFingerprint) {
+        return String.join(
                 "\n",
                 "native-table-policy-v1",
-                ref.product(),
-                ref.buildConfig(),
-                ref.cdnConfig(),
-                ref.region(),
+                product,
+                buildConfig,
+                cdnConfig,
+                region,
                 locale,
-                info.version(),
-                opened.metadata().rootContentKey().hex(),
-                opened.metadata().encodingContentKey().hex(),
+                version,
+                root,
+                encoding,
                 BundledDefinitions.REVISION,
                 BundledDefinitions.MANIFEST_SHA256,
                 BundledDefinitions.SOURCES_SHA256,
                 com.vibeminer.formats.definitions.SupplementalDefinitions.IDENTITY,
                 new com.vibeminer.formats.db2.Db2Types.Limits().toString(),
                 keyFingerprint);
-        // The known-table inventory holds base DB2 outcomes; the hotfix overlay is applied on
-        // top of it when the workspace opens. Keys delivered by a hotfix already change the
-        // key fingerprint above, so a new cache snapshot never forces a full re-assessment.
-        return identity;
     }
 
     /** Loaded hotfix input and decoder revision, or null while the workspace reads base data. */

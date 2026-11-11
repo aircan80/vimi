@@ -89,13 +89,20 @@ final class SettingsView extends BorderPane {
         ScrollPane scroll = new ScrollPane(content);
         scroll.setFitToWidth(true);
         scroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
-        ScrollPane bundled = scroll(bundledData());
+        ScrollPane[] bundled = {null};
         setCenter(scroll);
         sections.getSelectionModel()
                 .selectedItemProperty()
                 .addListener(
-                        (observable, before, after) ->
-                                setCenter("Bundled data".equals(after) ? bundled : scroll));
+                        (observable, before, after) -> {
+                            if (!"Bundled data".equals(after)) {
+                                setCenter(scroll);
+                                return;
+                            }
+                            // Built on first view; an unreadable notice shows one line instead.
+                            if (bundled[0] == null) bundled[0] = scroll(bundledDataOrProblem());
+                            setCenter(bundled[0]);
+                        });
         render();
     }
 
@@ -111,6 +118,23 @@ final class SettingsView extends BorderPane {
                 "Ships with the application and is verified against its manifest and source"
                         + " hashes each time it loads. A newer revision comes with an application"
                         + " update; nothing is downloaded.");
+    }
+
+    private static VBox bundledDataOrProblem() {
+        try {
+            return bundledData();
+        } catch (RuntimeException unreadable) {
+            VBox content =
+                    new VBox(
+                            16,
+                            label("Bundled data", "h1"),
+                            label(
+                                    "The bundled data notice could not be read. The notices are in"
+                                            + " the application's legal folder (THIRD-PARTY.md).",
+                                    "muted"));
+            content.setPadding(new Insets(28));
+            return content;
+        }
     }
 
     /** Attribution for third-party data that ships with the application (not a data source). */

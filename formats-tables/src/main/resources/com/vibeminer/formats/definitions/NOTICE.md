@@ -25,8 +25,8 @@ Treasure and VW_MobileSpell); VibeMiner says those tables aren't described yet.
 
 The application uses only this bundled revision; it does not download definitions.
 A newer revision arrives with a new application release. (The table library can
-fetch a single definition file from https://github.com/wowdev/WoWDBDefs, decision
-D081; such files would be WoWDBDefs contributors' data under the same CC BY-SA 4.0
+fetch a single definition file from https://github.com/wowdev/WoWDBDefs; such
+files would be WoWDBDefs contributors' data under the same CC BY-SA 4.0
 terms, used unmodified and kept with their commit, URL and SHA-256. The application
 does not enable that.)
 
