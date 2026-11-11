@@ -82,6 +82,10 @@ final class RaceAppearancePlan {
     static final String ASSUMED_WEIGHTS =
             "Texture weights stored outside the model are assumed fully opaque.";
 
+    /** A page fact: some drawn surfaces' environment-reflection stage is left out. */
+    static final String ENVIRONMENT_NOT_DRAWN =
+            "Environment reflections on some surfaces are not drawn; their base texture is.";
+
     /** A model whose every surface uses a material setup outside the reviewed profile. */
     static final String UNREVIEWED_SURFACES =
             "Textures for this race are not supported yet: its model's surfaces use material"

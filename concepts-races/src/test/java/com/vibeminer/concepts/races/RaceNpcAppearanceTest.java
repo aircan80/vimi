@@ -1155,6 +1155,76 @@ final class RaceNpcAppearanceTest {
         assertTrue(provenNpc.appearance() != null, provenNpc.message());
     }
 
+    /**
+     * The authored model and SKIN with the one draw made a two-texture draw of shader {@code
+     * shader}: the body skin (texture 0, made type 1) then the model's second texture.
+     */
+    private static com.vibeminer.formats.AssetFilesFixture twoStage(int shader) throws Exception {
+        byte[] authored = golden("authored-274.m2");
+        var in = java.nio.ByteBuffer.wrap(authored).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        int md = 40, size = in.getInt(36);
+        assertEquals(authored.length, md + size, "MD21 is the last chunk");
+        int at = (size + 3) & ~3;
+        var b =
+                java.nio.ByteBuffer.wrap(java.util.Arrays.copyOf(authored, md + at + 12))
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        b.putInt(36, at + 12);
+        b.putInt(md + in.getInt(md + 0x54), 1);
+        // Two-entry texture, coordinate and transform lookups for the two stages.
+        b.putShort(md + at, (short) 0).putShort(md + at + 2, (short) 1);
+        b.putShort(md + at + 4, (short) 0).putShort(md + at + 6, (short) 0);
+        b.putShort(md + at + 8, (short) -1).putShort(md + at + 10, (short) -1);
+        b.putInt(md + 0x80, 2).putInt(md + 0x84, at);
+        b.putInt(md + 0x88, 2).putInt(md + 0x8c, at + 4);
+        b.putInt(md + 0x98, 2).putInt(md + 0x9c, at + 8);
+        byte[] skin = golden("authored-274.skin");
+        var k = java.nio.ByteBuffer.wrap(skin).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        int batch = k.getInt(4 + 36);
+        k.putShort(batch + 2, (short) shader).putShort(batch + 14, (short) 2);
+        return new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
+                .add(1234, "1".repeat(32), b.array())
+                .add(900, "2".repeat(32), skin)
+                .add(100, "3".repeat(32), bake());
+    }
+
+    @Test
+    void anEnvironmentDrawShowsItsBaseTextureAndSaysTheReflectionIsLeftOut() throws Exception {
+        var variant = new RaceMediaTypes.Variant(3, 0, 1, 1, 1234);
+        // Shader effect 0 (0x8000): the first stage, the body skin, is drawn.
+        var drawn =
+                render(
+                        twoStage(0x8000),
+                        variant,
+                        false,
+                        new com.vibeminer.generated.MemoryGeneratedStore(),
+                        RaceAppearance.appearanceKey("environment", false));
+        assertTrue(drawn.appearance() != null, drawn.message());
+        assertEquals(1, drawn.appearance().surfaces().size());
+        assertTrue(
+                drawn.issues().contains(RaceAppearancePlan.ENVIRONMENT_NOT_DRAWN),
+                drawn.issues().toString());
+        // Saved with the header that brings the fact back on restore.
+        var generated = new com.vibeminer.generated.MemoryGeneratedStore();
+        var key = RaceAppearance.appearanceKey("environment-saved", false);
+        render(twoStage(0x8000), variant, false, generated, key);
+        assertEquals(0x56414335, savedMagic(generated, key));
+        var restored = render(twoStage(0x8000), variant, false, generated, key);
+        assertTrue(restored.restored());
+        assertTrue(
+                restored.issues().contains(RaceAppearancePlan.ENVIRONMENT_NOT_DRAWN),
+                restored.issues().toString());
+        // Any other two-texture shader stays outside the reviewed profile.
+        var other =
+                render(
+                        twoStage(0x8001),
+                        variant,
+                        false,
+                        new com.vibeminer.generated.MemoryGeneratedStore(),
+                        RaceAppearance.appearanceKey("environment-1", false));
+        assertEquals(null, other.appearance());
+        assertEquals(RaceAppearancePlan.UNREVIEWED_SURFACES, other.message());
+    }
+
     @Test
     void anInvalidNpcModelIsRefusedNotAskedForAgainOnEveryTile() throws Exception {
         var variant = new RaceMediaTypes.Variant(3, 0, 1, 1, 1234);
