@@ -224,7 +224,12 @@ public final class M2Appearance {
                     if (keyCount == 0) {
                         continue;
                     }
-                    if (global < 0 && (i >= flags.size() || (flags.get(i) & 0x20) == 0)) {
+                    if (global < 0 && i >= flags.size()) {
+                        // A slice with no sequence: nothing says where its keys are stored.
+                        result = false;
+                        break;
+                    }
+                    if (global < 0 && (flags.get(i) & 0x20) == 0) {
                         // Read on: a key stored in the model that is not full opacity still
                         // proves the track partial, external keys or not.
                         external = true;

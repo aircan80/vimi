@@ -328,7 +328,6 @@ final class RaceAppearance {
                             .append(stat.file().contentKey())
                             .append('\n')
                             .append("choice-vector-v1\n")
-                            .append(plan.npc() ? "" : "external-weights-assumed-opaque-v1\n")
                             .append(selection.byOption())
                             .append('\n')
                             .append(plan)
@@ -352,7 +351,7 @@ final class RaceAppearance {
                         .append(':')
                         .append(source.file() == null ? "" : source.file().contentKey());
             }
-            var key = GeneratedKey.hash(identity.toString().getBytes(StandardCharsets.UTF_8));
+            var key = appearanceKey(identity.toString(), plan.npc());
             return new Prepared(base, plan, key, issues, null, request, unread ? null : sources);
         } catch (RacesService.Projection unavailable) {
             if (npc != null && unavailable instanceof RacesService.Unreadable unreadable) {
@@ -631,6 +630,20 @@ final class RaceAppearance {
             }
             return failed(issues, unavailable.getMessage());
         }
+    }
+
+    /** Names the external-weight assumption in the key of every composite that may make it. */
+    static final String ASSUMED_WEIGHTS_IDENTITY = "\nexternal-weights-assumed-opaque-v1";
+
+    /**
+     * The generated-store key of a composite. A preview composite may draw a weight track assumed
+     * opaque, so its key names that assumption: a composite saved without it is never restored
+     * here, nor one saved under it by code that does not make it. An NPC's key is unchanged.
+     */
+    static GeneratedKey appearanceKey(String identity, boolean npc) {
+        return GeneratedKey.hash(
+                (npc ? identity : identity + ASSUMED_WEIGHTS_IDENTITY)
+                        .getBytes(StandardCharsets.UTF_8));
     }
 
     /**

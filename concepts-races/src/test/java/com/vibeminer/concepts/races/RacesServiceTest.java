@@ -2,6 +2,7 @@ package com.vibeminer.concepts.races;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -1344,6 +1345,30 @@ final class RacesServiceTest {
             assertTrue(
                     assumed.issues().contains(RaceAppearancePlan.ASSUMED_WEIGHTS),
                     assumed.issues().toString());
+            // A marked derivative for another model or another SKIN is not restored either.
+            for (int variant = 0; variant < 2; variant++) {
+                generated.delete(List.of(key)).join();
+                storeDerivative(
+                        generated,
+                        key,
+                        variant == 0 ? 999 : 1234,
+                        900,
+                        (variant == 0 ? "2" : "4").repeat(32),
+                        stored,
+                        true);
+                assertFalse(appearance.render(unsettled, Cancellation.NONE).restored());
+            }
+            // A preview's key names the weight assumption: a derivative saved under the key the
+            // same identity had before is not restored by it. An NPC's key is unchanged.
+            generated.delete(List.of(key)).join();
+            storeDerivative(generated, key, 1234, 900, "2".repeat(32), stored);
+            assertEquals(key, RaceAppearance.appearanceKey("authored-derivative", true));
+            var previewKey = RaceAppearance.appearanceKey("authored-derivative", false);
+            assertNotEquals(key, previewKey);
+            var renamed =
+                    new RaceAppearance.Prepared(
+                            base, plan, previewKey, List.of(), null, request, null);
+            assertFalse(appearance.render(renamed, Cancellation.NONE).restored());
         } finally {
             service.closeAsync().join();
             tables.closeAsync().join();

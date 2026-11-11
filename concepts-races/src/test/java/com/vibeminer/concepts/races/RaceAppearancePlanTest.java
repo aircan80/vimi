@@ -1516,6 +1516,26 @@ final class RaceAppearancePlanTest {
                     List.of(524L),
                     option.choices().stream().map(RaceCustomizationTypes.Choice::id).toList());
             assertTrue(catalog.issues().contains(RaceCustomization.UNVERIFIED_SAMPLE));
+            // The listed default can be picked: requesting it selects it, with the same note.
+            var media = new RaceMedia(service, tables, null, null);
+            var notes = new ArrayList<String>();
+            var picked =
+                    new RaceCustomization(media)
+                            .select(3, 1, 5, Cancellation.NONE, notes, Map.of(30L, 524L));
+            assertEquals(Map.of(30L, 524L), picked.byOption());
+            assertTrue(notes.contains(RaceCustomization.UNVERIFIED_SAMPLE), notes.toString());
+            // A choice that can't be checked but isn't the listed default is still refused.
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    RacesService.Projection.class,
+                    () ->
+                            new RaceCustomization(media)
+                                    .select(
+                                            3,
+                                            1,
+                                            5,
+                                            Cancellation.NONE,
+                                            new ArrayList<>(),
+                                            Map.of(30L, 525L)));
         } finally {
             service.closeAsync().join();
             tables.closeAsync().join();
