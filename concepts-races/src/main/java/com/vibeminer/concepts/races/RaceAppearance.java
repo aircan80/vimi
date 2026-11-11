@@ -35,6 +35,7 @@ final class RaceAppearance {
     private final BuildFiles files;
     private final GeneratedStore generated;
     private final RaceAppearancePlan plans;
+    private final RacesService service;
 
     static final int MAX_REMEMBERED = 6;
     static final long MAX_REMEMBERED_BYTES = 160L << 20;
@@ -65,6 +66,7 @@ final class RaceAppearance {
         this.media = media;
         this.files = files;
         this.generated = generated;
+        this.service = owner;
         plans = new RaceAppearancePlan(owner, media, tables);
     }
 
@@ -79,10 +81,23 @@ final class RaceAppearance {
             List<String> issues,
             RaceAppearanceTypes.Result finished,
             String request,
-            java.util.Map<Long, String> sources) {
+            java.util.Map<Long, String> sources,
+            long raceId,
+            RaceAppearancePlan.Npc npc) {
         Prepared {
             issues = List.copyOf(issues);
             sources = sources == null ? java.util.Map.of() : java.util.Map.copyOf(sources);
+        }
+
+        Prepared(
+                RaceMediaTypes.Preview base,
+                RaceAppearancePlan.Plan plan,
+                GeneratedKey key,
+                List<String> issues,
+                RaceAppearanceTypes.Result finished,
+                String request,
+                java.util.Map<Long, String> sources) {
+            this(base, plan, key, issues, finished, request, sources, 0, null);
         }
     }
 
@@ -327,7 +342,7 @@ final class RaceAppearance {
                     new StringBuilder(
                                     npc == null
                                             ? "race-static-appearance-v2\n"
-                                            : "npc-baked-appearance-v2\n")
+                                            : "npc-baked-appearance-v3-attachments\n")
                             .append(MeshAppearanceCodec.REVISION)
                             .append('\n')
                             .append(M2RestDrawSkinReader.REVISION)
@@ -367,7 +382,8 @@ final class RaceAppearance {
                         .append(source.file() == null ? "" : source.file().contentKey());
             }
             var key = appearanceKey(identity.toString(), plan.npc());
-            return new Prepared(base, plan, key, issues, null, request, unread ? null : sources);
+            return new Prepared(
+                    base, plan, key, issues, null, request, unread ? null : sources, raceId, npc);
         } catch (RacesService.Projection unavailable) {
             if (npc != null && unavailable instanceof RacesService.Unreadable unreadable) {
                 throw unreadable; // asked for again (RaceNpcs.Appearance#retry), not refused
@@ -397,7 +413,24 @@ final class RaceAppearance {
                 if (restored.environmentNotDrawn()) {
                     note(issues, RaceAppearancePlan.ENVIRONMENT_NOT_DRAWN);
                 }
-                var result = result(restored.appearance(), base.visibleParts(), plan, issues, true);
+                var visible = base.visibleParts();
+                if (prepared.npc() != null) {
+                    // The attached items are part of the saved composite; the helmet's hiding
+                    // rows are read again (cheap table reads).
+                    visible =
+                            RaceNpcAttachments.visible(
+                                    visible,
+                                    RaceNpcAttachments.hiddenGroups(
+                                            service,
+                                            prepared.npc().items(),
+                                            prepared.raceId(),
+                                            base.variant().sex(),
+                                            token,
+                                            issues),
+                                    restored.appearance().mesh());
+                    npcFacts(restored.appearance(), issues);
+                }
+                var result = result(restored.appearance(), visible, plan, issues, true);
                 token.check();
                 remember(prepared, result, restored.skeleton(), restored.skeletonContent());
                 return result;
@@ -669,6 +702,28 @@ final class RaceAppearance {
                 note(issues, RaceAppearancePlan.ENVIRONMENT_NOT_DRAWN);
             }
             var appearance = new MeshAppearance(mesh, uv, normals, bindings, textures);
+            var visible = base.visibleParts();
+            if (prepared.npc() != null) {
+                var attached =
+                        RaceNpcAttachments.attach(
+                                service,
+                                files,
+                                generated,
+                                model.model(),
+                                appearance,
+                                visible,
+                                prepared.raceId(),
+                                base.variant().sex(),
+                                prepared.npc().items(),
+                                token,
+                                issues);
+                appearance = attached.appearance();
+                visible = attached.visible();
+                // An item or texture not readable yet: shown, but not saved or remembered.
+                complete &= attached.complete();
+                attached.notes().forEach(text -> note(issues, text));
+                npcFacts(appearance, issues);
+            }
             if (complete) {
                 save(
                         key,
@@ -683,7 +738,7 @@ final class RaceAppearance {
                         token,
                         issues);
             }
-            var result = result(appearance, base.visibleParts(), plan, issues, false);
+            var result = result(appearance, visible, plan, issues, false);
             if (complete) {
                 token.check();
                 remember(prepared, result, skeletonId, skeletonContent);
@@ -727,6 +782,17 @@ final class RaceAppearance {
             }
             throw failure;
         }
+    }
+
+    /** The NPC page facts every NPC appearance carries. */
+    static final String WEAPONS_NOT_DRAWN = "Weapons are server-side and not drawn.";
+
+    private static void npcFacts(MeshAppearance appearance, List<String> issues) {
+        if (appearance.mesh().parts().stream()
+                .anyMatch(part -> part.id() >= RaceNpcAttachments.FIRST_PART)) {
+            note(issues, "Item models are attached at the head and shoulders in the rest pose.");
+        }
+        note(issues, WEAPONS_NOT_DRAWN);
     }
 
     /** Names the external-weight assumption in the key of every composite that may make it. */

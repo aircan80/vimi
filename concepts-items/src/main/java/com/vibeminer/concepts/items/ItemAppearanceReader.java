@@ -54,6 +54,17 @@ final class ItemAppearanceReader {
         this.token = token;
     }
 
+    /** The model files one {@code ModelResourcesID} names; see {@link ItemModelFiles#files}. */
+    static ItemResourceRef modelFiles(
+            BuildTables tables,
+            RelationIndexes relations,
+            long modelResourcesId,
+            TableTypes.Priority priority,
+            Cancellation token) {
+        return new ItemAppearanceReader(tables, relations, new ItemsOptions(), priority, token)
+                .resource(ItemResourceKind.MODEL, 0, modelResourcesId);
+    }
+
     private TableTypes.SchemaResult schema(String table) {
         return schemas.computeIfAbsent(
                 table, name -> tables.schema(TableTypes.Ref.forName(name), priority, token).join());

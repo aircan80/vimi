@@ -59,6 +59,12 @@ public final class M2Types {
 
     public record AnimationFile(int animationId, int variation, long fileDataId) {}
 
+    /**
+     * One attachment point: its ID (11 head, 5 right shoulder, 6 left shoulder and so on), the bone
+     * it follows and its position in model space at rest.
+     */
+    public record Attachment(int id, int bone, Vec3 position) {}
+
     public static final class Model {
         private final long version;
         private final boolean isChunked;
@@ -72,6 +78,7 @@ public final class M2Types {
         private final List<Texture> textures;
         private final List<Material> materials;
         private final List<Bone> bones;
+        private final List<Attachment> attachments;
         private final List<Integer> textureCombos;
         private final List<Integer> textureCoordinates;
         private final List<Integer> textureWeights;
@@ -102,6 +109,7 @@ public final class M2Types {
                 List<Texture> textures,
                 List<Material> materials,
                 List<Bone> bones,
+                List<Attachment> attachments,
                 List<Integer> textureCombos,
                 List<Integer> textureCoordinates,
                 List<Integer> textureWeights,
@@ -130,6 +138,7 @@ public final class M2Types {
             this.textures = List.copyOf(textures);
             this.materials = List.copyOf(materials);
             this.bones = List.copyOf(bones);
+            this.attachments = List.copyOf(attachments);
             this.textureCombos = List.copyOf(textureCombos);
             this.textureCoordinates = List.copyOf(textureCoordinates);
             this.textureWeights = List.copyOf(textureWeights);
@@ -194,6 +203,13 @@ public final class M2Types {
 
         public List<Bone> bones() {
             return bones;
+        }
+
+        /**
+         * The model's attachment points, in recorded order; each names a bone of {@link #bones}.
+         */
+        public List<Attachment> attachments() {
+            return attachments;
         }
 
         public List<Integer> textureCombos() {

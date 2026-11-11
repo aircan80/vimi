@@ -40,6 +40,7 @@ dependencies {
     api project(':formats-audio')
     implementation project(':concepts-models')
     implementation project(':concepts-core')
+    implementation project(':concepts-items')
     testImplementation testFixtures(project(':formats-tables'))
     testImplementation testFixtures(project(':files'))
     testImplementation testFixtures(project(':formats-assets'))

@@ -7,6 +7,16 @@ import java.util.Set;
 
 /** Exact client-model references and explicitly static rest-surface previews. */
 public final class RaceMediaTypes {
+    /**
+     * The character surfaces a race model shows before any customization choice (the Races page's
+     * reviewed default convention, including exactly one face), for other views of a character
+     * model.
+     */
+    public static java.util.Set<Integer> defaultCharacterParts(
+            com.vibeminer.rendering.models.PreviewMesh mesh) {
+        return RaceMedia.defaultParts(mesh);
+    }
+
     private RaceMediaTypes() {}
 
     /** Standard or high definition, as named by an explicit recorded source field. */
