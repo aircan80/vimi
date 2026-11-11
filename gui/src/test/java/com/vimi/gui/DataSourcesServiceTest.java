@@ -26,6 +26,14 @@ public final class DataSourcesServiceTest {
         try {
             persistenceAndLocalInventory(directory.resolve("local"));
             futureSchemaIsReadOnly(directory.resolve("future"));
+            formerDefinitionsSourceSettingsAreIgnored(directory.resolve("former-definitions"));
+            var bundled = String.join("\n", SettingsView.bundledDefinitionsLines());
+            require(
+                    bundled.contains("WoWDBDefs")
+                            && bundled.contains("Revision b9a63096")
+                            && bundled.contains("CC BY-SA 4.0")
+                            && bundled.contains("https://github.com/wowdev/WoWDBDefs/tree/b9a63096"),
+                    "Settings attributes the bundled definitions with revision, license and source");
             mappingRules();
             require(DataSourcesService.compatibleNpcBuild("1.60.1.70532","1.60.1.70707"),"Older same-patch source is eligible");
             require(!DataSourcesService.compatibleNpcBuild("1.60.1.70707","1.60.1.70532"),"Newer sources do not leak backwards");
@@ -316,11 +324,9 @@ public final class DataSourcesServiceTest {
                                     && sources.questie().issue() == null,
                             "Fresh local inventory is empty, no network needed");
                     require(
-                            sources.definitions().tables() > 1000,
-                            "Actual bundled definitions are measured");
-                    sources.sync(DataSourcesService.Id.DEFINITIONS).join();
-                    require(!sources.checkedAt(DataSourcesService.Id.DEFINITIONS).equals("Never checked"),
-                            "Bundled definition validation participates in a full sync without downloads");
+                            java.util.Arrays.stream(DataSourcesService.Id.values())
+                                    .noneMatch(id -> id.name().equals("DEFINITIONS")),
+                            "Bundled table definitions are not a data source");
                     require(
                             "Forever".equals(sources.mapping(build).flavor()),
                             "Reviewed product maps directly");
@@ -329,7 +335,6 @@ public final class DataSourcesServiceTest {
                             "No default database is invented");
                     sources.setMapping(build, "TBC").join();
                     sources.setEnabled(DataSourcesService.Id.LISTFILE, false).join();
-                    sources.setEnabled(DataSourcesService.Id.DEFINITIONS, false).join();
                     sources.setEnabled(DataSourcesService.Id.QUESTIE, false).join();
                     sources.setEnabled(DataSourcesService.Id.TACT_KEYS, false).join();
                     sources.setEnabled(DataSourcesService.Id.POLESTAR, false).join();
@@ -387,6 +392,64 @@ public final class DataSourcesServiceTest {
                 } finally {
                     reopened.closeAsync().join();
                 }
+            } finally {
+                access.closeAsync().join();
+            }
+        } finally {
+            library.closeAsync().join();
+        }
+    }
+
+    /**
+     * A library from before table definitions stopped being a source still holds their switch,
+     * check schedule and timestamps. It opens cleanly and none of them is read.
+     */
+    private static void formerDefinitionsSourceSettingsAreIgnored(Path directory) throws Exception {
+        var library = ObjectStore.openLibrary(directory.resolve("library")).join();
+        try (var catalog = LibraryCatalog.open(library.databasePath()).join()) {
+            var former = new SourcePreferences(library.databasePath());
+            former.put("enabled.DEFINITIONS", "false");
+            former.put("checks.DEFINITIONS", "MANUAL");
+            former.put("checked.DEFINITIONS", java.time.Instant.EPOCH.toString());
+            former.put("attempt.DEFINITIONS", java.time.Instant.EPOCH.toString());
+            var original =
+                    library.forOwner(
+                            "provider:community-listfile",
+                            LibraryCatalog.Scope.GLOBAL,
+                            "source",
+                            LibraryCatalog.Role.ORIGINAL);
+            var access = CachingObjectSource.localOnly(original, original);
+            var names =
+                    new CommunityFileNames(
+                            access,
+                            new PackGeneratedStore(
+                                    library,
+                                    library.forOwner(
+                                            "provider:community-listfile",
+                                            LibraryCatalog.Scope.GLOBAL,
+                                            "index",
+                                            LibraryCatalog.Role.DERIVED)),
+                            token -> java.util.concurrent.CompletableFuture.completedFuture(true));
+            try {
+                var sources =
+                        DataSourcesService.open(
+                                library.databasePath(), directory.resolve("questie"), names, catalog);
+                try {
+                    sources.refreshLocal().join();
+                    for (var id : DataSourcesService.Id.values())
+                        require(sources.policy(id).enabled(), "Other sources keep their defaults");
+                    require(
+                            java.util.Arrays.stream(DataSourcesService.Id.values())
+                                    .noneMatch(id -> id.name().equals("DEFINITIONS")),
+                            "The former definitions switch is not offered");
+                } finally {
+                    sources.closeAsync().join();
+                }
+                require(
+                        new SourcePreferences(library.databasePath())
+                                .get("enabled.DEFINITIONS", "")
+                                .equals("false"),
+                        "The stored row is left as it was: no schema change or rewrite");
             } finally {
                 access.closeAsync().join();
             }

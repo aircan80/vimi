@@ -253,6 +253,14 @@ tasks.register('fullPreparationLibraryTest', JavaExec) {
 }
 check.dependsOn fullPreparationLibraryTest
 
+// Normal-case prepared table inventory identity; no library or display.
+tasks.register('preparationIdentityTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.PreparationIdentityTest'
+}
+check.dependsOn preparationIdentityTest
+
 tasks.register('sqlPreparationReceiptsTest', JavaExec) {
     dependsOn testClasses
     classpath = sourceSets.test.runtimeClasspath

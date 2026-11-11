@@ -1,7 +1,9 @@
 # External data sources
 
-Data Sources manages QuestieDB, the community listfile, bundled WoWDBDefs, and
-public wowdev/TACTKeys, EG Link and Polestar forever-db.
+Data Sources manages the downloaded community data: QuestieDB, the community
+listfile, public wowdev/TACTKeys, EG Link and Polestar forever-db. Table
+definitions (WoWDBDefs) are not a data source: a pinned revision ships with the
+application, see [Bundled table definitions](#bundled-table-definitions).
 Blizzard CDN acquisition remains in Builds. Native screens use cached typed service
 snapshots; persistence, provider calls and inventory work run off the JavaFX thread.
 The earlier illustrative source figures have been replaced with local measurements.
@@ -21,12 +23,8 @@ optional checks between global refreshes; older Manual/Startup values remain
 compatible and do not disable startup refresh. TACTKeys additionally defaults to a
 daily check. See [Source refresh](source-refresh.md) for progress, cancellation and
 per-provider scope. Individual check/download/prepare buttons remain available.
-Failed daily attempts do not spin in an automatic retry loop. Bundled definitions
-update with the application; there is no fabricated runtime definition updater.
+Failed daily attempts do not spin in an automatic retry loop.
 
-Open workspaces retain their table-definition policy. Disabled definitions produce
-an explicit issue and a separate preparation identity; an enabled-definition cache
-cannot silently restore into a disabled workspace. Metadata and Files still work.
 Filename acquisitions are canceled when the listfile is disabled; already-bound
 workspace data and completed provider objects are retained.
 
@@ -87,8 +85,26 @@ rejects conflicting duplicate names or malformed/empty lists, and bounds input t
 The listfile page shows actual installed tag, timestamps, indexed name count,
 preparation state and original/derived catalog payload totals. Payload totals cover
 retained provider objects, not just the active snapshot. Per-build filename coverage
-stays in the build Overview. Definitions show the pinned revision, provider table
-count, upstream source and license; provider count is not readable-table coverage.
+stays in the build Overview.
+
+## Bundled table definitions
+
+WoWDBDefs table definitions (revision `b9a63096cdd99b26967f17f9515377ae62cadfd7`,
+CC BY-SA 4.0, by WoWDBDefs contributors) ship inside the application, so they have
+no Data Sources page, no enable switch and no part in startup checks or **Refresh
+sources**. Their integrity is checked where they are loaded: the manifest and
+source-list hashes, the decoded stream's length and hash, and each definition's
+original hash before it is parsed (`formats-tables`, see its `REPACK.md`). A newer
+revision arrives with an application release. **Settings → Bundled data** shows
+the revision, upstream link, license and notice; the package's `legal/THIRD-PARTY.md`
+lists them too.
+
+The former per-source switch for definitions is gone. It only existed because
+definitions were listed as a source: turning it off left a workspace with no table
+interpretation at all, under its own preparation identity, which no feature needed.
+Libraries that stored the old `enabled.DEFINITIONS`, `checks.DEFINITIONS`,
+`checked.DEFINITIONS` or `attempt.DEFINITIONS` rows in `sources_preferences` open
+unchanged; those rows are no longer read.
 
 ## Polestar / forever-db
 

@@ -19,12 +19,14 @@ the full sync. A failed provider does not stop the other providers.
   stay pinned.
 - The community listfile checks and prepares its name index.
 - TACTKeys validates and retains the public list.
-- WoWDBDefs validates the bundled provider; new definition releases arrive with app
-  updates rather than from an invented runtime updater.
 - EG Link syncs its latest advertised build per product and already-installed build
   selections still advertised by the current revision.
 - Polestar checks, downloads and prepares its latest published dataset, retaining
   its actual client-build provenance.
+
+Table definitions (WoWDBDefs) are not refreshed: a pinned revision ships with the
+application and is verified where it is loaded. See
+[Bundled table definitions](data-sources.md#bundled-table-definitions).
 
 ## Progress and cancellation
 

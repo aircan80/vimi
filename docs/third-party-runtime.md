@@ -44,6 +44,16 @@ GPL-3.0-or-later artwork from VibeMiner; hashes/provenance are in
   `rendering-bgfx/lwjgl-runtime.json`.
   The build-only bgfx shader compiler is not installed or downloaded by the app.
 
+- WoWDBDefs table definitions, revision
+  b9a63096cdd99b26967f17f9515377ae62cadfd7, by WoWDBDefs contributors: data under
+  Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0,
+  https://creativecommons.org/licenses/by-sa/4.0/). The unmodified definition files,
+  the upstream LICENSE.md and VibeMiner's NOTICE.md are bundled in the
+  formats-tables JAR under `com/vibeminer/formats/definitions/`; only their
+  compression changed (see REPACK.md there). No upstream code is bundled.
+  Source: https://github.com/wowdev/WoWDBDefs/tree/b9a63096cdd99b26967f17f9515377ae62cadfd7 .
+  The app shows this under Settings → Bundled data.
+
 The package contains no downloaded game databases, CDN payloads, player data,
 credentials or local development configuration. Game data is acquired through the
 application's configured Blizzard/GitHub sources after launch.

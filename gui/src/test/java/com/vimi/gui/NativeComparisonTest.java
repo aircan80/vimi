@@ -102,7 +102,7 @@ public final class NativeComparisonTest {
                                     null,
                                     List.of(source));
                     var browsing =
-                            contexts.create(info, source, "enUS").withSourcePolicy(false, true);
+                            contexts.create(info, source, "enUS").withSourcePolicy(false);
                     try {
                         browsing.metadata(new Cancellation());
                         browsing.files(ignored -> {}, new Cancellation());
@@ -219,7 +219,7 @@ public final class NativeComparisonTest {
                             var differentKeys = new TactKeys(Map.of(77L, new byte[16]));
                             var uncached =
                                     contexts.createLocalComparison(
-                                            info, source, "enUS", true, differentKeys);
+                                            info, source, "enUS", differentKeys);
                             try {
                                 uncached.metadata(new Cancellation());
                                 uncached.files(ignored -> {}, new Cancellation());
