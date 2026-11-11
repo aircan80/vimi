@@ -25,6 +25,17 @@ final class RaceAppearancePlan {
             int order,
             String source) {}
 
+    /**
+     * ItemDisplayInfo GeosetGroup -1: the display does not set that group, which stays as the body
+     * or another item left it. 0 already names a part (the group's 01, or 2002 for boots), so -1 is
+     * the only way to say "no override"; reading it as "hide" would cut holes in base geometry such
+     * as the feet or the belt. Checked on 70862: 54 displays carry -1 and no other negative value
+     * appears; all but one (740250, boots) are NPC-only. 36 NPCs wear them in 37 slots: head (14,
+     * whose groups are not body geosets), feet (9, group 20), chest (9, groups 13, 22 and 28),
+     * waist (3) and hands (2). Before this each of those NPCs was refused whole.
+     */
+    static final int KEEP_GROUP = -1;
+
     record Item(long itemId, int inventoryType, long displayId, List<Integer> geosets) {
         Item {
             geosets = List.copyOf(geosets);
@@ -601,7 +612,7 @@ final class RaceAppearancePlan {
             var groups = new ArrayList<Integer>();
             for (int n = 0; n < 6; n++) {
                 int value = integer(display, info, "GeosetGroup[" + n + "]");
-                if (value < 0 || value > 98) {
+                if (value < KEEP_GROUP || value > 98) {
                     throw display.unsupported("Clothing geoset variant exceeds reviewed bounds");
                 }
                 groups.add(value);
@@ -744,7 +755,7 @@ final class RaceAppearancePlan {
             var groups = new ArrayList<Integer>();
             for (int n = 0; n < 6; n++) {
                 int value = integer(display, info, "GeosetGroup[" + n + "]");
-                if (value < 0 || value > 98) {
+                if (value < KEEP_GROUP || value > 98) {
                     throw display.unsupported("Clothing geoset variant exceeds reviewed bounds");
                 }
                 groups.add(value);

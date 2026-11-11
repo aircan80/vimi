@@ -210,6 +210,24 @@ checks the group range before arithmetic. Other raw fields/widths remain refused
 Read-only appearance verification now uses actual `Db2Reader` physical headers,
 including interpretation metadata, rather than columns reconstructed from DBD.
 
+A `GeosetID` of -1 empties the row's group (rows 213-221, 232-240, 6710, 12028
+and 12039 on 70862; choice 28271, Breechcloth on model 89, uses 12028). It is never
+read as variant 99 of the group below. A type or ID outside 0..99 (a few rows hold
+text-like garbage) is ignored with a diagnostic.
+
+Default geosets are section 0 and every group's 01 part, except groups 12, 17 and 35,
+which show only when chosen. Group 32 (head swap) holds alternatives, so exactly one
+part is drawn: the lowest variant from 02 upward, or 01 when the model has nothing
+else. On 70862, 57 of 125 character skins have several 32xx parts: 3201 is a small
+cap set behind the face and 3202 the full face, with 3203/3204 coincident full-size
+alternatives on some models. Every face customization (Face Shape, Eyes, Nose) picks
+from 3202 upward, and a selected choice replaces the group.
+
+`ItemDisplayInfo.GeosetGroup` -1 means "do not set this group": it stays as the body
+or another item left it. 0 already names a part, so hiding instead would cut holes in
+base geometry. On 70862, 54 displays carry -1 (no other negative value appears) and
+they used to refuse 36 NPCs whole.
+
 
 ## Orc static appearance profile
 

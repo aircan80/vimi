@@ -337,18 +337,7 @@ final class RaceMedia {
             Cancellation token,
             List<String> issues,
             RaceCustomization.Selection selection) {
-        var visible = new HashSet<Integer>();
-        // Reviewed character default surface convention, overridden only by recorded customization
-        // choices.
-        for (var part : mesh.parts()) {
-            int id = part.id(), group = id / 100;
-            if ((id == 0 || id % 100 == 1 || group == 32)
-                    && group != 17
-                    && group != 35
-                    && group != 12) {
-                visible.add(id);
-            }
-        }
+        var visible = new HashSet<>(defaultParts(mesh));
         try {
             var options = data("ChrCustomizationOption", 4096, token, issues);
             var choices = data("ChrCustomizationChoice", 40000, token, issues);
@@ -389,18 +378,17 @@ final class RaceMedia {
                     issue(issues, "Some customization geosets are unavailable.");
                     continue;
                 }
-                long group = geosets.number(row, "GeosetType"),
-                        part = group * 100 + geosets.number(row, "GeosetID");
-                if (group < 0
-                        || group > 100
-                        || part < Integer.MIN_VALUE
-                        || part > Integer.MAX_VALUE) {
+                var part =
+                        customizationPart(
+                                geosets.number(row, "GeosetType"), geosets.number(row, "GeosetID"));
+                if (part == null) {
+                    issue(issues, "Some customization geosets are outside the reviewed range.");
                     continue;
                 }
                 long related = elements.number(element, "RelatedChrCustomizationChoiceID");
                 if (selected.contains(choice) && (related == 0 || selected.contains(related))) {
-                    show.add((int) part);
-                    groups.add((int) group);
+                    groups.addAll(part.groups());
+                    show.addAll(part.show());
                 }
             }
             visible = new HashSet<>(applyCustomizationParts(visible, groups, show));
@@ -412,6 +400,79 @@ final class RaceMedia {
             issue(issues, "Customization selection unavailable: " + unavailable.getMessage());
         }
         return Set.copyOf(visible);
+    }
+
+    /**
+     * ChrCustomizationGeoset GeosetID -1: the choice empties its group. Checked on 70862: rows
+     * 213-221 and 232-240 (type 17), 6710, 12028 and 12039 (type 14) carry it, and choice 28271
+     * (Breechcloth, model 89) uses 12028. It is never read as variant 99 of the group below.
+     */
+    static final int HIDE_GROUP = -1;
+
+    /**
+     * What one ChrCustomizationGeoset row does: the groups it takes over and the parts it shows.
+     */
+    record CustomizationPart(Set<Integer> groups, Set<Integer> show) {
+        CustomizationPart {
+            groups = Set.copyOf(groups);
+            show = Set.copyOf(show);
+        }
+    }
+
+    /**
+     * A ChrCustomizationGeoset row as parts, or null when it is outside the reviewed range: the
+     * type must be 0..99 and the GeosetID 0..99 or {@link #HIDE_GROUP}. Some rows hold huge
+     * text-like values (12368, 12370, 12445 and 12449 on 70862); they are ignored, never folded
+     * into another group.
+     */
+    static CustomizationPart customizationPart(long type, long geosetId) {
+        if (type < 0 || type > 99 || geosetId < HIDE_GROUP || geosetId > 99) {
+            return null;
+        }
+        return new CustomizationPart(
+                Set.of((int) type),
+                geosetId == HIDE_GROUP ? Set.of() : Set.of((int) (type * 100 + geosetId)));
+    }
+
+    /** Head swap group: 01 is a recessed cap, 02 upward are full alternative faces. */
+    static final int FACE_GROUP = 32;
+
+    /**
+     * Reviewed character default surface convention, overridden only by recorded customization
+     * choices: section 0 and every group's 01 part, except group 12, 17 and 35, which show only
+     * when chosen.
+     *
+     * <p>Group 32 holds alternatives, so exactly one of its parts is drawn: the lowest variant from
+     * 02 upward, or 01 when the model has nothing else. Checked on 70862 across 125 character
+     * skins: 57 have more than one 32xx part. 3201 is a small cap (63-174 vertices, centred behind
+     * the face) and 3202 the full face (about 1,050-1,300 vertices); 3203 and 3204 on human and
+     * 3203 on Kul Tiran and the 200/201 models are coincident full-size alternatives. Every face
+     * customization (Face Shape on 1/2, Eyes on 53/54, Nose on 200/201) picks from 3202 upward, so
+     * 3202 is the face the client starts from. Only Snout on model 89 also offers 3201, where it is
+     * a full face, and a selection there replaces the group anyway.
+     */
+    static Set<Integer> defaultParts(PreviewMesh mesh) {
+        var visible = new HashSet<Integer>();
+        int face = -1;
+        for (var part : mesh.parts()) {
+            int id = part.id(), group = id / 100, variant = id % 100;
+            if (group == FACE_GROUP) {
+                if (variant >= 1 && (face < 0 || rankFace(variant) < rankFace(face))) {
+                    face = variant;
+                }
+            } else if ((id == 0 || variant == 1) && group != 17 && group != 35 && group != 12) {
+                visible.add(id);
+            }
+        }
+        if (face > 0) {
+            visible.add(FACE_GROUP * 100 + face);
+        }
+        return Set.copyOf(visible);
+    }
+
+    /** The cap (01) ranks after every full face; full faces rank by variant. */
+    private static int rankFace(int variant) {
+        return variant == 1 ? Integer.MAX_VALUE : variant;
     }
 
     /** Only active groups override defaults; base section0 is body/scalp, never a hairstyle. */
