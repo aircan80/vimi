@@ -5696,9 +5696,21 @@ class WorldExteriorObjectsTest {
     @Test
     @SuppressWarnings("try")
     void withdrawnReadAheadStartsNoFurtherReadAndClosesWhatRan() throws Exception {
-        // Directly on one operation: hint twelve slow groups, withdraw once four are running.
+        // Directly on one operation: hint twelve groups, withdraw once four reads are running.
+        // Each read stays in its open until its own read is canceled, so none finishes and frees
+        // a slot before the withdrawal however the threads are scheduled: exactly READS have
+        // started when it comes, and the withdrawal is what releases them.
         var files = new SlowGroups();
-        files.delay = 50;
+        files.delay = 0;
+        var running = new java.util.concurrent.CountDownLatch(WorldStreamScopes.Prefetcher.READS);
+        files.onGroupOpenWith =
+                (opened, cancel) -> {
+                    var withdrawn = new java.util.concurrent.CountDownLatch(1);
+                    try (var ignored = cancel.onCancel(withdrawn::countDown)) {
+                        running.countDown();
+                        await(withdrawn);
+                    }
+                };
         try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), files)) {
             var ids = manyGroups(files, 12);
             var observed = new int[2];
@@ -5712,14 +5724,14 @@ class WorldExteriorObjectsTest {
                                 for (long id : ids) {
                                     admission.prefetch(id, WorldStreamScopes.DerivedKind.WMO_GROUP);
                                 }
-                                long deadline = System.nanoTime() + 5_000_000_000L;
-                                while (files.groupOpens.get() < WorldStreamScopes.Prefetcher.READS
-                                        && System.nanoTime() < deadline) {
-                                    Thread.onSpinWait();
-                                }
+                                await(running);
                                 admission.cancelPrefetch();
                                 observed[0] = files.groupOpens.get();
                                 observed[1] = files.open.get();
+                                // A withdrawn hint has nothing left to start: the queue was
+                                // emptied under the read-ahead's lock before the reads were
+                                // released. This pause can only miss a late read, never invent
+                                // one.
                                 try {
                                     Thread.sleep(200);
                                 } catch (InterruptedException interrupted) {
