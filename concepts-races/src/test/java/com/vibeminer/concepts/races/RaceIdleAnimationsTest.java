@@ -10,6 +10,7 @@ import com.vibeminer.formats.models.BuildModelTypes.IdleRead;
 import com.vibeminer.formats.models.BuildModelTypes.ReadState;
 import com.vibeminer.formats.models.BuildModelTypes.StandRead;
 import com.vibeminer.formats.models.M2IdleAnimation;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CancellationException;
@@ -30,7 +31,7 @@ final class RaceIdleAnimationsTest {
     void boneFilesAreNotAReasonAndOnlyAddAFact() {
         var result =
                 RaceIdleAnimations.explain(
-                        0, true, BONE_FACT, () -> STAND_IN_MODEL, Cancellation.NONE);
+                        0, true, () -> BONE_FACT, () -> STAND_IN_MODEL, Cancellation.NONE);
         assertTrue(result.reasons().isEmpty());
         assertEquals(
                 List.of(
@@ -52,10 +53,11 @@ final class RaceIdleAnimationsTest {
                         null);
         var result =
                 RaceIdleAnimations.explain(
-                        77, true, BONE_FACT, () -> refusedStand, Cancellation.NONE);
+                        77, true, () -> BONE_FACT, () -> refusedStand, Cancellation.NONE);
         assertEquals(
                 List.of(
-                        "The model names external skeleton FileDataID 77 (SKID), which is not read.",
+                        "The model names external skeleton FileDataID 77 (SKID) and also stores"
+                                + " bones of its own; which rig its Stand moves is not reviewed.",
                         "Stand: A Stand bone track uses curve interpolation 2."),
                 result.reasons());
         assertEquals(List.of(BONE_FACT), result.facts());
@@ -63,29 +65,49 @@ final class RaceIdleAnimationsTest {
     }
 
     @Test
-    void skeletonOnlyBonesSkipTheStandRead() {
+    void skeletonOnlyBonesPlayTheSkeletonStand() {
+        var asked = new ArrayList<String>();
         var result =
                 RaceIdleAnimations.explain(
                         77,
                         false,
-                        null,
                         () -> {
-                            throw new AssertionError("Stand must not be read");
+                            asked.add("bone files");
+                            return BONE_FACT;
+                        },
+                        () -> {
+                            asked.add("stand");
+                            return STAND_IN_MODEL;
                         },
                         Cancellation.NONE);
+        // The skeleton's bone files are known only once the skeleton is read.
+        assertEquals(List.of("stand", "bone files"), asked);
+        assertTrue(result.reasons().isEmpty());
         assertEquals(
                 List.of(
-                        "The model names external skeleton FileDataID 77 (SKID), which is not read."),
-                result.reasons());
-        assertEquals(
-                List.of("Bones are stored only in the external skeleton; Stand is not read."),
+                        "Stand (plays sequence 0, 2667 ms) is stored in external skeleton FileDataID"
+                                + " 77: 120 step/linear keys on 12 bones.",
+                        BONE_FACT),
                 result.facts());
+        assertTrue(result.complete());
+        var absent =
+                RaceIdleAnimations.explain(
+                        77,
+                        false,
+                        () -> null,
+                        () -> new StandRead(ReadState.NEEDS_NETWORK, null, null, "absent"),
+                        Cancellation.NONE);
+        assertEquals(
+                List.of("The model's Stand sequence could not be re-read: absent"),
+                absent.reasons());
+        assertFalse(absent.complete());
     }
 
     @Test
     void localStandHasNoBlockerSoItCanBeBound() {
         var result =
-                RaceIdleAnimations.explain(0, true, null, () -> STAND_IN_MODEL, Cancellation.NONE);
+                RaceIdleAnimations.explain(
+                        0, true, () -> null, () -> STAND_IN_MODEL, Cancellation.NONE);
         assertTrue(result.reasons().isEmpty());
         assertEquals(
                 List.of(
@@ -97,7 +119,7 @@ final class RaceIdleAnimationsTest {
                 RaceIdleAnimations.explain(
                         0,
                         true,
-                        null,
+                        () -> null,
                         () -> new StandRead(ReadState.NEEDS_NETWORK, null, null, "absent"),
                         Cancellation.NONE);
         assertEquals(
@@ -112,7 +134,7 @@ final class RaceIdleAnimationsTest {
         token.cancel();
         assertThrows(
                 CancellationException.class,
-                () -> RaceIdleAnimations.explain(0, true, null, () -> STAND_IN_MODEL, token));
+                () -> RaceIdleAnimations.explain(0, true, () -> null, () -> STAND_IN_MODEL, token));
     }
 
     @Test
@@ -131,21 +153,31 @@ final class RaceIdleAnimationsTest {
                         + " face keeps the base rig's shape, as in the static preview. 4"
                         + " customization choices select one; the first recorded 'Face' (option 10)"
                         + " choice, 20, selects bone file 500, which is not applied.",
-                RaceIdleAnimations.boneFileFact(22, choice, null));
+                RaceIdleAnimations.boneFileFact(22, choice, null, true));
         // The first recorded choice may select none.
         var later = RaceIdleAnimations.boneFileChoice(choiceOption, Map.of(), Map.of(22L, 502L));
         assertEquals(new RaceIdleAnimations.BoneFileChoice(10, null, 20, 0, 1), later);
         assertTrue(
-                RaceIdleAnimations.boneFileFact(3, later, null)
+                RaceIdleAnimations.boneFileFact(3, later, null, true)
                         .endsWith(
                                 "1 customization choices select one; the first recorded option 10"
                                         + " choice, 20, selects none."));
         assertEquals(null, RaceIdleAnimations.boneFileChoice(choiceOption, names, Map.of()));
         assertTrue(
-                RaceIdleAnimations.boneFileFact(14, null, null)
+                RaceIdleAnimations.boneFileFact(14, null, null, true)
                         .endsWith("No customization choice of this model selects one."));
+        // Tables read only in part do not establish that no choice selects one.
         assertTrue(
-                RaceIdleAnimations.boneFileFact(14, null, "which choice could not be read: x")
+                RaceIdleAnimations.boneFileFact(14, null, null, false)
+                        .endsWith(
+                                "the customization tables could not be fully read, so which choice"
+                                        + " selects one is not known."));
+        // A found choice is still named when a table is partial.
+        assertTrue(
+                RaceIdleAnimations.boneFileFact(22, choice, null, false)
+                        .endsWith("selects bone file 500, which is not applied."));
+        assertTrue(
+                RaceIdleAnimations.boneFileFact(14, null, "which choice could not be read: x", true)
                         .endsWith(
                                 "Bone files are customization choices; which choice could not be"
                                         + " read: x"));
