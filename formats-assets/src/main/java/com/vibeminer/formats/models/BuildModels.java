@@ -242,6 +242,59 @@ public final class BuildModels {
         return readIdleCore(read, M2IdleAnimation::readBaseRig, token);
     }
 
+    /**
+     * Reads the base rig's Stand from the read model's external skeleton (SKID) through {@link
+     * M2IdleAnimation#readSkeleton}: the skeleton's own bones, sequences and track arrays; bone
+     * files are not applied and a parent skeleton is not read.
+     */
+    public CompletableFuture<BuildModelTypes.SkeletonIdleRead> readIdleSkeleton(
+            ModelRead read, Cancellation token) {
+        Objects.requireNonNull(read);
+        if (read.state() != ReadState.READ || read.model() == null) {
+            throw new IllegalArgumentException("Idle reads require a model read with READ state");
+        }
+        Model model = read.model();
+        long id = model.skeletonFileDataId();
+        if (id == 0) {
+            throw new IllegalArgumentException("The model names no external skeleton");
+        }
+        return AssetTasks.run(
+                () -> {
+                    token.check();
+                    FileStat stat = files.stat(FileRef.id(id), token).join();
+                    BuildFile file = stat.file();
+                    if (stat.state() != FileLookupState.FOUND || file == null) {
+                        return new BuildModelTypes.SkeletonIdleRead(
+                                id,
+                                null,
+                                new BuildModelTypes.IdleRead(
+                                        stateOf(stat.state()),
+                                        null,
+                                        null,
+                                        "The skeleton file is " + stat.state() + "."),
+                                List.of());
+                    }
+                    var boneFiles = new ArrayList<List<Long>>(1);
+                    FileOutcome<M2IdleAnimation.Idle> outcome =
+                            readFile(
+                                    id,
+                                    source -> {
+                                        var skeleton = M2SkeletonFile.read(source, token).join();
+                                        boneFiles.add(skeleton.boneFileDataIds());
+                                        return M2IdleAnimation.readSkeleton(
+                                                        source, skeleton, model, token)
+                                                .join();
+                                    },
+                                    token);
+                    return new BuildModelTypes.SkeletonIdleRead(
+                            id,
+                            file.contentKey(),
+                            new BuildModelTypes.IdleRead(
+                                    outcome.state, outcome.value, outcome.code, outcome.message),
+                            boneFiles.isEmpty() ? List.of() : boneFiles.getFirst());
+                });
+    }
+
     private interface IdleReader {
         CompletableFuture<M2IdleAnimation.Idle> read(
                 AssetSource source, Model model, Cancellation token);

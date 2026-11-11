@@ -773,6 +773,123 @@ final class RacesServiceTest {
         }
     }
 
+    private static byte[] chunk(String id, byte[] payload) {
+        return java.nio.ByteBuffer.allocate(8 + payload.length)
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                .put(id.getBytes(java.nio.charset.StandardCharsets.US_ASCII))
+                .putInt(payload.length)
+                .put(payload)
+                .array();
+    }
+
+    /**
+     * An authored skeleton: one Stand (1000 ms, keys in the skeleton); bone 0 a root translating
+     * (0, 0, 0) to (0, 0, 4), bone 1 its child; a BFID chunk naming bone files 801 and 802.
+     */
+    private static byte[] skeleton() {
+        var s = java.nio.ByteBuffer.allocate(32 + 64).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        s.putInt(8, 1).putInt(12, 32);
+        s.putInt(32 + 4, 1000).putInt(32 + 12, 0x20);
+        var b =
+                java.nio.ByteBuffer.allocate(16 + 2 * 88 + 48)
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        b.putInt(0, 2).putInt(4, 16);
+        for (int bone = 0; bone < 2; bone++) {
+            int row = 16 + bone * 88;
+            b.putInt(row, -1).putInt(row + 4, 512).putShort(row + 8, (short) (bone - 1));
+            for (int track : new int[] {16, 36, 56}) {
+                b.putShort(row + track + 2, (short) -1);
+            }
+        }
+        int data = 16 + 2 * 88, row = 16 + 16;
+        b.putShort(row, (short) 1).putInt(row + 4, 1).putInt(row + 8, data);
+        b.putInt(row + 12, 1).putInt(row + 16, data + 8);
+        b.putInt(data, 2).putInt(data + 4, data + 16);
+        b.putInt(data + 8, 2).putInt(data + 12, data + 24);
+        b.putInt(data + 16, 0).putInt(data + 20, 1000);
+        b.putFloat(data + 24 + 20, 4);
+        var ids = java.nio.ByteBuffer.allocate(8).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        ids.putInt(801).putInt(802);
+        var out = new java.io.ByteArrayOutputStream();
+        out.writeBytes(chunk("SKL1", new byte[16]));
+        out.writeBytes(chunk("SKS1", s.array()));
+        out.writeBytes(chunk("SKB1", b.array()));
+        out.writeBytes(chunk("BFID", ids.array()));
+        return out.toByteArray();
+    }
+
+    /**
+     * The authored 274 model with no bones of its own, every vertex rigidly bound to bone 0, and a
+     * SKID chunk naming skeleton 4242.
+     */
+    private static byte[] skeletonModel() throws Exception {
+        byte[] original = golden("authored-274.m2");
+        var parsed =
+                com.vibeminer.formats.models.M2ModelReader.read(
+                                com.vibeminer.formats.AssetSource.bytes(original))
+                        .join();
+        int base = Math.toIntExact(parsed.baseOffset());
+        var b =
+                java.nio.ByteBuffer.wrap(java.util.Arrays.copyOf(original, original.length + 12))
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        int vertices = base + Math.toIntExact(b.getInt(base + 64));
+        for (int v = 0; v < b.getInt(base + 60); v++) {
+            b.putInt(vertices + v * 48 + 12, 255).putInt(vertices + v * 48 + 16, 0);
+        }
+        b.position(original.length);
+        b.put("SKID".getBytes(java.nio.charset.StandardCharsets.US_ASCII)).putInt(4).putInt(4242);
+        return b.array();
+    }
+
+    @Test
+    void skeletonModelPlaysTheSkeletonsStandWithoutItsBoneFiles() throws Exception {
+        var tables = idleTables();
+        byte[] skin = golden("authored-274.skin");
+        var files =
+                new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
+                        .add(1234, "1".repeat(32), skeletonModel())
+                        .add(900, "2".repeat(32), skin);
+        var service = new RacesService(tables, files, null);
+        try {
+            // The skeleton is not stored yet: the result says so and is not cached.
+            var absent = service.idle(1, 10, Cancellation.NONE).join();
+            assertEquals(RaceTypes.State.UNSUPPORTED, absent.state());
+            assertTrue(
+                    absent.message().contains("The skeleton file is UNKNOWN_FILE."),
+                    absent.message());
+            files.add(4242, "3".repeat(32), skeleton());
+            var idle = service.idle(1, 10, Cancellation.NONE).join();
+            assertEquals(RaceTypes.State.READY, idle.state(), idle.message());
+            assertEquals(2, idle.animation().boneCount());
+            assertEquals(
+                    "Stand (plays sequence 0, 1000 ms) is stored in external skeleton FileDataID"
+                            + " 4242: 2 step/linear keys on 1 bones.",
+                    idle.facts().get(0));
+            // The skeleton's bone files are named but neither opened nor applied.
+            assertTrue(
+                    idle.facts().get(1).startsWith("Bone files (BFID): 2 declared, none applied"),
+                    idle.facts().get(1));
+            var preview = service.preview(1, 0, 10, Cancellation.NONE).join();
+            assertTrue(idle.animation().matches(preview.mesh()), preview.message());
+            float[] still = preview.mesh().positions();
+            float[] posed = idle.animation().pose(preview.mesh(), 500).mesh().positions();
+            for (int i = 2; i < still.length; i += 3) {
+                assertEquals(still[i] + 2, posed[i], 1e-5);
+            }
+            // Cached; a changed skeleton is reassessed.
+            int opens = files.opens.get();
+            assertTrue(
+                    service.idle(1, 10, Cancellation.NONE).join().animation() == idle.animation());
+            assertEquals(opens, files.opens.get());
+            files.add(4242, "4".repeat(32), skeleton());
+            service.idle(1, 10, Cancellation.NONE).join();
+            assertTrue(files.opens.get() > opens, "Changed skeleton is reassessed");
+        } finally {
+            service.closeAsync().join();
+            tables.closeAsync().join();
+        }
+    }
+
     @Test
     void boneFileModelWithAnUnsupportedStandIsStillRefused() throws Exception {
         var tables = idleTables();

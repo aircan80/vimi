@@ -10,6 +10,7 @@ import com.vibeminer.formats.models.BuildModelTypes.IdleRead;
 import com.vibeminer.formats.models.BuildModelTypes.ReadState;
 import com.vibeminer.formats.models.BuildModelTypes.StandRead;
 import com.vibeminer.formats.models.M2IdleAnimation;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CancellationException;
@@ -30,7 +31,7 @@ final class RaceIdleAnimationsTest {
     void boneFilesAreNotAReasonAndOnlyAddAFact() {
         var result =
                 RaceIdleAnimations.explain(
-                        0, true, BONE_FACT, () -> STAND_IN_MODEL, Cancellation.NONE);
+                        0, true, () -> BONE_FACT, () -> STAND_IN_MODEL, Cancellation.NONE);
         assertTrue(result.reasons().isEmpty());
         assertEquals(
                 List.of(
@@ -52,10 +53,11 @@ final class RaceIdleAnimationsTest {
                         null);
         var result =
                 RaceIdleAnimations.explain(
-                        77, true, BONE_FACT, () -> refusedStand, Cancellation.NONE);
+                        77, true, () -> BONE_FACT, () -> refusedStand, Cancellation.NONE);
         assertEquals(
                 List.of(
-                        "The model names external skeleton FileDataID 77 (SKID), which is not read.",
+                        "The model names external skeleton FileDataID 77 (SKID) and also stores"
+                                + " bones of its own; which rig its Stand moves is not reviewed.",
                         "Stand: A Stand bone track uses curve interpolation 2."),
                 result.reasons());
         assertEquals(List.of(BONE_FACT), result.facts());
@@ -63,29 +65,49 @@ final class RaceIdleAnimationsTest {
     }
 
     @Test
-    void skeletonOnlyBonesSkipTheStandRead() {
+    void skeletonOnlyBonesPlayTheSkeletonStand() {
+        var asked = new ArrayList<String>();
         var result =
                 RaceIdleAnimations.explain(
                         77,
                         false,
-                        null,
                         () -> {
-                            throw new AssertionError("Stand must not be read");
+                            asked.add("bone files");
+                            return BONE_FACT;
+                        },
+                        () -> {
+                            asked.add("stand");
+                            return STAND_IN_MODEL;
                         },
                         Cancellation.NONE);
+        // The skeleton's bone files are known only once the skeleton is read.
+        assertEquals(List.of("stand", "bone files"), asked);
+        assertTrue(result.reasons().isEmpty());
         assertEquals(
                 List.of(
-                        "The model names external skeleton FileDataID 77 (SKID), which is not read."),
-                result.reasons());
-        assertEquals(
-                List.of("Bones are stored only in the external skeleton; Stand is not read."),
+                        "Stand (plays sequence 0, 2667 ms) is stored in external skeleton FileDataID"
+                                + " 77: 120 step/linear keys on 12 bones.",
+                        BONE_FACT),
                 result.facts());
+        assertTrue(result.complete());
+        var absent =
+                RaceIdleAnimations.explain(
+                        77,
+                        false,
+                        () -> null,
+                        () -> new StandRead(ReadState.NEEDS_NETWORK, null, null, "absent"),
+                        Cancellation.NONE);
+        assertEquals(
+                List.of("The model's Stand sequence could not be re-read: absent"),
+                absent.reasons());
+        assertFalse(absent.complete());
     }
 
     @Test
     void localStandHasNoBlockerSoItCanBeBound() {
         var result =
-                RaceIdleAnimations.explain(0, true, null, () -> STAND_IN_MODEL, Cancellation.NONE);
+                RaceIdleAnimations.explain(
+                        0, true, () -> null, () -> STAND_IN_MODEL, Cancellation.NONE);
         assertTrue(result.reasons().isEmpty());
         assertEquals(
                 List.of(
@@ -97,7 +119,7 @@ final class RaceIdleAnimationsTest {
                 RaceIdleAnimations.explain(
                         0,
                         true,
-                        null,
+                        () -> null,
                         () -> new StandRead(ReadState.NEEDS_NETWORK, null, null, "absent"),
                         Cancellation.NONE);
         assertEquals(
@@ -112,7 +134,7 @@ final class RaceIdleAnimationsTest {
         token.cancel();
         assertThrows(
                 CancellationException.class,
-                () -> RaceIdleAnimations.explain(0, true, null, () -> STAND_IN_MODEL, token));
+                () -> RaceIdleAnimations.explain(0, true, () -> null, () -> STAND_IN_MODEL, token));
     }
 
     @Test
