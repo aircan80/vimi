@@ -243,9 +243,10 @@ final class RaceAppearance {
                 return prepareFailure(
                         issues, "Texture preparation is unavailable for this workspace.");
             }
-            if (!RaceAppearancePlan.reviewedPair(raceId, modelId)) {
-                // Refused before any read, so an unreviewed race's GPU preview is not held back.
-                return prepareFailure(issues, RaceAppearancePlan.UNREVIEWED_PAIR);
+            String refused = RaceAppearancePlan.refusedPair(raceId, modelId);
+            if (refused != null) {
+                // Refused before any read, so a refused race's GPU preview is not held back.
+                return prepareFailure(issues, refused);
             }
             var known = remembered(request, token);
             if (known != null) {
@@ -587,9 +588,7 @@ final class RaceAppearance {
             if (bindings.isEmpty()) {
                 // A lasting fact of this model and plan (no draw fits the reviewed static
                 // profile): a stated refusal for players and NPCs alike, not a read failure.
-                return failed(
-                        issues,
-                        "No reviewed static one-stage diffuse draw bindings are available.");
+                return failed(issues, RaceAppearancePlan.UNREVIEWED_SURFACES);
             }
             var appearance = new MeshAppearance(mesh, uv, normals, bindings, textures);
             if (complete) {

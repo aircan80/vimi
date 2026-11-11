@@ -155,10 +155,16 @@ final class RaceCustomization {
                 races.rows.stream()
                         .filter(row -> row.id() == raceId)
                         .findFirst()
-                        .orElseThrow(() -> races.unsupported("Race mask is unavailable"));
+                        .orElseThrow(
+                                () ->
+                                        new RacesService.Projection(
+                                                RaceTypes.State.UNSUPPORTED,
+                                                RaceAppearancePlan.NOT_PLAYABLE));
         long bit = races.number(race, "PlayableRaceBit");
         if (bit < 0 || bit > 63) {
-            throw races.unsupported("Unreviewed playable-race bit");
+            // Stated plainly to the user, without the table name the data refusal prefixes.
+            throw new RacesService.Projection(
+                    RaceTypes.State.UNSUPPORTED, RaceAppearancePlan.NOT_PLAYABLE);
         }
         var selected = new TreeMap<Long, Long>();
         var all = new HashSet<Long>();
