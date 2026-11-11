@@ -59,6 +59,8 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
             List<RaceTypes.PlayerClass> recorded) {
         super(12);
         this.handle = handle;
+        // Races animate by default: a fitting Stand starts playing unless the user unticks it.
+        viewer.idleByDefault(true);
         this.handles = handles;
         this.revisions = revisions;
         this.revision = revision;
@@ -233,7 +235,7 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
         state.setText("Loading model surface…");
         activity.setVisible(true);
         evidence.getChildren().clear();
-        viewer.loading("Loading static model…");
+        viewer.loading("Loading model…");
         voices.selection(raceId, classId, model.sex());
         if (customization == null) loadCustomizations(model, classId, request);
         request(() -> handle.preview(raceId, classId, model.chrModelId(), token))
@@ -267,8 +269,7 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                                                 return;
                                             }
                                             state.setText(
-                                                    "Static model preview · preparing textures and"
-                                                            + " starting clothing…");
+                                                    "Preparing textures and starting clothing…");
                                             evidence.getChildren()
                                                     .setAll(
                                                             new Label(
@@ -294,7 +295,10 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                                                 evidence.getChildren().add(note);
                                             }
                                             activity.setVisible(true);
-                                            viewer.setMesh(
+                                            // Not shown untextured while its textures are
+                                            // prepared: the textured model replaces the loading
+                                            // state, or this surface does once they are refused.
+                                            viewer.setMeshBehindAppearance(
                                                     result.mesh(),
                                                     result.visibleParts(),
                                                     "Preparing textures and starting clothing…");

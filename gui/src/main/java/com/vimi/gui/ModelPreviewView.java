@@ -53,6 +53,27 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
 
     private final CheckBox idle = new CheckBox("Idle animation");
     private final Label idleStatus = new Label();
+
+    /** Whether an offered idle starts playing until the user chooses otherwise. */
+    private boolean idleByDefault;
+
+    /** The user's last idle choice in this view, kept across models; null until they choose. */
+    private Boolean idleChoice;
+
+    /**
+     * A static surface kept off screen while its textured appearance is prepared: the view shows
+     * a neutral loading state, then the appearance, or the surface once it is refused.
+     */
+    private boolean surfaceHeld;
+
+    /**
+     * The held surface has not been shown untextured: a textured frame that then fails to render
+     * falls back to it, as a refused appearance does, rather than leaving the viewport empty.
+     */
+    private boolean surfaceUnshown;
+
+    /** Test seam: runs on the render thread before each software frame; may throw to fail it. */
+    volatile java.util.function.Consumer<MeshAppearance> softwareRenderSeam = ignored -> {};
     private com.vibeminer.rendering.models.PreviewAnimation animation;
     private long idleOrigin, idlePaused, idleLastFrame;
     private final javafx.animation.AnimationTimer idleClock =
@@ -286,6 +307,7 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
                                 + " rendering."));
         idle.setOnAction(
                 event -> {
+                    idleChoice = idle.isSelected();
                     if (idle.isSelected()) {
                         idleOrigin = System.nanoTime() - idlePaused * 1_000_000L;
                     } else {
@@ -350,6 +372,11 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
         idle.setVisible(true);
         idle.setManaged(true);
         idle.setDisable(false);
+        if (replaced) {
+            // The user's last choice wins; without one, a view that plays by default starts it.
+            idle.setSelected(idleChoice != null ? idleChoice : idleByDefault);
+            idlePaused = 0;
+        }
         showIdleStatus(message);
         if (replaced && idle.isSelected()) {
             idleOrigin = System.nanoTime();
@@ -395,10 +422,36 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
     }
 
     /**
+     * Whether an idle offered from now on starts playing when the user has not chosen; off by
+     * default, so views that do not ask keep idle opt-in.
+     */
+    void idleByDefault(boolean value) {
+        idleByDefault = value;
+    }
+
+    /**
+     * Takes a static surface whose textured appearance is being prepared without showing it: the
+     * view states {@code message} with its activity indicator until {@link #presentAppearance}
+     * shows the appearance, or {@link #appearanceUnavailable} shows this surface instead.
+     */
+    void setMeshBehindAppearance(PreviewMesh value, Set<Integer> visibleParts, String message) {
+        showMesh(value, visibleParts, message, true);
+        image.setImage(null);
+        status.setText(message);
+    }
+
+    /**
      * Shows a static surface; a non-null message also announces that its textured appearance is
      * coming, so the inline GPU renderer waits for that scene instead of starting for this one.
      */
     void setMesh(PreviewMesh value, Set<Integer> visibleParts, String appearanceMessage) {
+        showMesh(value, visibleParts, appearanceMessage, false);
+    }
+
+    private void showMesh(
+            PreviewMesh value, Set<Integer> visibleParts, String appearanceMessage, boolean held) {
+        surfaceHeld = held;
+        surfaceUnshown = held;
         endAppearance();
         if (animation != null && !animation.matches(value)) resetAnimation(null);
         closeGpu();
@@ -423,6 +476,7 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
 
     void setAppearance(MeshAppearance value, Set<Integer> visibleParts, boolean qualifiedOnly) {
         if (closed) return;
+        surfaceHeld = false;
         if (appearanceTarget != null && appearanceTarget != value) endAppearance();
         if (animation != null && !animation.matches(value)) resetAnimation(null);
         var parts = Set.copyOf(visibleParts);
@@ -469,7 +523,8 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
 
     /** Ends a pending appearance; a GPU renderer deferred for it starts for the static surface. */
     void appearanceUnavailable() {
-        boolean deferred = gpuDeferred();
+        boolean deferred = gpuDeferred() || surfaceHeld;
+        surfaceHeld = false;
         endAppearance();
         if (deferred && !closed && mesh != null) request();
     }
@@ -494,6 +549,14 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
             return;
         var delivered = appearanceDelivery;
         endAppearance();
+        if (!success && surfaceUnshown && mesh != null && !closed) {
+            // The textured frame failed and the untextured surface was never shown: show it now,
+            // as a refused appearance does, instead of an empty viewport.
+            appearance = null;
+            qualifiedMaterials = false;
+            textures.setDisable(true);
+            request();
+        }
         if (delivered != null) delivered.accept(success);
     }
 
@@ -506,6 +569,8 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
     }
 
     void clear(String message) {
+        surfaceHeld = false;
+        surfaceUnshown = false;
         endAppearance();
         closeGpu();
         gpuButton.setDisable(true);
@@ -522,7 +587,7 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
     }
 
     private void request() {
-        if (closed || mesh == null) {
+        if (closed || mesh == null || surfaceHeld) {
             return;
         }
         double scale =
@@ -589,6 +654,7 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
                                                         closed
                                                                 || generation.get()
                                                                         != current.generation();
+                                softwareRenderSeam.accept(work.appearance());
                                 var posedMesh = work.mesh();
                                 var posedAppearance = work.appearance();
                                 if (work.animation() != null) {
@@ -641,6 +707,9 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
                                                             0,
                                                             frame.width());
                                             image.setImage(bitmap);
+                                            if (current.appearance() == null) {
+                                                surfaceUnshown = false;
+                                            }
                                             renderingActivity.setVisible(false);
                                             renderingActivity.setManaged(false);
                                             status.setText(
