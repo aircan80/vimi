@@ -21,6 +21,21 @@ final class RaceCustomizationTest {
         var eyes = new RaceCustomization.Requirement(3, 16351, -1, -1, 0, 0, 0, -1, 0, false);
         assertEquals(RaceCustomization.Eligibility.ALLOWED, RaceCustomization.evaluate(eyes, 1, 0));
         assertEquals(RaceCustomization.Eligibility.DENIED, RaceCustomization.evaluate(eyes, 6, 0));
+        // An NPC race (no playable bit) without a class: a mask naming only some classes cannot
+        // be checked. A playable race without a class is denied, as before.
+        assertEquals(
+                RaceCustomization.Eligibility.UNKNOWN, RaceCustomization.evaluate(eyes, 0, -1));
+        assertEquals(RaceCustomization.Eligibility.DENIED, RaceCustomization.evaluate(eyes, 0, 0));
+        assertEquals(RaceCustomization.Eligibility.DENIED, RaceCustomization.evaluate(eyes, 6, -1));
+        assertEquals(
+                RaceCustomization.Eligibility.ALLOWED, RaceCustomization.evaluate(standard, 0, 0));
+        // The race mask still denies.
+        assertEquals(
+                RaceCustomization.Eligibility.DENIED,
+                RaceCustomization.evaluate(
+                        new RaceCustomization.Requirement(3, 16351, 4, 0, 0, 0, 0, -1, 0, false),
+                        0,
+                        -1));
         assertEquals(
                 RaceCustomization.Eligibility.UNKNOWN,
                 RaceCustomization.evaluate(

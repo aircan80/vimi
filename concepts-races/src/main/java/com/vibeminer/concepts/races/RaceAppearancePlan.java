@@ -93,6 +93,10 @@ final class RaceAppearancePlan {
     static final String ASSUMED_WEIGHTS =
             "Texture weights stored outside the model are assumed fully opaque.";
 
+    /** A layout's base skin (target 1) got no sampled layer. */
+    static final String NO_BASE_SKIN =
+            "Textures for this race are not supported yet: no base skin choice could be sampled.";
+
     /** A page fact for a race without a playable bit (an NPC race). */
     static final String NO_LOADOUT =
             "This race has no new-character loadout; it is shown without starting clothes.";
@@ -371,6 +375,7 @@ final class RaceAppearancePlan {
                         "ChrModelTextureTargetID",
                         "MaterialResourcesID");
         var recipe = new ArrayList<Layer>();
+        boolean baseSkin = false;
         for (var element : elements.rows) {
             token.check();
             if (!selectedSample
@@ -392,6 +397,7 @@ final class RaceAppearancePlan {
                 continue;
             }
             long target = customization.number(material, "ChrModelTextureTargetID");
+            baseSkin |= target == 1;
             var matches =
                     layers.rows.stream()
                             .filter(
@@ -471,6 +477,20 @@ final class RaceAppearancePlan {
                     }
                 }
             }
+        }
+        // A layout that records a base skin (target 1) whose sample chose none (every choice of
+        // its option denied) would leave the skin regions empty, drawn black: refused, not
+        // shown. An NPC's bake covers the body.
+        if (npc == null
+                && !baseSkin
+                && layers.rows.stream()
+                        .anyMatch(
+                                row ->
+                                        layers.number(row, "CharComponentTextureLayoutsID")
+                                                        == layout
+                                                && layers.number(row, "ChrModelTextureTargetID[0]")
+                                                        == 1)) {
+            throw new RacesService.Projection(RaceTypes.State.UNSUPPORTED, NO_BASE_SKIN);
         }
         // An NPC's bake covers the whole body, so the selected base skin is not needed.
         if (npc == null

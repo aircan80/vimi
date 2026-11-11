@@ -693,6 +693,13 @@ final class RaceNpcAppearanceTest {
                 "ChrCustomizationOption: the customization choices are unknown",
                 undead.finished().message(),
                 String.valueOf(undead));
+        // An NPC of a race without a playable bit (an NPC race) gets as far as the Orc NPC: its
+        // customization is no longer refused at the bit.
+        var npcRace = prepareNpcOfRace(12, "-1", ORC_MALE);
+        assertEquals(
+                "Model file is UNKNOWN_FILE",
+                npcRace.finished().message(),
+                String.valueOf(npcRace));
     }
 
     @Test
