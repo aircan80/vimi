@@ -85,18 +85,12 @@ final class RaceAppearancePlan {
             "Textures for this race are not supported yet: a recorded texture section lies outside"
                     + " its canvas.";
 
-    /** Undead skin regions cut out to show bone compose as solid black: not shown yet. */
-    static final String UNDEAD_REFUSED =
-            "Undead character textures are not shown yet: their cut-out skin regions compose as"
-                    + " solid black.";
-
     /**
      * Race and ChrModel pairs whose composed textures were reviewed and found wrong, each with the
      * reason shown instead. Every other pair is composed, and the deeper gates (the playable-race
      * bit, the reviewed draw-binding profile) still refuse what they cannot draw.
      */
-    private static final Map<Long, String> REFUSED_PAIRS =
-            Map.of(5L << 32 | 9, UNDEAD_REFUSED, 5L << 32 | 10, UNDEAD_REFUSED);
+    private static final Map<Long, String> REFUSED_PAIRS = Map.of();
 
     /** Why a race and ChrModel pair's textures are refused before any read, or null. */
     static String refusedPair(long raceId, long chrModelId) {

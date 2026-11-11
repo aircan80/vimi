@@ -1312,28 +1312,9 @@ final class RacesServiceTest {
     @Test
     void everyPairIsComposedExceptThoseReviewedAndRefused() {
         // Composition is attempted for every race and ChrModel pair; the deeper gates decide.
-        assertNull(RaceAppearancePlan.refusedPair(95, 218));
-        assertNull(RaceAppearancePlan.refusedPair(1, 1));
-        assertNull(RaceAppearancePlan.refusedPair(22, 43));
-        // Undead, reviewed and found wrong, is refused with its reason.
-        assertEquals(RaceAppearancePlan.UNDEAD_REFUSED, RaceAppearancePlan.refusedPair(5, 9));
-        assertEquals(RaceAppearancePlan.UNDEAD_REFUSED, RaceAppearancePlan.refusedPair(5, 10));
-    }
-
-    @Test
-    void refusedPairsAreRefusedBeforeAnyRead() {
-        var tables = idleTables();
-        var files = new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS");
-        var service =
-                new RacesService(tables, files, new com.vibeminer.generated.MemoryGeneratedStore());
-        try {
-            var refused = service.appearance(5, 8, 9, Cancellation.NONE).join();
-            assertEquals(RaceTypes.State.UNAVAILABLE, refused.state());
-            assertEquals(RaceAppearancePlan.UNDEAD_REFUSED, refused.message());
-            assertEquals(0, files.stats.get() + files.opens.get());
-        } finally {
-            service.closeAsync().join();
-            tables.closeAsync().join();
+        // No pair is refused at this gate now: Undead compose since their skin is sampled.
+        for (long[] pair : new long[][] {{95, 218}, {1, 1}, {22, 43}, {5, 9}, {5, 10}}) {
+            assertNull(RaceAppearancePlan.refusedPair(pair[0], pair[1]));
         }
     }
 

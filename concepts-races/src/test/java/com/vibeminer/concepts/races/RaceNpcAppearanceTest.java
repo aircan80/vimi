@@ -641,10 +641,13 @@ final class RaceNpcAppearanceTest {
         var gnome = prepareNpcOfRace(7, "6", ORC_MALE);
         assertEquals(
                 "Model file is UNKNOWN_FILE", gnome.finished().message(), String.valueOf(gnome));
-        // An Undead NPC, reviewed and refused, is refused with that reason before any read.
+        // An Undead NPC (ChrModel 9) passes the gate too and reaches its customization, where
+        // this fixture's choices (members of the Orc model's option) are unknown for model 9.
         var undead = prepareNpcOfRace(5, "4", new RaceMediaTypes.Variant(9, 0, 1, 1, 1));
-        assertTrue(undead.finished() != null, String.valueOf(undead));
-        assertEquals(RaceAppearancePlan.UNDEAD_REFUSED, undead.finished().message());
+        assertEquals(
+                "ChrCustomizationOption: the customization choices are unknown",
+                undead.finished().message(),
+                String.valueOf(undead));
     }
 
     @Test

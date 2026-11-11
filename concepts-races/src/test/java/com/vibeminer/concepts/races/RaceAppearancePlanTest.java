@@ -1289,6 +1289,73 @@ final class RaceAppearancePlanTest {
         }
     }
 
+    /** Samples option 10 of {@code seed}; returns the chosen choices and the notes. */
+    private static java.util.Set<Long> sampleOption(
+            List<MemoryTables.FakeTable> seed, List<String> notes) {
+        var tables =
+                new MemoryTables()
+                        .add(BUILD, "enUS", seed)
+                        .forBuild(BUILD, "enUS", Cancellation.NONE)
+                        .join()
+                        .tables();
+        var service = new RacesService(tables);
+        try {
+            return new RaceCustomization(new RaceMedia(service, tables, null, null))
+                    .select(1, 1, 1, Cancellation.NONE, notes)
+                    .choices();
+        } finally {
+            service.closeAsync().join();
+            tables.closeAsync().join();
+        }
+    }
+
+    @Test
+    void anOptionWithOnlyUncheckableChoicesSamplesItsFirstButNeverADeniedOne() {
+        // As Undead skin: no choice is known to be eligible. Choice 1 is refused for this race
+        // (its race mask excludes it); choice 2's requirement names an archive, which cannot be
+        // checked here. The sample shows choice 2 and says so, never the refused choice 1.
+        var seed = new ArrayList<>(fixture(false, 9));
+        replace(
+                seed,
+                table(
+                        "ChrCustomizationOption",
+                        "DCC2A86E",
+                        "ChrModelID,Requirement",
+                        row(10, "1", "0")));
+        replace(
+                seed,
+                table(
+                        "ChrCustomizationChoice",
+                        "9559C358",
+                        "ChrCustomizationOptionID->ChrCustomizationOption,UiOrderIndex,ChrCustomizationReqID,ChrCustomizationVisReqID",
+                        row(1, "10", "0", "1", "0"),
+                        row(2, "10", "1", "2", "0")));
+        replace(
+                seed,
+                table(
+                        "ChrCustomizationReq",
+                        "CA154412",
+                        "ReqType,ClassMask,RegionGroupMask,ReqAchievementID,ReqQuestID,OverrideArchive,ReqItemModifiedAppearanceID,RaceMasks:2",
+                        row(1, "3", "-1", "0", "0", "0", "-1", "0", "0", "0"),
+                        row(2, "3", "-1", "0", "0", "0", "0", "0", "-1", "-1")));
+        replace(seed, table("ChrCustomizationReqChoice", "F925BC6F", "ChrCustomizationReqID"));
+        var notes = new ArrayList<String>();
+        assertEquals(java.util.Set.of(2L), sampleOption(seed, notes));
+        assertTrue(notes.contains(RaceCustomization.UNVERIFIED_SAMPLE), notes.toString());
+        // With choice 2 refused too, nothing is sampled for the option.
+        replace(
+                seed,
+                table(
+                        "ChrCustomizationReq",
+                        "CA154412",
+                        "ReqType,ClassMask,RegionGroupMask,ReqAchievementID,ReqQuestID,OverrideArchive,ReqItemModifiedAppearanceID,RaceMasks:2",
+                        row(1, "3", "-1", "0", "0", "0", "-1", "0", "0", "0"),
+                        row(2, "3", "-1", "0", "0", "0", "-1", "0", "0", "0")));
+        var none = new ArrayList<String>();
+        assertTrue(sampleOption(seed, none).isEmpty());
+        assertFalse(none.contains(RaceCustomization.UNVERIFIED_SAMPLE));
+    }
+
     @Test
     void skinCatalogDerivesOnlyActualKnownEligibleModelMembers() {
         var seed = new ArrayList<>(fixture(false, 9));
