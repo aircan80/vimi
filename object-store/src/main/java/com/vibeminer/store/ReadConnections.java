@@ -44,9 +44,26 @@ final class ReadConnections {
         }
     }
 
+    /** Runs {@code task} once, about {@code delayNanos} from now, off the caller's thread. */
+    interface Scheduler {
+        void schedule(long delayNanos, Runnable task);
+    }
+
+    private static final Scheduler DELAYED =
+            (delay, task) ->
+                    CompletableFuture.delayedExecutor(
+                                    delay,
+                                    TimeUnit.NANOSECONDS,
+                                    command ->
+                                            Thread.ofVirtual()
+                                                    .name("vimi-store-read-sweep")
+                                                    .start(command))
+                            .execute(task);
+
     private final int capacity;
     private final ArrayDeque<Pooled> idle = new ArrayDeque<>();
     private final LongSupplier clock;
+    private final Scheduler scheduler;
     // Package-private so tests can shorten it.
     volatile long idleTtlNanos = DEFAULT_IDLE_TTL_NANOS;
     private long generation;
@@ -55,15 +72,20 @@ final class ReadConnections {
     private int closing;
 
     ReadConnections(int capacity) {
-        this(capacity, System::nanoTime);
+        this(capacity, System::nanoTime, DELAYED);
     }
 
-    ReadConnections(int capacity, LongSupplier clock) {
+    /**
+     * A pool on {@code clock}, whose background sweeps {@code scheduler} runs. The two must agree:
+     * a sweep compares idle times on {@code clock}, so a test clock needs a test scheduler.
+     */
+    ReadConnections(int capacity, LongSupplier clock, Scheduler scheduler) {
         if (capacity < 1) {
             throw new IllegalArgumentException("Read connection capacity must be positive");
         }
         this.capacity = capacity;
         this.clock = Objects.requireNonNull(clock);
+        this.scheduler = Objects.requireNonNull(scheduler);
     }
 
     /**
@@ -123,11 +145,7 @@ final class ReadConnections {
     }
 
     private void sweepLater(long delay) {
-        CompletableFuture.delayedExecutor(
-                        Math.max(1, delay),
-                        TimeUnit.NANOSECONDS,
-                        command -> Thread.ofVirtual().name("vimi-store-read-sweep").start(command))
-                .execute(this::sweep);
+        scheduler.schedule(Math.max(1, delay), this::sweep);
     }
 
     /** Closes idle connections past their lifetime; reschedules while any stay idle. */

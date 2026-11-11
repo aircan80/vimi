@@ -197,7 +197,11 @@ final class ReadConnectionPoolTest {
     void idleConnectionsExpireAndAReplacedIndexFileIsNeverReused() throws Exception {
         open(new Options());
         long[] now = {0};
-        var pool = new ReadConnections(4, () -> now[0]);
+        // Sweeps run only when the test calls sweep(): a background sweep on the real scheduler
+        // would race the assertions below, closing connections the fake clock has expired.
+        var scheduled = new AtomicInteger();
+        var pool =
+                new ReadConnections(4, () -> now[0], (delay, task) -> scheduled.incrementAndGet());
         pool.idleTtlNanos = 100;
         Object first = "inode-1", second = "inode-2";
         var a = new ReadConnections.Pooled(store.openReader(), pool.generation(), first);
@@ -230,6 +234,7 @@ final class ReadConnectionPoolTest {
         pool.give(late, true);
         assertEquals(0, pool.idle());
         assertEquals(0, pool.held(), "a connection returned after close is still open");
+        assertTrue(scheduled.get() > 0, "pooling a connection schedules a sweep");
     }
 
     @Test
