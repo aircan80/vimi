@@ -719,6 +719,8 @@ final class RaceAppearance {
                                 issues);
                 appearance = attached.appearance();
                 visible = attached.visible();
+                // An item or texture not readable yet: shown, but not saved or remembered.
+                complete &= attached.complete();
                 attached.notes().forEach(text -> note(issues, text));
                 npcFacts(appearance, issues);
             }

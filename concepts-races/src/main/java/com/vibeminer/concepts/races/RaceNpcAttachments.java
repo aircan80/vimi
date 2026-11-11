@@ -39,24 +39,77 @@ final class RaceNpcAttachments {
         return partId >= FIRST_PART ? (partId - FIRST_PART) / 100 : -1;
     }
 
+    /** A page fact: an attached item draws only some of its surfaces. */
+    static final String SURFACES_LEFT_OUT =
+            "Some item surfaces are not drawn (outside the reviewed profile or texture bounds).";
+
     /** NPC item slots with models: 0 the head, 1 the shoulders. */
     static final int HEAD_SLOT = 0, SHOULDER_SLOT = 1;
 
     /** M2 attachment IDs: the helmet, the right and left shoulder. */
     static final int HEAD = 11, SHOULDER_RIGHT = 5, SHOULDER_LEFT = 6;
 
-    /** What was attached; {@code notes} are the page facts. */
+    /**
+     * What was attached; {@code notes} are the page facts. Not {@code complete} when an item or its
+     * texture cannot be read yet: the result is shown but not saved or remembered.
+     */
     record Attached(
-            MeshAppearance appearance, Set<Integer> visible, int items, List<String> notes) {}
+            MeshAppearance appearance,
+            Set<Integer> visible,
+            int items,
+            List<String> notes,
+            boolean complete) {}
 
     /** One model to place: its resource, texture resource, attachment and position index. */
-    private record Piece(int slot, long resource, long material, int attachment, int position) {}
+    record Piece(int slot, long resource, long material, int attachment, int position) {}
+
+    /**
+     * The models one slot item places: a helmet at the head, shoulders at both sides. 74 of 1,212
+     * NPC shoulder displays on 70862 name one resource holding both sides (positions 0 and 1); the
+     * right side then comes from it too. Pure.
+     */
+    static List<Piece> pieces(int slot, long[] resource, long[] material) {
+        var out = new ArrayList<Piece>();
+        if (slot == HEAD_SLOT && resource[0] > 0) {
+            out.add(new Piece(HEAD_SLOT, resource[0], material[0], HEAD, -1));
+        } else if (slot == SHOULDER_SLOT) {
+            if (resource[0] > 0) {
+                out.add(new Piece(SHOULDER_SLOT, resource[0], material[0], SHOULDER_LEFT, 0));
+            }
+            long right = resource[1] > 0 ? resource[1] : resource[0];
+            long rightMaterial = resource[1] > 0 ? material[1] : material[0];
+            if (right > 0) {
+                out.add(new Piece(SHOULDER_SLOT, right, rightMaterial, SHOULDER_RIGHT, 1));
+            }
+        }
+        return out;
+    }
+
+    /** Whether a {@code HelmetGeosetData} row of {@code rowRace} applies to the NPC's race. */
+    static boolean hidesFor(long rowRace, long raceId) {
+        return rowRace == raceId || rowRace == 0;
+    }
+
+    /** What an item texture read means for the piece: drawn, asked again later, or left out. */
+    enum TextureRead {
+        DRAWN,
+        LATER,
+        LEFT_OUT
+    }
+
+    static TextureRead textureRead(com.vibeminer.formats.images.BlpImageTypes.Result read) {
+        if (read.image() != null) {
+            return TextureRead.DRAWN;
+        }
+        return RaceAppearance.retryable(read) ? TextureRead.LATER : TextureRead.LEFT_OUT;
+    }
 
     private RaceNpcAttachments() {}
 
     /**
      * Character groups the NPC's helmet hides for its race ({@code HelmetGeosetData} rows of the
-     * display's {@code HelmetGeosetVis} for this sex and race); other races' rows are left alone.
+     * display's {@code HelmetGeosetVis} for this sex and race, or for every race: RaceID 0); other
+     * races' rows are left alone.
      */
     static Set<Integer> hiddenGroups(
             RacesService service,
@@ -91,7 +144,9 @@ final class RaceNpcAttachments {
                                 256,
                                 token)) {
                     long group = data.number(hide, "HideGeosetGroup");
-                    if (data.number(hide, "RaceID") == raceId && group >= 0 && group < 100) {
+                    long race = data.number(hide, "RaceID");
+                    // RaceID 0 is every race (5 rows on 70862); others name one race.
+                    if (hidesFor(race, raceId) && group >= 0 && group < 100) {
                         hidden.add((int) group);
                     }
                 }
@@ -155,22 +210,11 @@ final class RaceNpcAttachments {
                 display.number(row, "ModelMaterialResourcesID[0]"),
                 display.number(row, "ModelMaterialResourcesID[1]")
             };
-            if (item.slot() == HEAD_SLOT && resource[0] > 0) {
-                pieces.add(new Piece(HEAD_SLOT, resource[0], material[0], HEAD, -1));
-            } else if (item.slot() == SHOULDER_SLOT) {
-                if (resource[0] > 0) {
-                    pieces.add(
-                            new Piece(SHOULDER_SLOT, resource[0], material[0], SHOULDER_LEFT, 0));
-                }
-                if (resource[1] > 0) {
-                    pieces.add(
-                            new Piece(SHOULDER_SLOT, resource[1], material[1], SHOULDER_RIGHT, 1));
-                }
-            }
+            pieces.addAll(pieces(item.slot(), resource, material));
         }
         var hidden = hiddenGroups(service, items, raceId, sex, token, issues);
         if (pieces.isEmpty()) {
-            return new Attached(base, visible(parts, hidden, base.mesh()), 0, notes);
+            return new Attached(base, visible(parts, hidden, base.mesh()), 0, notes, true);
         }
         float[] basePositions = base.mesh().positions();
         var positions = new java.util.ArrayList<float[]>();
@@ -186,6 +230,7 @@ final class RaceNpcAttachments {
         var textures = new ArrayList<>(base.textures());
         int vertexBase = basePositions.length / 3, indexBase = base.mesh().indices().length;
         int attached = 0;
+        boolean complete = true, partial = false;
         boolean environment = false;
         var leftOut = new TreeMap<String, Integer>();
         var models = new BuildModels(files);
@@ -220,10 +265,12 @@ final class RaceNpcAttachments {
                         var read = models.readModel(FileTypes.FileRef.id(file), token).join();
                         if (read.state() != BuildModelTypes.ReadState.READ
                                 || read.model() == null) {
+                            complete &= !RaceAppearance.retryable(read.state());
                             refusal = "its model is " + read.state();
                         } else {
                             var drawn = RaceAppearance.drawSurface(models, read, token);
                             if (drawn.surface() == null) {
+                                complete &= !RaceAppearance.retryable(drawn.skin().state());
                                 refusal = "its surface is " + drawn.skin().state();
                             } else {
                                 var item = drawn.surface();
@@ -233,6 +280,7 @@ final class RaceNpcAttachments {
                                         new ArrayList<int[]>(); // {section, textureIndex, flags,
                                 // alphaKey}
                                 var byFile = new java.util.HashMap<Long, Integer>();
+                                boolean skipped = false;
                                 for (var batch : drawn.skin().skin().batches()) {
                                     // One texture with shader 0, or the base stage of an
                                     // environment-effect draw (its reflection is not drawn).
@@ -242,16 +290,19 @@ final class RaceNpcAttachments {
                                                     && (batch.textureCount() != 1
                                                             || batch.shaderId() != 0)
                                             || batch.colorIndex() != -1) {
+                                        skipped = true;
                                         continue;
                                     }
                                     environment |= firstStage;
                                     var mat = m.materials().get(batch.materialIndex());
                                     if (mat.blendMode() > 1) {
+                                        skipped = true;
                                         continue;
                                     }
                                     if (m.textureTransforms()
                                                     .get(batch.textureTransformComboIndex())
                                             != 65535) {
+                                        skipped = true;
                                         continue;
                                     }
                                     var texture =
@@ -273,6 +324,7 @@ final class RaceNpcAttachments {
                                                             ? texture.fileDataId()
                                                             : 0;
                                     if (textureFile <= 0) {
+                                        skipped = true;
                                         continue;
                                     }
                                     Integer index = byFile.get(textureFile);
@@ -284,7 +336,16 @@ final class RaceNpcAttachments {
                                                                 512,
                                                                 token)
                                                         .join();
-                                        if (decoded.image() == null || textures.size() >= 16) {
+                                        if (textureRead(decoded) != TextureRead.DRAWN) {
+                                            // Not readable now: shown without it, not saved.
+                                            complete &= textureRead(decoded) != TextureRead.LATER;
+                                            partial = true;
+                                            skipped = true;
+                                            continue;
+                                        }
+                                        if (textures.size() >= 16) {
+                                            partial = true;
+                                            skipped = true;
                                             continue;
                                         }
                                         index = textures.size();
@@ -339,6 +400,7 @@ final class RaceNpcAttachments {
                                                         (b[2] & 2) != 0,
                                                         b[3] == 1));
                                     }
+                                    partial |= skipped;
                                     vertexBase += placed.length / 3;
                                     indexBase += itemIndices.length;
                                     attached++;
@@ -347,6 +409,9 @@ final class RaceNpcAttachments {
                         }
                     }
                 }
+            } catch (RacesService.Unreadable later) {
+                complete = false;
+                refusal = "it cannot be read yet: " + later.getMessage();
             } catch (RacesService.Projection unavailable) {
                 refusal = unavailable.getMessage();
             }
@@ -368,12 +433,15 @@ final class RaceNpcAttachments {
         if (environment) {
             notes.add(RaceAppearancePlan.ENVIRONMENT_NOT_DRAWN);
         }
+        if (partial) {
+            notes.add(SURFACES_LEFT_OUT);
+        }
         if (attached == 0) {
-            return new Attached(base, visible(parts, hidden, base.mesh()), 0, notes);
+            return new Attached(base, visible(parts, hidden, base.mesh()), 0, notes, complete);
         }
         var mesh = new PreviewMesh(concat(positions), concatInts(indices), meshParts);
         var appearance = new MeshAppearance(mesh, concat(uvs), concat(normals), surfaces, textures);
-        return new Attached(appearance, visible(parts, hidden, mesh), attached, notes);
+        return new Attached(appearance, visible(parts, hidden, mesh), attached, notes, complete);
     }
 
     private static void note(List<String> issues, String text) {
