@@ -35,6 +35,35 @@ public final class BundledDefinitions {
 
     public record Definition(String sha256, String sourceUrl, DbdDocument document) {}
 
+    /**
+     * Attribution for the bundled definition data, for the application's notices: who made it, the
+     * pinned revision, where it comes from, its license and the bundled notice text.
+     */
+    public record Attribution(
+            String name,
+            String authors,
+            String revision,
+            String upstream,
+            String license,
+            String licenseUrl,
+            String notice) {}
+
+    /** The bundled data's attribution; reads the NOTICE.md shipped beside the definitions. */
+    public static Attribution attribution() {
+        try (var in = resource("NOTICE.md")) {
+            return new Attribution(
+                    "WoWDBDefs",
+                    "WoWDBDefs contributors",
+                    REVISION,
+                    "https://github.com/wowdev/WoWDBDefs/tree/" + REVISION,
+                    "CC BY-SA 4.0",
+                    "https://creativecommons.org/licenses/by-sa/4.0/",
+                    new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            throw new IllegalStateException("Bundled definitions notice is unreadable", e);
+        }
+    }
+
     public record Lookup(Definition definition, DefinitionException failure) {}
 
     record File(String name, String sha, int length, long offset) {}

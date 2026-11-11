@@ -67,6 +67,14 @@ final class RaceCustomization {
                 && ((((low & 0xffffffffL) | ((high & 0xffffffffL) << 32)) & (1L << bit)) != 0);
     }
 
+    /**
+     * A race mask with every bit set: it names every race, so it admits a race without a playable
+     * bit too (an NPC race). Any narrower mask names only playable races.
+     */
+    static boolean everyRace(long low, long high) {
+        return (low & 0xffffffffL) == 0xffffffffL && (high & 0xffffffffL) == 0xffffffffL;
+    }
+
     static Eligibility evaluate(Requirement req, long classId, int raceBit) {
         if ((req.type() & 1) == 0) {
             return Eligibility.DENIED;
@@ -75,15 +83,21 @@ final class RaceCustomization {
         // holds: checked before any term that only makes it unknown, so a choice refused for
         // this race or class is never sampled as merely unchecked.
         long mask = req.classMask() & 0xffffffffL;
+        // An NPC race (no playable bit) records no class: without one, a mask naming only some
+        // classes cannot be checked, so it is unknown, never denied. A real class is checked
+        // against it, and a playable race without a class context is treated as before.
+        boolean classUnchecked = mask != 0 && mask != 0xffffffffL && classId == 0 && raceBit < 0;
         if (mask != 0
                 && mask != 0xffffffffL
+                && !classUnchecked
                 && (classId < 1 || classId > 32 || (mask & (1L << (classId - 1))) == 0)) {
             return Eligibility.DENIED;
         }
-        if (!hasRace(req.raceLow(), req.raceHigh(), raceBit)) {
+        if (!hasRace(req.raceLow(), req.raceHigh(), raceBit)
+                && !everyRace(req.raceLow(), req.raceHigh())) {
             return Eligibility.DENIED;
         }
-        if (req.type() != 1 && req.type() != 3) {
+        if (req.type() != 1 && req.type() != 3 || classUnchecked) {
             return Eligibility.UNKNOWN;
         }
         if (req.region() != 0
@@ -164,7 +178,7 @@ final class RaceCustomization {
                                         new RacesService.Projection(
                                                 RaceTypes.State.UNSUPPORTED, NOT_PLAYABLE));
         long bit = races.number(race, "PlayableRaceBit");
-        if (bit < 0 || bit > 63) {
+        if (bit < -1 || bit > 63) {
             // Stated plainly to the user, without the table name the data refusal prefixes.
             throw new RacesService.Projection(RaceTypes.State.UNSUPPORTED, NOT_PLAYABLE);
         }

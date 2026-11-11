@@ -323,7 +323,8 @@ public final class DisplayModelService implements BuildDisplayModels {
                             ? DisplayIdleAnimations.admitWorld(
                                     m, geometry, idle, surface.mesh(), surface.normals(), token)
                             : new DisplayIdleAnimations.WorldStand(
-                                    DisplayIdleAnimations.admit(
+                                    // The preview poses per camera view.
+                                    DisplayIdleAnimations.admitFacingCamera(
                                             m,
                                             geometry,
                                             idle,

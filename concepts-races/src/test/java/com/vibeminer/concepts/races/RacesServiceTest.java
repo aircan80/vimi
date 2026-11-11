@@ -1955,6 +1955,36 @@ final class RacesServiceTest {
     }
 
     @Test
+    void aCompositeThatLeavesNearlyEverySurfaceNeutralIsRefused() {
+        var mesh =
+                new com.vibeminer.rendering.models.PreviewMesh(
+                        new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0},
+                        new int[] {
+                            0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2,
+                            0, 1, 2, 0, 1, 2
+                        },
+                        List.of(
+                                new com.vibeminer.rendering.models.PreviewMesh.Part(0, 0, 27),
+                                new com.vibeminer.rendering.models.PreviewMesh.Part(1, 27, 3)));
+        var small =
+                new com.vibeminer.rendering.models.MeshAppearance.Surface(
+                        1, 0, false, false, false);
+        var large =
+                new com.vibeminer.rendering.models.MeshAppearance.Surface(
+                        0, 0, false, false, false);
+        // Only the small part bound: nine tenths neutral, at the limit.
+        assertEquals(0.9, RaceAppearance.neutralShare(mesh, Set.of(0, 1), List.of(small)), 1e-9);
+        assertTrue(
+                RaceAppearance.neutralShare(mesh, Set.of(0, 1), List.of(small))
+                        >= RaceAppearance.NEUTRAL_LIMIT);
+        assertEquals(0.0, RaceAppearance.neutralShare(mesh, Set.of(0, 1), List.of(large, small)));
+        assertEquals(0.1, RaceAppearance.neutralShare(mesh, Set.of(0, 1), List.of(large)), 1e-9);
+        // A hidden part does not count.
+        assertEquals(0.0, RaceAppearance.neutralShare(mesh, Set.of(1), List.of(small)));
+        assertEquals(0.0, RaceAppearance.neutralShare(mesh, Set.of(), List.of()));
+    }
+
+    @Test
     void everyPairIsComposedExceptThoseReviewedAndRefused() {
         // Composition is attempted for every race and ChrModel pair; the deeper gates decide.
         // No pair is refused at this gate now: Undead compose since their skin is sampled.

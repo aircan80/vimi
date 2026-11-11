@@ -421,6 +421,184 @@ class PreviewAnimationTest {
         assertEquals(new MeshAppearance.Vec3(1, 0, 4), round(posed.modelPivot()));
     }
 
+    /** The camera looking from +Y (toward = +Y, up = +Z) and from +X (toward = +X). */
+    private static final PreviewAnimation.View
+            FROM_Y = PreviewAnimation.View.orbit(-Math.PI / 2, 0),
+            FROM_X = PreviewAnimation.View.orbit(0, 0);
+
+    @Test
+    void orbitViewsMatchThePreviewCamera() {
+        for (double yaw : new double[] {-2, -0.3, 0, 1.1, 3}) {
+            for (double pitch : new double[] {-1.1, 0, 0.7}) {
+                var view = PreviewAnimation.View.orbit(yaw, pitch);
+                var camera =
+                        PreviewCamera.create(
+                                new PreviewCamera.Bounds(-1, -1, -1, 1, 1, 1),
+                                100,
+                                100,
+                                new StaticMeshRenderer.View(
+                                        yaw, pitch, 1, false, java.util.Set.of()),
+                                false);
+                var toward = camera.normalToEye(view.towardX(), view.towardY(), view.towardZ());
+                var up = camera.normalToEye(view.upX(), view.upY(), view.upZ());
+                assertEquals(1, toward.z(), 1e-9, "toward faces the eye");
+                assertEquals(1, up.y(), 1e-9, "up is screen up");
+            }
+        }
+        near(
+                new float[] {0, 1, 0},
+                new float[] {
+                    (float) FROM_Y.towardX(), (float) FROM_Y.towardY(), (float) FROM_Y.towardZ()
+                },
+                0);
+    }
+
+    /**
+     * A translating root, camera-facing bone 1 under it (pivot (0, 0, 1)) and ordinary bone 2 under
+     * bone 1 (pivot (1, 0, 1)), as on a rig whose billboard bone carries a child chain.
+     */
+    private static List<Bone> facingChain(PreviewAnimation.Facing facing) {
+        return List.of(
+                new Bone(-1, 0, 0, 0, constant(3, 0, 0, 2), null, null, false),
+                new Bone(0, 0, 0, 1, null, null, null, false, facing),
+                new Bone(1, 1, 0, 1, null, null, null, false));
+    }
+
+    @Test
+    void childrenOfACameraFacingBoneTurnWithItTowardTheCamera() {
+        var rest = mesh(1, 0, 1, 2, 0, 1, 0, 0, 0);
+        var animation =
+                new PreviewAnimation(
+                        "Stand",
+                        1000,
+                        new long[0],
+                        facingChain(PreviewAnimation.Facing.SPHERICAL),
+                        rest,
+                        new float[0],
+                        rigid(2, 1, 0),
+                        full(3));
+        assertTrue(animation.viewDependent());
+        assertThrows(IllegalArgumentException.class, () -> animation.pose(rest, 0));
+        // Seen from +X the rest offsets already face the camera; the root lifts everything by 2.
+        var fromX = animation.pose(rest, 0, FROM_X).mesh().positions();
+        near(new float[] {1, 0, 3}, fromX, 0);
+        near(new float[] {2, 0, 3}, fromX, 1);
+        // Seen from +Y the facing bone turns its +X offsets toward +Y; its child follows.
+        var fromY = animation.pose(rest, 0, FROM_Y).mesh().positions();
+        near(new float[] {0, 1, 3}, fromY, 0);
+        near(new float[] {0, 2, 3}, fromY, 1);
+        near(new float[] {0, 0, 2}, fromY, 2);
+        // Pivots: the facing bone stays on its parent; the child's pivot swings with the camera.
+        var pivots = animation.pose(rest, 0, FROM_Y).pivots();
+        assertEquals(new MeshAppearance.Vec3(0, 0, 3), round(pivots.get(1)));
+        assertEquals(new MeshAppearance.Vec3(0, 1, 3), round(pivots.get(2)));
+    }
+
+    @Test
+    void partlyWeightedVerticesBlendTheCameraFacingMatrix() {
+        var rest = mesh(1, 0, 1, 1, 0, 1, 1, 0, 1);
+        int[] bones = {1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0};
+        int[] weights = {128, 127, 0, 0, 128, 127, 0, 0, 128, 127, 0, 0};
+        var animation =
+                new PreviewAnimation(
+                        "Stand",
+                        1000,
+                        new long[0],
+                        facingChain(PreviewAnimation.Facing.SPHERICAL),
+                        rest,
+                        new float[0],
+                        bones,
+                        weights);
+        var posed = animation.pose(rest, 0, FROM_Y).mesh().positions();
+        float a = 128 / 255f, b = 127 / 255f;
+        // Bone 1 puts it at (0, 1, 3), the root at (1, 0, 3); the weights blend the two.
+        near(new float[] {b, a, 3}, posed, 0);
+    }
+
+    @Test
+    void cylindricalFacingTurnsOnlyAboutItsAxis() {
+        var rest = mesh(1, 0, 1, 1, 0, 2, 0, 0, 0);
+        var animation =
+                new PreviewAnimation(
+                        "Stand",
+                        1000,
+                        new long[0],
+                        facingChain(PreviewAnimation.Facing.CYLINDRICAL_Z),
+                        rest,
+                        new float[0],
+                        rigid(1, 1, 0),
+                        full(3));
+        // From +Y and 60 degrees up, the +X offset turns to +Y but stays level, and Z stays Z.
+        var high = PreviewAnimation.View.orbit(-Math.PI / 2, Math.PI / 3);
+        var posed = animation.pose(rest, 0, high).mesh().positions();
+        near(new float[] {0, 1, 3}, posed, 0);
+        near(new float[] {0, 1, 4}, posed, 1);
+    }
+
+    @Test
+    void cardsOverCameraFacingVerticesAreDroppedAndOtherAnimationsIgnoreTheView() {
+        var root = new Bone(-1, 0, 0, 0, constant(3, 0, 0, 3), null, null, false);
+        var facing =
+                new Bone(0, 1, 0, 1, null, null, null, false, PreviewAnimation.Facing.SPHERICAL);
+        var rest =
+                new PreviewMesh(
+                        new float[] {1, -.5f, .5f, 1, .5f, .5f, 1, .5f, 1.5f, 1, -.5f, 1.5f},
+                        new int[] {0, 1, 2, 0, 2, 3},
+                        List.of(new PreviewMesh.Part(0, 0, 6)));
+        var appearance =
+                new MeshAppearance(
+                        rest,
+                        new float[8],
+                        new float[0],
+                        List.of(
+                                new MeshAppearance.Surface(
+                                        0,
+                                        new MeshAppearance.Material(
+                                                MeshAppearance.Combiner.DIFFUSE,
+                                                List.of(
+                                                        new MeshAppearance.TextureStage(
+                                                                0,
+                                                                MeshAppearance.Coordinate.UV0,
+                                                                false,
+                                                                false)),
+                                                MeshAppearance.Lighting.UNLIT,
+                                                MeshAppearance.Blend.ADDITIVE))),
+                        List.of(new MeshAppearance.Texture(1, 1, new int[] {-1})),
+                        List.of(
+                                new MeshAppearance.RigidBillboard(
+                                        1,
+                                        new MeshAppearance.Vec3(1, 0, 1),
+                                        new int[] {0, 1, 2, 3})));
+        var animation =
+                new PreviewAnimation(
+                        "Stand",
+                        1000,
+                        new long[0],
+                        List.of(root, facing),
+                        rest,
+                        new float[0],
+                        rigid(1, 1, 1, 1),
+                        full(4));
+        var posed = animation.pose(appearance, 0, FROM_Y);
+        assertTrue(posed.billboards().isEmpty(), "the posed vertices already face the camera");
+        // An animation without camera-facing bones poses the same with or without a view.
+        var plain =
+                new PreviewAnimation(
+                        "Stand",
+                        1000,
+                        new long[0],
+                        List.of(root, new Bone(0, 1, 0, 1, null, null, null, true)),
+                        rest,
+                        new float[0],
+                        rigid(1, 1, 1, 1),
+                        full(4));
+        assertFalse(plain.viewDependent());
+        assertArrayEquals(
+                plain.pose(rest, 0).mesh().positions(),
+                plain.pose(rest, 0, FROM_Y).mesh().positions());
+        assertEquals(1, plain.pose(appearance, 0, FROM_Y).billboards().size());
+    }
+
     private static MeshAppearance.Vec3 round(MeshAppearance.Vec3 v) {
         return new MeshAppearance.Vec3(
                 Math.round(v.x() * 1e4f) / 1e4f,

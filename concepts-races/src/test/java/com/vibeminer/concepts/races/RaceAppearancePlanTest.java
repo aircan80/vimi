@@ -856,6 +856,69 @@ final class RaceAppearancePlanTest {
     }
 
     @Test
+    void aBaseSkinWhoseEveryChoiceIsDeniedIsRefusedNotDrawnBlack() {
+        // The layout records a base skin (target 1), but its only choice is denied for this race:
+        // the skin regions would stay empty, so the texture plan is refused.
+        var seed = new ArrayList<>(orcFixture(3, 105));
+        replace(
+                seed,
+                table(
+                        "ChrCustomizationOption",
+                        "DCC2A86E",
+                        "ChrModelID,Requirement",
+                        row(10, "3", "0")));
+        replace(
+                seed,
+                table(
+                        "ChrCustomizationChoice",
+                        "9559C358",
+                        "ChrCustomizationOptionID->ChrCustomizationOption,UiOrderIndex,ChrCustomizationReqID,ChrCustomizationVisReqID",
+                        row(20, "10", "0", "7", "0")));
+        replace(
+                seed,
+                table(
+                        "ChrCustomizationReq",
+                        "CA154412",
+                        "ReqType,ClassMask,RegionGroupMask,ReqAchievementID,ReqQuestID,OverrideArchive,ReqItemModifiedAppearanceID,RaceMasks:2",
+                        row(7, "3", "-1", "0", "0", "0", "-1", "0", "4", "0")));
+        replace(
+                seed,
+                table(
+                        "ChrCustomizationElement",
+                        "6483C37E",
+                        "ChrCustomizationChoiceID,RelatedChrCustomizationChoiceID,ChrCustomizationMaterialID",
+                        row(30, "20", "0", "40")));
+        replace(
+                seed,
+                table(
+                        "ChrCustomizationMaterial",
+                        "BE9767E9",
+                        "ChrModelTextureTargetID,MaterialResourcesID",
+                        row(40, "1", "900")));
+        replace(
+                seed,
+                table(
+                        "ChrModelTextureLayer",
+                        "D0583FB4",
+                        "CharComponentTextureLayoutsID,TextureType,Layer,BlendMode,TextureSectionTypeBitMask,TextureSectionTypeBitMask2,Flags,ChrModelTextureTargetID:2",
+                        row(50, "105", "1", "0", "1", "-1", "-1", "0", "1", "0")));
+        var refused = assertThrows(RacesService.Projection.class, () -> buildOrc(seed, 2));
+        assertEquals(RaceAppearancePlan.NO_BASE_SKIN, refused.getMessage());
+        // The same choice allowed for this race (bit 1) is sampled, and the plan builds.
+        var allowed = new ArrayList<>(seed);
+        replace(
+                allowed,
+                table(
+                        "ChrCustomizationReq",
+                        "CA154412",
+                        "ReqType,ClassMask,RegionGroupMask,ReqAchievementID,ReqQuestID,OverrideArchive,ReqItemModifiedAppearanceID,RaceMasks:2",
+                        row(7, "3", "-1", "0", "0", "0", "-1", "0", "2", "0")));
+        assertTrue(
+                buildOrc(allowed, 2).layers().stream()
+                        .anyMatch(layer -> layer.source().startsWith("Customization")));
+    }
+
+    @Test
     void orcCustomizationRetainsStrictReviewedBlendProfile() {
         for (int blend : new int[] {1, 15, 4, 6, 9}) {
             var seed = new ArrayList<>(orcFixture(3, 105));
@@ -982,6 +1045,11 @@ final class RaceAppearancePlanTest {
     /** Builds the plan for race {@code raceId}, ChrModel 3 (male), over {@code seed}. */
     private static RaceAppearancePlan.Plan buildOrc(
             List<MemoryTables.FakeTable> seed, long raceId) {
+        return buildOrc(seed, raceId, new ArrayList<>());
+    }
+
+    private static RaceAppearancePlan.Plan buildOrc(
+            List<MemoryTables.FakeTable> seed, long raceId, List<String> issues) {
         var tables =
                 new MemoryTables()
                         .add(BUILD, "enUS", seed)
@@ -997,7 +1065,7 @@ final class RaceAppearancePlanTest {
                             1,
                             new RaceMediaTypes.Variant(3, 0, 1, 1, 1),
                             Cancellation.NONE,
-                            new ArrayList<>());
+                            issues);
         } finally {
             service.closeAsync().join();
             tables.closeAsync().join();
@@ -1005,16 +1073,31 @@ final class RaceAppearancePlanTest {
     }
 
     @Test
-    void aNonPlayableRaceIsRefusedPlainlyAtThePlayableRaceBit() {
-        // A race without a playable-race bit (an NPC race or a mount), and one with no ChrRaces
-        // row at all, are both refused with the plain reason, never an unchecked exception.
-        var seed = orcFixture(3, 105);
-        replace(seed, table("ChrRaces", "4F44C796", "PlayableRaceBit", row(2, "-1")));
-        var refused = assertThrows(RacesService.Projection.class, () -> buildOrc(seed, 2));
-        assertEquals(RaceAppearancePlan.NOT_PLAYABLE, refused.getMessage());
+    void aRaceWithoutAPlayableBitIsSampledFromChoicesThatNameEveryRace() {
+        // A race without a playable-race bit (an NPC race) is sampled like a playable one from
+        // choices whose requirements name every race (here, choices with no requirement), but
+        // has no new-character loadout: the Orc's starting item is masked to playable races. A
+        // race with no ChrRaces row at all is still refused with the plain reason.
+        var npcSeed = orcFixture(3, 105);
+        replace(npcSeed, table("ChrRaces", "4F44C796", "PlayableRaceBit", row(2, "-1")));
+        var notes = new ArrayList<String>();
+        var npc = buildOrc(npcSeed, 2, notes);
+        assertTrue(notes.contains(RaceAppearancePlan.NO_LOADOUT), notes.toString());
+        var orc = buildOrc(orcFixture(3, 105), 2);
+        assertEquals(orc.canvases(), npc.canvases());
+        assertEquals(1, orc.layers().size());
+        assertTrue(orc.layers().getFirst().source().startsWith("Starting item"));
+        assertEquals(List.of(), npc.layers());
         var missing =
                 assertThrows(RacesService.Projection.class, () -> buildOrc(orcFixture(3, 105), 7));
         assertEquals(RaceAppearancePlan.NOT_PLAYABLE, missing.getMessage());
+        // A recorded bit outside the 64 a race mask holds is still refused.
+        var outOfRange = orcFixture(3, 105);
+        replace(outOfRange, table("ChrRaces", "4F44C796", "PlayableRaceBit", row(2, "-2")));
+        assertEquals(
+                RaceAppearancePlan.NOT_PLAYABLE,
+                assertThrows(RacesService.Projection.class, () -> buildOrc(outOfRange, 2))
+                        .getMessage());
     }
 
     @Test
@@ -1536,6 +1619,93 @@ final class RaceAppearancePlanTest {
                                             Cancellation.NONE,
                                             new ArrayList<>(),
                                             Map.of(30L, 525L)));
+        } finally {
+            service.closeAsync().join();
+            tables.closeAsync().join();
+        }
+    }
+
+    @Test
+    void withoutAClassAPartialClassMaskIsSampledAsUncheckable() {
+        // An NPC race (no playable bit) records no class: its choices' class masks cannot be
+        // checked, so the first recorded choice is sampled and said so. A real class is checked
+        // as before, and so is a playable race without a class context.
+        var seed = new ArrayList<>(fixture(false, 9));
+        replace(seed, table("ChrRaces", "4F44C796", "PlayableRaceBit", row(3, "-1")));
+        replace(
+                seed,
+                table(
+                        "ChrCustomizationOption",
+                        "DCC2A86E",
+                        "ChrModelID,Requirement,Name_lang",
+                        row(30, "5", "0", "Skin Color")));
+        replace(
+                seed,
+                table(
+                        "ChrCustomizationChoice",
+                        "9559C358",
+                        "ChrCustomizationOptionID->ChrCustomizationOption,UiOrderIndex,ChrCustomizationReqID,ChrCustomizationVisReqID",
+                        row(524, "30", "0", "3", "0"),
+                        row(525, "30", "1", "3", "0")));
+        replace(
+                seed,
+                table(
+                        "ChrCustomizationReq",
+                        "CA154412",
+                        "ReqType,ClassMask,RegionGroupMask,ReqAchievementID,ReqQuestID,OverrideArchive,ReqItemModifiedAppearanceID,RaceMasks:2",
+                        row(3, "3", "16351", "0", "0", "0", "-1", "0", "-1", "-1")));
+        var tables =
+                new MemoryTables()
+                        .add(BUILD, "enUS", seed)
+                        .forBuild(BUILD, "enUS", Cancellation.NONE)
+                        .join()
+                        .tables();
+        var service = new RacesService(tables);
+        try {
+            var media = new RaceMedia(service, tables, null, null);
+            var classless = new ArrayList<String>();
+            var sampled =
+                    new RaceCustomization(media).select(3, 0, 5, Cancellation.NONE, classless);
+            assertEquals(Map.of(30L, 524L), sampled.byOption());
+            assertTrue(
+                    classless.contains(RaceCustomization.UNVERIFIED_SAMPLE), classless.toString());
+            // Class 1 is in the mask: allowed, with no note.
+            var warrior = new ArrayList<String>();
+            assertEquals(
+                    Map.of(30L, 524L),
+                    new RaceCustomization(media)
+                            .select(3, 1, 5, Cancellation.NONE, warrior)
+                            .byOption());
+            assertFalse(warrior.contains(RaceCustomization.UNVERIFIED_SAMPLE), warrior.toString());
+            // Class 6 is excluded: denied, so nothing is sampled.
+            var excluded = new ArrayList<String>();
+            assertEquals(
+                    Map.of(),
+                    new RaceCustomization(media)
+                            .select(3, 6, 5, Cancellation.NONE, excluded)
+                            .byOption());
+            assertFalse(excluded.contains(RaceCustomization.UNVERIFIED_SAMPLE));
+            // A playable race without a class context is unchanged: denied, nothing sampled.
+            var playableSeed = new ArrayList<>(seed);
+            replace(playableSeed, table("ChrRaces", "4F44C796", "PlayableRaceBit", row(3, "2")));
+            var playableTables =
+                    new MemoryTables()
+                            .add(BUILD, "enUS", playableSeed)
+                            .forBuild(BUILD, "enUS", Cancellation.NONE)
+                            .join()
+                            .tables();
+            var playableService = new RacesService(playableTables);
+            try {
+                assertEquals(
+                        Map.of(),
+                        new RaceCustomization(
+                                        new RaceMedia(playableService, playableTables, null, null))
+                                .select(3, 0, 5, Cancellation.NONE, new ArrayList<>())
+                                .byOption());
+            } finally {
+                playableService.closeAsync().join();
+                playableTables.closeAsync().join();
+            }
         } finally {
             service.closeAsync().join();
             tables.closeAsync().join();

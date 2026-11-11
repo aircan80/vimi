@@ -2,7 +2,6 @@ package com.vimi.gui;
 
 import com.vibeminer.files.names.CommunityFileNames;
 import com.vibeminer.files.names.NamesTypes;
-import com.vibeminer.formats.definitions.BundledDefinitions;
 import com.vibeminer.questie.QuestieRepository;
 import com.vibeminer.questie.QuestieTypes;
 import com.vibeminer.questie.data.QuestieDataTypes.PreparedVersion;
@@ -22,12 +21,18 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
-/** Application lifetime source orchestration; controls read immutable cached snapshots only. */
+/**
+ * Application lifetime source orchestration; controls read immutable cached snapshots only.
+ *
+ * <p>Only downloaded providers are sources. Table definitions (WoWDBDefs) ship with the
+ * application and are verified where they are loaded, so they are neither listed, refreshed nor
+ * switched here; preferences an older library stored for them ({@code *.DEFINITIONS}) are never
+ * read.
+ */
 public final class DataSourcesService {
     public enum Id {
         QUESTIE,
         LISTFILE,
-        DEFINITIONS,
         TACT_KEYS,
         EG_LINK,
         POLESTAR
@@ -58,8 +63,6 @@ public final class DataSourcesService {
             List<Database> databases, List<String> releases, String latest, String issue) {}
 
     public record Activity(boolean busy, String message, double fraction, String problem) {}
-
-    public record DefinitionsState(String revision, long tables, String license, String origin) {}
 
     public record Mapping(
             String choice, String flavor, String versionId, String release, String message) {}
@@ -108,7 +111,6 @@ public final class DataSourcesService {
     private final Map<Id, Activity> activity = new ConcurrentHashMap<>();
     private volatile QuestieState questieState = new QuestieState(List.of(), List.of(), null, null);
     private volatile NamesTypes.FileNamesStatus listfile;
-    private volatile DefinitionsState definitions;
     private volatile LibraryCatalog.Figures listfileBytes;
     private final java.util.concurrent.atomic.AtomicLong revision =
             new java.util.concurrent.atomic.AtomicLong();
@@ -228,10 +230,6 @@ public final class DataSourcesService {
 
     public NamesTypes.FileNamesStatus listfile() {
         return listfile;
-    }
-
-    public DefinitionsState definitions() {
-        return definitions;
     }
 
     public LibraryCatalog.Figures listfileBytes() {
@@ -382,9 +380,6 @@ public final class DataSourcesService {
     }
 
     public CompletableFuture<Void> setChecks(Id id, Checks checks) {
-        if (id == Id.DEFINITIONS && checks != Checks.MANUAL)
-            return CompletableFuture.failedFuture(
-                    new IllegalArgumentException("Bundled definitions update with the app"));
         return submit(
                 () -> {
                     preferences.put("checks." + id, checks.name());
@@ -504,14 +499,6 @@ public final class DataSourcesService {
                     } catch (Throwable error) {
                         activity.put(Id.LISTFILE, new Activity(false, null, -1, message(error)));
                     }
-                    var bundled =
-                            BundledDefinitions.open(com.vibeminer.access.Cancellation.NONE).join();
-                    definitions =
-                            new DefinitionsState(
-                                    BundledDefinitions.REVISION,
-                                    bundled.tables().size(),
-                                    bundled.info().license(),
-                                    bundled.info().sourceUrl());
                     listfileBytes =
                             catalog.figures(
                                             "provider:community-listfile",
@@ -624,7 +611,7 @@ public final class DataSourcesService {
                 if (closing || cancelEpoch.getOrDefault(id, 0L) != epoch || !policy(id).enabled())
                     return CompletableFuture.<Void>failedFuture(new java.util.concurrent.CancellationException());
                 startupChecked.add(id);
-                if (prior != null && (id == Id.TACT_KEYS || id == Id.LISTFILE || id == Id.DEFINITIONS)) {
+                if (prior != null && (id == Id.TACT_KEYS || id == Id.LISTFILE)) {
                     // These individual operations already include every preparation phase.
                     return submit(() -> preferences.put("attempt." + id, Instant.now().toString())).thenCompose(doneAt -> prior);
                 }
@@ -656,16 +643,6 @@ public final class DataSourcesService {
             case TACT_KEYS -> updateTactKeys();
             case EG_LINK -> syncEgLink();
             case POLESTAR -> syncPolestar();
-            case DEFINITIONS -> job(id, (token, progress) -> {
-                progress.accept(new QuestieTypes.Progress(QuestieTypes.Stage.VERIFYING, 0, null, "provider", "Checking bundled definitions…"));
-                var bundled = BundledDefinitions.open(com.vibeminer.access.Cancellation.NONE).join();
-                token.check();
-                submit(() -> {
-                    definitions = new DefinitionsState(BundledDefinitions.REVISION, bundled.tables().size(), bundled.info().license(), bundled.info().sourceUrl());
-                    preferences.put("checked." + id, Instant.now().toString());
-                    revision.incrementAndGet();
-                }).join();
-            });
         };
     }
 

@@ -46,8 +46,6 @@ final class LocalComparisonFactory implements ComparisonCoordinator.Factory {
         // These are already-loaded immutable keys; tactKeysForBuild may refresh and is forbidden
         // here.
         TactKeys keys = sources == null ? TactKeys.EMPTY : sources.tactKeys();
-        boolean definitions =
-                sources == null || sources.policy(DataSourcesService.Id.DEFINITIONS).enabled();
         var receipts = contexts.comparisonReceipts();
         boolean items = request.area().equals("Items");
         boolean effects = request.area().equals("Item effects");
@@ -87,7 +85,6 @@ final class LocalComparisonFactory implements ComparisonCoordinator.Factory {
                         opened++ == 0 ? ItemsSnapshot.Side.A : ItemsSnapshot.Side.B,
                         budget,
                         keys,
-                        definitions,
                         receipts,
                         cancellation);
             }
@@ -201,12 +198,11 @@ final class LocalComparisonFactory implements ComparisonCoordinator.Factory {
             ItemsSnapshot.Side side,
             TempBudget budget,
             TactKeys keys,
-            boolean definitions,
             java.util.List<PreparationHistory.Receipt> receipts,
             Cancellation token) {
         var evidence = evidence(build, locale, receipts);
         NativePreparationWork work =
-                contexts.createLocalComparison(build, evidence, locale, definitions, keys);
+                contexts.createLocalComparison(build, evidence, locale, keys);
         ComparisonInput input = null;
         try {
             var metadata = work.metadata(token);
@@ -227,9 +223,6 @@ final class LocalComparisonFactory implements ComparisonCoordinator.Factory {
             dependencies.put("comparison.names", "unassessed");
             dependencies.put("comparison.storage", "unassessed");
             if (area.equals("Items")) {
-                if (!definitions)
-                    throw new IllegalStateException(
-                            "Table definitions are disabled; Items comparison is unavailable.");
                 var issues = work.keysPreparedLocal(token);
                 dependencies.put(
                         "items.bootstrap.key-issues",
@@ -260,9 +253,6 @@ final class LocalComparisonFactory implements ComparisonCoordinator.Factory {
                                                 budget,
                                                 cancellation));
             } else if (area.equals("Item effects")) {
-                if (!definitions) {
-                    throw new IllegalStateException("Table definitions are disabled; item effects comparison is unavailable.");
-                }
                 var issues = work.keysPreparedLocal(token);
                 dependencies.put("effects.bootstrap.key-issues", String.join("; ", issues.stream().limit(16)
                         .map(issue -> issue.substring(0, Math.min(1024, issue.length()))).toList()));
@@ -289,18 +279,12 @@ final class LocalComparisonFactory implements ComparisonCoordinator.Factory {
                                 dependencies);
                 input = new FilesInventoryInput(work.filesHandle(), descriptor, null);
             } else if (tableId != null) {
-                if (!definitions)
-                    throw new IllegalStateException(
-                            "Table definitions are disabled. Files can still be compared.");
                 var issues = work.keysPreparedLocal(token);
                 dependencies.put(
                         "raw.bootstrap.key-issues",
                         String.join("; ", issues.stream().limit(16).toList()));
                 input = rawInput(work, locale, tableId, dependencies, budget, token);
             } else {
-                if (!definitions)
-                    throw new IllegalStateException(
-                            "Table definitions are disabled. Files can still be compared.");
                 // Only cached key-table bytes may be read; work and its opener are both local-only.
                 work.keys(token);
                 var cached = work.cachedTableInventory(token);

@@ -266,3 +266,8 @@ and [`eg-link`](eg-link/README.md), and storage accounting in [`accounting`](acc
 vimi is licensed under the [GNU General Public License v3](LICENSE). World of
 Warcraft and its game data belong to Blizzard Entertainment; vimi is an
 unofficial tool and is not affiliated with or endorsed by Blizzard.
+
+The app bundles the WoWDBDefs table definitions (revision `b9a63096`, by WoWDBDefs
+contributors, CC BY-SA 4.0) and third-party runtime libraries; their notices are
+listed in [Bundled runtime notices](docs/third-party-runtime.md) and shown in the
+app under **Settings → Bundled data**.

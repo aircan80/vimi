@@ -82,6 +82,19 @@ final class RaceAppearancePlan {
     static final String ASSUMED_WEIGHTS =
             "Texture weights stored outside the model are assumed fully opaque.";
 
+    /** A layout's base skin (target 1) got no sampled layer. */
+    static final String NO_BASE_SKIN =
+            "Textures for this race are not supported yet: no base skin choice could be sampled.";
+
+    /** A page fact for a race without a playable bit (an NPC race). */
+    static final String NO_LOADOUT =
+            "This race has no new-character loadout; it is shown without starting clothes.";
+
+    /** A model of which nearly every visible surface would keep neutral shading. */
+    static final String MOSTLY_UNREVIEWED_SURFACES =
+            "Textures for this race are not supported yet: nearly all of its model's surfaces use"
+                    + " material setups that are not reviewed.";
+
     /** A page fact: some drawn surfaces' environment-reflection stage is left out. */
     static final String ENVIRONMENT_NOT_DRAWN =
             "Environment reflections on some surfaces are not drawn; their base texture is.";
@@ -355,6 +368,7 @@ final class RaceAppearancePlan {
                         "ChrModelTextureTargetID",
                         "MaterialResourcesID");
         var recipe = new ArrayList<Layer>();
+        boolean baseSkin = false;
         for (var element : elements.rows) {
             token.check();
             if (!selectedSample
@@ -376,6 +390,7 @@ final class RaceAppearancePlan {
                 continue;
             }
             long target = customization.number(material, "ChrModelTextureTargetID");
+            baseSkin |= target == 1;
             var matches =
                     layers.rows.stream()
                             .filter(
@@ -455,6 +470,20 @@ final class RaceAppearancePlan {
                     }
                 }
             }
+        }
+        // A layout that records a base skin (target 1) whose sample chose none (every choice of
+        // its option denied) would leave the skin regions empty, drawn black: refused, not
+        // shown. An NPC's bake covers the body.
+        if (npc == null
+                && !baseSkin
+                && layers.rows.stream()
+                        .anyMatch(
+                                row ->
+                                        layers.number(row, "CharComponentTextureLayoutsID")
+                                                        == layout
+                                                && layers.number(row, "ChrModelTextureTargetID[0]")
+                                                        == 1)) {
+            throw new RacesService.Projection(RaceTypes.State.UNSUPPORTED, NO_BASE_SKIN);
         }
         // An NPC's bake covers the whole body, so the selected base skin is not needed.
         if (npc == null
@@ -648,6 +677,11 @@ final class RaceAppearancePlan {
                                         new RacesService.Projection(
                                                 RaceTypes.State.UNSUPPORTED, NOT_PLAYABLE));
         int bit = integer(races, race, "PlayableRaceBit");
+        if (bit < 0) {
+            // New-character loadouts are recorded for playable races only.
+            note(issues, NO_LOADOUT);
+            return;
+        }
         var loadouts = media.data("CharacterLoadout", 1024, token, issues);
         fields(loadouts, "ChrClassID", "Purpose");
         loadouts.field("Racemask", true, 2);
