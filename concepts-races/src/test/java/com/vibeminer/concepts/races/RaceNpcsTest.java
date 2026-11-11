@@ -103,7 +103,7 @@ final class RaceNpcsTest {
      * Appearance 51 has no bake; 52 records two choices for one option; 53 two files for its bake.
      */
     private static List<MemoryTables.FakeTable> tables() {
-        return List.of(
+        return tables(
                 table(
                         1,
                         "CreatureDisplayInfoExtra",
@@ -117,7 +117,33 @@ final class RaceNpcsTest {
                                 row(51, 1, 0, 1, 0),
                                 row(52, 1, 0, 1, 900),
                                 row(53, 1, 1, 1, 901),
-                                row(54, 1, 1, 1, 900))),
+                                row(54, 1, 1, 1, 900))));
+    }
+
+    /**
+     * As {@link #tables()}, with HD bakes: 50 records HD bake 902 (file 9020) beside its pre-HD
+     * bake, 51 only HD bake 902, and 54 none (pre-HD bake 900 only).
+     */
+    private static List<MemoryTables.FakeTable> hdTables() {
+        return tables(
+                table(
+                        1,
+                        "CreatureDisplayInfoExtra",
+                        List.of(
+                                reference("DisplayRaceID", "ChrRaces"),
+                                number("DisplaySexID"),
+                                number("DisplayClassID"),
+                                number("BakeMaterialResourcesID"),
+                                number("HDBakeMaterialResourcesID")),
+                        List.of(
+                                row(50, 1, 0, 1, 900, 902),
+                                row(51, 1, 0, 1, 0, 902),
+                                row(54, 1, 1, 1, 900, 0))));
+    }
+
+    private static List<MemoryTables.FakeTable> tables(MemoryTables.FakeTable extras) {
+        return List.of(
+                extras,
                 table(
                         2,
                         "CreatureDisplayInfoOption",
@@ -153,16 +179,22 @@ final class RaceNpcsTest {
                                 row(9000, 0, 900),
                                 row(9001, 2, 900),
                                 row(9010, 0, 901),
-                                row(9011, 0, 901))));
+                                row(9011, 0, 901),
+                                row(9020, 0, 902))));
     }
 
     private static final RaceMediaTypes.Variant MALE =
             new RaceMediaTypes.Variant(1, 0, 49, 149, 1490);
 
     private static RaceNpcs.Resolution resolve(long id, List<RaceMediaTypes.Variant> variants) {
+        return resolve(tables(), id, variants);
+    }
+
+    private static RaceNpcs.Resolution resolve(
+            List<MemoryTables.FakeTable> seed, long id, List<RaceMediaTypes.Variant> variants) {
         try (var tables =
                 new MemoryTables()
-                        .add(BUILD, "enUS", tables())
+                        .add(BUILD, "enUS", seed)
                         .forBuild(BUILD, "enUS", Cancellation.NONE)
                         .join()
                         .tables()) {
@@ -215,6 +247,24 @@ final class RaceNpcsTest {
         assertEquals(9000, spec.bakeFileDataId());
         // Slot 300 is outside the profile and slot 6 records two items: left out and counted.
         assertEquals(2, spec.omittedItems());
+    }
+
+    @Test
+    void theHdBakeIsUsedWhereverTheExtraRecordsOne() {
+        // The character models follow the HD texture layout; the pre-HD bake would put its face
+        // and clothing on the wrong regions.
+        var both = resolve(hdTables(), 50, List.of(MALE)).spec();
+        assertEquals(902, both.bakeMaterialResourcesId());
+        assertEquals(9020, both.bakeFileDataId());
+        // Only an HD bake (as for races 10, 95 and 96): no longer refused.
+        var hdOnly = resolve(hdTables(), 51, List.of(MALE));
+        assertNull(hdOnly.refusal());
+        assertEquals(9020, hdOnly.spec().bakeFileDataId());
+        // Only a pre-HD bake: used as before.
+        var legacy =
+                resolve(hdTables(), 54, List.of(new RaceMediaTypes.Variant(1, 1, 50, 150, 1500)));
+        assertNull(legacy.refusal());
+        assertEquals(9000, legacy.spec().bakeFileDataId());
     }
 
     @Test
