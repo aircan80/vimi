@@ -83,18 +83,38 @@ public final class M2Appearance {
     public static final class ModelFacts {
         private final Model model;
         private final List<Boolean> staticWeights;
+        private final List<Boolean> externalWeights;
 
         ModelFacts(Model model, List<Boolean> weights) {
+            this(model, weights, java.util.Collections.nCopies(weights.size(), false));
+        }
+
+        ModelFacts(Model model, List<Boolean> weights, List<Boolean> external) {
+            if (external.size() != weights.size()) {
+                throw new IllegalArgumentException("One external fact per weight track");
+            }
             this.model = model;
             this.staticWeights = List.copyOf(weights);
+            this.externalWeights = List.copyOf(external);
         }
 
         public Model model() {
             return model;
         }
 
+        /** Per weight track: proven constant full opacity. */
         public List<Boolean> staticWeights() {
             return staticWeights;
+        }
+
+        /**
+         * Per weight track: not proven only because some of its keys are stored outside the model
+         * (in a sequence's external animation file), every key stored in the model being full
+         * opacity. False for a track proven full, proven partial, or unprovable for another reason.
+         * Only a caller that states the assumption may treat such a track as opaque.
+         */
+        public List<Boolean> externalWeights() {
+            return externalWeights;
         }
     }
 
@@ -160,8 +180,10 @@ public final class M2Appearance {
                         header),
                 (row, i) -> tracks.add(new long[] {i16(row, 2), u32(row, 12), u32(row, 16)}));
         List<Boolean> proofs = new ArrayList<>();
+        List<Boolean> externals = new ArrayList<>();
         int slicesLeft = 65536, keysLeft = 65536;
         Map<SliceKey, Boolean> sliceArrays = new HashMap<>();
+        Map<SliceKey, Boolean> sliceExternal = new HashMap<>();
         Map<KeysKey, Boolean> keyArrays = new HashMap<>();
         for (long[] track : tracks) {
             token.check();
@@ -169,14 +191,18 @@ public final class M2Appearance {
             long count = track[1], offset = track[2];
             if (global >= globals) {
                 proofs.add(false);
+                externals.add(false);
                 continue;
             }
             SliceKey key = new SliceKey(count, count == 0 ? 0 : offset, global >= 0);
             if (sliceArrays.containsKey(key)) {
                 proofs.add(sliceArrays.get(key));
+                externals.add(sliceExternal.get(key));
                 continue;
             }
             boolean result = false;
+            // Keys stored outside the model: the track is then unproven, opaque or not.
+            boolean external = false;
             if (count <= slicesLeft) {
                 slicesLeft -= (int) count;
                 result = true;
@@ -199,8 +225,10 @@ public final class M2Appearance {
                         continue;
                     }
                     if (global < 0 && (i >= flags.size() || (flags.get(i) & 0x20) == 0)) {
-                        result = false;
-                        break;
+                        // Read on: a key stored in the model that is not full opacity still
+                        // proves the track partial, external keys or not.
+                        external = true;
+                        continue;
                     }
                     KeysKey k = new KeysKey(keyCount, keyOffset);
                     if (keyArrays.containsKey(k)) {
@@ -232,11 +260,15 @@ public final class M2Appearance {
                     result = full[0];
                 }
             }
+            boolean externalOnly = result && external;
+            result &= !external;
             sliceArrays.put(key, result);
+            sliceExternal.put(key, externalOnly);
             proofs.add(result);
+            externals.add(externalOnly);
         }
         input.finish();
-        return new ModelFacts(model, proofs);
+        return new ModelFacts(model, proofs, externals);
     }
 
     public static CompletableFuture<Plan> admit(

@@ -328,6 +328,7 @@ final class RaceAppearance {
                             .append(stat.file().contentKey())
                             .append('\n')
                             .append("choice-vector-v1\n")
+                            .append(plan.npc() ? "" : "external-weights-assumed-opaque-v1\n")
                             .append(selection.byOption())
                             .append('\n')
                             .append(plan)
@@ -376,7 +377,10 @@ final class RaceAppearance {
         try {
             var restored = restore(key, base.variant().modelFileDataId(), token);
             if (restored != null) {
-                var result = result(restored, base.visibleParts(), plan, issues, true);
+                if (restored.assumedWeights()) {
+                    note(issues, RaceAppearancePlan.ASSUMED_WEIGHTS);
+                }
+                var result = result(restored.appearance(), base.visibleParts(), plan, issues, true);
                 token.check();
                 remember(prepared, result);
                 return result;
@@ -548,6 +552,8 @@ final class RaceAppearance {
             }
             var bindings = new ArrayList<MeshAppearance.Surface>();
             var seen = new java.util.HashSet<Integer>();
+            boolean assumeExternal = assumesExternalWeights(plan);
+            boolean assumedWeights = false;
             var sectionBatches = new HashMap<Integer, Integer>();
             for (var batch : skin.skin().batches()) {
                 sectionBatches.merge(batch.sectionIndex(), 1, Integer::sum);
@@ -560,7 +566,8 @@ final class RaceAppearance {
                                 model.model(),
                                 batch,
                                 facts,
-                                sectionBatches.get(batch.sectionIndex()))) {
+                                sectionBatches.get(batch.sectionIndex()),
+                                assumeExternal)) {
                     continue;
                 }
                 if (batch.textureCount() != 1
@@ -579,9 +586,7 @@ final class RaceAppearance {
                 }
                 int weight = m.textureWeights().get(batch.textureWeightComboIndex());
                 if (weight != 65535
-                        && (facts == null
-                                || weight >= facts.staticWeights().size()
-                                || !facts.staticWeights().get(weight))) {
+                        && !RaceAppearanceProfiles.opaqueWeight(facts, weight, assumeExternal)) {
                     continue;
                 }
                 var texture = m.textures().get(m.textureCombos().get(batch.textureComboIndex()));
@@ -590,11 +595,17 @@ final class RaceAppearance {
                     continue;
                 }
                 bindings.add(RaceAppearanceProfiles.surface(batch, material, texture, mapped));
+                if (weight != 65535 && !facts.staticWeights().get(weight)) {
+                    assumedWeights = true;
+                }
             }
             if (bindings.isEmpty()) {
                 // A lasting fact of this model and plan (no draw fits the reviewed static
                 // profile): a stated refusal for players and NPCs alike, not a read failure.
                 return failed(issues, RaceAppearancePlan.UNREVIEWED_SURFACES);
+            }
+            if (assumedWeights) {
+                note(issues, RaceAppearancePlan.ASSUMED_WEIGHTS);
             }
             var appearance = new MeshAppearance(mesh, uv, normals, bindings, textures);
             if (complete) {
@@ -604,6 +615,7 @@ final class RaceAppearance {
                         skin.fileDataId(),
                         skin.file().contentKey(),
                         appearance,
+                        assumedWeights,
                         token,
                         issues);
             }
@@ -619,6 +631,15 @@ final class RaceAppearance {
             }
             return failed(issues, unavailable.getMessage());
         }
+    }
+
+    /**
+     * Whether this render may treat a texture-weight track whose keys are stored outside the model
+     * as full opacity (see {@link RaceAppearanceProfiles#opaqueWeight}). Only the static character
+     * preview states that assumption; an NPC plan, and so a World creature, never does.
+     */
+    static boolean assumesExternalWeights(RaceAppearancePlan.Plan plan) {
+        return !plan.npc();
     }
 
     /**
@@ -707,8 +728,15 @@ final class RaceAppearance {
                 RaceTypes.State.UNAVAILABLE, null, Set.of(), List.of(), issues, false, message);
     }
 
+    private static final int MAGIC = 0x56414331;
+
+    /** A composite whose draws include a weight track assumed opaque (see {@link #render}). */
+    private static final int ASSUMED_MAGIC = 0x56414332;
+
+    private record Restored(MeshAppearance appearance, boolean assumedWeights) {}
+
     @SuppressWarnings("try")
-    private MeshAppearance restore(GeneratedKey key, long modelId, Cancellation token) {
+    private Restored restore(GeneratedKey key, long modelId, Cancellation token) {
         var lower = new com.vibeminer.generated.Cancellation();
         try (var registration = token.onCancel(lower::cancel)) {
             var size = generated.readRange(key, 0, 0, lower).join();
@@ -723,7 +751,8 @@ final class RaceAppearance {
                 return null;
             }
             var bytes = ByteBuffer.wrap(saved.bytes()).order(ByteOrder.LITTLE_ENDIAN);
-            if (bytes.getInt() != 0x56414331 || bytes.getLong() != modelId) {
+            int magic = bytes.getInt();
+            if (magic != MAGIC && magic != ASSUMED_MAGIC || bytes.getLong() != modelId) {
                 return null;
             }
             long skin = bytes.getLong();
@@ -741,7 +770,7 @@ final class RaceAppearance {
             }
             byte[] payload = new byte[length];
             bytes.get(payload);
-            return MeshAppearanceCodec.decode(payload);
+            return new Restored(MeshAppearanceCodec.decode(payload), magic == ASSUMED_MAGIC);
         } catch (java.util.concurrent.CancellationException canceled) {
             throw canceled;
         } catch (RuntimeException invalid) {
@@ -757,13 +786,14 @@ final class RaceAppearance {
             long skinId,
             String content,
             MeshAppearance appearance,
+            boolean assumedWeights,
             Cancellation token,
             List<String> issues) {
         var lower = new com.vibeminer.generated.Cancellation();
         try (var registration = token.onCancel(lower::cancel)) {
             byte[] payload = MeshAppearanceCodec.encode(appearance);
             var bytes = ByteBuffer.allocate(40 + payload.length).order(ByteOrder.LITTLE_ENDIAN);
-            bytes.putInt(0x56414331)
+            bytes.putInt(assumedWeights ? ASSUMED_MAGIC : MAGIC)
                     .putLong(modelId)
                     .putLong(skinId)
                     .put(HexFormat.of().parseHex(content))

@@ -63,6 +63,8 @@ final class M2AppearanceTest {
                 M2Appearance.readModel(AssetSource.bytes(p.modelBytes), p.model, Cancellation.NONE)
                         .join();
         assertEquals(List.of(false), facts.staticWeights());
+        // Only the external track is left unproven for want of its keys: a partial one is proven.
+        assertEquals(List.of(name.equals("external-weight")), facts.externalWeights());
         var plan = plan(p);
         assertEquals(M2Appearance.Refusal.TEXTURE_WEIGHT, plan.decline().reason());
         assertTrue(plan.draws().isEmpty());
