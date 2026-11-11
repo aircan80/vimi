@@ -436,7 +436,10 @@ final class RaceMedia {
                             && Set.of(
                                             "ChrCustomizationChoiceID",
                                             "ChrCustomizationGeosetID",
-                                            "RelatedChrCustomizationChoiceID")
+                                            "RelatedChrCustomizationChoiceID",
+                                            // Checked on 70862: every non-zero value names a
+                                            // ChrCustomizationBoneSet row.
+                                            "ChrCustomizationBoneSetID")
                                     .contains(field);
             case "ChrCustomizationGeoset" ->
                     layouts.contains("BF55F2FB")

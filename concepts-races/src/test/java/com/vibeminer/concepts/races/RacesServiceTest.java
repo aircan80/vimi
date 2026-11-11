@@ -647,12 +647,8 @@ final class RacesServiceTest {
         }
     }
 
-    /** Authored chunked 274 model with a BFID chunk naming {@code ids}; no game data. */
-    private static byte[] modelWithBoneFiles(long... ids) throws Exception {
-        byte[] model;
-        try (var in = RacesServiceTest.class.getResourceAsStream("/golden/authored-274.m2")) {
-            model = in.readAllBytes();
-        }
+    /** {@code model} (a chunked 274 model) with a BFID chunk naming {@code ids}; no game data. */
+    private static byte[] withBoneFiles(byte[] model, long... ids) {
         var b =
                 java.nio.ByteBuffer.allocate(model.length + 8 + ids.length * 4)
                         .order(java.nio.ByteOrder.LITTLE_ENDIAN);
@@ -660,17 +656,6 @@ final class RacesServiceTest {
         b.putInt(ids.length * 4);
         for (long id : ids) {
             b.putInt((int) id);
-        }
-        return b.array();
-    }
-
-    private static byte[] boneFile() {
-        var b = java.nio.ByteBuffer.allocate(4 + 10 + 72).order(java.nio.ByteOrder.LITTLE_ENDIAN);
-        b.putInt(1).put("BIDA".getBytes(java.nio.charset.StandardCharsets.US_ASCII)).putInt(2);
-        b.putShort((short) 0);
-        b.put("BOMT".getBytes(java.nio.charset.StandardCharsets.US_ASCII)).putInt(64);
-        for (int i = 0; i < 16; i++) {
-            b.putFloat(i % 5 == 0 ? 1 : 0);
         }
         return b.array();
     }
@@ -727,50 +712,85 @@ final class RacesServiceTest {
     }
 
     @Test
-    void idleAssessmentCachesOnlyCompleteResultsAndFollowsContentKeys() throws Exception {
+    void boneFileModelPlaysTheBaseRigStandWithoutOpeningItsBoneFiles() throws Exception {
         var tables = idleTables();
-        byte[] model = modelWithBoneFiles(701, 702);
+        byte[] skin = golden("authored-274.skin");
+        byte[] plain = modelWithStand(0x200);
+        // Bone files 701 and 702 are declared but not stored: nothing asks for them.
         var files =
                 new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
-                        .add(1234, "1".repeat(32), model)
-                        .add(701, "2".repeat(32), boneFile());
+                        .add(1234, "1".repeat(32), withBoneFiles(plain, 701, 702))
+                        .add(900, "2".repeat(32), skin);
         var service = new RacesService(tables, files, null);
         try {
-            // Bone file 702 is not stored: the refusal names it and is not cached.
-            var first = service.idle(1, 10, Cancellation.NONE).join();
-            assertEquals(RaceTypes.State.UNSUPPORTED, first.state());
-            assertEquals(10, first.variant().chrModelId());
-            assertTrue(first.message().contains("2 external bone files (BFID)"), first.message());
-            assertTrue(first.message().contains("1 not readable (UNKNOWN_FILE)"), first.message());
-            // The repeat reassesses the bone files but reuses the model read and its Stand facts,
-            // which depend only on the model's content.
+            var idle = service.idle(1, 10, Cancellation.NONE).join();
+            assertEquals(RaceTypes.State.READY, idle.state(), idle.message());
+            assertTrue(idle.reasons().isEmpty());
+            assertEquals(1000, idle.animation().durationMillis());
+            assertEquals(3, idle.facts().size(), idle.facts().toString());
+            String fact = idle.facts().get(1);
+            assertTrue(
+                    fact.startsWith(
+                            "Bone files (BFID): 2 declared, none applied; Stand plays on the base"
+                                    + " rig"),
+                    fact);
+            // These tables record no customization: the fact says so rather than refusing.
+            assertTrue(fact.contains("could not be read"), fact);
+            assertTrue(idle.facts().get(2).startsWith("Stand is bound to 4 rest vertices"));
+            // The base rig's Stand is the Stand of the same model without bone files.
+            var plainFiles =
+                    new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
+                            .add(1234, "1".repeat(32), plain)
+                            .add(900, "2".repeat(32), skin);
+            var reference = new RacesService(tables, plainFiles, null);
+            try {
+                var expected = reference.idle(1, 10, Cancellation.NONE).join();
+                assertEquals(RaceTypes.State.READY, expected.state(), expected.message());
+                var preview = reference.preview(1, 0, 10, Cancellation.NONE).join();
+                for (int at : new int[] {0, 250, 500, 999}) {
+                    assertTrue(
+                            java.util.Arrays.equals(
+                                    expected.animation()
+                                            .pose(preview.mesh(), at)
+                                            .mesh()
+                                            .positions(),
+                                    idle.animation().pose(preview.mesh(), at).mesh().positions()),
+                            "same pose at " + at);
+                }
+            } finally {
+                reference.closeAsync().join();
+            }
+            // A complete result is cached; a changed model is reassessed.
             int opens = files.opens.get();
-            var repeated = service.idle(1, 10, Cancellation.NONE).join();
-            assertEquals(first.message(), repeated.message());
+            assertTrue(
+                    service.idle(1, 10, Cancellation.NONE).join().animation() == idle.animation());
             assertEquals(opens, files.opens.get());
-            // Once every source is read, the result is cached and opens nothing.
-            files.add(702, "3".repeat(32), boneFile());
-            var complete = service.idle(1, 10, Cancellation.NONE).join();
-            assertFalse(complete.message().contains("not readable"), complete.message());
-            opens = files.opens.get();
-            int stats = files.stats.get();
-            var cached = service.idle(1, 10, Cancellation.NONE).join();
-            assertEquals(complete.message(), cached.message());
-            assertEquals(opens, files.opens.get());
-            int cachedStats = files.stats.get() - stats;
-            // A bone file with new content invalidates the cached result: its bone files are
-            // looked up again (the authored model stores no bones, so none is opened).
-            files.add(702, "4".repeat(32), boneFile());
-            stats = files.stats.get();
-            service.idle(1, 10, Cancellation.NONE).join();
-            assertTrue(files.stats.get() - stats > cachedStats, "Changed bone file is reassessed");
-            // So does a model with new content.
-            opens = files.opens.get();
-            service.idle(1, 10, Cancellation.NONE).join();
-            assertEquals(opens, files.opens.get());
-            files.add(1234, "5".repeat(32), model);
+            files.add(1234, "5".repeat(32), withBoneFiles(plain, 701, 702));
             service.idle(1, 10, Cancellation.NONE).join();
             assertTrue(files.opens.get() > opens, "Changed model is reassessed");
+        } finally {
+            service.closeAsync().join();
+            tables.closeAsync().join();
+        }
+    }
+
+    @Test
+    void boneFileModelWithAnUnsupportedStandIsStillRefused() throws Exception {
+        var tables = idleTables();
+        byte[] model;
+        try (var in = RacesServiceTest.class.getResourceAsStream("/golden/authored-274.m2")) {
+            model = in.readAllBytes();
+        }
+        var files =
+                new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
+                        .add(1234, "1".repeat(32), withBoneFiles(model, 701));
+        var service = new RacesService(tables, files, null);
+        try {
+            // The authored model stores no bones: the base rig has nothing to animate.
+            var idle = service.idle(1, 10, Cancellation.NONE).join();
+            assertEquals(RaceTypes.State.UNSUPPORTED, idle.state());
+            assertEquals(List.of("Stand: The model has no bones to animate."), idle.reasons());
+            assertTrue(idle.facts().getFirst().startsWith("Bone files (BFID): 1 declared"));
         } finally {
             service.closeAsync().join();
             tables.closeAsync().join();

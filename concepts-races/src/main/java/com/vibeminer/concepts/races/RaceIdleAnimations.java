@@ -4,46 +4,44 @@ import com.vibeminer.access.Cancellation;
 import com.vibeminer.concepts.models.DisplayIdleAnimations;
 import com.vibeminer.files.BuildFiles;
 import com.vibeminer.files.FileTypes;
+import com.vibeminer.formats.db2.Db2Types;
 import com.vibeminer.formats.models.BuildModelTypes;
 import com.vibeminer.formats.models.BuildModels;
 import com.vibeminer.formats.models.M2IdleAnimation;
 import com.vibeminer.rendering.models.PreviewAnimation;
 import java.util.ArrayList;
-import java.util.BitSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
-import java.util.function.Function;
 import java.util.function.Supplier;
 
 /**
  * Offers, or explains why it cannot offer, the selected race model's Stand idle. Runs on the race
  * component worker.
  *
- * <p>A model that names no external skeleton (SKID) and no bone files (BFID), and stores its Stand
- * keys itself, reads them through {@link com.vibeminer.formats.models.M2IdleAnimation#read} and
- * binds them to the static rest surface through the same bone-flag admission as Mounts ({@link
- * DisplayIdleAnimations}). Otherwise every reason is collected rather than only the first: the
- * SKID, the BFID bone files (each read and validated through {@link
- * com.vibeminer.formats.models.M2BoneFile}), and the model-resident Stand with every check of the
- * mount idle reader except its external-file gate. Bone files hold per-bone matrices, but which
- * file the client applies for an appearance and how those matrices combine with Stand keys are not
- * reviewed, so a model declaring any is refused rather than approximated. Results whose sources
- * were all read are cached per model content key and revalidated against each bone file's and the
+ * <p>A model that keeps its bones itself (no external skeleton, SKID) reads its Stand keys through
+ * {@link com.vibeminer.formats.models.M2IdleAnimation#readBaseRig} and binds them to the static
+ * rest surface through the same bone-flag admission as Mounts ({@link DisplayIdleAnimations}). Bone
+ * files (BFID) are not applied: each one reshapes the face (and sometimes the hands) for one
+ * customization choice ({@code ChrCustomizationElement} to {@code ChrCustomizationBoneSet}), and
+ * the static preview shows the base rig too, so the Stand plays on the base rig and a fact names
+ * the customization choice whose bone file is left out. A model with an external skeleton is
+ * refused with every reason collected: the SKID and, when the model also stores bones, its
+ * model-resident Stand with every check of the mount idle reader except its external-file gate.
+ * Results whose sources were all read are cached per model content key and revalidated against the
  * SKIN's content key; a source that could not be read, or that changed during the assessment, is
  * reassessed; that reassessment reuses the model read and its model-resident Stand facts, which
  * depend only on the model's content. At most {@value #MAX_CACHED_ANIMATIONS} prepared animations
  * are kept.
  */
 final class RaceIdleAnimations {
-    static final int MAX_BONE_FILES = 64;
     private static final int MAX_CACHED = 32;
     static final int MAX_CACHED_ANIMATIONS = 4;
     private final RaceMedia media;
     private final BuildFiles files;
 
-    /** A complete result and the content keys of the bone files it was built from. */
+    /** A complete result and the content keys of the SKIN it was built from. */
     private record Cached(RaceMediaTypes.Idle result, Map<Long, String> sourceKeys) {}
 
     private final Map<String, Cached> cached =
@@ -60,8 +58,8 @@ final class RaceIdleAnimations {
 
     /**
      * The model read and its model-resident Stand facts, per model content key. Both are pure
-     * functions of the model bytes, so an assessment that must be repeated because a bone file or
-     * SKIN could not be read reuses them and re-reads only those other sources.
+     * functions of the model bytes, so an assessment that must be repeated because the SKIN could
+     * not be read reuses them and re-reads only those other sources.
      */
     private record ModelSources(BuildModelTypes.ModelRead read, BuildModelTypes.StandRead stand) {}
 
@@ -131,25 +129,22 @@ final class RaceIdleAnimations {
         }
         var model = read.model();
         var sourceKeys = new TreeMap<Long, String>();
-        boolean local =
-                model.skeletonFileDataId() == 0
-                        && model.boneFileDataIds().stream().allMatch(id -> id == 0);
+        boolean local = model.skeletonFileDataId() == 0;
+        var boneFiles = model.boneFileDataIds().stream().filter(id -> id != 0).toList();
+        String boneFileFact =
+                boneFiles.isEmpty()
+                        ? null
+                        : boneFileFact(
+                                variant.chrModelId(), variant.modelFileDataId(), boneFiles, token);
         M2IdleAnimation.Idle[] tracks = {null};
         var assessed =
                 explain(
                         model.skeletonFileDataId(),
                         !model.bones().isEmpty(),
-                        model.boneFileDataIds(),
-                        id -> {
-                            var bone = models.readBoneFile(read, id, token).join();
-                            if (bone.contentKey() != null) {
-                                sourceKeys.put(id, bone.contentKey());
-                            }
-                            return bone;
-                        },
+                        boneFileFact,
                         local
                                 ? () -> {
-                                    var idle = models.readIdle(read, token).join();
+                                    var idle = models.readIdleBaseRig(read, token).join();
                                     tracks[0] = idle.idle();
                                     return standOf(idle);
                                 }
@@ -315,7 +310,7 @@ final class RaceIdleAnimations {
         return new BuildModelTypes.StandRead(read.state(), null, read.code(), read.message());
     }
 
-    /** Whether every recorded bone file and SKIN still has the content it was assessed with. */
+    /** Whether the recorded SKIN still has the content it was assessed with. */
     private boolean unchanged(Map<Long, String> sourceKeys, Cancellation token) {
         for (var entry : sourceKeys.entrySet()) {
             var stat = files.stat(FileTypes.FileRef.id(entry.getKey()), token).join();
@@ -332,12 +327,15 @@ final class RaceIdleAnimations {
      */
     record Assessment(List<String> reasons, List<String> facts, boolean complete) {}
 
-    /** Pure assessment over the model's declarations and the supplied source reads. */
+    /**
+     * Pure assessment over the model's declarations and the supplied Stand read. Bone files are
+     * never a reason: {@code boneFileFact}, when the model declares any, only says that none is
+     * applied.
+     */
     static Assessment explain(
             long skeletonFileDataId,
             boolean modelBones,
-            List<Long> declaredBoneFiles,
-            Function<Long, BuildModelTypes.BoneFileRead> boneFile,
+            String boneFileFact,
             Supplier<BuildModelTypes.StandRead> standRead,
             Cancellation token) {
         var reasons = new ArrayList<String>();
@@ -349,24 +347,160 @@ final class RaceIdleAnimations {
                             + skeletonFileDataId
                             + " (SKID), which is not read.");
         }
-        var boneFiles = declaredBoneFiles.stream().filter(id -> id != 0).toList();
-        if (boneFiles.size() > MAX_BONE_FILES) {
-            reasons.add(
-                    "The model declares "
-                            + boneFiles.size()
-                            + " external bone files (BFID); at most "
-                            + MAX_BONE_FILES
-                            + " are assessed.");
-        } else if (!boneFiles.isEmpty()) {
-            complete &= boneFiles(boneFile, boneFiles, reasons, facts, token);
-        }
         if (skeletonFileDataId != 0 && !modelBones) {
             facts.add("Bones are stored only in the external skeleton; Stand is not read.");
         } else {
             token.check();
             complete &= stand(standRead.get(), reasons, facts);
         }
+        if (boneFileFact != null) {
+            facts.add(boneFileFact);
+        }
         return new Assessment(List.copyOf(reasons), List.copyOf(facts), complete);
+    }
+
+    /**
+     * Says which customization choice of {@code chrModelId} selects a bone file for model {@code
+     * modelFileDataId}; bone files are not applied. A bone file reshapes the face (and sometimes
+     * the hands) for one customization choice ({@code
+     * ChrCustomizationElement.ChrCustomizationBoneSetID} to {@code ChrCustomizationBoneSet}); the
+     * Stand plays on the base rig, which is also the shape the static preview shows. Unreadable
+     * tables only make the fact less specific.
+     */
+    private String boneFileFact(
+            long chrModelId, long modelFileDataId, List<Long> boneFiles, Cancellation token) {
+        var issues = new ArrayList<String>();
+        BoneFileChoice choice;
+        try {
+            var options = media.data("ChrCustomizationOption", 4096, token, issues);
+            var choices = media.data("ChrCustomizationChoice", 40000, token, issues);
+            var elements = media.data("ChrCustomizationElement", 200000, token, issues);
+            var sets = media.data("ChrCustomizationBoneSet", 40000, token, issues);
+            options.field("ChrModelID", true);
+            choices.field("ChrCustomizationOptionID", true);
+            elements.field("ChrCustomizationChoiceID", true);
+            elements.field("ChrCustomizationBoneSetID", true);
+            sets.field("BoneFileDataID", true);
+            sets.field("ModelFileDataID", true);
+            var optionIds = new java.util.HashSet<Long>();
+            var optionNames = new java.util.HashMap<Long, String>();
+            for (var option : options.rows) {
+                if (options.number(option, "ChrModelID") == chrModelId) {
+                    optionIds.add(option.id());
+                    optionNames.put(option.id(), optionName(options, option));
+                }
+            }
+            var choiceOption = new java.util.HashMap<Long, Long>();
+            for (var row : choices.rows) {
+                long option = choices.number(row, "ChrCustomizationOptionID");
+                if (optionIds.contains(option)) {
+                    choiceOption.put(row.id(), option);
+                }
+            }
+            var setFiles = new java.util.HashMap<Long, Long>();
+            for (var row : sets.rows) {
+                // A bone set names the model it reshapes; a set for another model never applies.
+                if (sets.number(row, "ModelFileDataID") == modelFileDataId) {
+                    setFiles.put(row.id(), sets.number(row, "BoneFileDataID"));
+                }
+            }
+            var selecting = new TreeMap<Long, Long>();
+            for (var row : elements.rows) {
+                token.check();
+                long set = elements.number(row, "ChrCustomizationBoneSetID");
+                long id = elements.number(row, "ChrCustomizationChoiceID");
+                if (set != 0 && choiceOption.containsKey(id) && setFiles.containsKey(set)) {
+                    selecting.merge(id, setFiles.get(set), Math::min);
+                }
+            }
+            choice = boneFileChoice(choiceOption, optionNames, selecting);
+        } catch (RacesService.Projection unreadable) {
+            return boneFileFact(
+                    boneFiles.size(),
+                    null,
+                    "which customization choice selects them could not be read: "
+                            + unreadable.getMessage());
+        }
+        return boneFileFact(boneFiles.size(), choice, null);
+    }
+
+    private static String optionName(RacesService.Data options, Db2Types.Row option) {
+        try {
+            options.field("Name_lang", false);
+            String name = options.text(option, "Name_lang");
+            return name.isBlank() ? null : name;
+        } catch (RacesService.Projection unreadable) {
+            return null;
+        }
+    }
+
+    /**
+     * The choice a bone file fact names: among the options whose choices select a bone file, the
+     * lowest option ID; within it, its first recorded (lowest-ID) choice, as the Races sample
+     * picks. {@code selecting} maps each selecting choice to its (lowest) bone file.
+     */
+    record BoneFileChoice(
+            long optionId,
+            String optionName,
+            long firstChoiceId,
+            long boneFileDataId,
+            int selectingChoices) {}
+
+    static BoneFileChoice boneFileChoice(
+            Map<Long, Long> choiceOption,
+            Map<Long, String> optionNames,
+            Map<Long, Long> selecting) {
+        if (selecting.isEmpty()) {
+            return null;
+        }
+        long option = selecting.keySet().stream().mapToLong(choiceOption::get).min().orElseThrow();
+        long first =
+                choiceOption.entrySet().stream()
+                        .filter(entry -> entry.getValue() == option)
+                        .mapToLong(Map.Entry::getKey)
+                        .min()
+                        .orElseThrow();
+        return new BoneFileChoice(
+                option,
+                optionNames.get(option),
+                first,
+                selecting.getOrDefault(first, 0L),
+                selecting.size());
+    }
+
+    static String boneFileFact(int declared, BoneFileChoice choice, String unread) {
+        var text =
+                new StringBuilder("Bone files (BFID): ")
+                        .append(declared)
+                        .append(" declared, none applied; Stand plays on the base rig, and the")
+                        .append(" face keeps the base rig's shape, as in the static preview. ");
+        if (unread != null) {
+            text.append("Bone files are customization choices; ").append(unread);
+        } else if (choice == null) {
+            text.append("No customization choice of this model selects one.");
+        } else {
+            String option =
+                    choice.optionName() == null
+                            ? "option " + choice.optionId()
+                            : "'" + choice.optionName() + "' (option " + choice.optionId() + ")";
+            text.append(choice.selectingChoices()).append(" customization choices select one; ");
+            if (choice.boneFileDataId() != 0) {
+                text.append("the first recorded ")
+                        .append(option)
+                        .append(" choice, ")
+                        .append(choice.firstChoiceId())
+                        .append(", selects bone file ")
+                        .append(choice.boneFileDataId())
+                        .append(", which is not applied.");
+            } else {
+                text.append("the first recorded ")
+                        .append(option)
+                        .append(" choice, ")
+                        .append(choice.firstChoiceId())
+                        .append(", selects none.");
+            }
+        }
+        return text.toString();
     }
 
     /** Adds model-resident Stand facts; returns false if the source could not be read. */
@@ -396,82 +530,5 @@ final class RaceIdleAnimations {
         }
         return stand.state() == BuildModelTypes.ReadState.READ
                 || stand.state() == BuildModelTypes.ReadState.REJECTED;
-    }
-
-    /** Reads every declared bone file; returns false if any source could not be read. */
-    private static boolean boneFiles(
-            Function<Long, BuildModelTypes.BoneFileRead> read,
-            List<Long> ids,
-            List<String> reasons,
-            List<String> facts,
-            Cancellation token) {
-        int valid = 0, fewest = Integer.MAX_VALUE, most = 0;
-        var covered = new BitSet();
-        var unread = new TreeMap<String, Integer>();
-        String rejected = null;
-        int rejectedCount = 0;
-        for (long id : ids) {
-            token.check();
-            var bone = read.apply(id);
-            switch (bone.state()) {
-                case READ -> {
-                    valid++;
-                    int count = bone.bones().count();
-                    fewest = Math.min(fewest, count);
-                    most = Math.max(most, count);
-                    for (int index : bone.bones().bones()) {
-                        covered.set(index);
-                    }
-                }
-                case REJECTED -> {
-                    rejectedCount++;
-                    if (rejected == null) {
-                        rejected = "FileDataID " + id + ": " + bone.message();
-                    }
-                }
-                default -> unread.merge(bone.state().name(), 1, Integer::sum);
-            }
-        }
-        var detail = new StringBuilder();
-        if (valid > 0) {
-            detail.append(valid)
-                    .append(" read and validated (")
-                    .append(fewest == most ? fewest + "" : fewest + "–" + most)
-                    .append(" bone matrices each, ")
-                    .append(covered.cardinality())
-                    .append(" distinct bones)");
-            facts.add(
-                    "Bone files: "
-                            + valid
-                            + " of "
-                            + ids.size()
-                            + " validated; they name bones "
-                            + covered.nextSetBit(0)
-                            + "–"
-                            + (covered.length() - 1)
-                            + ".");
-        }
-        if (rejectedCount > 0) {
-            detail.append(detail.isEmpty() ? "" : "; ")
-                    .append(rejectedCount)
-                    .append(" refused (")
-                    .append(rejected)
-                    .append(')');
-        }
-        for (var entry : unread.entrySet()) {
-            detail.append(detail.isEmpty() ? "" : "; ")
-                    .append(entry.getValue())
-                    .append(" not readable (")
-                    .append(entry.getKey())
-                    .append(')');
-        }
-        reasons.add(
-                "The model declares "
-                        + ids.size()
-                        + " external bone files (BFID): "
-                        + detail
-                        + ". Which file the client applies for an appearance, and how its"
-                        + " matrices combine with Stand keys, are not reviewed.");
-        return unread.isEmpty();
     }
 }
