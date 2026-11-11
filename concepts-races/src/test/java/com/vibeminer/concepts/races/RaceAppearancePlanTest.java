@@ -1019,16 +1019,16 @@ final class RaceAppearancePlanTest {
 
     @Test
     void aNewlyAdmittedRaceComposesOrIsRefusedCleanly() {
-        // A playable race outside the former five pairs (Gnome, race 7, bit 6) over the same
-        // records: the plan is built, or refused with a stated reason; nothing else escapes.
+        // A playable race outside the former five pairs (Gnome, race 7, bit 6) over the Orc
+        // records: the plan is built, with the Orc's canvases. The fixture's starting item is
+        // masked to the Orc (race bit 1), so the Gnome's plan has no layer where the Orc's has it.
         var seed = orcFixture(3, 105);
         replace(seed, table("ChrRaces", "4F44C796", "PlayableRaceBit", row(7, "6")));
-        try {
-            var plan = buildOrc(seed, 7);
-            assertFalse(plan.canvases().isEmpty());
-        } catch (RacesService.Projection refused) {
-            assertTrue(refused.getMessage() != null && !refused.getMessage().isBlank());
-        }
+        var gnome = buildOrc(seed, 7);
+        var orc = buildOrc(orcFixture(3, 105), 2);
+        assertEquals(orc.canvases(), gnome.canvases());
+        assertEquals(1, orc.layers().size());
+        assertTrue(gnome.layers().isEmpty(), gnome.layers().toString());
     }
 
     @Test
@@ -1312,8 +1312,9 @@ final class RaceAppearancePlanTest {
     @Test
     void anOptionWithOnlyUncheckableChoicesSamplesItsFirstButNeverADeniedOne() {
         // As Undead skin: no choice is known to be eligible. Choice 1 is refused for this race
-        // (its race mask excludes it); choice 2's requirement names an archive, which cannot be
-        // checked here. The sample shows choice 2 and says so, never the refused choice 1.
+        // (its race mask excludes it, under an odd requirement type that alone would only be
+        // unknown); choice 2's requirement names an archive, which cannot be checked here. The
+        // sample shows choice 2 and says so, never the refused choice 1.
         var seed = new ArrayList<>(fixture(false, 9));
         replace(
                 seed,
@@ -1336,7 +1337,7 @@ final class RaceAppearancePlanTest {
                         "ChrCustomizationReq",
                         "CA154412",
                         "ReqType,ClassMask,RegionGroupMask,ReqAchievementID,ReqQuestID,OverrideArchive,ReqItemModifiedAppearanceID,RaceMasks:2",
-                        row(1, "3", "-1", "0", "0", "0", "-1", "0", "0", "0"),
+                        row(1, "5", "-1", "0", "0", "0", "-1", "0", "0", "0"),
                         row(2, "3", "-1", "0", "0", "0", "0", "0", "-1", "-1")));
         replace(seed, table("ChrCustomizationReqChoice", "F925BC6F", "ChrCustomizationReqID"));
         var notes = new ArrayList<String>();
@@ -1354,6 +1355,23 @@ final class RaceAppearancePlanTest {
         var none = new ArrayList<String>();
         assertTrue(sampleOption(seed, none).isEmpty());
         assertFalse(none.contains(RaceCustomization.UNVERIFIED_SAMPLE));
+    }
+
+    @Test
+    void aMaskExclusionDeniesWhateverTheRequirementTypeSays() {
+        // An odd requirement type other than 1 or 3 is only unknown when its masks admit this
+        // race and class; a race mask that excludes it denies, so the sample never takes it.
+        var excluded = new RaceCustomization.Requirement(5, -1, 0, 0, 0, 0, 0, -1, 0, false);
+        assertEquals(
+                RaceCustomization.Eligibility.DENIED, RaceCustomization.evaluate(excluded, 1, 4));
+        var classExcluded =
+                new RaceCustomization.Requirement(5, 1 << 3, -1, -1, 0, 0, 0, -1, 0, false);
+        assertEquals(
+                RaceCustomization.Eligibility.DENIED,
+                RaceCustomization.evaluate(classExcluded, 1, 4));
+        var admitted = new RaceCustomization.Requirement(5, -1, -1, -1, 0, 0, 0, -1, 0, false);
+        assertEquals(
+                RaceCustomization.Eligibility.UNKNOWN, RaceCustomization.evaluate(admitted, 1, 4));
     }
 
     @Test
@@ -1445,6 +1463,59 @@ final class RaceAppearancePlanTest {
                                             5,
                                             List.of(new RaceCustomizationTypes.Pick(31, 528))),
                                     Cancellation.NONE));
+        } finally {
+            service.closeAsync().join();
+            tables.closeAsync().join();
+        }
+    }
+
+    @Test
+    void aSkinCatalogWhoseDefaultIsOnlyUncheckableListsItAndSaysSo() {
+        // Every Skin Color choice names an archive, which cannot be checked here: none is known
+        // to be eligible, the sample falls back to the first, and the catalog lists that default
+        // (it must be a member) and states why.
+        var seed = new ArrayList<>(fixture(false, 9));
+        replace(seed, table("ChrRaces", "4F44C796", "PlayableRaceBit", row(3, "2")));
+        replace(
+                seed,
+                table(
+                        "ChrCustomizationOption",
+                        "DCC2A86E",
+                        "ChrModelID,Requirement,Name_lang",
+                        row(30, "5", "0", "Skin Color")));
+        replace(
+                seed,
+                table(
+                        "ChrCustomizationChoice",
+                        "9559C358",
+                        "ChrCustomizationOptionID->ChrCustomizationOption,UiOrderIndex,ChrCustomizationReqID,ChrCustomizationVisReqID",
+                        row(524, "30", "0", "3", "0"),
+                        row(525, "30", "1", "3", "0")));
+        replace(
+                seed,
+                table(
+                        "ChrCustomizationReq",
+                        "CA154412",
+                        "ReqType,ClassMask,RegionGroupMask,ReqAchievementID,ReqQuestID,OverrideArchive,ReqItemModifiedAppearanceID,RaceMasks:2",
+                        row(3, "3", "-1", "0", "0", "0", "0", "0", "-1", "-1")));
+        var tables =
+                new MemoryTables()
+                        .add(BUILD, "enUS", seed)
+                        .forBuild(BUILD, "enUS", Cancellation.NONE)
+                        .join()
+                        .tables();
+        var service = new RacesService(tables);
+        try {
+            var catalog =
+                    new RaceCustomization(new RaceMedia(service, tables, null, null))
+                            .catalog(3, 1, 5, Cancellation.NONE);
+            assertEquals(1, catalog.options().size(), catalog.toString());
+            var option = catalog.options().getFirst();
+            assertEquals(524, option.defaultChoiceId());
+            assertEquals(
+                    List.of(524L),
+                    option.choices().stream().map(RaceCustomizationTypes.Choice::id).toList());
+            assertTrue(catalog.issues().contains(RaceCustomization.UNVERIFIED_SAMPLE));
         } finally {
             service.closeAsync().join();
             tables.closeAsync().join();

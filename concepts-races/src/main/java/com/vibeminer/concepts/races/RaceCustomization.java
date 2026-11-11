@@ -70,9 +70,9 @@ final class RaceCustomization {
         if ((req.type() & 1) == 0) {
             return Eligibility.DENIED;
         }
-        if (req.type() != 1 && req.type() != 3) {
-            return Eligibility.UNKNOWN;
-        }
+        // A class or race mask that excludes this context denies, whatever else the requirement
+        // holds: checked before any term that only makes it unknown, so a choice refused for
+        // this race or class is never sampled as merely unchecked.
         long mask = req.classMask() & 0xffffffffL;
         if (mask != 0
                 && mask != 0xffffffffL
@@ -81,6 +81,9 @@ final class RaceCustomization {
         }
         if (!hasRace(req.raceLow(), req.raceHigh(), raceBit)) {
             return Eligibility.DENIED;
+        }
+        if (req.type() != 1 && req.type() != 3) {
+            return Eligibility.UNKNOWN;
         }
         if (req.region() != 0
                 || req.achievement() != 0
@@ -158,13 +161,11 @@ final class RaceCustomization {
                         .orElseThrow(
                                 () ->
                                         new RacesService.Projection(
-                                                RaceTypes.State.UNSUPPORTED,
-                                                RaceAppearancePlan.NOT_PLAYABLE));
+                                                RaceTypes.State.UNSUPPORTED, NOT_PLAYABLE));
         long bit = races.number(race, "PlayableRaceBit");
         if (bit < 0 || bit > 63) {
             // Stated plainly to the user, without the table name the data refusal prefixes.
-            throw new RacesService.Projection(
-                    RaceTypes.State.UNSUPPORTED, RaceAppearancePlan.NOT_PLAYABLE);
+            throw new RacesService.Projection(RaceTypes.State.UNSUPPORTED, NOT_PLAYABLE);
         }
         var selected = new TreeMap<Long, Long>();
         var all = new HashSet<Long>();
@@ -357,6 +358,20 @@ final class RaceCustomization {
                 members.add(
                         new RaceCustomizationTypes.Choice(choice.id(), "Choice #" + choice.id()));
             }
+            if (members.stream().noneMatch(member -> member.id() == defaultChoice)) {
+                // The sampled default when no member is known to be eligible: one whose
+                // requirements only cannot be checked here. It is listed, and said so.
+                if (members.size() == 64) {
+                    throw choices.unsupported("Skin Color choices exceed preview bounds");
+                }
+                members.add(
+                        0,
+                        new RaceCustomizationTypes.Choice(
+                                defaultChoice, "Choice #" + defaultChoice));
+                if (issues.size() < 32 && !issues.contains(UNVERIFIED_SAMPLE)) {
+                    issues.add(UNVERIFIED_SAMPLE);
+                }
+            }
             String label = options.text(optionRows.getFirst(), "Name_lang");
             if (label == null || label.isBlank() || label.length() > 256) {
                 throw options.unsupported("Skin Color option label is unavailable");
@@ -407,6 +422,13 @@ final class RaceCustomization {
         }
         return Map.copyOf(result);
     }
+
+    /**
+     * A race without a playable-race customization record (an NPC race or a mount). Shown by the
+     * geoset sample of the untextured preview too, so it says nothing about textures; the texture
+     * path states its own reason ({@link RaceAppearancePlan#NOT_PLAYABLE}).
+     */
+    static final String NOT_PLAYABLE = "This race has no playable-race customization record.";
 
     /** The issue a sample choice with uncheckable requirements adds. */
     static final String UNVERIFIED_SAMPLE =

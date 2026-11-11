@@ -252,12 +252,18 @@ final class RaceAppearance {
             if (known != null) {
                 return new Prepared(null, null, null, issues, known, request, null);
             }
-            var selection =
-                    npc == null
-                            ? new RaceCustomization(media)
-                                    .select(raceId, classId, modelId, token, issues, requested)
-                            : new RaceCustomization(media)
-                                    .npc(raceId, classId, modelId, requested, token, issues);
+            RaceCustomization.Selection selection;
+            try {
+                selection =
+                        npc == null
+                                ? new RaceCustomization(media)
+                                        .select(raceId, classId, modelId, token, issues, requested)
+                                : new RaceCustomization(media)
+                                        .npc(raceId, classId, modelId, requested, token, issues);
+            } catch (RacesService.Projection customizationRefused) {
+                // Stated as a texture refusal here; the untextured preview keeps its own wording.
+                throw RaceAppearancePlan.asTextureRefusal(customizationRefused);
+            }
             var base = media.preview(raceId, classId, modelId, token, selection);
             boolean unread = media.unreadParts();
             base.issues().stream()

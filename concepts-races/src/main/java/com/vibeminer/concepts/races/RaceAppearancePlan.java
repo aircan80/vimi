@@ -80,6 +80,16 @@ final class RaceAppearancePlan {
             "Textures for this race are not supported yet: its model's surfaces use material"
                     + " setups that are not reviewed.";
 
+    /**
+     * A customization refusal restated for the texture path: the playable-race refusal gains its
+     * texture wording; any other refusal is returned as it is.
+     */
+    static RacesService.Projection asTextureRefusal(RacesService.Projection refused) {
+        return RaceCustomization.NOT_PLAYABLE.equals(refused.getMessage())
+                ? new RacesService.Projection(RaceTypes.State.UNSUPPORTED, NOT_PLAYABLE)
+                : refused;
+    }
+
     /** A texture section or layer that lies outside the canvas it is drawn into. */
     static final String OUTSIDE_CANVAS =
             "Textures for this race are not supported yet: a recorded texture section lies outside"
@@ -310,11 +320,16 @@ final class RaceAppearancePlan {
                         > 8_388_608L) {
             throw materials.unsupported("Texture canvas memory exceeds preview bounds");
         }
-        var selectedSample =
-                sample != null
-                        ? sample
-                        : new RaceCustomization(media)
-                                .select(raceId, classId, variant.chrModelId(), token, issues);
+        RaceCustomization.Selection selectedSample;
+        try {
+            selectedSample =
+                    sample != null
+                            ? sample
+                            : new RaceCustomization(media)
+                                    .select(raceId, classId, variant.chrModelId(), token, issues);
+        } catch (RacesService.Projection customizationRefused) {
+            throw asTextureRefusal(customizationRefused);
+        }
         var elements = media.data("ChrCustomizationElement", 200000, token, issues);
         fields(
                 elements,
