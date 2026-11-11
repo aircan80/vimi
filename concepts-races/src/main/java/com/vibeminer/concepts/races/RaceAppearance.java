@@ -341,7 +341,7 @@ final class RaceAppearance {
                             .append('\n')
                             .append(stat.file().contentKey())
                             .append('\n')
-                            .append("choice-vector-v1\n")
+                            .append("choice-vector-v1\nmostly-neutral-refused-v1\n")
                             .append(selection.byOption())
                             .append('\n')
                             .append(plan)
@@ -644,6 +644,11 @@ final class RaceAppearance {
                 // profile): a stated refusal for players and NPCs alike, not a read failure.
                 return failed(issues, RaceAppearancePlan.UNREVIEWED_SURFACES);
             }
+            if (neutralShare(mesh, base.visibleParts(), bindings) >= NEUTRAL_LIMIT) {
+                // Nearly the whole model would be drawn untextured (a dragonriding drake's body
+                // and its scale colour, for one): refused, not shown as if textured.
+                return failed(issues, RaceAppearancePlan.MOSTLY_UNREVIEWED_SURFACES);
+            }
             if (assumedWeights) {
                 note(issues, RaceAppearancePlan.ASSUMED_WEIGHTS);
             }
@@ -768,6 +773,35 @@ final class RaceAppearance {
                     case NEEDS_NETWORK, UNAVAILABLE, STORE_FAILED -> true;
                     default -> false;
                 };
+    }
+
+    /**
+     * The share of visible drawn indices at or above which a composite is refused: nearly all of
+     * the model would keep neutral shading.
+     */
+    static final double NEUTRAL_LIMIT = 0.9;
+
+    /** Of the visible drawn indices, the share no reviewed binding textures (neutral shading). */
+    static double neutralShare(
+            com.vibeminer.rendering.models.PreviewMesh mesh,
+            Set<Integer> visible,
+            java.util.Collection<MeshAppearance.Surface> surfaces) {
+        var bound =
+                surfaces.stream()
+                        .map(MeshAppearance.Surface::sectionIndex)
+                        .collect(java.util.stream.Collectors.toSet());
+        var parts = mesh.parts();
+        long all = 0, neutral = 0;
+        for (int index = 0; index < parts.size(); index++) {
+            if (!visible.contains(parts.get(index).id())) {
+                continue;
+            }
+            all += parts.get(index).indexCount();
+            if (!bound.contains(index)) {
+                neutral += parts.get(index).indexCount();
+            }
+        }
+        return all == 0 ? 0 : (double) neutral / all;
     }
 
     private static RaceAppearanceTypes.Result result(
