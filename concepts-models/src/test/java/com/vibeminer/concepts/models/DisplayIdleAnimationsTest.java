@@ -199,6 +199,86 @@ class DisplayIdleAnimationsTest {
         unsupported("has child bones", a -> a.parent(2, 1));
     }
 
+    private static PreviewAnimation admitFacingCamera(Authored authored) {
+        var parsed = authored.fixture.parse();
+        var surface =
+                DisplayModelService.restSurface(
+                        parsed.model(), parsed.rest().surface(), Cancellation.NONE);
+        var idle =
+                M2IdleAnimation.read(
+                                AssetSource.bytes(authored.fixture.modelBytes()),
+                                parsed.model(),
+                                Cancellation.NONE)
+                        .join();
+        return DisplayIdleAnimations.admitFacingCamera(
+                parsed.model(),
+                parsed.rest().surface(),
+                idle,
+                surface.mesh(),
+                surface.normals(),
+                Cancellation.NONE);
+    }
+
+    @Test
+    void aCameraPosingConsumerGetsBillboardsWithChildrenAsCameraFacingBones() throws Exception {
+        // Billboard bone 1 has child bone 2: refused for the card renderer, admitted for a
+        // consumer that poses per camera view.
+        var withChild = new Authored().translate(0).parent(2, 1);
+        assertThrows(DisplayIdleAnimations.Unsupported.class, withChild::admit);
+        var animation = admitFacingCamera(withChild);
+        assertTrue(animation.viewDependent());
+        var parsed = withChild.fixture.parse();
+        var rest =
+                DisplayModelService.restSurface(
+                        parsed.model(), parsed.rest().surface(), Cancellation.NONE);
+        var view = PreviewAnimation.View.orbit(0.4, 0.2);
+        var pose = animation.pose(rest.mesh(), 500, view);
+        // The camera-facing bone still follows its parent, which lifts it by 2 at half time.
+        assertEquals(2, pose.pivots().get(1).z() - parsed.model().bones().get(1).pivot().z(), 1e-5);
+        // Rotation keys on a billboard bone stay refused for every consumer.
+        var rotated = new Authored().translate(0).rotate(1);
+        var refused =
+                assertThrows(
+                        DisplayIdleAnimations.Unsupported.class, () -> admitFacingCamera(rotated));
+        assertTrue(refused.getMessage().contains("has rotation keys"), refused.getMessage());
+        // Without camera-facing bones the camera admission is the card admission.
+        assertTrue(!admitFacingCamera(new Authored().translate(0).flags(1, 0x200)).viewDependent());
+    }
+
+    @Test
+    void aCameraPosingConsumerBlendsPartlyWeightedBillboardMembers() throws Exception {
+        // Card vertex 2 is half on billboard bone 1 and half on bone 0.
+        var authored = new Authored().translate(0);
+        var body = authored.fixture.body;
+        int vertex = authored.fixture.vertices + 2 * 48;
+        body.putInt(vertex + 12, 128 | 127 << 8).putInt(vertex + 16, 1);
+        authored.fixture.syncBoneProperties();
+        var refused = assertThrows(DisplayIdleAnimations.Unsupported.class, authored::admit);
+        assertTrue(refused.getMessage().contains("rigidly bound"), refused.getMessage());
+        var animation = admitFacingCamera(authored);
+        assertTrue(animation.viewDependent());
+        var parsed = authored.fixture.parse();
+        var rest =
+                DisplayModelService.restSurface(
+                        parsed.model(), parsed.rest().surface(), Cancellation.NONE);
+        float[] at0 =
+                animation
+                        .pose(rest.mesh(), 0, PreviewAnimation.View.orbit(0, 0))
+                        .mesh()
+                        .positions();
+        float[] at1 =
+                animation
+                        .pose(rest.mesh(), 0, PreviewAnimation.View.orbit(1.2, 0))
+                        .mesh()
+                        .positions();
+        // The blended vertex moves with the camera; vertex 0, on bone 0 only, does not.
+        assertTrue(
+                Math.abs(at0[6] - at1[6]) + Math.abs(at0[7] - at1[7]) > 1e-4,
+                "the blended vertex follows the camera-facing bone");
+        assertEquals(at0[0], at1[0], 1e-6);
+        assertEquals(at0[1], at1[1], 1e-6);
+    }
+
     @Test
     void billboardTranslationKeysMoveTheCardPivot() throws Exception {
         // Bone 1 is the 0x8 card leaf; its own translation keys are admitted now.
@@ -262,8 +342,8 @@ class DisplayIdleAnimationsTest {
 
     @Test
     void theServiceWiresIdleWorldIdleAndStandsToTheirProfiles() throws Exception {
-        // Billboard bone 1 with child bones: the preview refuses it, the World admits it.
-        var authored = new Authored().translate(0).parent(2, 1);
+        // Billboard bone 1 with rotation keys: the preview refuses it, the World admits it.
+        var authored = new Authored().translate(0).rotate(1);
         var f = authored.fixture;
         var files =
                 new com.vibeminer.formats.AssetFilesFixture()
@@ -315,8 +395,8 @@ class DisplayIdleAnimationsTest {
 
     @Test
     void theServiceAnswersEachProfileWithItsOwnAdmission() throws Exception {
-        // Billboard bone 1 with child bones: the preview refuses, the World admits.
-        var authored = new Authored().translate(0).parent(2, 1);
+        // Billboard bone 1 with rotation keys: the preview refuses, the World admits.
+        var authored = new Authored().translate(0).rotate(1);
         var parsed = authored.fixture.parse();
         var geometry = parsed.rest().surface();
         var surface = DisplayModelService.restSurface(parsed.model(), geometry, Cancellation.NONE);
@@ -333,7 +413,7 @@ class DisplayIdleAnimationsTest {
                 DisplayModelService.admitted(
                         null, parsed.model(), geometry, surface, idle, true, Cancellation.NONE);
         assertEquals(DisplayModelTypes.IdleState.UNSUPPORTED, preview.state());
-        assertTrue(preview.message().contains("has child bones"), preview.message());
+        assertTrue(preview.message().contains("has rotation keys"), preview.message());
         assertEquals(DisplayModelTypes.IdleState.AVAILABLE, world.state());
         assertArrayEquals(new int[] {2, 3}, world.leftOut());
         assertTrue(

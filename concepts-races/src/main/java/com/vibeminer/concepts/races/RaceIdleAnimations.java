@@ -238,7 +238,7 @@ final class RaceIdleAnimations {
                 var surface = RaceRestSurface.of(model, skin.skin(), token);
                 try {
                     animation =
-                            DisplayIdleAnimations.admit(
+                            DisplayIdleAnimations.admitFacingCamera(
                                     model,
                                     skin.skin(),
                                     tracks[0],

@@ -12,8 +12,14 @@ import java.util.Objects;
  * T(-pivot)}, composed under its parent. Vertices use up to four linear-blend influences. A
  * spherical billboard bone keeps its card members at their rest offsets, scaled by its own scale
  * keys, around its evaluated pivot (moved by its own translation keys), so the existing
- * camera-facing card renderer stays responsible for orientation. Its rotation is the camera's. No
- * IK, blending between sequences, attachments, particles or material tracks are evaluated.
+ * camera-facing card renderer stays responsible for orientation. Its rotation is the camera's.
+ *
+ * <p>A camera-facing bone ({@link Facing}) is instead evaluated for a {@link View}: its world
+ * rotation is replaced by the camera's (fully, or turned only about the model's Z or Y axis), its
+ * own scale applies, and its pivot follows its parent chain and its own translation. Its children
+ * compose under it, so they turn with it, and vertices blend it with other bones by weight. An
+ * animation with such a bone is {@link #viewDependent()} and must be posed with a view. No IK,
+ * blending between sequences, attachments, particles or material tracks are evaluated.
  */
 public final class PreviewAnimation {
     /** A software evaluation budget; see {@code M2IdleAnimation.MAX_BONES}. */
@@ -164,6 +170,46 @@ public final class PreviewAnimation {
         }
     }
 
+    /** How a camera-facing bone turns toward the camera. */
+    public enum Facing {
+        /** An ordinary bone. */
+        NONE,
+        /** Fully: its X axis points at the camera, Y to screen right, Z to screen up. */
+        SPHERICAL,
+        /** Only about the model's Z axis, which stays fixed (bone flag 0x40). */
+        CYLINDRICAL_Z,
+        /** Only about the model's Y axis, which stays fixed (bone flag 0x20). */
+        CYLINDRICAL_Y
+    }
+
+    /**
+     * A camera in native model space (Z up): the unit direction from the model toward the camera,
+     * and the camera's unit up direction, perpendicular to it.
+     */
+    public record View(
+            double towardX, double towardY, double towardZ, double upX, double upY, double upZ) {
+        public View {
+            double toward = towardX * towardX + towardY * towardY + towardZ * towardZ,
+                    up = upX * upX + upY * upY + upZ * upZ,
+                    dot = towardX * upX + towardY * upY + towardZ * upZ;
+            if (!Double.isFinite(toward + up + dot)
+                    || Math.abs(toward - 1) > 1e-6
+                    || Math.abs(up - 1) > 1e-6
+                    || Math.abs(dot) > 1e-6) {
+                throw new IllegalArgumentException("Invalid camera view");
+            }
+        }
+
+        /**
+         * The orbit camera of the preview renderers ({@code StaticMeshRenderer}, {@code
+         * PreviewCamera}) at {@code yaw} and {@code pitch}.
+         */
+        public static View orbit(double yaw, double pitch) {
+            double c = Math.cos(yaw), s = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
+            return new View(c * cp, -s * cp, sp, -c * sp, s * sp, cp);
+        }
+    }
+
     /**
      * One bone. A null track is an identity component. {@code billboard} marks a spherical
      * billboard bone: its translation moves its pivot and its scale sizes its card around that
@@ -177,7 +223,30 @@ public final class PreviewAnimation {
             Track translation,
             Track rotation,
             Track scale,
-            boolean billboard) {
+            boolean billboard,
+            Facing facing) {
+        /** An ordinary or rigid-card bone, not camera-facing. */
+        public Bone(
+                int parent,
+                float pivotX,
+                float pivotY,
+                float pivotZ,
+                Track translation,
+                Track rotation,
+                Track scale,
+                boolean billboard) {
+            this(
+                    parent,
+                    pivotX,
+                    pivotY,
+                    pivotZ,
+                    translation,
+                    rotation,
+                    scale,
+                    billboard,
+                    Facing.NONE);
+        }
+
         public Bone {
             if (parent < -1
                     || !Float.isFinite(pivotX)
@@ -188,7 +257,9 @@ public final class PreviewAnimation {
                     || translation != null && translation.components != 3
                     || rotation != null && rotation.components != 4
                     || scale != null && scale.components != 3
-                    || billboard && rotation != null) {
+                    || billboard && rotation != null
+                    || facing == null
+                    || facing != Facing.NONE && (billboard || rotation != null)) {
                 throw new IllegalArgumentException("Invalid animation bone");
             }
         }
@@ -212,6 +283,11 @@ public final class PreviewAnimation {
     private final int[] influenceBones;
     private final int[] influenceWeights;
     private final int[] rigidBillboard;
+
+    /** Per rest vertex: whether a camera-facing bone, or a descendant of one, moves it. */
+    private final boolean[] facingVertex;
+
+    private final boolean viewDependent;
     private final float[] frameMin = new float[3], frameMax = new float[3];
 
     /**
@@ -316,6 +392,24 @@ public final class PreviewAnimation {
         int[] all = parentFirst;
         order = Arrays.stream(all).filter(b -> needed[b]).toArray();
         idle = Arrays.stream(all).filter(b -> !needed[b]).toArray();
+        boolean[] facingTree = new boolean[this.bones.size()];
+        boolean dependent = false;
+        for (int b : order) {
+            var bone = this.bones.get(b);
+            facingTree[b] =
+                    bone.facing() != Facing.NONE || bone.parent() >= 0 && facingTree[bone.parent()];
+            dependent |= bone.facing() != Facing.NONE;
+        }
+        viewDependent = dependent;
+        facingVertex = new boolean[vertices];
+        for (int v = 0; v < vertices; v++) {
+            for (int k = 0; k < 4; k++) {
+                if (this.influenceWeights[v * 4 + k] > 0
+                        && facingTree[this.influenceBones[v * 4 + k]]) {
+                    facingVertex[v] = true;
+                }
+            }
+        }
         for (int axis = 0; axis < 3; axis++) {
             frameMin[axis] = restMesh.minimum(axis);
             frameMax[axis] = restMesh.maximum(axis);
@@ -323,13 +417,27 @@ public final class PreviewAnimation {
         float[] scratch = new float[rest.length];
         double[] matrices = new double[this.bones.size() * 12];
         double[] scales = new double[this.bones.size() * 3];
-        for (int sample = 0; sample < FRAMING_SAMPLES; sample++) {
-            long time = durationMillis * sample / FRAMING_SAMPLES;
-            matrices(time, matrices, scales);
-            skin(matrices, scales, scratch, null);
-            for (int i = 0; i < scratch.length; i++) {
-                frameMin[i % 3] = Math.min(frameMin[i % 3], scratch[i]);
-                frameMax[i % 3] = Math.max(frameMax[i % 3], scratch[i]);
+        // A view-dependent pose is framed over views around the model as well.
+        List<View> views = new ArrayList<>();
+        views.add(null);
+        if (viewDependent) {
+            views.clear();
+            for (int yaw = 0; yaw < 8; yaw++) {
+                for (double pitch : new double[] {-1.1, 0, 1.1}) {
+                    views.add(View.orbit(yaw * Math.PI / 4, pitch));
+                }
+            }
+        }
+        int samples = viewDependent ? FRAMING_SAMPLES / 8 : FRAMING_SAMPLES;
+        for (var view : views) {
+            for (int sample = 0; sample < samples; sample++) {
+                long time = durationMillis * sample / samples;
+                matrices(time, view, matrices, scales);
+                skin(matrices, scales, scratch, null);
+                for (int i = 0; i < scratch.length; i++) {
+                    frameMin[i % 3] = Math.min(frameMin[i % 3], scratch[i]);
+                    frameMax[i % 3] = Math.max(frameMax[i % 3], scratch[i]);
+                }
             }
         }
         for (int axis = 0; axis < 3; axis++) {
@@ -399,12 +507,28 @@ public final class PreviewAnimation {
      * vertex nor parents one is not evaluated; its pivot is reported at its rest place.
      */
     public Pose pose(PreviewMesh restMesh, long millis) {
+        return pose(restMesh, millis, null);
+    }
+
+    /** Whether a camera-facing bone moves rendered vertices: posing then needs a {@link View}. */
+    public boolean viewDependent() {
+        return viewDependent;
+    }
+
+    /**
+     * As {@link #pose(PreviewMesh, long)} for the camera {@code view}, which a {@link
+     * #viewDependent()} animation requires and any other ignores.
+     */
+    public Pose pose(PreviewMesh restMesh, long millis, View view) {
         if (!matches(restMesh)) {
             throw new IllegalArgumentException("Animation belongs to another rest surface");
         }
+        if (viewDependent && view == null) {
+            throw new IllegalArgumentException("A camera-facing pose needs a camera view");
+        }
         double[] matrices = new double[bones.size() * 12];
         double[] scales = new double[bones.size() * 3];
-        matrices(Math.max(0, millis), matrices, scales);
+        matrices(Math.max(0, millis), view, matrices, scales);
         float[] positions = new float[rest.length];
         float[] normals = restNormals.length == 0 ? new float[0] : new float[restNormals.length];
         skin(matrices, scales, positions, normals.length == 0 ? null : normals);
@@ -422,13 +546,25 @@ public final class PreviewAnimation {
      * their members and move to the evaluated pivot of the bone that owns them.
      */
     public MeshAppearance pose(MeshAppearance restAppearance, long millis) {
+        return pose(restAppearance, millis, null);
+    }
+
+    /**
+     * As {@link #pose(MeshAppearance, long)} for the camera {@code view}. Vertices that a
+     * camera-facing bone moves are posed already facing the camera, so a rest card over them is
+     * dropped rather than turned a second time by the card renderer.
+     */
+    public MeshAppearance pose(MeshAppearance restAppearance, long millis, View view) {
         if (!matches(restAppearance)) {
             throw new IllegalArgumentException("Animation belongs to another rest appearance");
         }
-        var pose = pose(restAppearance.mesh(), millis);
+        var pose = pose(restAppearance.mesh(), millis, view);
         var cards = new ArrayList<MeshAppearance.RigidBillboard>();
         for (var card : restAppearance.billboards()) {
             int[] members = card.vertexIndices();
+            if (Arrays.stream(members).anyMatch(member -> facingVertex[member])) {
+                continue;
+            }
             int bone = rigidBillboard[members[0]];
             for (int member : members) {
                 if (rigidBillboard[member] != bone) {
@@ -454,7 +590,7 @@ public final class PreviewAnimation {
      * Bone matrices at {@code millis}; for a billboard bone, {@code scales} receives its own scale,
      * which sizes its card instead of entering its matrix.
      */
-    private void matrices(long millis, double[] out, double[] scales) {
+    private void matrices(long millis, View view, double[] out, double[] scales) {
         long sequence = millis % durationMillis;
         double[] t = new double[4], r = new double[4], s = new double[4], local = new double[12];
         double[] none = {0, 0, 0, 1}, unit = {1, 1, 1, 1};
@@ -464,6 +600,12 @@ public final class PreviewAnimation {
         }
         for (int b : order) {
             var bone = bones.get(b);
+            if (bone.facing() != Facing.NONE) {
+                sample(bone.translation(), sequence, millis, t, 0);
+                sample(bone.scale(), sequence, millis, s, 2);
+                facing(bone, view, b, t, s, out);
+                continue;
+            }
             if (bone.billboard()) {
                 sample(bone.translation(), sequence, millis, t, 0);
                 sample(bone.scale(), sequence, millis, s, 2);
@@ -483,6 +625,87 @@ public final class PreviewAnimation {
                 multiply(out, bone.parent() * 12, local, out, b * 12);
             }
         }
+    }
+
+    /**
+     * A camera-facing bone's matrix: its pivot (moved by its own translation) through its parent's
+     * matrix, then the camera basis scaled by its own scale about that pivot. The parent's rotation
+     * and scale do not turn or size it; its children compose under it.
+     */
+    private void facing(Bone bone, View view, int b, double[] t, double[] s, double[] out) {
+        double px = bone.pivotX() + t[0], py = bone.pivotY() + t[1], pz = bone.pivotZ() + t[2];
+        double[] pivot =
+                bone.parent() < 0
+                        ? new double[] {px, py, pz}
+                        : transform(out, bone.parent(), px, py, pz);
+        double[] x, y, z;
+        double[] toward = {view.towardX(), view.towardY(), view.towardZ()},
+                up = {view.upX(), view.upY(), view.upZ()};
+        switch (bone.facing()) {
+            case SPHERICAL -> {
+                x = toward;
+                z = up;
+                y = cross(z, x);
+            }
+            case CYLINDRICAL_Z -> {
+                z = new double[] {0, 0, 1};
+                x =
+                        horizontal(
+                                toward[0],
+                                toward[1],
+                                -up[0] * Math.signum(toward[2]),
+                                -up[1] * Math.signum(toward[2]));
+                x = new double[] {x[0], x[1], 0};
+                y = cross(z, x);
+            }
+            case CYLINDRICAL_Y -> {
+                y = new double[] {0, 1, 0};
+                double[] h =
+                        horizontal(
+                                toward[0],
+                                toward[2],
+                                -up[0] * Math.signum(toward[1]),
+                                -up[2] * Math.signum(toward[1]));
+                x = new double[] {h[0], 0, h[1]};
+                z = cross(x, y);
+            }
+            default -> throw new IllegalStateException("Not a camera-facing bone");
+        }
+        int o = b * 12;
+        double[][] axes = {x, y, z};
+        for (int row = 0; row < 3; row++) {
+            double offset = pivot[row];
+            for (int col = 0; col < 3; col++) {
+                double value = axes[col][row] * s[col];
+                out[o + row * 4 + col] = value;
+                offset -=
+                        value
+                                * (col == 0
+                                        ? bone.pivotX()
+                                        : col == 1 ? bone.pivotY() : bone.pivotZ());
+            }
+            out[o + row * 4 + 3] = offset;
+        }
+    }
+
+    /** The unit vector of (a, b), or of the fallback (c, d) when (a, b) is (nearly) zero. */
+    private static double[] horizontal(double a, double b, double c, double d) {
+        double length = Math.hypot(a, b);
+        if (length < 1e-9) {
+            a = c;
+            b = d;
+            length = Math.hypot(a, b);
+        }
+        if (length < 1e-9) {
+            return new double[] {1, 0};
+        }
+        return new double[] {a / length, b / length};
+    }
+
+    private static double[] cross(double[] a, double[] b) {
+        return new double[] {
+            a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]
+        };
     }
 
     private void sample(Track track, long sequence, long millis, double[] out, int kind) {
