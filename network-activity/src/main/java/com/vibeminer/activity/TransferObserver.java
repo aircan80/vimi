@@ -9,7 +9,6 @@ public interface TransferObserver {
     enum Kind {
         CDN,
         BUILD_METADATA,
-        DEFINITIONS,
         LISTFILE,
         TACT_KEYS,
         EG_LINK,

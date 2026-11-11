@@ -194,8 +194,7 @@ public final class BuildApplication {
                                         network,
                                         List.of(
                                                 ObservationAdapters.versions(network),
-                                                ObservationAdapters.listfile(network),
-                                                ObservationAdapters.definitions(network)));
+                                                ObservationAdapters.listfile(network)));
                         cleanup.addFirst(source::closeAsync);
                         var catalog =
                                 Catalog.open(

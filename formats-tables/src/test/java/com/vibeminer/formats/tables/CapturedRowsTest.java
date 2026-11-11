@@ -144,7 +144,7 @@ final class CapturedRowsTest {
                                     "11223344",
                                     new BundledDefinitions.Definition(
                                             "a".repeat(64), "fixture", document)));
-            definitions = new TableDefinitions(provider, null, null);
+            definitions = new TableDefinitions(provider);
             options =
                     new TablesOptions(
                             (build, token) -> CompletableFuture.completedFuture("1.2.3.4"),

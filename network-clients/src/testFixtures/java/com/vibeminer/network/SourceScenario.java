@@ -50,10 +50,6 @@ public final class SourceScenario implements AutoCloseable {
         return real == null ? memory : real;
     }
 
-    public DefinitionClient definitions() {
-        return real == null ? memory : real;
-    }
-
     public ListfileClient listfile() {
         return real == null ? memory : real;
     }
@@ -78,14 +74,6 @@ public final class SourceScenario implements AutoCloseable {
     public void version(String product, String region, DocumentKind kind, byte[] bytes) {
         memory.version(product, region, kind, bytes);
         put(SourceUrls.version(product, region, kind), bytes);
-    }
-
-    public void definition(String name, byte[] bytes) {
-        memory.definition(name, REVISION, bytes);
-        put(
-                SourceUrls.commits(name),
-                ("[{\"sha\":\"" + REVISION + "\"}]").getBytes(StandardCharsets.UTF_8));
-        put(SourceUrls.definition(REVISION, name), bytes);
     }
 
     public void release(byte[] bytes) {

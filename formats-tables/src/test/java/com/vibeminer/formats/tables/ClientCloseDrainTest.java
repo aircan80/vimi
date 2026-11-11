@@ -66,9 +66,7 @@ class ClientCloseDrainTest {
                                 Map.of(
                                         "11223344",
                                         new BundledDefinitions.Definition(
-                                                "a".repeat(64), "authored", document))),
-                        null,
-                        null);
+                                                "a".repeat(64), "authored", document))));
         var client =
                 new ClientBuildTables(
                         null,

@@ -35,7 +35,6 @@ public final class AccessScenario implements AutoCloseable {
         var adapters =
                 List.of(
                         ObservationAdapters.versions(network),
-                        ObservationAdapters.definitions(network),
                         ObservationAdapters.listfile(network));
         if (independent) {
             fake = new MemoryObjectSource(adapters);

@@ -50,9 +50,9 @@ reference standalone modes. The composition root owns the underlying stores/clie
   Large objects stream through bounded staging and reuse only verified persisted
   prefixes across host failures. Authenticated BLTE range reads can avoid whole-object
   download, including objects exceeding the stored-payload limit.
-- `observe` adapts versions/CDNs/BGDL/summary, WoWDBDefs and listfile clients; optional
+- `observe` adapts versions/CDNs/BGDL/summary and listfile clients; optional
   history recording and `record` validate canonical provenance before appending.
-  `readHistory` exposes durable history. Definitions have explicit revision helpers.
+  `readHistory` exposes durable history.
 - `StoreCommits` subscriptions report stored/removed keys after durable mutations.
   Notifications are process-local. A bounded subscriber that falls behind receives a
   missed flag and must reconcile; it cannot stall a writer.

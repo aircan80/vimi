@@ -189,9 +189,7 @@ public final class AuthoredPartialNativeMap implements AutoCloseable {
                                 Map.of(
                                         "11223344",
                                         new BundledDefinitions.Definition(
-                                                "a".repeat(64), "authored", document))),
-                        null,
-                        null);
+                                                "a".repeat(64), "authored", document))));
         String inventoryKey = contentKey.get();
         files =
                 (BuildFiles)

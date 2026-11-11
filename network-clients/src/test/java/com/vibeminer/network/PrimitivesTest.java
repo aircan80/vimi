@@ -126,11 +126,7 @@ final class PrimitivesTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> SourceUrls.version("wow", "eu", NetworkTypes.DocumentKind.SUMMARY));
-        assertThrows(IllegalArgumentException.class, () -> SourceUrls.commits("../Item"));
         assertThrows(IllegalArgumentException.class, () -> SourceUrls.asset("../x"));
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> SourceUrls.definition("a".repeat(39), "Item"));
         assertFalse(
                 SourceUrls.assetRedirect(
                         URI.create("https://release-assets.githubusercontent.com.evil.test/x")));

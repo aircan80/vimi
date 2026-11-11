@@ -153,8 +153,7 @@ class HotfixKeyCryptoTest {
         var tables =
                 new TablesService(
                                 files,
-                                new TableDefinitions(
-                                        BundledDefinitions.of(manifest, defs), null, null),
+                                new TableDefinitions(BundledDefinitions.of(manifest, defs)),
                                 new GeneratedTables(new MemoryGeneratedStore()),
                                 options)
                         .forBuild(FilesScenario.REF, "enUS", Cancellation.NONE)
@@ -228,9 +227,7 @@ class HotfixKeyCryptoTest {
                         Map.of(
                                 "11223344",
                                 new BundledDefinitions.Definition(
-                                        "a".repeat(64), "authored", doc))),
-                null,
-                null);
+                                        "a".repeat(64), "authored", doc))));
     }
 
     @Test
