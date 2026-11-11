@@ -229,6 +229,26 @@ public final class BuildModels {
      */
     public CompletableFuture<BuildModelTypes.IdleRead> readIdle(
             ModelRead read, Cancellation token) {
+        return readIdleCore(read, M2IdleAnimation::read, token);
+    }
+
+    /**
+     * Re-reads the model source for the base rig's Stand through {@link
+     * M2IdleAnimation#readBaseRig}: bone files (BFID) are not applied; external skeletons are
+     * refused.
+     */
+    public CompletableFuture<BuildModelTypes.IdleRead> readIdleBaseRig(
+            ModelRead read, Cancellation token) {
+        return readIdleCore(read, M2IdleAnimation::readBaseRig, token);
+    }
+
+    private interface IdleReader {
+        CompletableFuture<M2IdleAnimation.Idle> read(
+                AssetSource source, Model model, Cancellation token);
+    }
+
+    private CompletableFuture<BuildModelTypes.IdleRead> readIdleCore(
+            ModelRead read, IdleReader reader, Cancellation token) {
         Objects.requireNonNull(read);
         if (read.state() != ReadState.READ || read.model() == null || read.fileDataId() == null) {
             throw new IllegalArgumentException("Idle reads require a model read with READ state");
@@ -240,7 +260,7 @@ public final class BuildModels {
                     FileOutcome<M2IdleAnimation.Idle> outcome =
                             readFile(
                                     read.fileDataId(),
-                                    source -> M2IdleAnimation.read(source, model, token).join(),
+                                    source -> reader.read(source, model, token).join(),
                                     token);
                     return new BuildModelTypes.IdleRead(
                             outcome.state, outcome.value, outcome.code, outcome.message);
