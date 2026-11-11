@@ -132,7 +132,10 @@ final class RaceIdleAnimations {
         boolean local = model.skeletonFileDataId() == 0;
         var boneFiles = model.boneFileDataIds().stream().filter(id -> id != 0).toList();
         String boneFileFact =
-                boneFiles.isEmpty() ? null : boneFileFact(variant.chrModelId(), boneFiles, token);
+                boneFiles.isEmpty()
+                        ? null
+                        : boneFileFact(
+                                variant.chrModelId(), variant.modelFileDataId(), boneFiles, token);
         M2IdleAnimation.Idle[] tracks = {null};
         var assessed =
                 explain(
@@ -357,13 +360,15 @@ final class RaceIdleAnimations {
     }
 
     /**
-     * Says which customization choice of {@code chrModelId} selects one of the declared bone files,
-     * which are not applied. A bone file reshapes the face (and sometimes the hands) for one
-     * customization choice ({@code ChrCustomizationElement.ChrCustomizationBoneSetID} to {@code
-     * ChrCustomizationBoneSet}); the Stand plays on the base rig, which is also the shape the
-     * static preview shows. Unreadable tables only make the fact less specific.
+     * Says which customization choice of {@code chrModelId} selects a bone file for model {@code
+     * modelFileDataId}; bone files are not applied. A bone file reshapes the face (and sometimes
+     * the hands) for one customization choice ({@code
+     * ChrCustomizationElement.ChrCustomizationBoneSetID} to {@code ChrCustomizationBoneSet}); the
+     * Stand plays on the base rig, which is also the shape the static preview shows. Unreadable
+     * tables only make the fact less specific.
      */
-    private String boneFileFact(long chrModelId, List<Long> boneFiles, Cancellation token) {
+    private String boneFileFact(
+            long chrModelId, long modelFileDataId, List<Long> boneFiles, Cancellation token) {
         var issues = new ArrayList<String>();
         BoneFileChoice choice;
         try {
@@ -376,6 +381,7 @@ final class RaceIdleAnimations {
             elements.field("ChrCustomizationChoiceID", true);
             elements.field("ChrCustomizationBoneSetID", true);
             sets.field("BoneFileDataID", true);
+            sets.field("ModelFileDataID", true);
             var optionIds = new java.util.HashSet<Long>();
             var optionNames = new java.util.HashMap<Long, String>();
             for (var option : options.rows) {
@@ -393,7 +399,10 @@ final class RaceIdleAnimations {
             }
             var setFiles = new java.util.HashMap<Long, Long>();
             for (var row : sets.rows) {
-                setFiles.put(row.id(), sets.number(row, "BoneFileDataID"));
+                // A bone set names the model it reshapes; a set for another model never applies.
+                if (sets.number(row, "ModelFileDataID") == modelFileDataId) {
+                    setFiles.put(row.id(), sets.number(row, "BoneFileDataID"));
+                }
             }
             var selecting = new TreeMap<Long, Long>();
             for (var row : elements.rows) {
