@@ -88,6 +88,8 @@ public final class WorldStreamSourceControllerTest {
         buildingsComeFirstAndCreaturesReplaceThemLater();
         refusedCreatureReplacementKeepsTheBuildings();
         newBuildingsPreemptACreaturePassThatThenResumes();
+        loadedTileBuildingsPreemptACreaturePass();
+        afterThreePreemptionsACreaturePassRunsToItsEnd();
         lateObjectFailuresStayIsolatedFromTerrain();
         lateObjectsCompletingAfterRetirementAreIgnored();
         refusedInitialQualificationRetriesOnItsDeadline();
@@ -1110,6 +1112,141 @@ public final class WorldStreamSourceControllerTest {
             fixture.untilPresented(() -> fixture.objectLines().contains(first + " REPLACE ATTACHED"));
             check(creatureCalls.get(first).get() == 2,
                     "The preempted creature pass was prepared again: " + creatureCalls);
+        } finally {
+            fixture.close();
+        }
+    }
+
+    /**
+     * A preparer whose buildings pass for {@code holdY} waits for {@code release}, and whose
+     * creature passes for {@code firstY} run until canceled, except call {@code finishCall}, which
+     * waits for {@code finish} instead and later calls, which run straight through. Creature calls
+     * are counted per tile.
+     */
+    private static WorldStreamSourceBridge.ExteriorPreparer holdingPreparer(int holdY,
+            java.util.concurrent.CountDownLatch release, int firstY, int finishCall,
+            java.util.concurrent.CountDownLatch finish, java.util.concurrent.atomic.AtomicBoolean blocked,
+            java.util.Map<Integer, java.util.concurrent.atomic.AtomicInteger> creatureCalls) {
+        return new WorldStreamSourceBridge.ExteriorPreparer() {
+            @Override
+            public WorldStreamSourceBridge.ExteriorCopy prepare(
+                    com.vibeminer.concepts.world.WorldTerrainStreaming source,
+                    com.vibeminer.concepts.world.WorldTerrainStreaming.Scope scope,
+                    com.vibeminer.formats.world.WorldFormats.Tile tile,
+                    com.vibeminer.access.Cancellation cancellation, int formats, long creatureBytes) {
+                try {
+                    if (creatureBytes == BUILDINGS_ONLY) {
+                        if (tile.y() == holdY) release.await();
+                        return new WorldStreamSourceBridge.ExteriorCopy(building(), 1, false, "authored");
+                    }
+                    int call = creatureCalls.computeIfAbsent(tile.y(),
+                            key -> new java.util.concurrent.atomic.AtomicInteger()).incrementAndGet();
+                    if (tile.y() == firstY) {
+                        blocked.set(true);
+                        try {
+                            if (call == finishCall) finish.await();
+                            else if (call < finishCall) while (!cancellation.isCanceled()) Thread.sleep(1);
+                        } finally {
+                            blocked.set(false);
+                        }
+                        cancellation.check();
+                    }
+                } catch (InterruptedException error) {
+                    throw new AssertionError(error);
+                }
+                return new WorldStreamSourceBridge.ExteriorCopy(building(), 1, false, "authored",
+                        WorldTileCreatures.Summary.drawn(2, 1, 1 << 20));
+            }
+
+            @Override
+            public boolean appendsCreatures() {
+                return true;
+            }
+        };
+    }
+
+    /**
+     * Commits {@code loaded} tiles' terrain while the first tile's buildings are held, then wants only
+     * the first {@code wanted} of them, so the others stay loaded with their buildings never offered.
+     */
+    private static void loadThenNarrow(Fixture fixture, WorldStreamSourceBridge.ExteriorPreparer preparer,
+            int loaded, int wanted, java.util.concurrent.CountDownLatch release,
+            java.util.concurrent.atomic.AtomicBoolean blocked) throws Exception {
+        fixture.start(fixture.gpu::start, () -> {}, preparer);
+        fixture.until(() -> fixture.controller.snapshot().seed() != null);
+        fixture.camera(1);
+        fixture.controller.neighborhood(fixture.tiles.subList(0, loaded));
+        fixture.untilPresented(() -> fixture.controller.snapshot().phase() == WorldStreamSourceController.Phase.READY
+                && fixture.controller.snapshot().prepared() == loaded
+                && fixture.controller.snapshot().detail().contains("loading buildings"));
+        fixture.controller.neighborhood(fixture.tiles.subList(0, wanted));
+        release.countDown();
+        fixture.untilPresented(blocked::get);
+        check(fixture.objectLines().size() == wanted,
+                "Only the wanted tiles' buildings came before the creature pass: " + fixture.objectLines());
+    }
+
+    /**
+     * A tile whose terrain is already loaded and whose buildings come due during a creature pass
+     * (no terrain to preempt it) gets them without waiting for the pass, which then resumes.
+     */
+    private static void loadedTileBuildingsPreemptACreaturePass() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 3);
+        fixture.exteriors = true;
+        int first = fixture.tiles.get(0).y(), loadedOnly = fixture.tiles.get(2).y();
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var blocked = new java.util.concurrent.atomic.AtomicBoolean();
+        var calls = new java.util.concurrent.ConcurrentHashMap<Integer, java.util.concurrent.atomic.AtomicInteger>();
+        // The second creature pass for the first tile (the resumed one) runs straight through.
+        var preparer = holdingPreparer(first, release, first, 2, new java.util.concurrent.CountDownLatch(0),
+                blocked, calls);
+        try {
+            loadThenNarrow(fixture, preparer, 3, 2, release, blocked);
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 3));
+            fixture.untilPresented(() -> fixture.objectLines().contains(loadedOnly + " ATTACHED"));
+            check(calls.get(first).get() >= 1 && fixture.objectLines().indexOf(loadedOnly + " ATTACHED") == 2,
+                    "The loaded tile's buildings did not wait for the creature pass: " + fixture.objectLines());
+            fixture.untilPresented(() -> fixture.objectLines().contains(first + " REPLACE ATTACHED"));
+            check(calls.get(first).get() == 2, "The preempted creature pass resumed: " + calls);
+        } finally {
+            fixture.close();
+        }
+    }
+
+    /**
+     * Three creature passes in a row give way to buildings; the fourth runs to its end, and the
+     * buildings that came due meanwhile follow it.
+     */
+    private static void afterThreePreemptionsACreaturePassRunsToItsEnd() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 6);
+        fixture.exteriors = true;
+        int first = fixture.tiles.get(0).y();
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var finish = new java.util.concurrent.CountDownLatch(1);
+        var blocked = new java.util.concurrent.atomic.AtomicBoolean();
+        var calls = new java.util.concurrent.ConcurrentHashMap<Integer, java.util.concurrent.atomic.AtomicInteger>();
+        check(WorldStreamSourceController.CREATURE_PREEMPTIONS == 3, "Three preemptions in a row");
+        var preparer = holdingPreparer(first, release, first, 4, finish, blocked, calls);
+        try {
+            loadThenNarrow(fixture, preparer, 6, 2, release, blocked);
+            for (int wanted = 3; wanted <= 5; wanted++) {
+                int y = fixture.tiles.get(wanted - 1).y(), call = wanted - 1;
+                fixture.controller.neighborhood(fixture.tiles.subList(0, wanted));
+                fixture.untilPresented(() -> fixture.objectLines().contains(y + " ATTACHED")
+                        && calls.get(first).get() == call && blocked.get());
+            }
+            // The fourth pass is not preempted: the sixth tile's buildings wait for it.
+            int last = fixture.tiles.get(5).y();
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 6));
+            for (int i = 0; i < 100; i++) { fixture.pump(); Thread.sleep(2); }
+            check(!fixture.objectLines().contains(last + " ATTACHED") && blocked.get(),
+                    "The fourth creature pass runs to its end: " + fixture.objectLines());
+            finish.countDown();
+            fixture.untilPresented(() -> fixture.objectLines().contains(last + " ATTACHED"));
+            var lines = fixture.objectLines();
+            check(lines.indexOf(first + " REPLACE ATTACHED") >= 0
+                            && lines.indexOf(first + " REPLACE ATTACHED") < lines.indexOf(last + " ATTACHED"),
+                    "The buildings follow the pass that ran to its end: " + lines);
         } finally {
             fixture.close();
         }

@@ -1744,7 +1744,10 @@ final class WorldStreamSourceController {
                 exterior = null;
                 // Preempted by terrain (or retired): untried, so it restarts when terrain idles.
                 if (work.creaturesPass) {
-                    // Its buildings stay as they are; creatures are not tried again.
+                    // Canceled (for terrain or buildings), it stays pending. Failed, its buildings
+                    // stay as they are and creatures are not tried again; either way it ended, so
+                    // the next pass may give way to buildings again.
+                    if (!work.cancellation.isCanceled()) creaturePreemptions = 0;
                     if (!work.cancellation.isCanceled() && live(work.entry)) {
                         WorldDiagnostics.degraded("world creatures",
                                 "World creature objects preparation failed; tile kept without creatures", failed);
