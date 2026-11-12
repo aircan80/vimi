@@ -170,6 +170,18 @@ protected or oversized source fails the whole set. A cutout or blended building 
 instead. It is counted as `DOODAD_SOURCE_INPUT`, in
 addition to that read's unavailable bucket, so decoration never costs a tile its buildings.
 
+A building or doodad source that has no local copy and is only on the network (read state
+`NEEDS_NETWORK`, refused at `SOURCE_PENDING`) is left out like an unavailable one. It is counted as
+`SOURCE_PENDING`, and the rest of the tile draws.
+- **Retry.** The controller prepares the tile again after a back-off of 15 s, doubling up to
+  4 minutes. It does so only once one of the missing files can be read, and replaces the drawn set
+  only if the new set leaves fewer sources out or draws more. A retry gives way to buildings that
+  a newly wanted tile needs.
+- **Transient border difference.** Interior groups count towards the size check that decides how
+  a building on a tile border is split between the tiles. If a file arrives between the two tiles'
+  passes, the tiles can briefly disagree about that building until the earlier tile's retry reads
+  the file too.
+
 Any other runtime failure while reading or copying a doodad M2 or SKIN is counted as
 `MODEL_FAILED` and omits only that model's doodads; this tile's own cancellation still
 propagates. A source that changes during or after a read (`SOURCE_BINDING`) still fails the whole

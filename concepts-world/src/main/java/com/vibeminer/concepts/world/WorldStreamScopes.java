@@ -2441,6 +2441,24 @@ final class WorldStreamScopes {
         return source;
     }
 
+    /**
+     * Whether any of {@code ids} can be read now rather than only from the network: a cheap check
+     * (an open, closed at once) before preparing a tile again for sources it left out.
+     */
+    boolean anyReadableNow(java.util.List<Long> ids, Cancellation token) {
+        for (long id : ids) {
+            token.check();
+            var opened = WorldSourceFutures.await(files.openRead(FileTypes.FileRef.id(id), token));
+            if (opened.stream() != null) {
+                opened.stream().close();
+            }
+            if (opened.state() != FileTypes.FileReadState.NEEDS_NETWORK) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static final Set<FileTypes.FileReadState> UNAVAILABLE_READS =
             EnumSet.of(
                     FileTypes.FileReadState.PROTECTED,

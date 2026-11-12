@@ -1295,6 +1295,9 @@ public final class WorldExteriorObjects {
         }
     }
 
+    /** Pending source IDs a set keeps ({@link TileObjects#pendingSources}). */
+    public static final int MAX_PENDING_IDS = 64;
+
     /** Immutable neutral per-tile set. Close only retires access; it holds no native resource. */
     public static final class TileObjects implements AutoCloseable {
         private final long mapId;
@@ -1327,6 +1330,17 @@ public final class WorldExteriorObjects {
 
         /** BLP levels its builder decoded, over every image (#360); diagnostics and tests. */
         int levelDecodes;
+
+        /**
+         * The first {@link #MAX_PENDING_IDS} sources left out as only on the network ({@link
+         * Count#SOURCE_PENDING}), by FileDataID: what a later pass would have to read.
+         */
+        volatile List<Long> pendingSources = List.of();
+
+        /** Sources left out because only the network had them (at most the first 64 IDs). */
+        public List<Long> pendingSources() {
+            return pendingSources;
+        }
 
         private TileObjects(
                 long mapId,
@@ -2401,12 +2415,16 @@ public final class WorldExteriorObjects {
             objects.retainedSourceBytes = peakRetainedSourceBytes;
             WorldStageTimings.stop("objects.phase.assembly", phase);
             objects.levelDecodes = levelDecodes;
+            objects.pendingSources = List.copyOf(pendingIds);
             return objects;
         }
 
         private void count(Count count) {
             counts[count.ordinal()]++;
         }
+
+        // Sources left out as only on the network, in read order, at most MAX_PENDING_IDS.
+        private final java.util.LinkedHashSet<Long> pendingIds = new java.util.LinkedHashSet<>();
 
         /**
          * A building's draw cost under the opaque-only profile: its opaque ranges. A building with
@@ -6835,6 +6853,9 @@ public final class WorldExteriorObjects {
                     // Not in the local files yet: left out as unavailable, fetched on a later pass.
                     token.check();
                     count(Count.SOURCE_PENDING);
+                    if (pendingIds.size() < MAX_PENDING_IDS) {
+                        pendingIds.add(id);
+                    }
                     return null;
                 }
                 boolean doodad =

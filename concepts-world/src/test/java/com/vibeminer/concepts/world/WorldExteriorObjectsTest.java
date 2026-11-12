@@ -3046,6 +3046,13 @@ class WorldExteriorObjectsTest {
                     "SOURCE_INPUT",
                     assertThrows(WorldTerrainStreaming.Refusal.class, f::run).site());
         }
+        // A later pass checks cheaply whether any left-out source is local now.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), group)) {
+            assertFalse(f.engine.anyReadableNow(List.of(GROUP), Cancellation.NONE));
+            assertTrue(f.engine.anyReadableNow(List.of(GROUP, ROOT), Cancellation.NONE));
+            group.failedOpens.remove(GROUP);
+            assertTrue(f.engine.anyReadableNow(List.of(GROUP), Cancellation.NONE));
+        }
         var placements = new WorldTerrainTextureSourceTest.Files();
         placements.failedOpens.put(
                 TILE.obj0Id(), opened(com.vibeminer.files.FileTypes.FileReadState.NEEDS_NETWORK));
