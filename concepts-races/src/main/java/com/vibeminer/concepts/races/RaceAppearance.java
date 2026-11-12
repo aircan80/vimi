@@ -606,11 +606,13 @@ final class RaceAppearance {
                     complete = false;
                     note(
                             issues,
-                            "Texture #"
+                            INCOMPLETE
+                                    + "texture #"
                                     + fid
                                     + " is "
                                     + read.state()
-                                    + "; available layers are retained.");
+                                    + ", so the layers that could be read are shown; this preview"
+                                    + " is not saved.");
                     continue;
                 }
                 var image = read.image();
@@ -622,7 +624,10 @@ final class RaceAppearance {
                     complete = false;
                     note(
                             issues,
-                            "Additional diffuse images exceed the bounded texture preview budget.");
+                            INCOMPLETE
+                                    + "more diffuse images than the bounded texture budget allows,"
+                                    + " so the extra layers are left out; this preview is not"
+                                    + " saved.");
                     continue;
                 }
                 decodedPixels += imagePixels;
@@ -720,6 +725,12 @@ final class RaceAppearance {
                     // Without its content key, a skeleton that appears later could not
                     // invalidate this composite: it is shown but not saved or remembered.
                     complete = false;
+                    note(
+                            issues,
+                            INCOMPLETE
+                                    + "the model's skeleton is "
+                                    + skeletonStat.state()
+                                    + " in this build, so this preview is shown but not saved.");
                 }
             }
             var skeleton = weightSkeleton(model.model(), skeletonLater, token);
@@ -729,6 +740,12 @@ final class RaceAppearance {
                             "The NPC model's skeleton cannot be read whole yet.");
                 }
                 complete = false;
+                note(
+                        issues,
+                        INCOMPLETE
+                                + "the model's skeleton cannot be read whole yet, so surfaces"
+                                + " whose weights need it may be missing; this preview is not"
+                                + " saved.");
             }
             var open =
                     files.openRead(FileTypes.FileRef.id(base.variant().modelFileDataId()), token)
@@ -760,6 +777,13 @@ final class RaceAppearance {
                     return failed(issues, "The NPC model is " + open.state() + ".");
                 }
                 complete = false;
+                note(
+                        issues,
+                        INCOMPLETE
+                                + "the model file "
+                                + (holes ? "has protected sections" : "is " + open.state())
+                                + ", so surfaces that need its weight facts are not drawn; this"
+                                + " preview is not saved.");
             }
             var bindings = new ArrayList<MeshAppearance.Surface>();
             var seen = new java.util.HashSet<Integer>();
@@ -820,11 +844,18 @@ final class RaceAppearance {
                 }
             }
             if (bindings.isEmpty()) {
+                // Without the model's facts its draws could not be checked: not a lasting fact.
+                if (facts == null) {
+                    return failed(issues, modelNotWhole(open.state(), holes));
+                }
                 // A lasting fact of this model and plan (no draw fits the reviewed static
                 // profile): a stated refusal for players and NPCs alike, not a read failure.
                 return failed(issues, RaceAppearancePlan.UNREVIEWED_SURFACES);
             }
             if (neutralShare(mesh, base.visibleParts(), bindings) >= NEUTRAL_LIMIT) {
+                if (facts == null) {
+                    return failed(issues, modelNotWhole(open.state(), holes));
+                }
                 // Nearly the whole model would be drawn untextured (a dragonriding drake's body
                 // and its scale colour, for one): refused, not shown as if textured.
                 return failed(issues, RaceAppearancePlan.MOSTLY_UNREVIEWED_SURFACES);
@@ -922,6 +953,23 @@ final class RaceAppearance {
             }
             throw failure;
         }
+    }
+
+    /**
+     * How a player preview that is shown without everything it was composed from begins its issue
+     * (#499): it is drawn from what could be read, and not saved or remembered.
+     */
+    static final String INCOMPLETE = "Preview incomplete: ";
+
+    /**
+     * Why a player preview cannot be drawn while its model file is not stored whole: its draws
+     * cannot be checked without the model's facts. Asked again later; never a lasting refusal.
+     */
+    static String modelNotWhole(FileTypes.FileReadState state, boolean holes) {
+        return "This race's model cannot be read whole yet ("
+                + (holes ? "protected sections" : state)
+                + "), so its surfaces cannot be checked; it is shown once the model is stored"
+                + " whole.";
     }
 
     /** The NPC page facts every NPC appearance carries. */

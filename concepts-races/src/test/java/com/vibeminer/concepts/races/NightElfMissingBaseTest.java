@@ -94,7 +94,11 @@ final class NightElfMissingBaseTest {
             assertEquals(RaceTypes.State.UNAVAILABLE, result.state());
             assertTrue(result.message().startsWith("The base skin texture is unavailable"));
             assertTrue(
-                    result.issues().stream().anyMatch(issue -> issue.startsWith("Texture #100")));
+                    result.issues().stream()
+                            .anyMatch(
+                                    issue ->
+                                            issue.startsWith(
+                                                    RaceAppearance.INCOMPLETE + "texture #100")));
             assertEquals(0, generated.puts());
         } finally {
             service.closeAsync().join();
