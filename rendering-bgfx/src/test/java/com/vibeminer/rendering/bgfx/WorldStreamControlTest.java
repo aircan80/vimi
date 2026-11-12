@@ -228,6 +228,74 @@ class WorldStreamControlTest {
         assertEquals(333, encoded.length, line);
         assertTrue(encoded.length <= WorldStreamControl.MAX_LINE_BYTES);
         assertEquals(worst, WorldStreamControl.decode(encoded, encoded.length));
+        // The widest body tail on top: the longest line of all, pinned to the limit's reason.
+        var body =
+                new WorldStreamTransport.Body(
+                        -WorldStreamTransport.Body.MAX_YARDS,
+                        -WorldStreamTransport.Body.MAX_YARDS,
+                        -WorldStreamTransport.Body.MAX_YARDS,
+                        6.2831,
+                        0xffff,
+                        com.vibeminer.rendering.models.PreviewAnimation.MAX_DURATION_MILLIS,
+                        true);
+        var widest =
+                new WorldStreamControl.Camera(
+                        NONCE,
+                        Long.MAX_VALUE,
+                        Long.MAX_VALUE,
+                        WorldFrameLimits.MAX_WIDTH,
+                        WorldFrameLimits.MAX_HEIGHT,
+                        new TerrainCamera(longest, longest, longest, longest, longest),
+                        sky,
+                        body);
+        byte[] all = WorldStreamControl.encode(widest);
+        String text = new String(all, StandardCharsets.US_ASCII);
+        assertTrue(
+                text.endsWith(" BODY -100000000 -100000000 -100000000 62831 65535 600000 1\n"),
+                text);
+        assertEquals(392, all.length, text);
+        assertTrue(all.length <= WorldStreamControl.MAX_LINE_BYTES);
+        assertEquals(widest, WorldStreamControl.decode(all, all.length));
+    }
+
+    @Test
+    void theBodyTailRoundTripsQuantizedAndRefusesMalformedTails() throws IOException {
+        var body = new WorldStreamTransport.Body(-150.12345, 260.0004, 10.5, -0.5, 4, 133, false);
+        assertEquals(-150.123, body.x(), 0);
+        assertEquals(260.0, body.y(), 0);
+        assertEquals(2 * Math.PI - .5, body.yaw(), 1e-4, "the yaw is kept in [0, 2 pi)");
+        for (var sky : new WorldStreamTransport.Sky[] {null, WorldStreamTransport.Sky.EXPLORER}) {
+            var camera =
+                    new WorldStreamControl.Camera(
+                            NONCE, 7, 2, 800, 500, new TerrainCamera(1, 2, 3, 0, 0), sky, body);
+            byte[] line = WorldStreamControl.encode(camera);
+            assertEquals(camera, WorldStreamControl.decode(line, line.length));
+            assertTrue(
+                    new String(line, StandardCharsets.US_ASCII)
+                            .endsWith(" BODY -150123 260000 10500 57832 4 133 0\n"));
+        }
+        var model = new WorldStreamControl.BodyModel(NONCE, 4096, "a".repeat(64));
+        byte[] line = WorldStreamControl.encode(model);
+        assertEquals(
+                PREFIX + "BODY_MODEL 1 body-1.wsb 4096 " + "a".repeat(64) + "\n",
+                new String(line, StandardCharsets.US_ASCII));
+        assertEquals(model, WorldStreamControl.decode(line, line.length));
+        for (String tail :
+                List.of(
+                        "CAM 1 1 800 500 0.0 0.0 0.0 0.0 0.0 BODY 1 2 3 4 5 6 2",
+                        "CAM 1 1 800 500 0.0 0.0 0.0 0.0 0.0 BODY 01 2 3 4 5 6 0",
+                        "CAM 1 1 800 500 0.0 0.0 0.0 0.0 0.0 BODY -0 2 3 4 5 6 0",
+                        "CAM 1 1 800 500 0.0 0.0 0.0 0.0 0.0 BODY 1 2 3 62832 5 6 0",
+                        "CAM 1 1 800 500 0.0 0.0 0.0 0.0 0.0 BODY 1 2 3 4 65536 6 0",
+                        "CAM 1 1 800 500 0.0 0.0 0.0 0.0 0.0 BODY 1 2 3 4 5 600001 0",
+                        "CAM 1 1 800 500 0.0 0.0 0.0 0.0 0.0 BODY 1 2 3 4 5 6",
+                        "CAM 1 1 800 500 0.0 0.0 0.0 0.0 0.0 BODY 100000001 2 3 4 5 6 0",
+                        "BODY_MODEL 1 body-2.wsb 4096 " + "a".repeat(64),
+                        "BODY_MODEL 1 body-1.wsb 15 " + "a".repeat(64))) {
+            byte[] bytes = (PREFIX + tail + "\n").getBytes(StandardCharsets.US_ASCII);
+            assertThrows(
+                    IOException.class, () -> WorldStreamControl.decode(bytes, bytes.length), tail);
+        }
     }
 
     /** Sky values are checked whatever the weight, and quantized to what the line carries. */

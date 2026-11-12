@@ -781,6 +781,16 @@ final class WorldTileCreatures implements AutoCloseable {
 
     /** As {@link #convert(DisplayModelTypes.Preview, Cancellation)}, leaving out {@code leftOut}. */
     static Converted convert(DisplayModelTypes.Preview preview, int[] leftOut, Cancellation token) {
+        return convert(preview, leftOut, null, token);
+    }
+
+    /**
+     * As {@link #convert(DisplayModelTypes.Preview, int[], Cancellation)}; {@code sources}, when
+     * given, receives the rest vertex of each model vertex in model order, so a skinned pose of the
+     * rest surface can be gathered into the model's vertices.
+     */
+    static Converted convert(DisplayModelTypes.Preview preview, int[] leftOut,
+            java.util.function.IntConsumer sources, Cancellation token) {
         if (preview == null || preview.appearance() == null || preview.reference() == null)
             return Converted.refused(Count.MODEL_UNAVAILABLE,
                     preview == null || preview.message() == null ? "no static preview" : preview.message());
@@ -796,7 +806,7 @@ final class WorldTileCreatures implements AutoCloseable {
             return Converted.refused(Count.VISIBILITY_UNRESOLVED, rowsDecideSome(reference, mesh)
                     ? "every geoset is hidden by the display's rows"
                     : "the model has no section 0 or x01 section to draw");
-        return surfaces(appearance, visible.ids(), leftOut, true, token);
+        return surfaces(appearance, visible.ids(), leftOut, true, sources, token);
     }
 
     /**
@@ -804,7 +814,7 @@ final class WorldTileCreatures implements AutoCloseable {
      * appearance, as a model; rigid cards are dropped.
      */
     static Converted surfaces(MeshAppearance appearance, Set<Integer> visibleIds, Cancellation token) {
-        return surfaces(appearance, visibleIds, new int[0], false, token);
+        return surfaces(appearance, visibleIds, new int[0], false, null, token);
     }
 
     /**
@@ -817,6 +827,11 @@ final class WorldTileCreatures implements AutoCloseable {
      */
     static Converted surfaces(MeshAppearance appearance, Set<Integer> visibleIds, int[] leftOut,
             boolean sorted, Cancellation token) {
+        return surfaces(appearance, visibleIds, leftOut, sorted, null, token);
+    }
+
+    private static Converted surfaces(MeshAppearance appearance, Set<Integer> visibleIds, int[] leftOut,
+            boolean sorted, java.util.function.IntConsumer sources, Cancellation token) {
         var mesh = appearance.mesh();
         var billboard = new HashSet<Integer>();
         for (int vertex : leftOut) billboard.add(vertex);
@@ -880,6 +895,7 @@ final class WorldTileCreatures implements AutoCloseable {
                     if (mapped == null) {
                         mapped = remap.size();
                         remap.put(vertex, mapped);
+                        if (sources != null) sources.accept(vertex);
                         float[] values = {positions[vertex * 3], positions[vertex * 3 + 1], positions[vertex * 3 + 2],
                             normals.length == 0 ? 0f : normals[vertex * 3],
                             normals.length == 0 ? 0f : normals[vertex * 3 + 1],

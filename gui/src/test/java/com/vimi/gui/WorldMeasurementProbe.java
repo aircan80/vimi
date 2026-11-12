@@ -519,6 +519,12 @@ public final class WorldMeasurementProbe {
                     + " capsule " + com.vibeminer.rendering.world.BodyAnimation.capsule(size.geoBox(), size.scale())));
             var sequences = displays.worldSequences(display, ids, Cancellation.NONE).get(2, TimeUnit.MINUTES);
             var out = Path.of(System.getProperty("probe.out"));
+            // The World's body file of this display, for the renderer's body GPU proof.
+            var built = WorldBodyModel.build(displays, display, Cancellation.NONE);
+            var bodyFile = out.resolve("body-" + display + ".wsb");
+            java.nio.file.Files.write(bodyFile, built.file());
+            say("PROBE body file " + bodyFile.getFileName() + ": " + built.file().length + " bytes, capsule "
+                    + built.capsule() + ", sequences " + built.durations() + " ms, move speeds " + built.moveSpeeds());
             for (var entry : sequences.entrySet()) {
                 var idle = entry.getValue();
                 say("PROBE body sequence " + entry.getKey() + ": " + idle.state() + " · " + idle.message()

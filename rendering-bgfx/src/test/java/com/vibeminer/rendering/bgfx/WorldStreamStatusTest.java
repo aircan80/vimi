@@ -193,4 +193,15 @@ class WorldStreamStatusTest {
             assertThrows(IOException.class, () -> parse(bad), bad);
         }
     }
+
+    @Test
+    void bodyOutcomesDecodeAndAnythingElseIsRefused() throws Exception {
+        for (var outcome : WorldStreamStatus.BodyOutcome.values()) {
+            var done = (WorldStreamStatus.BodyDone) parse("BODY_DONE 1 " + outcome.name());
+            assertEquals(outcome, done.outcome());
+        }
+        for (String body : new String[] {"BODY_DONE 2 DRAWN", "BODY_DONE 1 NONE", "BODY_DONE 1"}) {
+            assertThrows(IOException.class, () -> parse(body), body);
+        }
+    }
 }

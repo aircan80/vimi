@@ -131,6 +131,20 @@ final class WorldStreamStatus {
         }
     }
 
+    /** The one terminal reply to {@code BODY_MODEL}; none of them is ever session-fatal. */
+    enum BodyOutcome {
+        /** Read and attached; the body is drawn whenever a camera carries its pose. */
+        DRAWN,
+        /** Read, validation or allocation failed; the session continues without a body. */
+        FAILED
+    }
+
+    record BodyDone(WorldStreamState.Nonce nonce, BodyOutcome outcome) implements Message {
+        BodyDone {
+            java.util.Objects.requireNonNull(outcome);
+        }
+    }
+
     enum Rejection {
         STALE_TRANSACTION,
         STALE_LEASE,
@@ -252,6 +266,11 @@ final class WorldStreamStatus {
                     arity(p, 5);
                     require(p[3].equals("1"));
                     yield new HorizonDone(nonce, HorizonOutcome.valueOf(p[4]));
+                }
+                case "BODY_DONE" -> {
+                    arity(p, 5);
+                    require(p[3].equals("1"));
+                    yield new BodyDone(nonce, BodyOutcome.valueOf(p[4]));
                 }
                 case "COMMITTED" -> {
                     arity(p, 6);

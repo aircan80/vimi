@@ -154,4 +154,18 @@ class WorldControlMailboxTest {
         assertFalse(mailbox.failed());
         assertFalse(mailbox.closing());
     }
+
+    @Test
+    void theBodyLaneTakesOneCommandAndIgnoresRepeats() {
+        var mailbox = new WorldControlMailbox(NONCE);
+        var first = new WorldStreamControl.BodyModel(NONCE, 100, "d".repeat(64));
+        assertEquals(WorldControlMailbox.Result.ACCEPTED, mailbox.offer(first));
+        assertEquals(
+                WorldControlMailbox.Result.ACCEPTED,
+                mailbox.offer(new WorldStreamControl.BodyModel(NONCE, 200, "e".repeat(64))));
+        assertEquals(first, mailbox.takeBody());
+        assertNull(mailbox.takeBody());
+        assertNull(mailbox.takeHorizon(), "its own lane");
+        assertFalse(mailbox.failed());
+    }
 }

@@ -175,6 +175,8 @@ final class WorldExplorerInput {
     private final Host host;
     private final ExplorerMotion motion = new ExplorerMotion();
     private final BodyMotion body = new BodyMotion();
+    // The drawn body's animation clock, once its model is known.
+    private com.vibeminer.rendering.world.BodyAnimator animator;
     private Mode mode = Mode.FREE;
     private final Set<KeyCode> keys = new HashSet<>();
     private long lastTick, lastRender, lastNearby;
@@ -220,6 +222,18 @@ final class WorldExplorerInput {
     /** The body (walking or flying), for status and tests. */
     BodyMotion body() {
         return body;
+    }
+
+    /**
+     * The drawn body's animation clock; with one, body modes also request frames at the movement
+     * cadence while the body stands, so its idle plays.
+     */
+    void animator(com.vibeminer.rendering.world.BodyAnimator next) {
+        animator = next;
+    }
+
+    com.vibeminer.rendering.world.BodyAnimator animator() {
+        return animator;
     }
 
     private static WalkController.Mode bodyMode(Mode mode) {
@@ -591,6 +605,8 @@ final class WorldExplorerInput {
         var stepped = body.step(camera, input.forward(), input.strafe(), input.vertical(), input.turn(),
                 input.tilt(), flySpeed(), dt, host.collision());
         host.bodyStatus(mode, stepped.status());
+        if (animator != null)
+            animator.step(body.mode(), stepped.status(), walker.horizontalSpeed(), input.forward() < 0, false, dt);
         // Only the body travelling is movement; a look or a zoom only swings the camera.
         // Placing the body under a new camera is not travel either.
         boolean travelled = placed && (walker.x() != x || walker.y() != y || walker.z() != z);
@@ -598,9 +614,14 @@ final class WorldExplorerInput {
         boolean busy = input.forward() != 0 || input.strafe() != 0 || input.vertical() != 0
                 || stepped.status() == WalkController.Status.FALLING
                 || stepped.status() == WalkController.Status.SLIDING;
+        long cadence = host.fastCadence() ? FAST_CADENCE_NANOS : SLOW_CADENCE_NANOS;
         if (!stepped.moved()) {
             if (looked) frame();
-            else showFinal();
+            else if (animator != null && now - lastRender > cadence) {
+                // The body's idle keeps playing while nothing moves.
+                lastRender = now;
+                frame();
+            } else showFinal();
             if (!busy) rested();
             return;
         }
@@ -608,7 +629,6 @@ final class WorldExplorerInput {
         if (travelled) moving = true;
         else if (!looked && !busy) rested();
         unshown = true;
-        long cadence = host.fastCadence() ? FAST_CADENCE_NANOS : SLOW_CADENCE_NANOS;
         if (looked || now - lastRender > cadence) {
             lastRender = now;
             frame();

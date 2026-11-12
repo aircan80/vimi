@@ -283,6 +283,9 @@ final class WorldStreamSourceController {
     private volatile WorldStreamTransport.Session session;
     // Whether this session's WDL horizon was asked for (#372); once per session.
     private boolean horizonStarted;
+    // The walking body's file, once a source is attached; sent once per session.
+    private volatile java.util.function.Supplier<java.util.concurrent.CompletableFuture<byte[]>> bodySource;
+    private boolean bodyStarted;
     private List<WorldFormats.Tile> desired;
     // Tiles one ring beyond the demand (#366): a pending tile there is kept, not canceled.
     private List<WorldFormats.Tile> keep = List.of();
@@ -537,6 +540,36 @@ final class WorldStreamSourceController {
                                     "World horizon was not delivered", sendFailure);
                     });
                 });
+    }
+
+    /**
+     * The walking body's file ({@link com.vibeminer.rendering.bgfx.WorldStreamBodyFile}), asked for
+     * once the session draws; any failure only means no body.
+     */
+    void body(java.util.function.Supplier<java.util.concurrent.CompletableFuture<byte[]>> source) {
+        bodySource = Objects.requireNonNull(source);
+        kick();
+    }
+
+    /** Once per session, when a body source is attached: hands the body to the World child. */
+    private void startBody() {
+        var source = bodySource;
+        if (bodyStarted || closing || source == null) return;
+        bodyStarted = true;
+        var opened = session;
+        source.get().whenComplete((file, failure) -> {
+            if (failure != null) {
+                WorldDiagnostics.degradedUnlessClean("body", "World body unavailable", failure);
+                return;
+            }
+            if (closing) return;
+            opened.attachBody(file).whenComplete((outcome, sendFailure) -> {
+                if (sendFailure != null)
+                    WorldDiagnostics.degradedUnlessClean("body", "World body was not delivered", sendFailure);
+                else if (outcome != com.vibeminer.rendering.bgfx.WorldStreamTransport.BodyOutcome.DRAWN)
+                    WorldDiagnostics.degraded("body", "The World child could not draw the body", null);
+            });
+        });
     }
 
     /** Records the capacity revision before the transport can refuse this commit. */
@@ -1107,6 +1140,7 @@ final class WorldStreamSourceController {
         if (!session.initialized().isDone()) return;
         session.initialized().join();
         startHorizon();
+        startBody();
         pollFrame();
         updateArea();
         stepExterior();

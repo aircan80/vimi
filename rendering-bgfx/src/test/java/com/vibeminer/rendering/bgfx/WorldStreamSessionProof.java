@@ -62,8 +62,14 @@ public final class WorldStreamSessionProof {
                             "true")
                     .start();
         }
+        return launch(directory, SESSION);
+    }
+
+    /** Launches the real World child for {@code session} (not instrumented). */
+    static Process launch(Path directory, WorldStreamEnvelope.Session session) throws Exception {
+        String java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
         Path bootstrap = directory.resolve("session.wss");
-        Files.write(bootstrap, WorldStreamEnvelope.encode(SESSION));
+        Files.write(bootstrap, WorldStreamEnvelope.encode(session));
         return new ProcessBuilder(
                         java,
                         "--enable-native-access=ALL-UNNAMED",

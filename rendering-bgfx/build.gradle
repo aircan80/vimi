@@ -362,6 +362,34 @@ tasks.register('nativeGpuWorldStreamHorizonProof', JavaExec) {
     args layout.buildDirectory.dir('native-world-stream-horizon').get().asFile.absolutePath
 }
 
+// The walking body: attached once, posed by the camera's body tail, drawn by the objects
+// pass. -PbodyFile=<body-441.wsb from the measurement probe's body mode> draws a real body;
+// without it an authored body swings its leg. Frames go to -PbodyProofOutput or the build folder.
+tasks.register('nativeGpuWorldStreamBodySessionProof', JavaExec) {
+    group = 'verification'
+    description = 'Sends an authored body to the real World child and checks BODY_DONE and its frames.'
+    dependsOn testClasses, tasks.named('verifyWorldStreamShaders'), tasks.named('verifyWorldWmoShaders'), tasks.named('verifyShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.WorldStreamBodySessionProof'
+    timeout = java.time.Duration.ofMinutes(3)
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args layout.buildDirectory.dir('native-world-stream-body-session').get().asFile.absolutePath
+}
+
+tasks.register('nativeGpuWorldStreamBodyProof', JavaExec) {
+    group = 'verification'
+    description = 'Draws the walking body standing, walking and running from the follow camera.'
+    dependsOn testClasses, tasks.named('verifyWorldStreamShaders'), tasks.named('verifyWorldWmoShaders'), tasks.named('verifyShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.WorldStreamBodyProof'
+    timeout = java.time.Duration.ofMinutes(2)
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    systemProperty 'vimi.worldProof.backend', providers.gradleProperty('worldProofBackend').getOrElse('vulkan')
+    def body = providers.gradleProperty('bodyFile')
+    args([providers.gradleProperty('bodyProofOutput').getOrElse(layout.buildDirectory.dir('native-world-stream-body').get().asFile.absolutePath)]
+        + (body.isPresent() ? [body.get()] : []))
+}
+
 // Raw terrain frames of one authored tile, for before/after comparisons of the terrain path.
 tasks.register('nativeGpuWorldStreamTerrainCapture', JavaExec) {
     group = 'verification'

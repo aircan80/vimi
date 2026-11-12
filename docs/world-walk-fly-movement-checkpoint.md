@@ -12,8 +12,9 @@ modes:
 - **Fly with collision** (checkbox or G; G again walks) moves the same body
   without gravity.
 
-No body is drawn yet; the camera follows an invisible capsule. The body
-collides with the terrain, buildings and doodads.
+The body is drawn as a murloc (creature display 441) that stands, walks and
+runs with its movement, and is hidden in first person. It collides with the
+terrain, buildings and doodads. See [Drawn body](#drawn-body-murloc).
 
 ## Walking
 
@@ -164,9 +165,9 @@ accept a 0.01 yd overlap.
 No game data or screenshots are included. Real-client movement parity is not
 claimed for the flagged values.
 
-## Body sequences (murloc, groundwork)
+## Body sequences (murloc)
 
-The drawn body is not in the World yet; its data is:
+The drawn body's data:
 
 - `M2IdleAnimation.readSequence` reads any sequence stored in the model (Stand
   0, Walk 4, Run 5, WalkBackwards 13, SwimIdle 41, Swim 42, Fly 135) under the
@@ -191,5 +192,46 @@ The drawn body is not in the World yet; its data is:
   (or protected sections) when the build's key set changes
   (`BuildFiles.keyRevision`), and reads them again.
 - The measurement probe's `body` mode renders each sequence of a display at four
-  times on the CPU.
+  times on the CPU, and writes the World's body file (`body-441.wsb`).
+
+## Drawn body (murloc)
+
+- `WorldBodyModel` builds the body once per World view, on a worker: the
+  display's World binding converted exactly as the World converts creatures
+  (`WorldTileCreatures.convert`, which also reports the rest vertex behind each
+  model vertex), its sequences and its size, packed as one body file
+  (`WorldStreamBodyFile`: model, vertex map, scale, and each animation's
+  `PreviewAnimation.write` record). The capsule takes the recorded size.
+- The stream controller hands the file to the World child once per session,
+  after the first visible tile, as file `body-1.wsb` and command `BODY_MODEL`;
+  the child checks length, digest and every count and reference, builds the
+  index buffer, textures and a dynamic vertex buffer in the objects' layout,
+  and answers one `BODY_DONE` (`DRAWN` or `FAILED`; a failure only means no
+  body).
+- Each camera line in a body mode carries a `BODY` tail: the feet in
+  thousandths of a yard, the yaw in ten-thousandths of a radian, the sequence,
+  its clock in milliseconds and a hidden flag (first person). The longest
+  camera line is now 392 bytes; the line limit is 400.
+- Each frame with a new pose, the child skins the rest surface with the
+  sequence's `Skinner`, gathers positions and normals through the vertex map
+  into the dynamic vertex buffer and draws the body's ranges with the objects'
+  program, materials and states under one instance row (yaw about +Z, scale,
+  feet relative to the camera). Opaque and cutout ranges draw with the objects,
+  blended and additive ones after the blended objects. Nothing is allocated on
+  the Java heap per frame; a repeated pose is not uploaded again.
+- `BodyAnimator` keeps the clock: the sequence from `BodyAnimation.choose`, its
+  clock at `BodyAnimation.rate`, restarted on a change of sequence; without
+  WalkBackwards (the murloc has none) backpedalling plays the walk in reverse.
+  A standing body keeps requesting frames at the movement cadence so its idle
+  plays.
+- Proofs: `nativeGpuWorldStreamBodyProof` draws a body (an authored one, or
+  `-PbodyFile=body-441.wsb` from the probe) standing, walking and running from
+  the follow camera and from the side at four times each, and checks that it
+  draws, that a hidden body draws nothing, that the legs move and that a
+  repeated pose is not uploaded; `nativeGpuWorldStreamBodySessionProof` sends a
+  body through the real World child and checks `BODY_DONE 1 DRAWN` and its
+  frames.
+- Not yet: swimming (needs a liquid-surface query), jump and fall sequences,
+  the body turning toward its movement while strafing, and the gryphon for
+  flying.
 

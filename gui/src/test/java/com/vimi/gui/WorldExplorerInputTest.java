@@ -20,6 +20,7 @@ public final class WorldExplorerInputTest {
     private WorldExplorerInputTest() {}
 
     public static void main(String[] args) {
+        aDrawnBodyPlaysItsSequencesAndKeepsFramingWhileItStands();
         keysMapToClampedAxes();
         walkToggleIgnoresKeyRepeat();
         commandKeysFireOncePerPressAndNeverMove();
@@ -1089,6 +1090,41 @@ public final class WorldExplorerInputTest {
         input.pulse(t += 16_666_667L);
         input.pulse(t += 16_666_667L);
         require(host.statuses.getLast().equals("WALK:LOADING"), "Waits for collision: " + host.statuses.getLast());
+    }
+
+    /**
+     * With a drawn body, standing still keeps requesting frames at the movement cadence so its
+     * idle plays; running forward plays Run and backpedalling the walk (backwards).
+     */
+    private static void aDrawnBodyPlaysItsSequencesAndKeepsFramingWhileItStands() {
+        var host = new Host();
+        var input = new WorldExplorerInput(host);
+        input.motion(WorldExplorerInput.Mode.WALK, true);
+        var animator = new com.vibeminer.rendering.world.BodyAnimator(
+                java.util.Map.of(0, 1333L, 4, 534L, 5, 533L), java.util.Map.of(4, 2.5f, 5, 8.333333f));
+        input.animator(animator);
+        long t = 1_000_000_000L;
+        input.pulse(t);
+        long before = host.count("frame");
+        for (int i = 0; i < 30; i++) input.pulse(t += 5_000_000L);
+        require(host.count("frame") - before >= 5, "Standing still keeps framing the idle: " + host.calls);
+        require(animator.sequence() == 0 && animator.millis() > 100, "Stand plays: " + animator.millis());
+        input.keyPressed(KeyCode.W);
+        for (int i = 0; i < 10; i++) input.pulse(t += 16_666_667L);
+        require(animator.sequence() == 5, "Running forward plays Run: " + animator.sequence());
+        input.keyReleased(KeyCode.W);
+        input.keyPressed(KeyCode.S);
+        for (int i = 0; i < 10; i++) input.pulse(t += 16_666_667L);
+        require(animator.sequence() == 4, "Backpedalling plays the walk: " + animator.sequence());
+        input.keyReleased(KeyCode.S);
+        // Without a drawn body nothing frames a body that stands still.
+        var plain = new Host();
+        var still = new WorldExplorerInput(plain);
+        still.motion(WorldExplorerInput.Mode.WALK, true);
+        still.pulse(t);
+        long once = plain.count("frame");
+        for (int i = 0; i < 30; i++) still.pulse(t += 5_000_000L);
+        require(plain.count("frame") == once, "No body, no idle frames: " + plain.calls);
     }
 
     /** F toggles walking, G walking or flying, and C first person, once per press. */
