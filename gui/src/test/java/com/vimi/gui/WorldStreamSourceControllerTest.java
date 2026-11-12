@@ -59,6 +59,7 @@ public final class WorldStreamSourceControllerTest {
         nativePresentationAcceptsCurrentContentAndRelievesTwelveOwners();
         nativePresentationWithAStillCameraAcceptsEachCommit();
         everySessionSendsEachBodyOnceAfterItsFirstCommit();
+        aRefusedBodyIsSentAgainAfterABackoff();
         nativeReportBeforeTheReceiptIsStillAccepted();
         poolReleaseRetriesWithoutDemandOrParentCapacityChange();
         capacityChangeBetweenTileRefusalAndRetryStillWakesPreparation();
@@ -2607,6 +2608,53 @@ public final class WorldStreamSourceControllerTest {
                 outcome.complete(new byte[64]);
                 fixture.close();
             }
+        }
+    }
+
+    /**
+     * A body the child refuses (here an 80-byte file) is not drawn, and is sent again only after
+     * the backoff (2 s, then 4 s): not in a loop. A drawn body ends the retries.
+     */
+    private static void aRefusedBodyIsSentAgainAfterABackoff() throws Exception {
+        check(WorldStreamSourceController.bodyRetryDelay(1) == 2_000_000_000L
+                        && WorldStreamSourceController.bodyRetryDelay(2) == 4_000_000_000L
+                        && WorldStreamSourceController.bodyRetryDelay(20) == 60_000_000_000L,
+                "Body retry delays double up to a minute");
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 9);
+        var size = new java.util.concurrent.atomic.AtomicInteger(80);
+        try {
+            fixture.start();
+            fixture.controller.body(441, () ->
+                    java.util.concurrent.CompletableFuture.completedFuture(new byte[size.get()]));
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 9));
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                    == WorldStreamSourceController.Phase.READY);
+            var log = fixture.gpu.scratch.getParent().resolve("authored-commands.log");
+            java.util.function.LongSupplier sent = () -> {
+                try {
+                    return Files.readString(log).lines().filter(line -> line.startsWith("BodyModel[")).count();
+                } catch (java.io.IOException e) {
+                    return -1;
+                }
+            };
+            fixture.until(() -> sent.getAsLong() == 1);
+            for (int i = 0; i < 40; i++) fixture.pump();
+            check(sent.getAsLong() == 1 && fixture.controller.bodyDrawn() == -1,
+                    "A refused body is not drawn and not sent again at once: " + sent.getAsLong());
+            fixture.clock.addAndGet(2_000_000_000L);
+            fixture.until(() -> sent.getAsLong() == 2);
+            for (int i = 0; i < 40; i++) fixture.pump();
+            check(sent.getAsLong() == 2, "Then once more after 2 s: " + sent.getAsLong());
+            // The child takes it this time.
+            size.set(96);
+            fixture.clock.addAndGet(4_000_000_000L);
+            fixture.until(() -> fixture.controller.bodyDrawn() == 441);
+            for (int i = 0; i < 40; i++) fixture.pump();
+            check(sent.getAsLong() == 3, "Drawn after the second retry, and no more sends: " + sent.getAsLong());
+        } finally {
+            fixture.close();
         }
     }
 

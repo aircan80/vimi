@@ -130,9 +130,10 @@ public final class AuthoredWorldControllerChild {
                                         + covered
                                         + (exteriors ? " 0" : ""));
                     }
-                } else if (command instanceof WorldStreamControl.BodyModel) {
-                    // The authored child takes any body file; it draws nothing.
-                    state.send("BODY_DONE 1 DRAWN");
+                } else if (command instanceof WorldStreamControl.BodyModel model) {
+                    // The authored child takes any body file and draws nothing; a body of exactly
+                    // 80 bytes stands for one the child refuses (the objects' budget).
+                    state.send(model.length() == 80 ? "BODY_DONE 1 FAILED" : "BODY_DONE 1 DRAWN");
                 } else if (command instanceof WorldStreamControl.Commit next) {
                     var commit =
                             WorldStreamEnvelope.decodeCommit(

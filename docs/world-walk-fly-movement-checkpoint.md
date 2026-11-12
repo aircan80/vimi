@@ -115,7 +115,10 @@ line says "resting on the ground (the walk/fly key lands)", the gryphon plays
 Stand, and it stays in fly mode until the walk/fly key switches to walking.
 
 The flying body is a gryphon (creature display 1149, model 792, the taxi
-gryphon); see "Drawn body" below.
+gryphon); see "Drawn body" below. Its capsule is large (radius 2.30, height
+5.35 yd, from its box): it does not fit through doorways or into most
+interiors, and switching to fly mode indoors pushes the body out of walls and
+ceilings, which can move it out of a room. Fly outdoors; walk indoors.
 
 ## Camera
 
@@ -297,8 +300,11 @@ The drawn body's data:
   `body-1.wsb` and command `BODY_MODEL`. Switching walk and fly sends the other
   body, which replaces the drawn one; each body is built once and the same body
   is not sent twice in a row. Body commands go one at a time: the next only
-  after the child answered the previous. Until the swapped body is drawn (and
-  after a failed one) no body is drawn, never the other mode's;
+  after the child answered the previous. From the moment a body is sent until
+  the child answers it drawn (and after a failed one) no body is drawn, never
+  the other mode's. A body the child refuses or that is not delivered is sent
+  again after 2 s, doubling up to a minute, so a passing refusal (the objects'
+  budget) recovers without a loop;
   the child checks length, digest and every count and reference, builds the
   index buffer, textures and a dynamic vertex buffer in the objects' layout,
   and answers one `BODY_DONE` (`DRAWN` or `FAILED`; a failure only means no

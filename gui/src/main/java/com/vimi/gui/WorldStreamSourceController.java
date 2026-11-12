@@ -291,8 +291,12 @@ final class WorldStreamSourceController {
     private record BodyWanted(
             long key, java.util.function.Supplier<java.util.concurrent.CompletableFuture<byte[]>> source) {}
     private volatile BodyWanted bodyWanted;
-    // Worker only: the key last sent. Shared: whether a send is unanswered, and the drawn key.
-    private long bodySent = -1;
+    // The key last sent (reset after a failed send so it is retried), whether a send is
+    // unanswered, the drawn key, and when a failed body may be sent again.
+    private volatile long bodySent = -1;
+    private volatile long bodyRetryAt;
+    private final java.util.concurrent.atomic.AtomicInteger bodyFailures =
+            new java.util.concurrent.atomic.AtomicInteger();
     private final java.util.concurrent.atomic.AtomicBoolean bodyInFlight =
             new java.util.concurrent.atomic.AtomicBoolean();
     private volatile long bodyDrawn = -1;
@@ -570,12 +574,29 @@ final class WorldStreamSourceController {
         return bodyDrawn;
     }
 
+    /**
+     * Delay before a body the child refused, or that was not delivered, is sent again: 2 s,
+     * doubling with each such failure in a row, at most a minute.
+     */
+    static final long BODY_RETRY_NANOS = 2_000_000_000L, BODY_RETRY_MAX_NANOS = 60_000_000_000L;
+
+    static long bodyRetryDelay(int failures) {
+        return Math.min(BODY_RETRY_MAX_NANOS, BODY_RETRY_NANOS << Math.min(5, Math.max(0, failures - 1)));
+    }
+
     /** Hands the wanted body to the World child when it is not the one last sent; one at a time. */
     private void startBody() {
         var wanted = bodyWanted;
-        if (closing || wanted == null || wanted.key() == bodySent || !bodyInFlight.compareAndSet(false, true))
+        if (closing || wanted == null || wanted.key() == bodySent) return;
+        long retryAt = bodyRetryAt;
+        if (retryAt != 0 && clock.getAsLong() - retryAt < 0) {
+            wakeAt(retryAt);
             return;
+        }
+        if (!bodyInFlight.compareAndSet(false, true)) return;
         bodySent = wanted.key();
+        // From now until its BODY_DONE the child may still draw the previous body: draw none.
+        bodyDrawn = -1;
         var opened = session;
         wanted.source().get().whenComplete((file, failure) -> {
             if (failure != null || closing) {
@@ -592,9 +613,17 @@ final class WorldStreamSourceController {
                 else if (outcome != com.vibeminer.rendering.bgfx.WorldStreamTransport.BodyOutcome.DRAWN)
                     WorldDiagnostics.degraded("body", "The World child could not draw the body", null);
                 // A failed swap leaves the child's previous body, which is not the one wanted.
-                bodyDrawn = sendFailure == null
-                        && outcome == com.vibeminer.rendering.bgfx.WorldStreamTransport.BodyOutcome.DRAWN
-                        ? wanted.key() : -1;
+                boolean drawn = sendFailure == null
+                        && outcome == com.vibeminer.rendering.bgfx.WorldStreamTransport.BodyOutcome.DRAWN;
+                bodyDrawn = drawn ? wanted.key() : -1;
+                if (drawn) {
+                    bodyFailures.set(0);
+                    bodyRetryAt = 0;
+                } else if (!closing) {
+                    // A refusal may be transient (the objects' budget): send it again later.
+                    bodyRetryAt = clock.getAsLong() + bodyRetryDelay(bodyFailures.incrementAndGet());
+                    bodySent = -1;
+                }
                 bodyInFlight.set(false);
                 kick();
             });
