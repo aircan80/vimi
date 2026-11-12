@@ -72,8 +72,307 @@ public final class WorldTileCreaturesTest {
         aTileHandsItsUnchosenNpcsToTheChooserTogether();
         aChooserRevisionRemakesChoicesButKeepsModels();
         aChoiceMadeAcrossARevisionChangeIsNotCached();
+        askingAheadDrawsExactlyWhatAskingInTurnDraws();
+        aBusyAskAheadIsAskedAgainInTurnAndDrawsTheSame();
+        aCanceledTileCancelsWhatItAskedAhead();
+        askingAheadStopsAtTheTileBudgetAndDrawsTheSame();
         BridgeAssembly.run();
         System.out.println("WorldTileCreaturesTest passed");
+    }
+
+    /**
+     * Sources that answer both ways: synchronously, and as futures completed later on their own
+     * threads, as the production components do. Display 13's first preview is refused busy, 12's
+     * Stand cannot be read yet, extended 80 is a refusal and extended 90 cannot be read yet.
+     */
+    private static final class AheadSources implements WorldTileCreatures.Previews, WorldTileCreatures.Npcs {
+        final java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(3);
+        final java.util.concurrent.ConcurrentHashMap<String, AtomicInteger> calls =
+                new java.util.concurrent.ConcurrentHashMap<>();
+        final MeshAppearance clean = geosets();
+
+        int call(String what) {
+            return calls.computeIfAbsent(what, key -> new AtomicInteger()).incrementAndGet();
+        }
+
+        /** Displays 20, 24, 26 and 28 are humanoid NPCs: extended 60, 80, 90 and 100. */
+        long extended(long display) {
+            return display == 20 ? 60 : display == 24 ? 80 : display == 26 ? 90 : display == 28 ? 100 : 0;
+        }
+
+        final AtomicInteger askedAhead = new AtomicInteger();
+        final java.util.Set<Cancellation> aheadTokens = java.util.concurrent.ConcurrentHashMap.newKeySet();
+        final AtomicInteger outstanding = new AtomicInteger(), mostOutstanding = new AtomicInteger();
+        // Display-model asks ahead are refused busy past this many in flight (a full queue).
+        volatile int aheadLimit = Integer.MAX_VALUE;
+        final AtomicInteger aheadModels = new AtomicInteger(), refusedAhead = new AtomicInteger();
+        // Busy retry pauses the tile took: a display deferred as busy pauses before it is asked again.
+        final AtomicInteger busyPauses = new AtomicInteger();
+
+        <T> java.util.concurrent.CompletableFuture<T> model(Cancellation token, java.util.concurrent.Callable<T> answer) {
+            if (aheadModels.incrementAndGet() > aheadLimit) {
+                aheadModels.decrementAndGet();
+                refusedAhead.incrementAndGet();
+                return java.util.concurrent.CompletableFuture.failedFuture(
+                        new DisplayModelTypes.ServiceUnavailable("Display previews busy", false, null));
+            }
+            return later(token, answer).whenComplete((value, failure) -> aheadModels.decrementAndGet());
+        }
+
+        <T> java.util.concurrent.CompletableFuture<T> later(Cancellation token, java.util.concurrent.Callable<T> answer) {
+            askedAhead.incrementAndGet();
+            aheadTokens.add(token);
+            mostOutstanding.accumulateAndGet(outstanding.incrementAndGet(), Math::max);
+            return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                try {
+                    Thread.sleep(1);
+                    return answer.call();
+                } catch (Exception failed) {
+                    throw new java.util.concurrent.CompletionException(failed);
+                } finally {
+                    outstanding.decrementAndGet();
+                }
+            }, pool);
+        }
+
+        @Override
+        public boolean asksAhead() {
+            return true;
+        }
+
+        @Override
+        public DisplayModelTypes.Reference reference(long display, Cancellation token) {
+            call("reference " + display);
+            return WorldTileCreaturesTest.preview(display, extended(display), 0L, clean).reference();
+        }
+
+        @Override
+        public DisplayModelTypes.Preview preview(long display, Cancellation token) {
+            // Display 13's first preview asked in turn is refused busy, and so is every ask ahead
+            // for it: the same busy retry either way.
+            if (call("preview " + display) == 1 && display == 13)
+                throw new DisplayModelTypes.ServiceUnavailable("Display previews busy", false, null);
+            return WorldTileCreaturesTest.preview(display, extended(display), 0L, clean);
+        }
+
+        @Override
+        public DisplayModelTypes.Idle worldIdle(long display, Cancellation token) {
+            call("idle " + display);
+            if (display == 12) return DisplayModelTypes.Idle.unavailable("not readable yet");
+            return new DisplayModelTypes.Idle(DisplayModelTypes.IdleState.AVAILABLE, null, lift(clean), "Stand");
+        }
+
+        @Override
+        public com.vibeminer.concepts.races.RaceNpcs.Appearance appearance(long extended, Cancellation token) {
+            call("npc " + extended);
+            if (extended == 80)
+                return com.vibeminer.concepts.races.RaceNpcs.Appearance.refused("there is no pre-baked NPC texture");
+            if (extended == 90)
+                return new com.vibeminer.concepts.races.RaceNpcs.Appearance(null, 0, 0,
+                        "Some NPC appearance rows cannot be read yet.", true);
+            var result = new com.vibeminer.concepts.races.RaceAppearanceTypes.Result(
+                    com.vibeminer.concepts.races.RaceTypes.State.READY, clean, Set.of(0), List.of(), List.of(),
+                    false, null);
+            return new com.vibeminer.concepts.races.RaceNpcs.Appearance(result, 0, 0, null, false);
+        }
+
+        @Override
+        public com.vibeminer.rendering.models.PreviewAnimation idle(long extended, MeshAppearance appearance,
+                Cancellation token) {
+            call("npc idle " + extended);
+            return extended % 20 == 0 ? lift(appearance) : null;
+        }
+
+        @Override
+        public java.util.concurrent.CompletableFuture<DisplayModelTypes.Reference> referenceAsync(long display,
+                Cancellation token) {
+            return model(token, () -> reference(display, token));
+        }
+
+        @Override
+        public java.util.concurrent.CompletableFuture<DisplayModelTypes.Preview> previewAsync(long display,
+                Cancellation token) {
+            return display == 13
+                    ? java.util.concurrent.CompletableFuture.failedFuture(
+                            new DisplayModelTypes.ServiceUnavailable("Display previews busy", false, null))
+                    : model(token, () -> WorldTileCreaturesTest.preview(display, extended(display), 0L, clean));
+        }
+
+        @Override
+        public java.util.concurrent.CompletableFuture<DisplayModelTypes.Idle> worldIdleAsync(long display,
+                Cancellation token) {
+            return model(token, () -> worldIdle(display, token));
+        }
+
+        @Override
+        public java.util.concurrent.CompletableFuture<com.vibeminer.concepts.races.RaceNpcs.Appearance>
+                appearanceAsync(long extended, Cancellation token) {
+            return later(token, () -> appearance(extended, token));
+        }
+
+        @Override
+        public java.util.concurrent.CompletableFuture<com.vibeminer.rendering.models.PreviewAnimation> idleAsync(
+                long extended, MeshAppearance appearance, Cancellation token) {
+            return later(token, () -> idle(extended, appearance, token));
+        }
+    }
+
+    /** What a tile drew, for comparing two ways of drawing it. */
+    private static List<Object> drawn(WorldTileCreatures.Summary summary,
+            WorldStreamTileWriter.Exterior.Builder builder) {
+        var counts = new ArrayList<Integer>();
+        for (var count : WorldTileCreatures.Count.values()) counts.add(summary.count(count));
+        var exterior = builder.build();
+        // The objects file's size and content counts, and each drawn placement with its choice
+        // and transform, in order.
+        return List.of(counts, summary.drawn(), summary.animated(), summary.restPosed(), summary.npcs(),
+                summary.models(), summary.bytes(), String.valueOf(summary.placed()), exterior.placements(),
+                exterior.draws(), exterior.bytes(), exterior.animatedModels());
+    }
+
+    /**
+     * Asking ahead (#175) changes when the remote parts are read, never what a tile draws: the same
+     * spawns over the same sources draw the same set, counts and summary with and without it, over
+     * creatures, humanoid NPCs, a busy preview retried on the tile, refusals, an unreadable Stand,
+     * repeated displays and idles carried near the camera, on two tiles in a row.
+     */
+    private static void askingAheadDrawsExactlyWhatAskingInTurnDraws() throws Exception {
+        var rows = new ArrayList<Map<String, Object>>();
+        long[] displays = {10, 11, 12, 13, 20, 24, 26, 28, 30, 31, 10, 20, 32, 33, 34, 35, 36, 37};
+        for (int i = 0; i < displays.length; i++)
+            rows.add(WorldSpawnOverlayTest.spawn(i + 1, 1, -100 - 7 * i, -100 - 3 * i, 10.0));
+        List<List<Object>> inTurn = null;
+        for (boolean ahead : new boolean[] {false, true}) {
+            var sources = new AheadSources();
+            try {
+                var creatures = new WorldTileCreatures(token -> index(rows), () -> "r1",
+                        (npc, token) -> qualified((int) displays[(int) npc - 1], null), sources, sources);
+                creatures.prefetch(ahead);
+                creatures.pause((millis, token) -> true);
+                double[] at = {-100, -100};
+                creatures.camera(() -> at);
+                var first = WorldStreamTileWriter.Exterior.builder();
+                var firstTile = drawn(creatures.append(first, 0, TILE, Cancellation.NONE), first);
+                var second = WorldStreamTileWriter.Exterior.builder();
+                var secondTile = drawn(creatures.append(second, 0, TILE, Cancellation.NONE), second);
+                require(ahead == sources.askedAhead.get() > 0, "Asked ahead only when on: " + sources.askedAhead);
+                // Two displays at a time, each with at most a reference, a preview or NPC, and a Stand.
+                require(sources.mostOutstanding.get() <= 2 * 3, "Bounded asking ahead: " + sources.mostOutstanding);
+                require(sources.aheadTokens.stream().allMatch(Cancellation::isCanceled),
+                        "What was asked ahead is canceled with its tile");
+                var both = List.of(firstTile, secondTile);
+                if (inTurn == null) inTurn = both;
+                else require(inTurn.equals(both), "Asking ahead draws the same: " + inTurn + " vs " + both);
+            } finally {
+                sources.pool.shutdownNow();
+            }
+        }
+    }
+
+    /** Draws {@code rows} on two tiles with sources made by {@code make}, asking ahead or not. */
+    private static List<List<Object>> drawTwoTiles(List<Map<String, Object>> rows, long[] displays, boolean ahead,
+            java.util.function.Consumer<AheadSources> setUp, java.util.function.Consumer<AheadSources> after) {
+        var sources = new AheadSources();
+        setUp.accept(sources);
+        try {
+            var creatures = new WorldTileCreatures(token -> index(rows), () -> "r1",
+                    (npc, token) -> qualified((int) displays[(int) npc - 1], null), sources, sources);
+            creatures.prefetch(ahead);
+            creatures.pause((millis, token) -> {
+                sources.busyPauses.incrementAndGet();
+                return true;
+            });
+            double[] at = {-100, -100};
+            creatures.camera(() -> at);
+            var first = WorldStreamTileWriter.Exterior.builder();
+            var firstTile = drawn(creatures.append(first, 0, TILE, Cancellation.NONE), first);
+            var second = WorldStreamTileWriter.Exterior.builder();
+            var secondTile = drawn(creatures.append(second, 0, TILE, Cancellation.NONE), second);
+            after.accept(sources);
+            return List.of(firstTile, secondTile);
+        } finally {
+            sources.pool.shutdownNow();
+        }
+    }
+
+    /**
+     * A component that refuses an ask-ahead busy (its queue full of asks) does not make the
+     * display busy: the conversion asks it in turn, and the tile draws exactly what asking in turn
+     * draws.
+     */
+    private static void aBusyAskAheadIsAskedAgainInTurnAndDrawsTheSame() {
+        var rows = new ArrayList<Map<String, Object>>();
+        long[] displays = {10, 11, 14, 15, 16, 17, 20, 24, 28, 30, 31, 32, 33, 34};
+        for (int i = 0; i < displays.length; i++)
+            rows.add(WorldSpawnOverlayTest.spawn(i + 1, 1, -100 - 7 * i, -100 - 3 * i, 10.0));
+        var inTurn = drawTwoTiles(rows, displays, false, sources -> {}, sources -> {});
+        var refused = new AtomicInteger();
+        var pauses = new AtomicInteger();
+        var ahead = drawTwoTiles(rows, displays, true, sources -> sources.aheadLimit = 1, sources -> {
+            refused.set(sources.refusedAhead.get());
+            pauses.set(sources.busyPauses.get());
+        });
+        require(refused.get() > 0, "Some asks ahead were refused busy");
+        // A refused ask-ahead never deferred its display: no busy retry paused the tiles.
+        require(pauses.get() == 0, "No display was deferred as busy: " + pauses.get() + " pauses");
+        require(inTurn.equals(ahead), "A busy ask-ahead draws the same: " + inTurn + " vs " + ahead);
+    }
+
+    /** A tile canceled while its asks ahead are in flight cancels them all, and the cancellation propagates. */
+    private static void aCanceledTileCancelsWhatItAskedAhead() {
+        var rows = new ArrayList<Map<String, Object>>();
+        for (int i = 0; i < 12; i++) rows.add(WorldSpawnOverlayTest.spawn(i + 1, 1, -100 - 7 * i, -100, 10.0));
+        var sources = new AheadSources();
+        var tile = new Cancellation();
+        var chosen = new AtomicInteger();
+        try {
+            var creatures = new WorldTileCreatures(token -> index(rows), () -> "r1", (npc, token) -> {
+                // Canceled once a few displays have been asked ahead.
+                if (chosen.incrementAndGet() == 5) tile.cancel();
+                return qualified((int) (10 + npc), null);
+            }, sources, sources);
+            boolean propagated = false;
+            try {
+                creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, tile);
+            } catch (CancellationException canceled) {
+                propagated = true;
+            }
+            require(propagated, "The tile's cancellation propagates");
+            require(sources.askedAhead.get() > 0, "Something was asked ahead");
+            require(sources.aheadTokens.stream().allMatch(Cancellation::isCanceled),
+                    "Everything asked ahead was canceled with the tile");
+        } finally {
+            sources.pool.shutdownNow();
+        }
+    }
+
+    /**
+     * Past the tile's preview budget no display is converted: asking ahead stops there, drops what
+     * it asked for spawns whose turn passed without a conversion, and the tile draws the same.
+     */
+    private static void askingAheadStopsAtTheTileBudgetAndDrawsTheSame() {
+        var rows = new ArrayList<Map<String, Object>>();
+        int count = WorldTileCreatures.TILE_PREVIEWS + 10;
+        long[] displays = new long[count];
+        for (int i = 0; i < count; i++) {
+            displays[i] = 100 + i;
+            rows.add(WorldSpawnOverlayTest.spawn(i + 1, 1, -100 - i, -100, 10.0));
+        }
+        var inTurn = drawTwoTiles(rows, displays, false, sources -> {}, sources -> {});
+        var ahead = drawTwoTiles(rows, displays, true, sources -> {}, sources -> {});
+        require(inTurn.equals(ahead), "Asking ahead draws the same up to the budget: " + inTurn + " vs " + ahead);
+        // One tile: no display past the budget (and the few asked ahead at a time) is asked at all.
+        var sources = new AheadSources();
+        try {
+            var creatures = new WorldTileCreatures(token -> index(rows), () -> "r1",
+                    (npc, token) -> qualified((int) displays[(int) npc - 1], null), sources, sources);
+            creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+            long asked = sources.calls.keySet().stream().filter(key -> key.startsWith("reference ")).count();
+            require(asked <= WorldTileCreatures.TILE_PREVIEWS + 2,
+                    "Asking ahead stops at the tile's preview budget: " + asked);
+        } finally {
+            sources.pool.shutdownNow();
+        }
     }
 
     /**
