@@ -762,6 +762,24 @@ public final class WorldTerrainStreaming {
     }
 
     /**
+     * Whether any of the sources a set left out as only on the network ({@link
+     * WorldExteriorObjects.TileObjects#pendingSources}) can be read now; true for an empty list,
+     * whose sources are not known. A cheap open of each, closed at once.
+     */
+    public boolean pendingReadable(java.util.List<Long> ids, Cancellation cancel) {
+        Objects.requireNonNull(ids);
+        Objects.requireNonNull(cancel);
+        if (ids.isEmpty()) {
+            return true;
+        }
+        try {
+            return source().anyReadableNow(ids, cancel);
+        } catch (RuntimeException failure) {
+            throw WorldSourceRefusals.boundary(failure);
+        }
+    }
+
+    /**
      * Walking collision for one recorded tile's placements (buildings and doodads), read from the
      * build's files outside the scoped source lane; see {@link WorldTileCollision}.
      */

@@ -2441,6 +2441,28 @@ final class WorldStreamScopes {
         return source;
     }
 
+    /**
+     * Whether any of {@code ids} can be read now rather than only from the network: a cheap check
+     * (an open, closed at once) before preparing a tile again for sources it left out. Online, the
+     * open may fetch: it reads only the file's BLTE header, which the object source serves by range
+     * for a large object (held in memory, nothing stored) or by fetching and storing a small object
+     * whole, so closing the stream at once never leaves a partial store entry, and a small file it
+     * fetched is then local for the pass that follows.
+     */
+    boolean anyReadableNow(java.util.List<Long> ids, Cancellation token) {
+        for (long id : ids) {
+            token.check();
+            var opened = WorldSourceFutures.await(files.openRead(FileTypes.FileRef.id(id), token));
+            if (opened.stream() != null) {
+                opened.stream().close();
+            }
+            if (opened.state() != FileTypes.FileReadState.NEEDS_NETWORK) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static final Set<FileTypes.FileReadState> UNAVAILABLE_READS =
             EnumSet.of(
                     FileTypes.FileReadState.PROTECTED,
@@ -2475,6 +2497,10 @@ final class WorldStreamScopes {
         if (opened.stream() == null) {
             if (opened.state() == FileTypes.FileReadState.COMPLETE) {
                 throw new IllegalStateException("Complete source has no stream");
+            }
+            if (classifyUnavailable && opened.state() == FileTypes.FileReadState.NEEDS_NETWORK) {
+                // Only the network has it now: left out, and asked for again on a later pass.
+                throw WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_PENDING);
             }
             throw WorldSourceRefusals.at(
                     UNAVAILABLE_READS.contains(opened.state())

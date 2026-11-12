@@ -86,6 +86,10 @@ public final class WorldStreamSourceControllerTest {
         lateObjectsAttachAfterTerrainAndReportBuildings();
         budgetRefusedObjectsRetryAfterAReleaseOnly();
         creaturesShareTheirBytesAndYieldToBuildings();
+        setsLeavingOutNetworkSourcesArePreparedAgainLater();
+        aRetryNoBetterOrWithNothingNewKeepsTheDrawnSet();
+        aRetryGivesWayToBuildingsDueNow();
+        aSetThatKeptOnlySomePendingIdsIsPreparedAtTheLongestBackOff();
         buildingsComeFirstAndCreaturesReplaceThemLater();
         aSpawnSourceWithoutSpawnsSchedulesNoCreaturePasses();
         aSessionThatDrawsCreaturesWarmsItsPreparerOffItsThread();
@@ -951,6 +955,207 @@ public final class WorldStreamSourceControllerTest {
                     line -> refusedTile.test(line) && line.endsWith(" ATTACHED")));
             check(fixture.objectLines().stream().filter(refusedTile).count() == 2,
                     "Offered exactly once more after the release: " + fixture.objectLines());
+        } finally {
+            fixture.close();
+        }
+    }
+
+    /**
+     * A drawn objects set that left out sources only the network had (SOURCE_PENDING) is prepared
+     * again after the pending back-off and replaces the drawn set; once nothing is pending, it is
+     * not prepared again.
+     */
+    private static void setsLeavingOutNetworkSourcesArePreparedAgainLater() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 6);
+        fixture.exteriors = true;
+        fixture.residents = 4;
+        var asked = new java.util.concurrent.ConcurrentHashMap<Integer, java.util.concurrent.atomic.AtomicInteger>();
+        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation, formats, creatureBytes) -> {
+            int pass = asked.computeIfAbsent(tile.y(), key -> new java.util.concurrent.atomic.AtomicInteger()).incrementAndGet();
+            var summary = new WorldStreamSourceBridge.ExteriorSummary(1, 0, 0, 0, 0, 0, 0, pass == 1 ? 2 : 0);
+            return new WorldStreamSourceBridge.ExteriorCopy(
+                    building(), 1, false, "authored", WorldTileCreatures.Summary.NONE, summary, null);
+        };
+        int y = fixture.tiles.get(0).y();
+        try {
+            fixture.start(fixture.gpu::start, () -> {}, preparer);
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 1));
+            fixture.untilPresented(() -> fixture.objectLines().stream()
+                    .anyMatch(line -> line.startsWith(y + " ") && line.endsWith(" ATTACHED")));
+            for (int i = 0; i < 50; i++) { fixture.pump(); Thread.sleep(2); }
+            check(asked.get(y).get() == 1, "Not prepared again before the back-off: " + asked.get(y));
+            fixture.clock.addAndGet(WorldStreamSourceController.PENDING_RETRY_NANOS);
+            fixture.untilPresented(() -> fixture.objectLines().stream()
+                    .anyMatch(line -> line.equals(y + " REPLACE ATTACHED")));
+            check(asked.get(y).get() == 2, "Prepared again once: " + asked.get(y));
+            fixture.clock.addAndGet(WorldStreamSourceController.PENDING_RETRY_MAX_NANOS);
+            for (int i = 0; i < 100; i++) { fixture.pump(); Thread.sleep(2); }
+            check(asked.get(y).get() == 2, "Nothing pending: not prepared again: " + asked.get(y));
+        } finally {
+            fixture.close();
+        }
+    }
+
+    /**
+     * Moves the controller clock past any retry time, as often as needed (the attach outcome that
+     * schedules a retry may land after the attach line), until tile {@code y} was prepared {@code
+     * passes} times.
+     */
+    private static void untilPrepared(
+            Fixture fixture,
+            java.util.concurrent.ConcurrentHashMap<Integer, java.util.concurrent.atomic.AtomicInteger> asked,
+            int y,
+            int passes) throws Exception {
+        long until = System.nanoTime() + 10_000_000_000L;
+        while (asked.get(y).get() < passes) {
+            check(System.nanoTime() < until, "Tile " + y + " not prepared " + passes + " times: " + asked.get(y));
+            fixture.clock.addAndGet(WorldStreamSourceController.PENDING_RETRY_MAX_NANOS);
+            fixture.pump();
+            Thread.sleep(2);
+        }
+    }
+
+    /** A preparer whose sets leave out {@code pending.apply(y, pass)} network sources. */
+    private static WorldStreamSourceBridge.ExteriorPreparer pendingPreparer(
+            java.util.concurrent.ConcurrentHashMap<Integer, java.util.concurrent.atomic.AtomicInteger> asked,
+            java.util.function.BiFunction<Integer, Integer, Integer> pending,
+            java.util.function.BooleanSupplier readable) {
+        return pendingPreparer(asked, pending, readable, false);
+    }
+
+    private static WorldStreamSourceBridge.ExteriorPreparer pendingPreparer(
+            java.util.concurrent.ConcurrentHashMap<Integer, java.util.concurrent.atomic.AtomicInteger> asked,
+            java.util.function.BiFunction<Integer, Integer, Integer> pending,
+            java.util.function.BooleanSupplier readable,
+            boolean truncated) {
+        return new WorldStreamSourceBridge.ExteriorPreparer() {
+            @Override
+            public WorldStreamSourceBridge.ExteriorCopy prepare(
+                    com.vibeminer.concepts.world.WorldTerrainStreaming source,
+                    com.vibeminer.concepts.world.WorldTerrainStreaming.Scope scope,
+                    WorldFormats.Tile tile, Cancellation cancellation, int formats, long creatureBytes) {
+                int pass = asked.computeIfAbsent(tile.y(), key -> new java.util.concurrent.atomic.AtomicInteger())
+                        .incrementAndGet();
+                int left = pending.apply(tile.y(), pass);
+                if (left < 0) {
+                    // Holds until canceled, as a long preparation would.
+                    while (!cancellation.isCanceled()) {
+                        try {
+                            Thread.sleep(2);
+                        } catch (InterruptedException error) {
+                            throw new AssertionError(error);
+                        }
+                    }
+                    cancellation.check();
+                }
+                // Every pending source's ID, or (truncated) only the first of them.
+                int ids = Math.min(Math.max(0, left), truncated ? 1 : Integer.MAX_VALUE);
+                var summary = new WorldStreamSourceBridge.ExteriorSummary(1, 0, 0, 0, 0, 0, 0, Math.max(0, left),
+                        java.util.stream.LongStream.rangeClosed(1, ids).boxed().toList());
+                return new WorldStreamSourceBridge.ExteriorCopy(
+                        building(), 1, false, "authored", WorldTileCreatures.Summary.NONE, summary, null);
+            }
+
+            @Override
+            public boolean pendingReadable(
+                    com.vibeminer.concepts.world.WorldTerrainStreaming source, List<Long> ids, Cancellation cancellation) {
+                return readable.getAsBoolean();
+            }
+        };
+    }
+
+    /**
+     * A retry whose set leaves out as many sources as the drawn one replaces nothing (no upload);
+     * while none of the sources it lacked can be read, it does not prepare at all. Both keep
+     * the back-off going.
+     */
+    private static void aRetryNoBetterOrWithNothingNewKeepsTheDrawnSet() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 6);
+        fixture.exteriors = true;
+        fixture.residents = 4;
+        var asked = new java.util.concurrent.ConcurrentHashMap<Integer, java.util.concurrent.atomic.AtomicInteger>();
+        var readable = new java.util.concurrent.atomic.AtomicBoolean(true);
+        int y = fixture.tiles.get(0).y();
+        try {
+            fixture.start(fixture.gpu::start, () -> {}, pendingPreparer(asked, (tile, pass) -> 2, readable::get));
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 1));
+            fixture.untilPresented(() -> fixture.objectLines().stream()
+                    .anyMatch(line -> line.startsWith(y + " ") && line.endsWith(" ATTACHED")));
+            untilPrepared(fixture, asked, y, 2);
+            for (int i = 0; i < 100; i++) { fixture.pump(); Thread.sleep(2); }
+            check(fixture.objectLines().stream().noneMatch(line -> line.contains("REPLACE")),
+                    "A retry no better than the drawn set replaces nothing: " + fixture.objectLines());
+            // Nothing readable yet: however late it gets, no retry prepares.
+            readable.set(false);
+            for (int i = 0; i < 150; i++) {
+                fixture.clock.addAndGet(WorldStreamSourceController.PENDING_RETRY_MAX_NANOS);
+                fixture.pump();
+                Thread.sleep(2);
+            }
+            check(asked.get(y).get() == 2, "Nothing new to read: not prepared: " + asked.get(y));
+            // Readable again: the next one prepares.
+            readable.set(true);
+            untilPrepared(fixture, asked, y, 3);
+        } finally {
+            fixture.close();
+        }
+    }
+
+    /**
+     * A set that lacked more sources than it kept the IDs of is prepared again at the longest
+     * back-off even though none of the kept IDs is readable: a later one may be.
+     */
+    private static void aSetThatKeptOnlySomePendingIdsIsPreparedAtTheLongestBackOff() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 6);
+        fixture.exteriors = true;
+        fixture.residents = 4;
+        var asked = new java.util.concurrent.ConcurrentHashMap<Integer, java.util.concurrent.atomic.AtomicInteger>();
+        int y = fixture.tiles.get(0).y();
+        try {
+            fixture.start(fixture.gpu::start, () -> {},
+                    pendingPreparer(asked, (tile, pass) -> 3, () -> false, true));
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 1));
+            fixture.untilPresented(() -> fixture.objectLines().stream()
+                    .anyMatch(line -> line.startsWith(y + " ") && line.endsWith(" ATTACHED")));
+            // Nothing the set kept is readable, yet the back-off reaches its longest and it prepares.
+            untilPrepared(fixture, asked, y, 2);
+        } finally {
+            fixture.close();
+        }
+    }
+
+    /** A retry still preparing gives way to buildings a newly wanted tile needs, and runs after. */
+    private static void aRetryGivesWayToBuildingsDueNow() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 6);
+        fixture.exteriors = true;
+        fixture.residents = 4;
+        var asked = new java.util.concurrent.ConcurrentHashMap<Integer, java.util.concurrent.atomic.AtomicInteger>();
+        int y = fixture.tiles.get(0).y(), other = fixture.tiles.get(1).y();
+        // Tile 0: pending first, its first retry holds until canceled, the next draws everything.
+        var preparer = pendingPreparer(asked,
+                (tile, pass) -> tile != y ? 0 : pass == 1 ? 2 : pass == 2 ? -1 : 0, () -> true);
+        try {
+            fixture.start(fixture.gpu::start, () -> {}, preparer);
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 1));
+            fixture.untilPresented(() -> fixture.objectLines().stream()
+                    .anyMatch(line -> line.startsWith(y + " ") && line.endsWith(" ATTACHED")));
+            untilPrepared(fixture, asked, y, 2);
+            // A new tile comes in while the retry holds: its buildings go first.
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 2));
+            fixture.untilPresented(() -> fixture.objectLines().stream()
+                    .anyMatch(line -> line.startsWith(other + " ") && line.endsWith(" ATTACHED")));
+            // Then the retry runs again and replaces the drawn set.
+            fixture.untilPresented(() -> fixture.objectLines().stream()
+                    .anyMatch(line -> line.equals(y + " REPLACE ATTACHED")));
+            check(asked.get(y).get() == 3, "The retry ran again after giving way: " + asked.get(y));
         } finally {
             fixture.close();
         }

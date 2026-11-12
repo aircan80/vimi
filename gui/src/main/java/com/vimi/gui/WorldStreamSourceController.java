@@ -233,6 +233,12 @@ final class WorldStreamSourceController {
         // The later creatures pass (#175): buildings again with the tile's creatures, replacing the
         // drawn buildings-only set (or attached as the first set when the tile had no buildings).
         final boolean creaturesPass;
+        // A pass again for a drawn set that left out sources only the network had (pendingRetry):
+        // the same objects, read again, replacing the drawn set.
+        final boolean retry;
+        // A retry first checks whether any source its set lacked can be read now, and prepares
+        // nothing if none can; false skips the check (see startPendingRetry).
+        boolean checkReadable = true;
         // A creature pass: the buildings its tile's buildings pass kept, reused instead of being
         // prepared again, or null. A buildings pass: what it kept (set on the exterior worker).
         WorldStreamSourceBridge.KeptBuildings reuse;
@@ -243,8 +249,13 @@ final class WorldStreamSourceController {
         }
 
         Exterior(Entry entry, boolean creaturesPass) {
+            this(entry, creaturesPass, false);
+        }
+
+        Exterior(Entry entry, boolean creaturesPass, boolean retry) {
             this.entry = entry;
             this.creaturesPass = creaturesPass;
+            this.retry = retry;
         }
     }
 
@@ -274,6 +285,9 @@ final class WorldStreamSourceController {
     private final java.util.Set<Entry> creaturesPending =
             java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private final IdentityHashMap<Entry, Long> creatureBudget = new IdentityHashMap<>();
+    // Worker-owned: drawn residents whose objects left out sources only the network had
+    // (SOURCE_PENDING), with when to prepare them again and how many times they have been.
+    private final IdentityHashMap<Entry, long[]> pendingRetry = new IdentityHashMap<>();
     // Creature passes canceled for buildings since one last ran to its end (worker-owned).
     private int creaturePreemptions;
     // Buildings prepared in a tile's buildings pass and kept for its creature pass (#175), by
@@ -776,6 +790,38 @@ final class WorldStreamSourceController {
      * with each such read in a row, at most four minutes.
      */
     static final long COLLISION_RETRY_NANOS = 15_000_000_000L, COLLISION_RETRY_MAX_NANOS = 240_000_000_000L;
+
+    /**
+     * A drawn objects set that left out sources only the network had is prepared again after 15
+     * s, doubling each time it still leaves some out, up to 4 minutes, while its tile stays.
+     */
+    static final long PENDING_RETRY_NANOS = 15_000_000_000L, PENDING_RETRY_MAX_NANOS = 240_000_000_000L;
+
+    /** What a retry prepares when none of the sources its tile lacked can be read yet. */
+    private static final WorldStreamSourceBridge.ExteriorCopy NOTHING_NEW =
+            new WorldStreamSourceBridge.ExteriorCopy(null, 0, false, "nothing new", WorldTileCreatures.Summary.NONE,
+                    WorldStreamSourceBridge.ExteriorSummary.NONE, null);
+
+    /** A summary that asks for another try: what a retry that drew nothing better leaves. */
+    private static final WorldStreamSourceBridge.ExteriorSummary PENDING =
+            new WorldStreamSourceBridge.ExteriorSummary(0, 0, 0, 0, 0, 0, 0, 1);
+
+    /**
+     * Whether a retry's set improves on the drawn one: it leaves fewer sources out as only on the
+     * network, or draws more buildings or doodads. Anything else would replace the drawn set with
+     * an equal one, uploading it again for nothing.
+     */
+    static boolean better(WorldStreamSourceBridge.ExteriorCopy copy, WorldStreamSourceBridge.ExteriorSummary drawn) {
+        if (copy.exterior() == null || copy.failed()) return false;
+        var next = copy.summary();
+        return next.pending() < drawn.pending()
+                || next.buildings() > drawn.buildings()
+                || next.doodads() > drawn.doodads();
+    }
+
+    static long pendingRetryDelay(int attempts) {
+        return Math.min(PENDING_RETRY_MAX_NANOS, PENDING_RETRY_NANOS << Math.min(10, Math.max(0, attempts - 1)));
+    }
 
     static long collisionRetryDelay(int attempts) {
         return Math.min(COLLISION_RETRY_MAX_NANOS, COLLISION_RETRY_NANOS << Math.min(10, Math.max(0, attempts - 1)));
@@ -1735,7 +1781,10 @@ final class WorldStreamSourceController {
                 return;
             }
         }
-        if (!creaturesLater) return;
+        if (!creaturesLater) {
+            startPendingRetry(wanted, false);
+            return;
+        }
         // A spawn source with no spawns draws no creature: no pass is scheduled (each would prepare
         // its tile's buildings again for nothing), and the tiles say why. Its tiles stay pending,
         // so creatures come once a new revision of the source has spawns.
@@ -1747,6 +1796,7 @@ final class WorldStreamSourceController {
                 if (!unavailable.equals(entry.source().creatures().note()))
                     entry.source().creatures(WorldTileCreatures.Summary.failed(unavailable));
             }
+            startPendingRetry(wanted, false);
             return;
         }
         // Every wanted tile's buildings are in: creatures next, still nearest first.
@@ -1768,6 +1818,61 @@ final class WorldStreamSourceController {
                 return;
             }
         }
+        startPendingRetry(wanted, true);
+    }
+
+    /**
+     * Prepares again, nearest first, a drawn set that left out sources only the network had, once
+     * its retry time has come and no other objects work waits; it replaces the drawn set. A tile
+     * whose creature pass is still to come ({@code creaturesComing}) waits for it instead: that
+     * pass reads its buildings again. Wakes the step for the earliest retry still to come.
+     */
+    private void startPendingRetry(List<WorldFormats.Tile> wanted, boolean creaturesComing) {
+        pendingRetry.keySet().removeIf(entry -> !live(entry) || !current.contains(entry));
+        if (pendingRetry.isEmpty()) return;
+        long now = clock.getAsLong();
+        long next = 0;
+        boolean waiting = false;
+        for (var tile : wanted) {
+            for (var entry : current) {
+                var retry = pendingRetry.get(entry);
+                if (retry == null || !same(tile, entry.resident())) continue;
+                if (creaturesComing && creaturesPending.contains(entry)
+                        || entry.resident().exteriorObjects() != WorldStreamTransport.ExteriorObjects.DRAWN) {
+                    continue;
+                }
+                if (retry[0] - now > 0) {
+                    if (!waiting || retry[0] - next < 0) next = retry[0];
+                    waiting = true;
+                    continue;
+                }
+                WorldStageTimings.add("parent.objects.pendingRetry", 1);
+                var work = new Exterior(entry, false, true);
+                // A set keeps only the first pending sources' IDs: when it lacked more, a later one
+                // may be the one that became readable, so at the longest back-off the retry
+                // prepares without checking. There is no other anti-starvation counter, by design:
+                // a tile whose known sources stay unreadable is never prepared again for nothing.
+                var drawn = entry.source().exteriorSummary();
+                work.checkReadable = drawn.pending() <= drawn.pendingSources().size()
+                        || pendingRetryDelay((int) retry[1]) < PENDING_RETRY_MAX_NANOS;
+                prepare(work, tile, creaturesShed.contains(entry) ? 0 : creatureAllowance(),
+                        "parent.objects.preparePending");
+                return;
+            }
+        }
+        if (waiting) wakeAt(next);
+    }
+
+    /** After a drawn set: prepared again later while it leaves out sources only the network had. */
+    private void schedulePendingRetry(Entry entry, WorldStreamSourceBridge.ExteriorSummary summary) {
+        if (summary.pending() <= 0) {
+            pendingRetry.remove(entry);
+            return;
+        }
+        var retry = pendingRetry.computeIfAbsent(entry, e -> new long[2]);
+        retry[1]++;
+        retry[0] = clock.getAsLong() + pendingRetryDelay((int) retry[1]);
+        wakeAt(retry[0]);
     }
 
     /** Whether {@code entry} is {@code tile}'s resident and its buildings are still to be offered. */
@@ -1787,6 +1892,18 @@ final class WorldStreamSourceController {
      */
     private void preemptCreaturesFor(List<WorldFormats.Tile> wanted) {
         var work = exterior;
+        if (work.retry && work.prepared != null && !work.prepared.isDone() && !work.cancellation.isCanceled()) {
+            // A retry for sources only the network had always gives way to buildings due now.
+            for (var tile : wanted) {
+                for (var entry : current) {
+                    if (!buildingsWanted(tile, entry)) continue;
+                    WorldStageTimings.add("parent.objects.pendingPreempted", 1);
+                    work.cancellation.cancel();
+                    return;
+                }
+            }
+            return;
+        }
         if (!work.creaturesPass
                 || work.prepared == null
                 || work.prepared.isDone()
@@ -1815,9 +1932,14 @@ final class WorldStreamSourceController {
                 () -> {
                     long preparing = WorldStageTimings.start();
                     try {
+                        // A retry reads nothing again until one of the sources it lacked is local.
+                        if (work.retry && work.checkReadable && !exteriorPreparer.pendingReadable(
+                                lane, work.entry.source().exteriorSummary().pendingSources(), work.cancellation)) {
+                            return NOTHING_NEW;
+                        }
                         return exteriorPreparer.prepare(
                                 lane, owner, tile, work.cancellation, formats, creatureBytes, work.reuse,
-                                creaturesLater && !work.creaturesPass ? kept -> {
+                                creaturesLater && !work.creaturesPass && !work.retry ? kept -> {
                                     // A session closing meanwhile no longer looks at this pass.
                                     if (closing) kept.close();
                                     else work.kept = kept;
@@ -1916,6 +2038,19 @@ final class WorldStreamSourceController {
                     else work.reuse.close();
                     work.reuse = null;
                 }
+                if (work.retry) {
+                    // Canceled (given way to buildings or terrain), it is due again at once; failed,
+                    // the drawn set stays and it is tried again later.
+                    if (live(work.entry) && current.contains(work.entry)) {
+                        if (work.cancellation.isCanceled()) {
+                            var retry = pendingRetry.get(work.entry);
+                            if (retry != null) retry[0] = clock.getAsLong();
+                        } else {
+                            schedulePendingRetry(work.entry, PENDING);
+                        }
+                    }
+                    return;
+                }
                 // Preempted by terrain (or retired): untried, so it restarts when terrain idles.
                 if (work.creaturesPass) {
                     // Canceled (for terrain or buildings), it stays pending. Failed, its buildings
@@ -1945,11 +2080,24 @@ final class WorldStreamSourceController {
             }
             // Kept only while the tile waits for its creature pass; dropped below if it does not.
             if (work.kept != null) {
-                keep(work.entry, work.kept);
+                // Buildings that left out sources only the network had are read again by the
+                // creature pass rather than reused, so what arrived meanwhile is drawn.
+                if (copy.summary().pending() > 0) work.kept.close();
+                else keep(work.entry, work.kept);
                 work.kept = null;
             }
             // A creature pass ran to its end: the next one may give way to buildings again.
             if (work.creaturesPass) creaturePreemptions = 0;
+            if (work.retry && !better(copy, work.entry.source().exteriorSummary())) {
+                // Nothing better than what is drawn (or nothing new to read): the drawn set stays,
+                // nothing is uploaded, and it is tried again later.
+                WorldStageTimings.add(copy == NOTHING_NEW ? "parent.objects.pendingNothingNew"
+                        : "parent.objects.pendingNoBetter", 1);
+                exterior = null;
+                if (live(work.entry) && current.contains(work.entry)) schedulePendingRetry(work.entry, PENDING);
+                changed();
+                return;
+            }
             if (work.creaturesPass && (copy.exterior() == null || copy.failed() || copy.creatures().drawn() == 0)) {
                 // Nothing to add to what is drawn (or the buildings failed this time): the drawn
                 // set stays, and the tile's creature counts are recorded as they are.
@@ -1981,7 +2129,7 @@ final class WorldStreamSourceController {
             work.picks = copy.picks();
             long attaching = WorldStageTimings.start();
             work.releaseRevision = session.objectsReleaseRevision();
-            boolean replace = work.creaturesPass
+            boolean replace = (work.creaturesPass || work.retry)
                     && work.entry.resident().exteriorObjects() == WorldStreamTransport.ExteriorObjects.DRAWN;
             work.attached = replace ? session.replaceObjects(work.entry.resident(), copy.exterior())
                     : session.attachObjects(work.entry.resident(), copy.exterior());
@@ -2006,6 +2154,12 @@ final class WorldStreamSourceController {
             // been released since this offer was issued (not since the refusal arrived, so a
             // release landing in between still counts), still nearest first.
             WorldStageTimings.add("parent.objects.budgetRefused", 1);
+            if (work.retry) {
+                // The drawn set stays; tried again later.
+                schedulePendingRetry(work.entry, PENDING);
+                changed();
+                return;
+            }
             if (work.creaturesPass) {
                 // The buildings it would replace stay drawn.
                 WorldStageTimings.add("parent.objects.creaturesBudgetRefused", 1);
@@ -2035,10 +2189,16 @@ final class WorldStreamSourceController {
                     work.entry.source().creatures(work.creatures);
                     work.entry.source().picks(work.picks);
                     if (work.buildingsFailed) work.entry.source().exteriorFailedLate();
-                    if (creaturesLater && !work.creaturesPass) creaturesPending.add(work.entry);
+                    if (creaturesLater && !work.creaturesPass && !work.retry) creaturesPending.add(work.entry);
+                    schedulePendingRetry(work.entry, work.summary);
                     updateObjects();
                 }
                 case FAILED -> {
+                    if (work.retry) {
+                        // A failed replacement leaves the drawn set; tried again later.
+                        schedulePendingRetry(work.entry, PENDING);
+                        break;
+                    }
                     if (work.creaturesPass && work.entry.resident().exteriorObjects()
                             == WorldStreamTransport.ExteriorObjects.DRAWN) {
                         // A failed replacement leaves the buildings drawn.
@@ -2474,6 +2634,7 @@ final class WorldStreamSourceController {
             creaturesShed.remove(entry);
             creaturesPending.remove(entry);
             creatureBudget.remove(entry);
+            pendingRetry.remove(entry);
             dropKept(entry);
         }
     }

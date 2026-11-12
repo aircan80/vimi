@@ -167,8 +167,41 @@ final class WorldStreamSourceBridge {
             int doodadsOmitted,
             int doodadsCapped,
             int surfacesOmitted,
-            int unreadable) {
+            int unreadable,
+            // Sources left out because only the network has them now (SOURCE_PENDING): the set is
+            // worth preparing again once they may be fetched; the first of them by FileDataID.
+            int pending,
+            List<Long> pendingSources) {
         static final ExteriorSummary NONE = new ExteriorSummary(0, 0, 0, 0, 0, 0, 0);
+
+        ExteriorSummary {
+            pendingSources = List.copyOf(pendingSources);
+        }
+
+        ExteriorSummary(
+                int buildings,
+                int buildingsOmitted,
+                int doodads,
+                int doodadsOmitted,
+                int doodadsCapped,
+                int surfacesOmitted,
+                int unreadable,
+                int pending) {
+            this(buildings, buildingsOmitted, doodads, doodadsOmitted, doodadsCapped, surfacesOmitted,
+                    unreadable, pending, List.of());
+        }
+
+        ExteriorSummary(
+                int buildings,
+                int buildingsOmitted,
+                int doodads,
+                int doodadsOmitted,
+                int doodadsCapped,
+                int surfacesOmitted,
+                int unreadable) {
+            this(buildings, buildingsOmitted, doodads, doodadsOmitted, doodadsCapped, surfacesOmitted,
+                    unreadable, 0);
+        }
 
         ExteriorSummary plus(ExteriorSummary o) {
             return new ExteriorSummary(
@@ -178,7 +211,12 @@ final class WorldStreamSourceBridge {
                     doodadsOmitted + o.doodadsOmitted,
                     doodadsCapped + o.doodadsCapped,
                     surfacesOmitted + o.surfacesOmitted,
-                    unreadable + o.unreadable);
+                    unreadable + o.unreadable,
+                    pending + o.pending,
+                    java.util.stream.Stream.concat(pendingSources.stream(), o.pendingSources.stream())
+                            .distinct()
+                            .limit(WorldExteriorObjects.MAX_PENDING_IDS)
+                            .toList());
         }
 
         int omitted() {
@@ -194,7 +232,9 @@ final class WorldStreamSourceBridge {
                     doodadsOmitted + doodadsCapped,
                     this.doodadsCapped + doodadsCapped,
                     surfacesOmitted,
-                    unreadable);
+                    unreadable,
+                    pending,
+                    pendingSources);
         }
 
         static ExteriorSummary of(WorldExteriorObjects.TileObjects set) {
@@ -246,7 +286,9 @@ final class WorldStreamSourceBridge {
                     doodadsOmitted,
                     doodadsCapped,
                     surfaces,
-                    set.count(WorldExteriorObjects.Count.BATCH_UNREADABLE));
+                    set.count(WorldExteriorObjects.Count.BATCH_UNREADABLE),
+                    set.count(WorldExteriorObjects.Count.SOURCE_PENDING),
+                    set.pendingSources());
         }
 
         private static int sum(
@@ -403,6 +445,14 @@ final class WorldStreamSourceBridge {
          * without creatures ignores it.
          */
         default void creatureArea(WorldTileCreatures.Area held) {}
+
+        /**
+         * Whether a tile prepared again for the sources it left out as only on the network ({@code
+         * ids}) may draw more now: whether any of them can be read. True when not known.
+         */
+        default boolean pendingReadable(WorldTerrainStreaming source, List<Long> ids, Cancellation cancellation) {
+            return true;
+        }
     }
 
     /**
@@ -486,6 +536,11 @@ final class WorldStreamSourceBridge {
             @Override
             public void creatureArea(WorldTileCreatures.Area held) {
                 creatures.area(held);
+            }
+
+            @Override
+            public boolean pendingReadable(WorldTerrainStreaming source, List<Long> ids, Cancellation cancellation) {
+                return source.pendingReadable(ids, cancellation);
             }
 
             @Override

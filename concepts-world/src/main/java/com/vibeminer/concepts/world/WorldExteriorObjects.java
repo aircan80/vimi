@@ -830,6 +830,14 @@ public final class WorldExteriorObjects {
          */
         SOURCE_READ_CAPPED,
         /**
+         * Derived sources (a WMO root, group or image, a doodad model, SKIN or image) the local
+         * files lack and only the network has now (offline, or no route): each is treated as
+         * unavailable and only it is omitted, landing in its kind's unavailable bucket as {@link
+         * #SOURCE_READ_CAPPED} does. A set with any is drawn as it is and worth preparing again
+         * later, when they may be fetched. Not an outcome bucket itself.
+         */
+        SOURCE_PENDING,
+        /**
          * MOGI-interior groups a split share would have drawn here, left out because the share fits
          * only without them and is placed with its exteriors only (no other tile owns them).
          * Counted once per group left out, only for a share that is placed (a capped share is
@@ -1287,6 +1295,9 @@ public final class WorldExteriorObjects {
         }
     }
 
+    /** Pending source IDs a set keeps ({@link TileObjects#pendingSources}). */
+    public static final int MAX_PENDING_IDS = 64;
+
     /** Immutable neutral per-tile set. Close only retires access; it holds no native resource. */
     public static final class TileObjects implements AutoCloseable {
         private final long mapId;
@@ -1319,6 +1330,17 @@ public final class WorldExteriorObjects {
 
         /** BLP levels its builder decoded, over every image (#360); diagnostics and tests. */
         int levelDecodes;
+
+        /**
+         * The first {@link #MAX_PENDING_IDS} sources left out as only on the network ({@link
+         * Count#SOURCE_PENDING}), by FileDataID: what a later pass would have to read.
+         */
+        volatile List<Long> pendingSources = List.of();
+
+        /** Sources left out because only the network had them (at most the first 64 IDs). */
+        public List<Long> pendingSources() {
+            return pendingSources;
+        }
 
         private TileObjects(
                 long mapId,
@@ -2393,12 +2415,16 @@ public final class WorldExteriorObjects {
             objects.retainedSourceBytes = peakRetainedSourceBytes;
             WorldStageTimings.stop("objects.phase.assembly", phase);
             objects.levelDecodes = levelDecodes;
+            objects.pendingSources = List.copyOf(pendingIds);
             return objects;
         }
 
         private void count(Count count) {
             counts[count.ordinal()]++;
         }
+
+        // Sources left out as only on the network, in read order, at most MAX_PENDING_IDS.
+        private final java.util.LinkedHashSet<Long> pendingIds = new java.util.LinkedHashSet<>();
 
         /**
          * A building's draw cost under the opaque-only profile: its opaque ranges. A building with
@@ -6798,12 +6824,13 @@ public final class WorldExteriorObjects {
         }
 
         /**
-         * Null for an unavailable source (missing, protected or over its cap), for a doodad source
-         * refused at SOURCE_INPUT (decoration never costs the tile its buildings), and, when {@code
-         * unreadable} is given, for a cutout or blended building image refused at SOURCE_INPUT
-         * (flagged in unreadable[0]), and for a group or image the interior pass reads refused at
-         * SOURCE_INPUT. Every other refusal, including any read the opaque-only profile made and
-         * any changed source, fails the whole set.
+         * Null for an unavailable source (missing, protected or over its cap, or only on the
+         * network now: SOURCE_PENDING, counted), for a doodad source refused at SOURCE_INPUT
+         * (decoration never costs the tile its buildings), and, when {@code unreadable} is given,
+         * for a cutout or blended building image refused at SOURCE_INPUT (flagged in
+         * unreadable[0]), and for a group or image the interior pass reads refused at SOURCE_INPUT.
+         * Every other refusal, including any read the opaque-only profile made and any changed
+         * source, fails the whole set.
          */
         private WorldStreamScopes.Input derived(
                 long id, WorldStreamScopes.DerivedKind kind, boolean[] unreadable) {
@@ -6820,6 +6847,15 @@ public final class WorldExteriorObjects {
                 return admission.readDerivedCandidate(id, kind);
             } catch (WorldTerrainStreaming.Refusal refusal) {
                 if (WorldSourceRefusals.Site.SOURCE_UNAVAILABLE.name().equals(refusal.site())) {
+                    return null;
+                }
+                if (WorldSourceRefusals.Site.SOURCE_PENDING.name().equals(refusal.site())) {
+                    // Not in the local files yet: left out as unavailable, fetched on a later pass.
+                    token.check();
+                    count(Count.SOURCE_PENDING);
+                    if (pendingIds.size() < MAX_PENDING_IDS) {
+                        pendingIds.add(id);
+                    }
                     return null;
                 }
                 boolean doodad =

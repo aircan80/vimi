@@ -586,6 +586,12 @@ final class WorldPreparedTerrain {
                 compressedFormats);
     }
 
+    /** Whether any of {@code ids} can be read now, not only from the network. */
+    boolean anyReadableNow(java.util.List<Long> ids, Cancellation cancel) {
+        checkOpen();
+        return scopes.anyReadableNow(ids, cancel);
+    }
+
     void invalidate() {
         invalidated = true;
     }
