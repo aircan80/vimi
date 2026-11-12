@@ -185,6 +185,39 @@ final class RepositoryTest {
     }
 
     @Test
+    void creatureDisplaysAreReadInBatchesAndRemembered() throws Exception {
+        var source = new Source();
+        try (var repository = new EgLinkRepository(folder, source)) {
+            var build = repository.check(Cancellation.NONE).join().builds().getFirst();
+            String id = repository.download(build, p -> {}, Cancellation.NONE).join().id();
+            repository.prepare(id, p -> {}, Cancellation.NONE).join();
+            // More IDs than one query reads: every one is answered, recorded or not.
+            var ids = new java.util.ArrayList<Long>();
+            for (long i = 0; i < 1200; i++) {
+                ids.add(i);
+            }
+            var found = repository.creatureDisplays(id, "enUS", ids, Cancellation.NONE).join();
+            assertEquals(1200, found.size());
+            assertTrue(found.get(197L).isPresent());
+            assertEquals(java.util.List.of(), found.get(197L).get().displays());
+            assertEquals("2026-11-01", found.get(197L).get().collectedOn());
+            assertTrue(found.get(5L).isEmpty());
+            // The Imp's display lacks its probability: unrecorded, the batch still answers.
+            assertTrue(found.get(416L).isEmpty());
+            // A remembered answer returns at once, without a task.
+            var again = repository.creatureDisplays(id, "enUS", 197, Cancellation.NONE);
+            assertTrue(again.isDone());
+            assertEquals(found.get(197L), again.join());
+            // A locale the snapshot does not record answers empty.
+            assertTrue(
+                    repository
+                            .creatureDisplays(id, "deDE", 197, Cancellation.NONE)
+                            .join()
+                            .isEmpty());
+        }
+    }
+
+    @Test
     void invalidUpdateAndCanceledDownloadKeepPreviousState() throws Exception {
         var source = new Source();
         try (var repository = new EgLinkRepository(folder, source)) {
