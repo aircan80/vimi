@@ -78,6 +78,16 @@ public final class DataSourcesService {
             List<com.vibeminer.eglink.EgLinkTypes.Snapshot> snapshots, String issue) {}
     private volatile EgLinkState egLinkState = new EgLinkState(new com.vibeminer.eglink.EgLinkTypes.Catalog(null, null, List.of()), List.of(), null);
     private final com.vibeminer.eglink.EgLinkRepository egLink;
+
+    /** A library or opened build whose EG Link snapshots pruning keeps. */
+    public record BuildKey(String product, String version) {}
+
+    /** The library's builds, for the EG Link snapshots pruning must keep; set by the application. */
+    private volatile java.util.function.Supplier<java.util.Collection<BuildKey>> libraryBuilds = List::of;
+    /** Builds opened this session (their NPC, quest or location sources were read). */
+    private final java.util.Set<BuildKey> openedBuilds = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    /** EG Link snapshots a user downloaded or prepared by hand this session. */
+    private final java.util.Set<String> chosenEgLink = java.util.concurrent.ConcurrentHashMap.newKeySet();
     public record PolestarState(java.util.Optional<com.vibeminer.polestar.PolestarTypes.Catalog> catalog,
             List<com.vibeminer.polestar.PolestarTypes.Snapshot> snapshots, String issue) {
         public PolestarState { snapshots = List.copyOf(snapshots); }
@@ -259,6 +269,7 @@ public final class DataSourcesService {
     /** Every prepared snapshot an NPC's displays may come from, in the order they are tried. */
     public List<com.vibeminer.eglink.EgLinkTypes.Snapshot> npcDisplaySnapshots(BuildInfo build, String locale) {
         if (egLink == null || build == null || !policy(Id.EG_LINK).enabled()) return List.of();
+        opened(build);
         return npcDisplaySnapshots(egLinkState.snapshots(), build.product(), build.version(), locale);
     }
 
@@ -294,6 +305,7 @@ public final class DataSourcesService {
 
     /** Local prepared snapshots only, frozen for one NPC catalogue load. */
     public List<com.vibeminer.concepts.npcs.NpcCatalog.Input> npcInputs(BuildInfo build, String locale) {
+        opened(build);
         var result = new java.util.ArrayList<com.vibeminer.concepts.npcs.NpcCatalog.Input>();
         var mapping = mapping(build);
         if (mapping.versionId() != null) result.add(com.vibeminer.concepts.npcs.NpcSources.questie(questie, mapping.versionId(), build.product(), build.version(), locale));
@@ -312,6 +324,7 @@ public final class DataSourcesService {
     }
 
     public List<com.vibeminer.concepts.quests.QuestCatalog.Input> questInputs(BuildInfo build, String locale) {
+        opened(build);
         var result = new java.util.ArrayList<com.vibeminer.concepts.quests.QuestCatalog.Input>();
         var mapping = mapping(build);
         if (mapping.versionId() != null) result.add(com.vibeminer.concepts.quests.QuestSources.questie(questie, mapping.versionId(), build.product(), build.version(), locale));
@@ -331,6 +344,7 @@ public final class DataSourcesService {
 
     /** Same prepared-source selection policy as NPC/quest catalogues; no downloads. */
     public List<com.vibeminer.concepts.locations.LocationInput> locationInputs(BuildInfo build, String locale) {
+        opened(build);
         var result = new java.util.ArrayList<com.vibeminer.concepts.locations.LocationInput>();
         var mapping = mapping(build);
         if (mapping.versionId() != null)
@@ -813,9 +827,54 @@ public final class DataSourcesService {
         }
     }
 
+    private void opened(BuildInfo build) {
+        if (build != null && build.product() != null && build.version() != null)
+            openedBuilds.add(new BuildKey(build.product(), build.version()));
+    }
+
+    /** Sets where the library's builds come from, for the EG Link snapshots pruning keeps. */
+    void libraryBuilds(java.util.function.Supplier<java.util.Collection<BuildKey>> builds) {
+        libraryBuilds = java.util.Objects.requireNonNull(builds);
+    }
+
+    /**
+     * The EG Link snapshots pruning keeps: for each library or opened build, the newest compatible
+     * prepared snapshot holding each dataset (what its NPC, quest, location and display lookups
+     * read), and every snapshot chosen by hand. Pure.
+     */
+    static java.util.Set<String> keptEgLink(List<com.vibeminer.eglink.EgLinkTypes.Snapshot> snapshots,
+            java.util.Collection<BuildKey> builds, java.util.Collection<String> chosen) {
+        var kept = new java.util.HashSet<String>(chosen);
+        var newestFirst = java.util.Comparator.comparing(
+                        (com.vibeminer.eglink.EgLinkTypes.Snapshot v) -> v.build().version(),
+                        DataSourcesService::compareNpcBuild)
+                .reversed()
+                .thenComparing(com.vibeminer.eglink.EgLinkTypes.Snapshot::downloadedAt,
+                        java.util.Comparator.reverseOrder());
+        for (var build : builds) {
+            var compatible = snapshots.stream()
+                    .filter(v -> v.indexedRecords() != null && v.problem() == null
+                            && v.build().product().equals(build.product())
+                            && compatibleNpcBuild(v.build().version(), build.version()))
+                    .sorted(newestFirst)
+                    .toList();
+            var covered = new java.util.HashSet<String>();
+            for (var snapshot : compatible) {
+                for (var dataset : snapshot.build().datasets()) {
+                    if (covered.add(dataset.name())) kept.add(snapshot.id());
+                }
+            }
+        }
+        return java.util.Set.copyOf(kept);
+    }
+
     public CompletableFuture<Void> syncEgLink() {
         return egLinkJob((token, progress) -> {
-            var result = egLink.sync(progress, token).join();
+            var result = egLink.sync(progress, held -> {
+                var builds = new java.util.LinkedHashSet<BuildKey>(libraryBuilds.get());
+                builds.addAll(openedBuilds);
+                return keptEgLink(held, builds, chosenEgLink);
+            }, token).join();
             submit(() -> {
                 preferences.put("checked.EG_LINK", Instant.now().toString());
                 loadEgLink(); revision.incrementAndGet();
@@ -837,13 +896,14 @@ public final class DataSourcesService {
 
     public CompletableFuture<Void> downloadEgLink(com.vibeminer.eglink.EgLinkTypes.Build build) {
         return egLinkJob((token, progress) -> {
-            egLink.download(build, progress, token).join();
+            chosenEgLink.add(egLink.download(build, progress, token).join().id());
             submit(() -> { loadEgLink(); revision.incrementAndGet(); }).join();
         });
     }
 
     public CompletableFuture<Void> prepareEgLink(String sourceId) {
         return egLinkJob((token, progress) -> {
+            chosenEgLink.add(sourceId);
             egLink.prepare(sourceId, progress, token).join();
             submit(() -> { loadEgLink(); revision.incrementAndGet(); }).join();
         });

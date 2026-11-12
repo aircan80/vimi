@@ -52,6 +52,22 @@ downloaded first. The rest are deleted with their prepared databases. Earlier
 builds therefore outlast repeated commits of the latest one, and the NPCs page can
 still find an NPC only an older build recorded.
 
+Pruning never deletes a snapshot in use: for each build saved in the library and
+each build opened this session, the newest compatible prepared snapshot holding
+each dataset is kept, and so is any snapshot downloaded or prepared by hand this
+session. These are kept on top of the ten. Removing a snapshot first closes what the
+repository holds open for it, then renames its folder atomically to a trash name (a
+crash never leaves a listed snapshot without its manifest), then deletes its
+database and the trash; leftover trash and orphaned databases are purged at the next
+sync. A snapshot that cannot be removed now (Windows refuses to delete a file
+another handle holds) is reported as a sync issue and tried again next time; the
+downloads and preparation of that sync still stand.
+
+The unchanged-build check compares only what the index declares per dataset
+(records, sources and collection date); it declares no content digest. A build
+corrected upstream with all three unchanged keeps its earlier snapshot until one of
+them changes; upstream bumps the collection date whenever it collects again.
+
 Before this, every downloaded commit was kept (up to 1,024 snapshots) and each
 upstream commit downloaded every installed build again.
 

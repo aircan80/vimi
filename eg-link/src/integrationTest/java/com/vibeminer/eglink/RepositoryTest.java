@@ -353,6 +353,131 @@ final class RepositoryTest {
         }
     }
 
+    /** Three builds downloaded and prepared at one commit; the repository retains two. */
+    private EgLinkRepository crowded(Source source, java.util.Map<String, Object> builds)
+            throws Exception {
+        byte[] current = source.files.get("data/wowf/" + VERSION + "/creature_details.enUS.json");
+        for (String version : java.util.List.of("1.60.1.70100", "1.60.1.70200", "1.60.1.70300")) {
+            var dataset = EgJson.object(EgJson.parse(current, 1 << 20));
+            EgJson.object(dataset.get("meta")).put("clientBuild", version);
+            source.files.put(
+                    "data/wowf/" + version + "/creature_details.enUS.json", EgJson.bytes(dataset));
+            builds.put(version, collected("2026-11-01"));
+        }
+        index(source, builds);
+        var repository = new EgLinkRepository(folder, source, 2);
+        for (var build : repository.check(Cancellation.NONE).join().builds()) {
+            var held = repository.download(build, progress -> {}, Cancellation.NONE).join();
+            repository.prepare(held.id(), progress -> {}, Cancellation.NONE).join();
+        }
+        return repository;
+    }
+
+    private static Map<String, Object> collected(String date) {
+        return Map.of(
+                "creature_details.enUS",
+                Map.of("records", 2, "sources", 1, "lastCollectedOn", date));
+    }
+
+    private static String idOf(java.util.List<EgLinkTypes.Snapshot> held, String version) {
+        return held.stream()
+                .filter(value -> value.build().version().equals(version))
+                .map(EgLinkTypes.Snapshot::id)
+                .findFirst()
+                .orElseThrow();
+    }
+
+    @Test
+    void aSnapshotABuildStillReadsIsNeverPruned() throws Exception {
+        var source = new Source();
+        var builds = new HashMap<String, Object>();
+        try (var repository = crowded(source, builds)) {
+            var synced =
+                    repository
+                            .sync(
+                                    progress -> {},
+                                    held -> java.util.Set.of(idOf(held, "1.60.1.70100")),
+                                    Cancellation.NONE)
+                            .join();
+            assertTrue(synced.issues().isEmpty(), synced.issues().toString());
+            var versions =
+                    synced.snapshots().stream().map(value -> value.build().version()).toList();
+            // Two retained (70300, 70200) plus the kept 70100, which would otherwise go.
+            assertEquals(3, versions.size(), versions.toString());
+            assertTrue(versions.contains("1.60.1.70100"));
+            var plain = repository.sync(progress -> {}, Cancellation.NONE).join();
+            assertEquals(2, plain.snapshots().size(), "without the keep, it goes");
+        }
+    }
+
+    @Test
+    void aSnapshotThatCannotBeReleasedIsAnIssueAndStaysListed() throws Exception {
+        var source = new Source();
+        var builds = new HashMap<String, Object>();
+        var released = new java.util.ArrayList<String>();
+        try (var repository = crowded(source, builds)) {
+            EgLinkRepository.releaseForTest =
+                    id -> {
+                        released.add(id);
+                        // As Windows refuses to delete a database a handle still holds open.
+                        throw new IllegalStateException("file is in use");
+                    };
+            var synced = repository.sync(progress -> {}, Cancellation.NONE).join();
+            assertEquals(1, released.size(), "released before anything is deleted");
+            assertEquals(1, synced.issues().size(), synced.issues().toString());
+            assertTrue(synced.issues().getFirst().contains("file is in use"));
+            assertEquals(3, synced.snapshots().size(), "the snapshot stays, complete");
+            assertEquals(3, synced.reused(), "the rest of the sync still counts");
+            EgLinkRepository.releaseForTest = released::add;
+            var retried = repository.sync(progress -> {}, Cancellation.NONE).join();
+            assertTrue(retried.issues().isEmpty(), retried.issues().toString());
+            assertEquals(2, retried.snapshots().size(), "removed at the next sync");
+        } finally {
+            EgLinkRepository.releaseForTest = null;
+        }
+    }
+
+    @Test
+    void aRemovalInterruptedAfterTheTrashRenameLeavesNoHalfSnapshot() throws Exception {
+        var source = new Source();
+        var builds = new HashMap<String, Object>();
+        try (var repository = crowded(source, builds)) {
+            EgLinkRepository.trashedForTest =
+                    id -> {
+                        throw new IllegalStateException("crash after the rename");
+                    };
+            var synced = repository.sync(progress -> {}, Cancellation.NONE).join();
+            EgLinkRepository.trashedForTest = null;
+            assertEquals(1, synced.issues().size(), synced.issues().toString());
+            assertEquals(2, synced.snapshots().size(), "the trashed snapshot is not listed");
+            try (var listed = Files.list(folder.resolve("sources"))) {
+                for (Path path : listed.toList()) {
+                    String name = path.getFileName().toString();
+                    if (name.matches("[0-9a-f]{64}")) {
+                        assertTrue(
+                                Files.exists(path.resolve("source.json")),
+                                "every listed folder keeps its manifest");
+                    }
+                }
+            }
+            try (var listed = Files.list(folder.resolve("sources"))) {
+                assertTrue(
+                        listed.anyMatch(
+                                path -> path.getFileName().toString().startsWith(".trash-")),
+                        "the interrupted removal left its trash");
+            }
+            repository.sync(progress -> {}, Cancellation.NONE).join();
+            try (var listed = Files.list(folder.resolve("sources"))) {
+                assertFalse(
+                        listed.anyMatch(
+                                path -> path.getFileName().toString().startsWith(".trash-")),
+                        "the next sync purges it");
+            }
+        } finally {
+            EgLinkRepository.trashedForTest = null;
+        }
+    }
+
     @Test
     void syncUpdatesLatestAndInstalledBuildsAndReusesUnchangedPreparedData() throws Exception {
         var source = new Source();

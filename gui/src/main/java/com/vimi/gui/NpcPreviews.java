@@ -308,10 +308,10 @@ final class NpcPreviews {
     /**
      * The EG Link lookups of the NPCs page, read locally, in order: every prepared downloaded
      * snapshot of the opened product and x.y.z not after the opened build (newest build first,
-     * then newest commit), then the bundled history's entry when it is of the same product and
-     * x.y.z. The bundled history keeps one build per NPC (the newest that recorded it), so its entry
-     * may be newer than the opened build: it is still offered, and {@link NpcDisplays} drops any
-     * display the opened build's CreatureDisplayInfo proves missing.
+     * then newest commit), then the bundled history's entries of the same product and x.y.z in
+     * {@link #bundledOrder}: the newest at or below the opened build first, then newer ones, which
+     * are still offered so no NPC is missed; {@link NpcDisplays} drops any display the opened
+     * build's CreatureDisplayInfo proves missing.
      */
     @SuppressWarnings("try")
     static Observed egLink(DataSourcesService sources, BuildInfo build, String locale) {
@@ -380,19 +380,33 @@ final class NpcPreviews {
             }
             var history = bundled.get();
             if (history != null && build != null && history.product().equals(build.product())) {
-                history.displays(npcId)
-                        .filter(entry -> sameRelease(entry.source().build(), build.version()))
-                        .ifPresent(
-                                entry ->
-                                        result.add(
-                                                new NpcDisplays.External(
-                                                        entry.provenance(),
-                                                        entry.displays().stream()
-                                                                .map(NpcPreviews::candidate)
-                                                                .toList())));
+                for (var entry : bundledOrder(history.entries(npcId), build.version())) {
+                    result.add(
+                            new NpcDisplays.External(
+                                    entry.provenance(),
+                                    entry.displays().stream().map(NpcPreviews::candidate).toList()));
+                }
             }
             return List.copyOf(result);
         };
+    }
+
+    /**
+     * The bundled entries of one NPC offered for {@code version}, in order: those of the same x.y.z
+     * at or below it, newest first, then the newer ones, newest first ("latest wins, don't miss
+     * NPCs"). {@code entries} come newest build first.
+     */
+    static List<com.vibeminer.eglink.BundledNpcHistory.Entry> bundledOrder(
+            List<com.vibeminer.eglink.BundledNpcHistory.Entry> entries, String version) {
+        var atOrBelow = new ArrayList<com.vibeminer.eglink.BundledNpcHistory.Entry>();
+        var newer = new ArrayList<com.vibeminer.eglink.BundledNpcHistory.Entry>();
+        for (var entry : entries) {
+            String built = entry.source().build();
+            if (!sameRelease(built, version)) continue;
+            (DataSourcesService.compatibleNpcBuild(built, version) ? atOrBelow : newer).add(entry);
+        }
+        atOrBelow.addAll(newer);
+        return List.copyOf(atOrBelow);
     }
 
     /** Whether two builds share their x.y.z. */

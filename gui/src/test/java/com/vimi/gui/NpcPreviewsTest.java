@@ -34,6 +34,8 @@ public final class NpcPreviewsTest {
         displaySnapshotsAreTriedNewestBuildThenNewestCommitFirst();
         anNpcOnlyAnOlderSnapshotRecordsIsFoundThere();
         theBundledHistoryIsTheLastSourceOfTheSameProductAndRelease();
+        bundledEntriesPreferTheNewestAtOrBelowTheBuildThenNewerOnes();
+        prunedSnapshotsKeepWhatLibraryAndOpenedBuildsRead();
         aDisplayMissingFromTheBuildFallsThroughToTheNextSource();
         System.out.println("NPC previews: resolution, creature, humanoid and refusal outcomes passed");
     }
@@ -317,6 +319,37 @@ public final class NpcPreviewsTest {
                                         0))
                         .displays(639, Cancellation.NONE)
                         .isEmpty());
+    }
+
+    static void bundledEntriesPreferTheNewestAtOrBelowTheBuildThenNewerOnes() {
+        // NPC 30 (Forest Spider) is recorded by both 70862 and 70888.
+        var entries = com.vibeminer.eglink.BundledNpcHistory.bundled().entries(30);
+        java.util.function.Function<String, List<String>> order =
+                version ->
+                        NpcPreviews.bundledOrder(entries, version).stream()
+                                .map(entry -> entry.source().build())
+                                .toList();
+        assertEquals(List.of("1.60.1.70862", "1.60.1.70888"), order.apply("1.60.1.70862"));
+        assertEquals(List.of("1.60.1.70888", "1.60.1.70862"), order.apply("1.60.1.70888"));
+        // Nothing at or below: the newest overall first.
+        assertEquals(List.of("1.60.1.70888", "1.60.1.70862"), order.apply("1.60.1.70700"));
+        assertEquals(List.of(), order.apply("1.61.0.70888"));
+    }
+
+    static void prunedSnapshotsKeepWhatLibraryAndOpenedBuildsRead() {
+        var snapshots =
+                List.of(
+                        snapshot("old", "wowf", "1.60.1.70532", true, 1),
+                        snapshot("used", "wowf", "1.60.1.70790", true, 2),
+                        snapshot("newer", "wowf", "1.60.1.70888", true, 3),
+                        snapshot("hotfix", "wowf", "1.60.1.70700", false, 4));
+        var kept =
+                DataSourcesService.keptEgLink(
+                        snapshots,
+                        List.of(new DataSourcesService.BuildKey("wowf", "1.60.1.70800")),
+                        List.of("chosen"));
+        // 70800 reads 70790's creature details and 70700's hotfixes; 70888 is newer than it.
+        assertEquals(java.util.Set.of("used", "hotfix", "chosen"), kept);
     }
 
     static void aDisplayMissingFromTheBuildFallsThroughToTheNextSource() throws Exception {

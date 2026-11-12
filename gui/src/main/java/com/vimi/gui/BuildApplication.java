@@ -258,6 +258,28 @@ public final class BuildApplication {
                         var dataSources = DataSourcesService.open(library.databasePath(), directory.resolve("questie"),
                                 fullContexts.communityNames(), ownership, keyClient == null ? network : keyClient, tactOwner, tactOwner, network, network, observer, background);
                         cleanup.addFirst(dataSources::closeAsync);
+                        // EG Link pruning keeps the snapshots the library's saved builds read.
+                        dataSources.libraryBuilds(
+                                () ->
+                                        saved.retainedReceipts().stream()
+                                                .map(
+                                                        receipt ->
+                                                                registry.get(
+                                                                                receipt.identity(),
+                                                                                com.vibeminer.store
+                                                                                        .Cancellation
+                                                                                        .NONE)
+                                                                        .join())
+                                                .filter(
+                                                        entry ->
+                                                                entry != null
+                                                                        && entry.version() != null)
+                                                .map(
+                                                        entry ->
+                                                                new DataSourcesService.BuildKey(
+                                                                        entry.reference().product(),
+                                                                        entry.version()))
+                                                .toList());
                         fullContexts.withSources(dataSources);
                         var worldBookmarks = worldStore(directory, library.databasePath());
                         cleanup.addFirst(() -> {

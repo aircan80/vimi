@@ -49,9 +49,9 @@ order:
    product and x.y.z not after the opened build, newest build first and the newest
    commit of a build first (the first that records the NPC with a usable display
    wins);
-3. the bundled EG Link NPC history, when its entry is of the same product and x.y.z.
-   It keeps one build per NPC (the newest that recorded it), so the entry may be
-   newer than the opened build.
+3. the bundled EG Link NPC history's entries of the same product and x.y.z: the
+   newest at or below the opened build first, then newer ones, newest first, so an
+   NPC only a newer build recorded is not missed.
 
 A display the opened build's `CreatureDisplayInfo` proves absent is never used, and
 its source falls through to the next one. A display that cannot be checked (a
