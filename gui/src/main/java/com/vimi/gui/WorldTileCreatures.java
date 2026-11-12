@@ -626,11 +626,16 @@ final class WorldTileCreatures implements AutoCloseable {
         camera = position;
     }
 
-    /** Whether a spawn at native {@code (x, y)} is near enough to the camera to carry its idle. */
+    /**
+     * Whether a spawn at native {@code (x, y)} is near enough to the camera to carry its idle.
+     * Without a camera source (tests, censuses) every spawn is; with one that has no camera yet,
+     * none is, so nothing pays for an idle before the camera is placed.
+     */
     boolean nearCamera(double x, double y) {
         var source = camera;
-        double[] at = source == null ? null : source.get();
-        return at == null || Math.hypot(x - at[0], y - at[1]) <= IDLE_DISTANCE;
+        if (source == null) return true;
+        double[] at = source.get();
+        return at != null && Math.hypot(x - at[0], y - at[1]) <= IDLE_DISTANCE;
     }
 
     synchronized Animation animation(long display) {

@@ -27,6 +27,9 @@ public final class RacesService implements BuildRaces {
     /** The persistent humanoid NPC appearance index; reads the borrowed tables directly. */
     final RaceNpcIndex npcIndex;
 
+    /** The persistent evaluated NPC idles, checked like {@link #npcIndex}'s entries. */
+    final RaceNpcIdleIndex idleIndex;
+
     /** Reverse relation indexes for per-key lookups (humanoid NPCs, #385). */
     final com.vibeminer.concepts.core.RelationIndexes relations;
 
@@ -34,7 +37,6 @@ public final class RacesService implements BuildRaces {
     private final RaceVoices voices;
     private final RaceAppearance appearance;
     private final RaceIdleAnimations idle;
-    private final com.vibeminer.files.BuildFiles filesForModels;
     // Voices run beside the projection worker: a first voice catalog scans SoundKitEntry and
     // must not hold back the selected model's surface and textures.
     private final ThreadPoolExecutor worker = worker("race-projection"),
@@ -68,14 +70,14 @@ public final class RacesService implements BuildRaces {
             com.vibeminer.files.BuildFiles files,
             com.vibeminer.generated.GeneratedStore generated) {
         npcIndex = new RaceNpcIndex(Objects.requireNonNull(tables), files, generated);
+        idleIndex = new RaceNpcIdleIndex(npcIndex);
         // With an index, every table read is recorded so an entry names the tables it came from.
         this.tables = npcIndex.available() ? npcIndex.recording(tables) : tables;
         this.relations = new com.vibeminer.concepts.core.RelationIndexes(this.tables);
         media = new RaceMedia(this, this.tables, files, generated);
         voices = new RaceVoices(this, media, this.tables, files, generated);
         appearance = new RaceAppearance(this, media, this.tables, files, generated);
-        idle = new RaceIdleAnimations(media, files);
-        filesForModels = files;
+        idle = new RaceIdleAnimations(media, files, idleIndex.available() ? idleIndex : null);
     }
 
     @Override
@@ -97,44 +99,48 @@ public final class RacesService implements BuildRaces {
                 token,
                 request -> {
                     try {
-                        var resolution =
-                                RaceNpcs.resolve(
-                                        this,
-                                        relations,
-                                        extendedDisplayInfoId,
-                                        race -> media.variants(race, request).variants(),
-                                        request,
-                                        new ArrayList<>());
-                        if (resolution.refusal() != null) {
-                            return RaceMediaTypes.Idle.unavailable(null, resolution.refusal());
+                        // The race and ChrModel resolved by an earlier session, while its tables
+                        // are unchanged; resolved (and kept) otherwise.
+                        var kept = idleIndex.resolution(extendedDisplayInfoId, request);
+                        long raceId, chrModelId;
+                        if (kept != null) {
+                            raceId = kept.raceId();
+                            chrModelId = kept.chrModelId();
+                        } else {
+                            var resolution =
+                                    RaceNpcs.resolve(
+                                            this,
+                                            relations,
+                                            extendedDisplayInfoId,
+                                            race -> media.variants(race, request).variants(),
+                                            request,
+                                            new ArrayList<>());
+                            if (resolution.refusal() != null) {
+                                return RaceMediaTypes.Idle.unavailable(null, resolution.refusal());
+                            }
+                            raceId = resolution.spec().raceId();
+                            chrModelId = resolution.spec().variant().chrModelId();
+                            idleIndex.writeResolution(
+                                    extendedDisplayInfoId,
+                                    new RaceNpcIdleIndex.Resolution(raceId, chrModelId),
+                                    request);
                         }
-                        var spec = resolution.spec();
-                        var stand =
-                                idle.assess(spec.raceId(), spec.variant().chrModelId(), request);
+                        var assessment = idle.standAssessment(raceId, chrModelId, request);
+                        var stand = assessment.result();
                         if (stand.state() != RaceTypes.State.READY || stand.animation() == null) {
                             return stand;
                         }
-                        return RaceNpcIdle.fit(stand, appearance, character(spec, request));
+                        // Attached items follow the race model's attachment points.
+                        var attachments = assessment.attachments();
+                        return RaceNpcIdle.fit(
+                                stand,
+                                appearance,
+                                attachment ->
+                                        attachments == null ? null : attachments.get(attachment));
                     } catch (Projection unavailable) {
                         return RaceMediaTypes.Idle.unavailable(null, unavailable.getMessage());
                     }
                 });
-    }
-
-    /** The NPC's race model, for its attachment points; null when it cannot be read now. */
-    private com.vibeminer.formats.models.M2Types.Model character(
-            RaceNpcs.Spec spec, Cancellation token) {
-        if (filesForModels == null) {
-            return null;
-        }
-        var read =
-                new com.vibeminer.formats.models.BuildModels(filesForModels)
-                        .readModel(
-                                com.vibeminer.files.FileTypes.FileRef.id(
-                                        spec.variant().modelFileDataId()),
-                                token)
-                        .join();
-        return read.model();
     }
 
     @Override

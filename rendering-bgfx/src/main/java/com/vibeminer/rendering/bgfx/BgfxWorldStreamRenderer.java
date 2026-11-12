@@ -3116,7 +3116,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 frameAnimated += drawn;
                 long millis =
                         WorldObjectAnimation.millis(
-                                animationClock, animation.animation.durationMillis(), phase);
+                                animationClock,
+                                animation.animation.durationMillis(),
+                                phase,
+                                WorldObjectAnimation.stepOffset(m, phase));
                 pose.used(animationFrame, millis);
                 if (pose.skinned() != millis) {
                     queueSkin(pose);
@@ -3949,6 +3952,12 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             }
         }
         return total;
+    }
+
+    /** GPU bytes all object sets, textures, the body and poses reserve now (measurement). */
+    long objectsReserved() {
+        requireOwner();
+        return reservedObjectBytes();
     }
 
     /** GPU bytes all resident sets' animation poses hold (#384). */
