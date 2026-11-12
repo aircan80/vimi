@@ -1,8 +1,10 @@
 package com.vibeminer.concepts.races;
 
 import com.vibeminer.access.Cancellation;
+import com.vibeminer.formats.models.M2IdleAnimation;
 import com.vibeminer.formats.models.M2ModelReader;
-import com.vibeminer.formats.models.M2RestDrawSkinReader;
+import com.vibeminer.formats.models.M2RestSkinReader;
+import com.vibeminer.formats.models.M2SkeletonFile;
 import com.vibeminer.formats.tables.TableTypes;
 import com.vibeminer.generated.GeneratedKey;
 import com.vibeminer.generated.GeneratedTypes;
@@ -39,8 +41,10 @@ import java.util.TreeSet;
  *
  * <ul>
  *   <li>The key names the build, the locale and the NPC or the ChrModel and model. The scope,
- *       stored with the entry and compared on read, adds this index's revision, the reader
- *       revisions, a digest of every class file of the idle path ({@link #CODE}), build and locale.
+ *       stored with the entry and compared on read, adds this index's revision, the revisions of
+ *       the readers a Stand is built from ({@link #READER_REVISIONS}), a digest of every class file
+ *       of the idle path ({@link #CODE}), build and locale. An entry is sealed with a digest of its
+ *       bytes, so a damaged one is a miss.
  *   <li>The entry names every table the races handle had read when it was written, with the digest
  *       of their fingerprints.
  *   <li>A Stand names the race model, skeleton and SKIN files it was built from; each is stated
@@ -71,6 +75,11 @@ final class RaceNpcIdleIndex {
                     "com/vibeminer/concepts/models/DisplayIdleAnimations",
                     "com/vibeminer/formats/models/M2IdleAnimation",
                     "com/vibeminer/formats/models/BuildModels",
+                    "com/vibeminer/formats/models/M2RestSkinReader",
+                    "com/vibeminer/formats/models/M2SkeletonFile",
+                    "com/vibeminer/formats/models/M2SkinReader",
+                    "com/vibeminer/formats/models/M2Input",
+                    "com/vibeminer/formats/models/M2Types",
                     "com/vibeminer/rendering/models/PreviewAnimation");
 
     static final String CODE =
@@ -141,15 +150,24 @@ final class RaceNpcIdleIndex {
                         .getBytes(StandardCharsets.UTF_8));
     }
 
+    /**
+     * The revisions of the readers a Stand is built from: the model, its rest surface (SKIN), its
+     * external skeleton and the Stand itself.
+     */
+    static final List<String> READER_REVISIONS =
+            List.of(
+                    M2ModelReader.REVISION,
+                    M2RestSkinReader.REVISION,
+                    M2SkeletonFile.REVISION,
+                    M2IdleAnimation.REVISION);
+
     String scope(String what) {
         var files = index.files();
         return REVISION
                 + "\n"
                 + code
                 + "\n"
-                + M2ModelReader.REVISION
-                + "\n"
-                + M2RestDrawSkinReader.REVISION
+                + String.join("\n", READER_REVISIONS)
                 + "\n"
                 + files.build()
                 + "\n"
@@ -289,14 +307,13 @@ final class RaceNpcIdleIndex {
             if (read.state() != GeneratedTypes.ReadState.PRESENT || read.bytes() == null) {
                 return null;
             }
-            var frame = frame(read.bytes());
+            byte[] bytes = unsealed(read.bytes());
+            var frame = bytes == null ? null : frame(bytes);
             if (frame == null) {
                 return null;
             }
             var digest = index.tablesDigest(frame.tables(), token);
-            return digest != null && MessageDigest.isEqual(digest, frame.digest())
-                    ? read.bytes()
-                    : null;
+            return digest != null && MessageDigest.isEqual(digest, frame.digest()) ? bytes : null;
         } catch (java.util.concurrent.CancellationException canceled) {
             throw canceled;
         } catch (RuntimeException failure) {
@@ -381,6 +398,9 @@ final class RaceNpcIdleIndex {
             }
             body.write(out);
             out.flush();
+            // Sealed with a digest of everything before it, so damage inside the body (an
+            // animation's floats, say) is a miss rather than a different Stand.
+            bytes.write(sha256().digest(bytes.toByteArray()));
             if (bytes.size() > MAX_ENTRY_BYTES) {
                 return false;
             }
@@ -398,6 +418,24 @@ final class RaceNpcIdleIndex {
             // Not written; the idle is evaluated again next time.
             token.check();
             return false;
+        }
+    }
+
+    /** {@code bytes} without their seal when it matches; null when they are damaged. */
+    static byte[] unsealed(byte[] bytes) {
+        if (bytes.length < 32) {
+            return null;
+        }
+        byte[] body = java.util.Arrays.copyOf(bytes, bytes.length - 32);
+        byte[] seal = java.util.Arrays.copyOfRange(bytes, bytes.length - 32, bytes.length);
+        return MessageDigest.isEqual(seal, sha256().digest(body)) ? body : null;
+    }
+
+    private static MessageDigest sha256() {
+        try {
+            return MessageDigest.getInstance("SHA-256");
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new AssertionError(impossible);
         }
     }
 

@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.files.BuildFiles;
+import com.vibeminer.files.FileTypes;
 import com.vibeminer.formats.AssetFilesFixture;
 import com.vibeminer.formats.tables.BuildTables;
 import com.vibeminer.formats.tables.MemoryTables;
@@ -20,6 +21,7 @@ import com.vibeminer.rendering.models.PreviewMesh;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.Test;
 
@@ -301,6 +303,157 @@ final class RaceNpcIdleIndexTest {
                             .join();
                     assertNull(service.idleIndex.resolution(50, Cancellation.NONE));
                 });
+    }
+
+    /** {@code files} with every open of {@code fileDataId} counted. */
+    private static BuildFiles counted(BuildFiles files, long fileDataId, AtomicInteger opens) {
+        return (BuildFiles)
+                java.lang.reflect.Proxy.newProxyInstance(
+                        RaceNpcIdleIndexTest.class.getClassLoader(),
+                        new Class<?>[] {BuildFiles.class},
+                        (proxy, method, args) -> {
+                            if (method.getName().equals("openRead")
+                                    && args[0] instanceof FileTypes.FileRef ref
+                                    && ref.fileDataId() != null
+                                    && ref.fileDataId() == fileDataId) {
+                                opens.incrementAndGet();
+                            }
+                            try {
+                                return method.invoke(files, args);
+                            } catch (java.lang.reflect.InvocationTargetException e) {
+                                throw e.getCause();
+                            }
+                        });
+    }
+
+    /** One handle's appearance and idle for NPC 50. */
+    private static RaceMediaTypes.Idle idle(
+            BuildTables tables, BuildFiles files, GeneratedStore generated) {
+        var service = new RacesService(tables, files, generated);
+        try {
+            var appearance = service.npcAppearance(50, Cancellation.NONE).join();
+            assertNotNull(appearance.result(), String.valueOf(appearance));
+            return service.npcIdle(50, appearance.result().appearance(), Cancellation.NONE).join();
+        } finally {
+            service.closeAsync().join();
+        }
+    }
+
+    @Test
+    void aSecondSessionReusesTheStoredResolutionAndStand() throws Exception {
+        var raw = raw();
+        var files = files(MODEL_KEY);
+        var generated = new MemoryGeneratedStore();
+        var firstOpens = new AtomicInteger();
+        var first = idle(raw, counted(files, 1234, firstOpens), generated);
+        // The fixture's model has no bones: a complete refusal of the model, so it is kept.
+        assertEquals(RaceTypes.State.UNSUPPORTED, first.state(), first.message());
+        assertTrue(firstOpens.get() > 0, "the first session reads the race model");
+        var probe = new RaceNpcIdleIndex(new RaceNpcIndex(raw, files, generated));
+        assertTrue(
+                generated.read(probe.resolutionKey(50)).join().state()
+                        == GeneratedTypes.ReadState.PRESENT,
+                "the resolution was written");
+        assertTrue(
+                generated
+                                .read(probe.standKey(first.variant().chrModelId(), 1234, MODEL_KEY))
+                                .join()
+                                .state()
+                        == GeneratedTypes.ReadState.PRESENT,
+                "the Stand was written");
+
+        var secondOpens = new AtomicInteger();
+        var second = idle(raw, counted(files, 1234, secondOpens), generated);
+        assertEquals(
+                0, secondOpens.get(), "the next session reads neither the model nor its Stand");
+        assertEquals(first.state(), second.state());
+        assertEquals(first.message(), second.message());
+        assertEquals(first.reasons(), second.reasons());
+        assertEquals(first.facts(), second.facts());
+        assertEquals(first.variant(), second.variant());
+    }
+
+    @Test
+    void aStandIsAMissWhenATableItNamesChangesOrItsBodyIsDamaged() throws Exception {
+        var raw = raw();
+        var files = files(MODEL_KEY);
+        var generated = new MemoryGeneratedStore();
+        var written = stand(Map.of(1234L, MODEL_KEY));
+        handle(
+                raw,
+                files,
+                generated,
+                service ->
+                        assertTrue(
+                                service.idleIndex.writeStand(
+                                        49, 1234, MODEL_KEY, written, Cancellation.NONE)));
+        // A table the handle had read when the Stand was written changed: a miss.
+        handle(
+                changed(raw, "NPCModelItemSlotDisplayInfo"),
+                files,
+                generated,
+                service ->
+                        assertNull(
+                                service.idleIndex.stand(49, 1234, MODEL_KEY, Cancellation.NONE)));
+        // A truncated, altered or extended body is a miss, never a partial Stand.
+        handle(
+                raw,
+                files,
+                generated,
+                service -> {
+                    var key = service.idleIndex.standKey(49, 1234, MODEL_KEY);
+                    byte[] bytes = generated.read(key).join().bytes();
+                    for (var damaged :
+                            List.of(
+                                    java.util.Arrays.copyOf(bytes, bytes.length - 1),
+                                    java.util.Arrays.copyOf(bytes, bytes.length - 200),
+                                    java.util.Arrays.copyOf(bytes, bytes.length + 4),
+                                    flipped(bytes, bytes.length - 40))) {
+                        generated.delete(List.of(key)).join();
+                        generated.put(List.of(new GeneratedTypes.Put(key, damaged))).join();
+                        assertNull(service.idleIndex.stand(49, 1234, MODEL_KEY, Cancellation.NONE));
+                    }
+                });
+    }
+
+    private static byte[] flipped(byte[] bytes, int at) {
+        var out = bytes.clone();
+        out[at] = (byte) ~out[at];
+        return out;
+    }
+
+    @Test
+    void theScopePinsTheReadersAStandIsBuiltFrom() throws Exception {
+        assertEquals(
+                List.of(
+                        com.vibeminer.formats.models.M2ModelReader.REVISION,
+                        com.vibeminer.formats.models.M2RestSkinReader.REVISION,
+                        com.vibeminer.formats.models.M2SkeletonFile.REVISION,
+                        com.vibeminer.formats.models.M2IdleAnimation.REVISION),
+                RaceNpcIdleIndex.READER_REVISIONS);
+        var index =
+                new RaceNpcIdleIndex(
+                        new RaceNpcIndex(raw(), files(MODEL_KEY), new MemoryGeneratedStore()));
+        String scope = index.scope("stand 49 1234 " + MODEL_KEY);
+        for (String revision : RaceNpcIdleIndex.READER_REVISIONS) {
+            assertTrue(scope.contains(revision), revision);
+        }
+        assertTrue(
+                scope.contains(RaceNpcIdleIndex.REVISION) && scope.contains(RaceNpcIdleIndex.CODE));
+        for (String reader :
+                List.of(
+                        "M2RestSkinReader",
+                        "M2SkeletonFile",
+                        "M2SkinReader",
+                        "M2Input",
+                        "M2Types",
+                        "M2IdleAnimation",
+                        "BuildModels")) {
+            assertTrue(
+                    RaceNpcIdleIndex.CODE_PREFIXES.contains(
+                            "com/vibeminer/formats/models/" + reader),
+                    reader);
+        }
     }
 
     @Test
