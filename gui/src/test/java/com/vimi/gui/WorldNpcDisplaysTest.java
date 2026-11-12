@@ -30,6 +30,7 @@ public final class WorldNpcDisplaysTest {
         aFailedTileBatchReadsNoMoreOutsideSourcesForThatTile();
         anUnreadableBundledHistoryLeavesTheSnapshotsAnswering();
         theRevisionFollowsOnlyTheOutsideSourcesInUse();
+        displayChainsAreReadOncePerSessionAndClientRecordsOncePerTile();
         System.out.println("World NPC displays: client rule, observed choice, batching and malformed records passed");
     }
 
@@ -46,7 +47,8 @@ public final class WorldNpcDisplaysTest {
     private static final class Creatures implements BuildCreatures {
         final Map<Long, CreatureTypes.CreatureResult> records;
         final Set<Long> absent, modelless;
-        int reads;
+        final Set<Long> unreadable = new java.util.HashSet<>();
+        int reads, chainReads;
 
         Creatures(Map<Long, CreatureTypes.CreatureResult> records, Set<Long> absent, Set<Long> modelless) {
             this.records = records;
@@ -87,8 +89,10 @@ public final class WorldNpcDisplaysTest {
         @Override
         public CompletableFuture<CreatureTypes.CreatureDisplayChain> displayChain(long displayId,
                 TableTypes.Priority priority, Cancellation token) {
+            chainReads++;
             return CompletableFuture.completedFuture(chain((int) displayId,
-                    absent.contains(displayId) ? CreatureTypes.CreatureDisplayChainState.DISPLAY_ABSENT
+                    unreadable.contains(displayId) ? CreatureTypes.CreatureDisplayChainState.DISPLAY_NOT_READABLE
+                            : absent.contains(displayId) ? CreatureTypes.CreatureDisplayChainState.DISPLAY_ABSENT
                             : modelless.contains(displayId) ? CreatureTypes.CreatureDisplayChainState.NO_DECLARED_MODEL
                             : CreatureTypes.CreatureDisplayChainState.METADATA_RESOLVED));
         }
@@ -315,6 +319,51 @@ public final class WorldNpcDisplaysTest {
         assertEquals(first, revision.get());
         snapshots.set(List.of(snapshot("n", "1.60.1.70888"), snapshot("o", "1.60.1.70862")));
         assertTrue(!first.equals(revision.get()), "a new snapshot changes the choices' revision");
+    }
+
+    static void displayChainsAreReadOncePerSessionAndClientRecordsOncePerTile() throws Exception {
+        var creatures = new Creatures(Map.of(1L, declared(1, 31)), Set.of(), Set.of());
+        WorldNpcDisplays.Observed observed = (ids, token) -> {
+            var out = new java.util.HashMap<Long, List<NpcDisplays.External>>();
+            for (long id : ids) out.put(id, List.of(eg("EG", 1, id + 10)));
+            return out;
+        };
+        Object[] revision = {"r1"};
+        var chooser = new WorldNpcDisplays(() -> creatures, observed, () -> revision[0], "b");
+        var tile = chooser.forNpcs(List.of(1L, 7L, 8L), Cancellation.NONE);
+        assertEquals(3, creatures.reads);
+        assertEquals(17, tile.choose(7, Cancellation.NONE).choice().displayId());
+        assertEquals(18, tile.choose(8, Cancellation.NONE).choice().displayId());
+        assertEquals(31, tile.choose(1, Cancellation.NONE).choice().displayId());
+        // The tile's client records were read together once; each display's chain once, for both
+        // the absent check and the shown display.
+        assertEquals(3, creatures.reads);
+        assertEquals(3, creatures.chainReads);
+        // The next tile reuses the session's chains (its client records are read again).
+        var next = chooser.forNpcs(List.of(7L, 8L), Cancellation.NONE);
+        assertEquals(17, next.choose(7, Cancellation.NONE).choice().displayId());
+        assertEquals(3, creatures.chainReads);
+        assertEquals(5, creatures.reads);
+        // A new revision of the outside sources drops them.
+        revision[0] = "r2";
+        chooser.forNpcs(List.of(7L), Cancellation.NONE).choose(7, Cancellation.NONE);
+        assertEquals(4, creatures.chainReads);
+        // A display not readable yet is asked again every time.
+        creatures.unreadable.add(19L);
+        var later = chooser.forNpcs(List.of(9L), Cancellation.NONE);
+        later.choose(9, Cancellation.NONE);
+        int afterUnreadable = creatures.chainReads;
+        later.choose(9, Cancellation.NONE);
+        assertTrue(creatures.chainReads > afterUnreadable, "an unreadable chain is not kept");
+        // Another creature data handle starts afresh.
+        var other = new Creatures(Map.of(), Set.of(), Set.of());
+        Object[] handle = {creatures};
+        var switching = new WorldNpcDisplays(() -> (Creatures) handle[0], observed, () -> "r", "b");
+        switching.choose(7, Cancellation.NONE);
+        handle[0] = other;
+        switching.choose(7, Cancellation.NONE);
+        assertTrue(other.chainReads > 0, "a new handle's chains are read from it");
+        assertTrue(WorldNpcDisplays.Chains.MAX > 0, "bounded");
     }
 
     private static com.vibeminer.eglink.EgLinkTypes.CreatureDisplays displays(String snapshot, long npc, long display) {
