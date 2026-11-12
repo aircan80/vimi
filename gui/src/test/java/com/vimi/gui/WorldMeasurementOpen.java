@@ -231,9 +231,13 @@ final class WorldMeasurementOpen implements AutoCloseable {
                     communityKeys && sources != null
                             ? sources.tactKeys()
                             : com.vibeminer.files.keys.TactKeys.EMPTY;
+            // probe.online (fetch mode only): the app's normal online work, so missing files are
+            // fetched from the CDN into this copy through the usual path.
             work =
-                    contexts.createLocalComparison(
-                            selection.build(), evidence, receipt.locale(), pinned);
+                    Boolean.getBoolean("probe.online")
+                            ? contexts.create(selection.build(), evidence, receipt.locale())
+                            : contexts.createLocalComparison(
+                                    selection.build(), evidence, receipt.locale(), pinned);
             var token = Cancellation.NONE;
             work.metadata(token);
             work.openFilesForMeasurement(token);

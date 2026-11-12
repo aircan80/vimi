@@ -76,7 +76,11 @@ final class RaceCustomization {
     }
 
     static Eligibility evaluate(Requirement req, long classId, int raceBit) {
-        if ((req.type() & 1) == 0) {
+        // A choice for NPCs only (type 2) is never a player's. An NPC race (no playable bit) has
+        // no player creation at all: its models' NPC-only choices are what its NPCs wear, so they
+        // are sampled like choices whose terms cannot be checked here, never denied (#104).
+        boolean npcOnly = (req.type() & 1) == 0;
+        if (npcOnly && (raceBit >= 0 || (req.type() & 2) == 0)) {
             return Eligibility.DENIED;
         }
         // A class or race mask that excludes this context denies, whatever else the requirement
@@ -97,7 +101,7 @@ final class RaceCustomization {
                 && !everyRace(req.raceLow(), req.raceHigh())) {
             return Eligibility.DENIED;
         }
-        if (req.type() != 1 && req.type() != 3 || classUnchecked) {
+        if (npcOnly || req.type() != 1 && req.type() != 3 || classUnchecked) {
             return Eligibility.UNKNOWN;
         }
         if (req.region() != 0
