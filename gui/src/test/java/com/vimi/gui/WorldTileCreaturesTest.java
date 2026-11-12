@@ -55,6 +55,8 @@ public final class WorldTileCreaturesTest {
         buildingsKeepTheirBudgetFirst();
         cappedSpawnsSayWhichBoundCappedThem();
         displaysTheAreaDrawsAlreadyCostNoAllowance();
+        theAreaChargesEachDisplayOnceWhileAnyTileHoldsIt();
+        aModelSettledInAnotherStateIsChargedItsGeometry();
         cachesPerRevisionAndRetriesFailures();
         cancellationPropagatesAndSourceFailuresAreNotes();
         statusDisclosure();
@@ -1503,8 +1505,9 @@ public final class WorldTileCreaturesTest {
     }
 
     /**
-     * A display the resident tiles already draw is added at no cost against the allowance (#773
-     * shares its GPU data); every drawn display is reported with its bytes for the area.
+     * A display the resident tiles already hold costs nothing for its textures, and nothing for
+     * its geometry only when held in the same animation state (#771 puts the animation in the
+     * geometry's digest, so an animated and a still copy are two uploads).
      */
     private static void displaysTheAreaDrawsAlreadyCostNoAllowance() {
         var rows = new ArrayList<Map<String, Object>>();
@@ -1512,21 +1515,85 @@ public final class WorldTileCreaturesTest {
         var big = textured(256);
         var creatures = new WorldTileCreatures(token -> index(rows), () -> "r1",
                 (npc, token) -> qualified((int) (100 + npc), null), (display, token) -> preview(display, 0L, 0L, big));
-        long gpu = WorldTileCreatures.gpuBytes(WorldTileCreatures.surfaces(big, Set.of(0), new int[0], false,
-                Cancellation.NONE).model());
+        var model = WorldTileCreatures.surfaces(big, Set.of(0), new int[0], false, Cancellation.NONE).model();
+        long gpu = WorldTileCreatures.gpuBytes(model), textures = model.pixels() * 4, geometry = gpu - textures;
         var first = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, gpu * 3, Cancellation.NONE);
+        var still = new WorldTileCreatures.Charge(textures, geometry);
         require(first.models() == 3 && first.bytes() == gpu * 3 && first.displays().size() == 3
-                        && first.displays().values().stream().allMatch(b -> b == gpu),
-                "Each drawn display is reported with its bytes");
-        // The area draws displays 101 and 102: with room for one more model, all three fit.
-        creatures.area(display -> display == 101 || display == 102);
+                        && first.displays().get(new WorldTileCreatures.AreaKey(101, false)).equals(still),
+                "Each drawn model is reported by display and animation state with its bytes");
+        // The area holds displays 101 and 102 still: with room for one more model, all three fit.
+        creatures.area(WorldTileCreatures.Area.of(List.of(holder(rows.subList(0, 2), gpu * 2))));
         var second = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, gpu, Cancellation.NONE);
         require(second.models() == 3 && second.bytes() == gpu && second.displays().size() == 3,
-                "Displays the area draws cost nothing: " + second.models() + " " + second.bytes());
-        creatures.area(display -> false);
-        var third = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, gpu, Cancellation.NONE);
-        require(third.models() == 1 && third.capped(WorldTileCreatures.Cap.AREA_BYTES) == 2,
+                "Displays held in the same state cost nothing: " + second.models() + " " + second.bytes());
+        // Held only animated: the still copy is another upload, so its geometry is charged.
+        var animated = new WorldTileCreatures.Area(Set.of(101L), Set.of(new WorldTileCreatures.AreaKey(101, true)), gpu);
+        creatures.area(animated);
+        var third = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, gpu * 3, Cancellation.NONE);
+        require(third.models() == 3 && third.bytes() == gpu * 2 + geometry,
+                "A display held in another animation state costs its geometry: " + third.bytes());
+        creatures.area(WorldTileCreatures.Area.NONE);
+        var fourth = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, gpu, Cancellation.NONE);
+        require(fourth.models() == 1 && fourth.capped(WorldTileCreatures.Cap.AREA_BYTES) == 2,
                 "Without them the allowance holds one model");
+    }
+
+    /**
+     * A model added free because the area holds its display still, then settled animated as it
+     * is placed, is another upload: the tile is charged its geometry when it ends. Held animated,
+     * it stays free.
+     */
+    private static void aModelSettledInAnotherStateIsChargedItsGeometry() throws Exception {
+        var available = new DisplayModelTypes.Idle(DisplayModelTypes.IdleState.AVAILABLE, null, lift(standing()), "Stand");
+        var creatures = standingCreatures(() -> available);
+        var first = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        var animatedKey = new WorldTileCreatures.AreaKey(7, true);
+        require(first.animated() == 2 && first.displays().keySet().equals(Set.of(animatedKey)),
+                "The model is reported animated: " + first.displays().keySet());
+        var charge = first.displays().get(animatedKey);
+        var stillHolder = new WorldTileCreatures.Area(Set.of(7L), Set.of(new WorldTileCreatures.AreaKey(7, false)),
+                charge.total());
+        creatures.area(stillHolder);
+        var settled = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(settled.animated() == 2 && settled.bytes() == charge.geometry(),
+                "Held still, the animated copy is charged its geometry: " + settled.bytes());
+        creatures.area(WorldTileCreatures.Area.of(List.of(first)));
+        var same = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(same.animated() == 2 && same.bytes() == 0, "Held animated, it costs nothing: " + same.bytes());
+    }
+
+    /** {@code rows}' displays drawn still on a tile of their own: a resident holder. */
+    private static WorldTileCreatures.Summary holder(List<Map<String, Object>> rows, long allowance) {
+        var holder = new WorldTileCreatures(token -> index(rows), () -> "r1",
+                (npc, token) -> qualified((int) (100 + npc), null),
+                (display, token) -> preview(display, 0L, 0L, textured(256)));
+        return holder.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, allowance, Cancellation.NONE);
+    }
+
+    /**
+     * The area charges each display's textures once and its geometry once per animation state,
+     * however many resident tiles draw it; retiring the first holder keeps it charged once while
+     * another tile still draws it, and the last one gives it back.
+     */
+    private static void theAreaChargesEachDisplayOnceWhileAnyTileHoldsIt() {
+        var d = new WorldTileCreatures.AreaKey(7, false);
+        var a = summaryWith(Map.of(d, new WorldTileCreatures.Charge(100, 50)));
+        var b = summaryWith(Map.of(d, new WorldTileCreatures.Charge(100, 50),
+                new WorldTileCreatures.AreaKey(8, false), new WorldTileCreatures.Charge(10, 5)));
+        require(WorldTileCreatures.Area.of(List.of(a, b)).bytes() == 165, "Two holders charge display 7 once");
+        var retired = WorldTileCreatures.Area.of(List.of(b));
+        require(retired.bytes() == 165 && retired.displays().contains(7L) && retired.models().contains(d),
+                "Retiring the first holder keeps it charged once");
+        require(WorldTileCreatures.Area.of(List.of()).bytes() == 0, "The last holder gives it back");
+        var moving = summaryWith(Map.of(new WorldTileCreatures.AreaKey(7, true), new WorldTileCreatures.Charge(100, 50)));
+        require(WorldTileCreatures.Area.of(List.of(a, moving)).bytes() == 200,
+                "An animated and a still copy share textures and hold two geometries");
+    }
+
+    private static WorldTileCreatures.Summary summaryWith(
+            Map<WorldTileCreatures.AreaKey, WorldTileCreatures.Charge> displays) {
+        return WorldTileCreatures.Summary.withDisplaysForTest(displays);
     }
 
     private static void cachesPerRevisionAndRetriesFailures() {

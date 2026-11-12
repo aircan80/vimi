@@ -1875,16 +1875,16 @@ final class WorldStreamSourceController {
      * What the next tile's creatures may add: {@link WorldTileCreatures#AREA_BYTES} less the bytes
      * the resident tiles' attached creatures hold, each display once: the session shares a model's
      * GPU geometry and textures across tiles (#773), so a display drawn on several tiles is held
-     * once. The preparer learns those displays, which the next tile then adds at no cost. A tile
-     * retired gives its share back.
+     * once, its geometry once per animation state ({@link WorldTileCreatures.Area}). The preparer
+     * learns what is held, which the next tile then adds at no cost. A tile retired gives its share
+     * back; a display another resident tile still draws stays charged once.
      */
     private long creatureAllowance() {
-        var held = new java.util.HashMap<Long, Long>();
-        for (var entry : entries.values()) entry.source().creatures().displays().forEach(held::putIfAbsent);
-        long bytes = 0;
-        for (long b : held.values()) bytes += b;
-        exteriorPreparer.creatureArea(java.util.Set.copyOf(held.keySet())::contains);
-        return Math.max(0, WorldTileCreatures.AREA_BYTES - bytes);
+        var tiles = new java.util.ArrayList<WorldTileCreatures.Summary>();
+        for (var entry : entries.values()) tiles.add(entry.source().creatures());
+        var held = WorldTileCreatures.Area.of(tiles);
+        exteriorPreparer.creatureArea(held);
+        return Math.max(0, WorldTileCreatures.AREA_BYTES - held.bytes());
     }
 
     /** A budget-refused resident waits until objects budget was released after its refusal. */

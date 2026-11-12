@@ -398,11 +398,11 @@ final class WorldStreamSourceBridge {
         }
 
         /**
-         * The displays the resident tiles' creatures already draw, which the next tile's creatures
-         * add at no cost against {@code creatureBytes} (#773 shares their GPU data). A preparer
+         * What the resident tiles' creatures already hold, which the next tile's creatures add at
+         * no cost against {@code creatureBytes} ({@link WorldTileCreatures.Area}). A preparer
          * without creatures ignores it.
          */
-        default void creatureArea(java.util.function.LongPredicate charged) {}
+        default void creatureArea(WorldTileCreatures.Area held) {}
     }
 
     /**
@@ -484,8 +484,8 @@ final class WorldStreamSourceBridge {
             }
 
             @Override
-            public void creatureArea(java.util.function.LongPredicate charged) {
-                creatures.area(charged);
+            public void creatureArea(WorldTileCreatures.Area held) {
+                creatures.area(held);
             }
 
             @Override

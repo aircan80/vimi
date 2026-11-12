@@ -190,6 +190,53 @@ final class WorldTileCreatures implements AutoCloseable {
         }
     }
 
+    /** One drawn model in the area share: its display, and whether it carries its idle (#384). */
+    record AreaKey(long display, boolean animated) {}
+
+    /** A drawn model's bytes ({@link #gpuBytes}): its texture chains, and its vertices and indices. */
+    record Charge(long textures, long geometry) {
+        long total() {
+            return textures + geometry;
+        }
+    }
+
+    /**
+     * What the resident tiles' creatures hold in the area share. The session uploads a model's
+     * GPU data once however many tiles draw it: textures by their chains (#660), geometry by its
+     * model asset (#773), whose digest includes the animation entry (#771). So a display's
+     * textures are held once, and its geometry once per animation state: an animated and a still
+     * copy of one display are two uploads. Transiently a model may be held twice and charged
+     * once: when two tiles upload it at the same time each keeps its own copy until one completes,
+     * and a tile whose holder is still uploading makes its own; the objects budget bounds both.
+     * A tile settles a model's animation state only as it places it, so a model added free in a
+     * state the area holds and then settled in the other is charged its geometry when the tile
+     * ends, which may pass the tile's allowance by that geometry.
+     */
+    record Area(Set<Long> displays, Set<AreaKey> models, long bytes) {
+        static final Area NONE = new Area(Set.of(), Set.of(), 0);
+
+        Area {
+            displays = Set.copyOf(displays);
+            models = Set.copyOf(models);
+        }
+
+        /** The area the given tiles' creatures hold, each display's textures and model once. */
+        static Area of(java.util.Collection<Summary> tiles) {
+            var textures = new HashMap<Long, Long>();
+            var models = new HashMap<AreaKey, Long>();
+            for (var tile : tiles) {
+                tile.displays().forEach((key, charge) -> {
+                    textures.putIfAbsent(key.display(), charge.textures());
+                    models.putIfAbsent(key, charge.geometry());
+                });
+            }
+            long bytes = 0;
+            for (long b : textures.values()) bytes += b;
+            for (long b : models.values()) bytes += b;
+            return new Area(textures.keySet(), models.keySet(), bytes);
+        }
+    }
+
     /** Which bound left a spawn {@link Count#CAPPED}: exactly one per capped spawn. */
     enum Cap {
         PLACEMENTS("tile placements"),
@@ -219,8 +266,8 @@ final class WorldTileCreatures implements AutoCloseable {
         /** Per {@link Cap}: the capped spawns it bound. */
         private int[] caps = new int[Cap.values().length];
 
-        /** The displays drawn, each with its model's {@link #gpuBytes}. */
-        private Map<Long, Long> displays = Map.of();
+        /** The models drawn, by display and animation, each with its texture and geometry bytes. */
+        private Map<AreaKey, Charge> displays = Map.of();
         private final int models, restPosed, billboardsLeftOut;
 
         /** Drawn placements whose model carries its idle animation for the child to play (#384). */
@@ -249,7 +296,13 @@ final class WorldTileCreatures implements AutoCloseable {
             counts[Count.DRAWN.ordinal()] = drawn;
             // A display of its own, which no other summary draws, holding all of its bytes.
             return new Summary(counts, models, 0, 0, NpcCounts.NONE, null, List.of(), bytes)
-                    .withDisplays(Map.of(-UNIQUE.incrementAndGet(), bytes));
+                    .withDisplays(Map.of(new AreaKey(-UNIQUE.incrementAndGet(), false), new Charge(0, bytes)));
+        }
+
+        /** Tests only: an empty tile summary holding {@code displays}. */
+        static Summary withDisplaysForTest(Map<AreaKey, Charge> displays) {
+            return new Summary(new int[Count.values().length], displays.size(), 0, 0, NpcCounts.NONE, null,
+                    List.of(), 0).withDisplays(displays);
         }
 
         private static final java.util.concurrent.atomic.AtomicLong UNIQUE =
@@ -293,15 +346,14 @@ final class WorldTileCreatures implements AutoCloseable {
         }
 
         /**
-         * The displays drawn on the tile, each with its model's {@link #gpuBytes}: the session
-         * shares a model's GPU geometry and textures across tiles (#773), so the area share
-         * charges each display once however many resident tiles draw it.
+         * The models drawn on the tile, by display and whether it carries its idle, each with its
+         * texture and geometry bytes ({@link Area}).
          */
-        Map<Long, Long> displays() {
+        Map<AreaKey, Charge> displays() {
             return displays;
         }
 
-        private Summary withDisplays(Map<Long, Long> displays) {
+        private Summary withDisplays(Map<AreaKey, Charge> displays) {
             this.displays = Map.copyOf(displays);
             return this;
         }
@@ -748,16 +800,16 @@ final class WorldTileCreatures implements AutoCloseable {
     /** Where the camera is (native x, y), or null to carry idles everywhere (tests, censuses). */
     private volatile Supplier<double[]> camera;
 
-    /** Displays the resident tiles already draw, charged to the area share once ({@link #area}). */
-    private volatile java.util.function.LongPredicate area = display -> false;
+    /** What the resident tiles' creatures already hold ({@link #area}). */
+    private volatile Area area = Area.NONE;
 
     /**
-     * Sets the displays the resident tiles' creatures already draw: a tile prepared next adds
-     * them at no cost against its allowance, as the session holds their GPU geometry and textures
-     * once (#773). Read when a tile's pass starts.
+     * Sets what the resident tiles' creatures already hold: a tile prepared next charges its
+     * allowance nothing for a display's textures held there, nor for its geometry held there in
+     * the same animation state ({@link Area}). Read when a tile's pass starts.
      */
-    void area(java.util.function.LongPredicate charged) {
-        area = Objects.requireNonNull(charged);
+    void area(Area held) {
+        area = Objects.requireNonNull(held);
     }
 
     /** Sets where the camera is, so only spawns near it carry their idle ({@link #IDLE_DISTANCE}). */
@@ -1448,8 +1500,12 @@ final class WorldTileCreatures implements AutoCloseable {
         long textureBytes, setBytes;
         final int[] caps = new int[Cap.values().length];
         // Displays the resident tiles draw already, and those this tile draws with their bytes.
-        final java.util.function.LongPredicate charged = area;
-        final LinkedHashMap<Long, Long> displayBytes = new LinkedHashMap<>();
+        final Area held = area;
+        // Per builder model: its display and bytes, and those added without charging their
+        // geometry, which is charged at the end unless the area holds their final state.
+        final LinkedHashMap<Integer, Long> modelDisplays = new LinkedHashMap<>();
+        final HashMap<Integer, Charge> modelCharges = new HashMap<>();
+        final HashSet<Integer> geometryFree = new HashSet<>();
 
         private void cap(Cap cap) {
             counts[Count.CAPPED.ordinal()]++;
@@ -1552,8 +1608,16 @@ final class WorldTileCreatures implements AutoCloseable {
                     return;
                 }
                 var m = converted.model();
-                // A display another resident tile draws costs the area nothing more (#773).
-                long cost = charged.test(display) ? 0 : gpuBytes(m);
+                // A display the area holds costs nothing for its textures, and nothing for its
+                // geometry while the area holds it in a state this model can still end in: still,
+                // or animated unless the model cannot animate. Its final state is settled at the
+                // end (summary), which charges the geometry if that state is not held (Area).
+                var charge = new Charge(m.pixels() * 4, gpuBytes(m) - m.pixels() * 4);
+                boolean shared = held.displays().contains(display);
+                boolean canAnimate = animation && m.animatableSurfaces();
+                boolean free = shared && (held.models().contains(new AreaKey(display, false))
+                        || canAnimate && held.models().contains(new AreaKey(display, true)));
+                long cost = !shared ? charge.total() : free ? 0 : charge.geometry();
                 Cap bound = added.size() == TILE_MODELS ? Cap.MODELS
                         : textureBytes + m.pixels() * 4 > TILE_TEXTURE_BYTES ? Cap.TEXTURE_BYTES
                         : cost > allowance - setBytes ? Cap.AREA_BYTES
@@ -1566,10 +1630,12 @@ final class WorldTileCreatures implements AutoCloseable {
                     return;
                 }
                 model = add(builder, m);
+                modelDisplays.put(model, display);
+                modelCharges.put(model, charge);
+                if (free) geometryFree.add(model);
                 if (!animation || !m.animatableSurfaces()) stillModels.add(model);
                 textureBytes += m.pixels() * 4;
                 setBytes += cost;
-                displayBytes.put(display, gpuBytes(m));
                 added.put(display, model);
                 if (m.restPose() != null) restModels.add(model);
                 if (m.billboardTriangles() > 0) billboardModels.add(model);
@@ -1692,8 +1758,18 @@ final class WorldTileCreatures implements AutoCloseable {
         Summary summary(String note) {
             int animated = 0;
             for (int model : animatedModels) animated += modelPlacements.getOrDefault(model, 0);
-            return new Summary(counts, added.size(), restPosed, billboardsLeftOut, npcCounts, note, placed, setBytes)
-                    .withCaps(caps).withDisplays(displayBytes)
+            var displays = new HashMap<AreaKey, Charge>();
+            long bytes = setBytes;
+            for (var entry : modelDisplays.entrySet()) {
+                int model = entry.getKey();
+                var key = new AreaKey(entry.getValue(), animatedModels.contains(model));
+                var charge = modelCharges.get(model);
+                displays.putIfAbsent(key, charge);
+                // Added free, but the area holds its geometry only in the other state: another upload.
+                if (geometryFree.contains(model) && !held.models().contains(key)) bytes += charge.geometry();
+            }
+            return new Summary(counts, added.size(), restPosed, billboardsLeftOut, npcCounts, note, placed, bytes)
+                    .withCaps(caps).withDisplays(displays)
                     .withAnimated(animated);
         }
     }
