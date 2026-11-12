@@ -3,6 +3,7 @@ package com.vibeminer.rendering.models;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -733,5 +734,37 @@ class PreviewAnimationTest {
                                 new float[0],
                                 rigid(0, 0, 0),
                                 full(3)));
+    }
+
+    @Test
+    void addedRigidVerticesFollowTheirBoneAndTheOriginalSurfaceIsKept() {
+        var root = new Bone(-1, 0, 0, 0, constant(3, 0, 0, 1), null, null, false);
+        var still = new Bone(-1, 1, 0, 0, null, null, null, false);
+        var rest = mesh(1, 0, 0, 2, 0, 0, 3, 0, 0);
+        var animation =
+                new PreviewAnimation(
+                        "Stand",
+                        1000,
+                        new long[0],
+                        List.of(root, still),
+                        rest,
+                        new float[9],
+                        rigid(1, 1, 1),
+                        full(3));
+        // Three item vertices appended: two on the moving root, one on the still bone.
+        var bigger = mesh(1, 0, 0, 2, 0, 0, 3, 0, 0, 5, 0, 0, 6, 0, 0, 7, 0, 0);
+        var extended = animation.withRigidVertices(bigger, new float[18], new int[] {0, 0, 1});
+        var posed = extended.pose(bigger, 0).mesh().positions();
+        near(new float[] {1, 0, 0}, posed, 0);
+        near(new float[] {5, 0, 1}, posed, 3);
+        near(new float[] {6, 0, 1}, posed, 4);
+        near(new float[] {7, 0, 0}, posed, 5);
+        assertTrue(extended.matches(bigger));
+        // A surface that does not begin with the rest surface, or a bone outside the skeleton.
+        assertNull(
+                animation.withRigidVertices(
+                        mesh(9, 0, 0, 2, 0, 0, 3, 0, 0, 5, 0, 0), new float[12], new int[] {0}));
+        assertNull(animation.withRigidVertices(bigger, new float[18], new int[] {0, 0, 2}));
+        assertNull(animation.withRigidVertices(bigger, new float[18], new int[] {0}));
     }
 }

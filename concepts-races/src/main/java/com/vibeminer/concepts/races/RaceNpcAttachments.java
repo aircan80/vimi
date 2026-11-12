@@ -28,8 +28,16 @@ import java.util.TreeMap;
  * Weapons and shields are server-side NPC equipment and are not in client data.
  */
 final class RaceNpcAttachments {
-    /** Part IDs of attached item surfaces start here, above every character geoset. */
+    /**
+     * Part IDs of attached item surfaces start here, above every character geoset: {@code
+     * FIRST_PART + attachment * 100 + ordinal}, so a part names the attachment point it follows.
+     */
     static final int FIRST_PART = 20000;
+
+    /** The attachment ID an attached item part follows, or -1 for a character part. */
+    static int attachmentOf(int partId) {
+        return partId >= FIRST_PART ? (partId - FIRST_PART) / 100 : -1;
+    }
 
     /** A page fact: an attached item draws only some of its surfaces. */
     static final String SURFACES_LEFT_OUT =
@@ -251,6 +259,21 @@ final class RaceNpcAttachments {
                                     ? ItemModelFiles.componentFile(
                                             ref.files(), raceId, sex, piece.position())
                                     : first(ref.files(), raceId, sex);
+                    boolean sided =
+                            piece.position() < 0
+                                    || ref.files().stream()
+                                            .anyMatch(
+                                                    f ->
+                                                            f.component() != null
+                                                                    && f.component().positionIndex()
+                                                                            != null
+                                                                    && f.component().positionIndex()
+                                                                            == piece.position());
+                    if (file == null && !sided) {
+                        // A single-sided shoulder: the resource has no file for this side at
+                        // all, so nothing is left out.
+                        continue;
+                    }
                     if (file == null) {
                         refusal = "no model file for this race and sex";
                     } else {
@@ -354,6 +377,9 @@ final class RaceNpcAttachments {
                                 }
                                 if (bound.isEmpty()) {
                                     refusal = "none of its surfaces fits the reviewed profile";
+                                } else if (bound.size() > 100) {
+                                    // Part IDs name the attachment with 100 ordinals each.
+                                    refusal = "it has more surfaces than the part IDs can name";
                                 } else if (meshParts.size() + bound.size() > PreviewMesh.MAX_PARTS
                                         || vertexBase + item.mesh().positions().length / 3
                                                 > PreviewMesh.MAX_VERTICES) {
@@ -373,12 +399,15 @@ final class RaceNpcAttachments {
                                         itemIndices[i] += vertexBase;
                                     }
                                     indices.add(itemIndices);
+                                    int ordinal = 0;
                                     for (int[] b : bound) {
                                         var section = item.mesh().parts().get(b[0]);
                                         int sectionIndex = meshParts.size();
                                         meshParts.add(
                                                 new PreviewMesh.Part(
-                                                        FIRST_PART + sectionIndex,
+                                                        FIRST_PART
+                                                                + piece.attachment() * 100
+                                                                + ordinal++,
                                                         indexBase + section.firstIndex(),
                                                         section.indexCount()));
                                         surfaces.add(

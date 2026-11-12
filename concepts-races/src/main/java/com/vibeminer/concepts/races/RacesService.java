@@ -31,6 +31,7 @@ public final class RacesService implements BuildRaces {
     private final RaceVoices voices;
     private final RaceAppearance appearance;
     private final RaceIdleAnimations idle;
+    private final com.vibeminer.files.BuildFiles filesForModels;
     // Voices run beside the projection worker: a first voice catalog scans SoundKitEntry and
     // must not hold back the selected model's surface and textures.
     private final ThreadPoolExecutor worker = worker("race-projection"),
@@ -69,12 +70,66 @@ public final class RacesService implements BuildRaces {
         voices = new RaceVoices(this, media, tables, files, generated);
         appearance = new RaceAppearance(this, media, tables, files, generated);
         idle = new RaceIdleAnimations(media, files);
+        filesForModels = files;
     }
 
     @Override
     public CompletableFuture<RaceMediaTypes.Idle> idle(
             long raceId, long chrModelId, Cancellation token) {
         return submit(token, request -> idle.assess(raceId, chrModelId, request));
+    }
+
+    @Override
+    public CompletableFuture<RaceMediaTypes.Idle> npcIdle(
+            long extendedDisplayInfoId,
+            com.vibeminer.rendering.models.MeshAppearance appearance,
+            Cancellation token) {
+        if (extendedDisplayInfoId <= 0 || extendedDisplayInfoId > 0xffffffffL) {
+            throw new IllegalArgumentException("Invalid extended display info ID");
+        }
+        java.util.Objects.requireNonNull(appearance);
+        return submit(
+                token,
+                request -> {
+                    try {
+                        var resolution =
+                                RaceNpcs.resolve(
+                                        this,
+                                        relations,
+                                        extendedDisplayInfoId,
+                                        race -> media.variants(race, request).variants(),
+                                        request,
+                                        new ArrayList<>());
+                        if (resolution.refusal() != null) {
+                            return RaceMediaTypes.Idle.unavailable(null, resolution.refusal());
+                        }
+                        var spec = resolution.spec();
+                        var stand =
+                                idle.assess(spec.raceId(), spec.variant().chrModelId(), request);
+                        if (stand.state() != RaceTypes.State.READY || stand.animation() == null) {
+                            return stand;
+                        }
+                        return RaceNpcIdle.fit(stand, appearance, character(spec, request));
+                    } catch (Projection unavailable) {
+                        return RaceMediaTypes.Idle.unavailable(null, unavailable.getMessage());
+                    }
+                });
+    }
+
+    /** The NPC's race model, for its attachment points; null when it cannot be read now. */
+    private com.vibeminer.formats.models.M2Types.Model character(
+            RaceNpcs.Spec spec, Cancellation token) {
+        if (filesForModels == null) {
+            return null;
+        }
+        var read =
+                new com.vibeminer.formats.models.BuildModels(filesForModels)
+                        .readModel(
+                                com.vibeminer.files.FileTypes.FileRef.id(
+                                        spec.variant().modelFileDataId()),
+                                token)
+                        .join();
+        return read.model();
     }
 
     @Override
