@@ -63,7 +63,11 @@ public final class WorldTerrainStreaming {
         BGRA8
     }
 
-    /** Expected negative source outcome; never a successful height packet or a drain receipt. */
+    /**
+     * Expected negative source outcome; never a successful height packet or a drain receipt. Its
+     * message names the source that refused: terrain, or a tile's objects ({@link
+     * #prepareExteriorObjects}), whose refusal leaves the tile's terrain as it is.
+     */
     public static final class Refusal extends IllegalStateException {
         private static final long serialVersionUID = 1L;
 
@@ -75,9 +79,15 @@ public final class WorldTerrainStreaming {
 
         private final Reason reason;
         private final String site, detail;
+        private final WorldSourceRefusals.Site origin;
 
         private Refusal(WorldSourceRefusals.Site origin, String detail) {
-            super("Terrain source: " + origin.name(), null);
+            this("Terrain", origin, detail);
+        }
+
+        private Refusal(String source, WorldSourceRefusals.Site origin, String detail) {
+            super(source + " source: " + origin.name(), null);
+            this.origin = origin;
             reason = origin.reason();
             site = origin.name();
             this.detail = detail;
@@ -103,10 +113,24 @@ public final class WorldTerrainStreaming {
             return java.util.Optional.ofNullable(detail);
         }
 
+        /** The same refusal, said of a tile's objects rather than its terrain. */
+        Refusal ofObjects() {
+            return new Refusal("Objects", origin, detail);
+        }
+
         @Override
         public synchronized Throwable fillInStackTrace() {
             return this;
         }
+    }
+
+    /**
+     * The public boundary of a tile's objects ({@link WorldSourceRefusals#boundary}): a refusal
+     * says "Objects source", so it never reads as missing terrain.
+     */
+    static RuntimeException objectsBoundary(RuntimeException failure) {
+        var bounded = WorldSourceRefusals.boundary(failure);
+        return bounded instanceof Refusal refusal ? refusal.ofObjects() : bounded;
     }
 
     static Refusal refusal(WorldSourceRefusals.Site site) {
@@ -733,7 +757,7 @@ public final class WorldTerrainStreaming {
             return source().exteriorObjects(
                             scope.token, comparison, cancel, detail, interiors, compressedFormats);
         } catch (RuntimeException failure) {
-            throw WorldSourceRefusals.boundary(failure);
+            throw objectsBoundary(failure);
         }
     }
 

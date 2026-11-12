@@ -577,6 +577,31 @@ class WorldSourceRefusalsTest {
     }
 
     @Test
+    void objectsRefusalsSayObjectsSourceAndKeepTheirSiteReasonAndDetail() {
+        var terrain = WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_INPUT);
+        assertEquals("Terrain source: SOURCE_INPUT", terrain.getMessage());
+        var objects =
+                (WorldTerrainStreaming.Refusal)
+                        WorldTerrainStreaming.objectsBoundary(new CompletionException(terrain));
+        assertEquals("Objects source: SOURCE_INPUT", objects.getMessage());
+        assertEquals("SOURCE_INPUT", objects.site());
+        assertEquals(terrain.reason(), objects.reason());
+        assertTrue(objects.detail().isEmpty());
+        var detailed =
+                WorldSourceRefusals.at(WorldSourceRefusals.Site.MAP_PROFILE, "two chunks refused");
+        var relabeled =
+                (WorldTerrainStreaming.Refusal) WorldTerrainStreaming.objectsBoundary(detailed);
+        assertEquals("Objects source: MAP_PROFILE", relabeled.getMessage());
+        assertEquals("two chunks refused", relabeled.detail().orElseThrow());
+        assertEquals(0, relabeled.getStackTrace().length);
+        // Anything else passes the boundary as before.
+        var other = new IllegalArgumentException("not a refusal");
+        assertTrue(
+                WorldTerrainStreaming.objectsBoundary(other)
+                        == WorldSourceRefusals.boundary(other));
+    }
+
+    @Test
     void boundedNormalizationNeverWalksUnknownCausesOrMasksAuxiliaryFailure() {
         var expected = WorldSourceRefusals.at(WorldSourceRefusals.Site.OUTPUT_CREDIT);
         assertEquals(0, expected.getStackTrace().length);

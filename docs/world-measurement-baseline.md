@@ -186,6 +186,15 @@ every 4th) of each map in `probe.maps` through the production terrain and water 
 no helper, GPU or JavaFX. It counts the water facts: tile states and reasons, declared, admitted
 and unresolved MH2O layers, cells, and issue kinds.
 
+**Census mode** (`-Pprobe.mode=census`) prepares every `probe.stride`-th recorded tile
+(default every tile) of each map in `probe.maps`. It prepares the terrain, then the objects,
+unless `-Pprobe.objects=false`. It counts outcomes by what refused and at which site. For the
+first `probe.limit` refused tiles (default 25) it prints each of the tile's files with its read
+state and length. That separates a file the local library copy lacks (`NEEDS_NETWORK`, fetched
+by the app when it is online) from a real refusal. On build 70862 both continents' terrain
+prepared on every tile (Kalimdor 988, Eastern Kingdoms 736, under a minute each). Objects
+refusals came only from obj0 and obj1 files the offline copy lacked.
+
 **Refusals mode** calls the real `BuildWorld.terrainTextures` over every recorded tile of each
 map, in batches of 9. It counts:
 - tile states;
