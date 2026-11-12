@@ -590,6 +590,17 @@ public final class WorldMeasurementProbe {
         }
         var models = new ArrayList<Long>();
         for (var text : System.getProperty("probe.models", "27,28").split(",")) models.add(Long.parseLong(text.strip()));
+        if (Boolean.getBoolean("probe.layouts")) {
+            for (var row : rows(tables, "ChrModel", "ID", models)) {
+                say("PROBE chrmodel " + row);
+                long layout = Long.parseLong(row.get("CharComponentTextureLayoutID"));
+                for (var m : rows(tables, "ChrModelMaterial", "CharComponentTextureLayoutsID", List.of(layout)))
+                    say("PROBE  material " + m);
+                for (var l : rows(tables, "ChrModelTextureLayer", "CharComponentTextureLayoutsID", List.of(layout)))
+                    say("PROBE  layer " + l);
+            }
+            return;
+        }
         for (long model : models) {
             var options = rows(tables, "ChrCustomizationOption", "ChrModelID", List.of(model));
             say("PROBE model " + model + ": " + options.size() + " options");
@@ -666,7 +677,11 @@ public final class WorldMeasurementProbe {
                         textured++;
                         var notes = result.issues().stream().filter(i -> i.startsWith("Preview incomplete")).toList();
                         if (!notes.isEmpty()) incomplete++;
-                        say("PROBE race textured " + label + (notes.isEmpty() ? "" : " INCOMPLETE " + notes));
+                        long canvasPixels = 0;
+                        for (var texture : result.appearance().textures())
+                            canvasPixels += (long) texture.width() * texture.height();
+                        say("PROBE race textured " + label + " canvases " + result.appearance().textures().size() + " / "
+                                + canvasPixels + " px" + (notes.isEmpty() ? "" : " INCOMPLETE " + notes));
                         if (imaged.contains(race.id())) {
                             say("PROBE   issues " + result.issues());
                             for (double yaw : new double[] {-1.2, 1.9}) {

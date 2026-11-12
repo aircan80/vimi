@@ -932,7 +932,7 @@ tasks.register('worldMeasurementProbe', JavaExec) {
      'probe.rotateSeconds', 'probe.flySeconds', 'probe.settleSeconds', 'probe.mapSeconds',
      'probe.deadlineSeconds', 'probe.size', 'probe.passes', 'probe.objects', 'probe.interiors', 'probe.root',
      'vimi.world.objectTextures', 'vimi.world.creatures', 'vimi.world.viewDistance',
-     'vimi.gpu.backend', 'probe.stride', 'probe.limit', 'probe.raceDetail', 'probe.models', 'probe.displays', 'probe.raceImages', 'probe.online', 'probe.files'].each { name ->
+     'vimi.gpu.backend', 'probe.stride', 'probe.limit', 'probe.raceDetail', 'probe.models', 'probe.displays', 'probe.raceImages', 'probe.online', 'probe.files', 'probe.layouts'].each { name ->
         def value = providers.gradleProperty(name)
         if (value.isPresent()) systemProperty name, value.get()
     }
