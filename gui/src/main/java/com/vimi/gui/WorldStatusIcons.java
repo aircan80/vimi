@@ -169,7 +169,7 @@ final class WorldStatusIcons {
         modeState = Objects.requireNonNull(state);
         modePath.setContent(state == Mode.FLY ? WINGS : BOOTS);
         mode.pseudoClassStateChanged(AMBER, state == Mode.WALK_NO_TERRAIN);
-        tip(mode, tip + "\nClick or press the walk key to " + (state == Mode.FLY ? "walk" : "fly"));
+        tip(mode, tip + "\nClick or press the mode key for the next mode: free camera, walk, fly");
     }
 
     /** The live speed in yards per second; sprinting brightens the chip. */

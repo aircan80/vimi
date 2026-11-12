@@ -44,8 +44,9 @@ record WorldControls(
         LOOK_UP("Look up"),
         LOOK_DOWN("Look down"),
         SPRINT("Faster (hold; with the wheel: speed)"),
-        WALK("Walk with collision (toggle; again: free camera)"),
-        FLY("Walk or fly with collision (toggle)"),
+        // The stored name stays WALK, so saved bindings keep their key.
+        WALK("Movement mode: free camera, walk, fly (next on each press)"),
+        FLY("Walk or fly with collision (switch directly)"),
         FIRST_PERSON("First or third person while walking or flying (toggle)"),
         MAP_PANEL("Map panel (toggle)", true),
         HIDE_HUD("Hide or show the HUD (toggle)", true),
@@ -306,8 +307,9 @@ record WorldControls(
                 + "/" + keysOf.apply(Action.LOOK_UP) + "/" + keysOf.apply(Action.LOOK_DOWN) + " to look · "
                 + keysOf.apply(Action.SPRINT) + " faster · wheel zooms"
                 + (modifier == null ? "" : " · " + modifier.getName() + "+wheel changes speed")
-                + " · " + keysOf.apply(Action.WALK) + " walks · " + keysOf.apply(Action.FLY)
-                + " walks or flies · " + keysOf.apply(Action.FIRST_PERSON) + " first person · "
+                + " · " + keysOf.apply(Action.WALK) + " next mode (free camera, walk, fly) · "
+                + keysOf.apply(Action.FLY) + " walk or fly · "
+                + keysOf.apply(Action.FIRST_PERSON) + " first person · "
                 + keysOf.apply(Action.MAP_PANEL)
                 + " map · " + keysOf.apply(Action.HIDE_HUD) + " hides the HUD · click inspects · "
                 + keysOf.apply(Action.INSPECT_PIN) + " pins the card · "

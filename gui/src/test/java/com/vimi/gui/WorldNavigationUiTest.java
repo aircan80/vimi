@@ -1261,7 +1261,7 @@ public final class WorldNavigationUiTest {
         var walk=(javafx.scene.control.CheckBox)get(view,"walkMode");
         var fly=(javafx.scene.control.CheckBox)get(view,"flyMode");
         var status=(javafx.scene.control.Label)view.lookup("#world-motion-status");
-        require(!walk.isSelected() && !fly.isSelected(),"Free flight is the default");
+        require(!walk.isSelected() && !fly.isSelected(),"The free camera is the default");
         key(viewport,KeyCode.F,true);
         key(viewport,KeyCode.F,true);
         key(viewport,KeyCode.F,false);
@@ -1311,9 +1311,24 @@ public final class WorldNavigationUiTest {
         key(viewport,KeyCode.G,true);
         key(viewport,KeyCode.G,false);
         require(walk.isSelected() && !fly.isSelected(),"G again walks");
+        // A mode change relabels the status line at once (no pulse needed).
+        require(status.getText().endsWith(" · F: fly"),"Walking names the next mode's key: "+status.getText());
+        // F, the mode key, moves on: walk, fly, free camera, walk.
+        key(viewport,KeyCode.F,true);
+        key(viewport,KeyCode.F,false);
+        require(fly.isSelected() && !walk.isSelected() && status.getText().startsWith("Flying")
+                        && status.getText().endsWith(" · F: free camera"),
+                "F after walking flies: "+status.getText());
+        key(viewport,KeyCode.F,true);
+        key(viewport,KeyCode.F,false);
+        require(!walk.isSelected() && !fly.isSelected(),"F after flying is the free camera");
+        require(status.getText().startsWith("Free camera") && status.getText().endsWith(" · F: walk"),
+                "The free camera is reported with the key to walk: "+status.getText());
+        key(viewport,KeyCode.F,true);
+        key(viewport,KeyCode.F,false);
+        require(walk.isSelected() && !fly.isSelected(),"F after the free camera walks again");
         walk.fire();
-        require(!walk.isSelected() && !fly.isSelected(),"Walking can be turned off");
-        require(status.getText().startsWith("Free flight"),"Free flight is reported");
+        require(!walk.isSelected() && !fly.isSelected(),"Walking can be turned off from the menu");
         smoothDefault(view);
     }
 

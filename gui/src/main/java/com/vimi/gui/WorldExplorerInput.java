@@ -38,9 +38,33 @@ import javafx.scene.input.MouseButton;
 final class WorldExplorerInput {
     /** Free camera, or a body walking or flying with collision. */
     enum Mode {
-        FREE,
-        WALK,
-        FLY
+        FREE("free camera"),
+        WALK("walk"),
+        FLY("fly");
+
+        /** How the status line and help name the mode. */
+        final String label;
+
+        Mode(String label) {
+            this.label = label;
+        }
+
+        /**
+         * The mode the mode key moves to: free camera, then walk, then fly, then free camera
+         * again, one press each.
+         */
+        Mode next() {
+            return switch (this) {
+                case FREE -> WALK;
+                case WALK -> FLY;
+                case FLY -> FREE;
+            };
+        }
+
+        /** The status line's hint: the key that moves on, and the mode it moves to. */
+        String nextHint(String modeKey) {
+            return " · " + modeKey + ": " + next().label;
+        }
     }
 
     /** View hooks; every method is called on the FX thread from an input event or pulse. */
@@ -59,6 +83,7 @@ final class WorldExplorerInput {
 
         void groundStatus(ExplorerMotion.Ground ground);
 
+        /** The mode key: the next mode of free camera, walk, fly ({@link Mode#next}). */
         void toggleWalk();
 
         /** The walk/fly key: switch the body between walking and flying. */
@@ -196,6 +221,8 @@ final class WorldExplorerInput {
     private Mode mode = Mode.FREE;
     private final Set<KeyCode> keys = new HashSet<>();
     private long lastTick, lastRender, lastNearby;
+    // Whether a pulse timed before the previous one was logged (once per input).
+    private boolean backwardsLogged;
     private WorldControls controls = WorldControls.DEFAULTS;
     private Pointer pointer = Pointer.NONE;
     private boolean looking, captureOff, awaitingEcho, lateEcho;
@@ -553,8 +580,18 @@ final class WorldExplorerInput {
             pendingX = pendingY = 0;
             return;
         }
-        double dt = lastTick == 0 ? 0 : Math.min(.1, (now - lastTick) / 1e9);
-        lastTick = now;
+        // The FX timer is monotonic, so a pulse timed before the last one should not happen; a
+        // test that drives pulses with its own fake clock beside the toolkit's real pulses can send
+        // one. It integrates nothing and keeps the later time, and the first is logged.
+        if (lastTick != 0 && now < lastTick && !backwardsLogged) {
+            backwardsLogged = true;
+            System.getLogger(WorldExplorerInput.class.getName())
+                    .log(System.Logger.Level.DEBUG,
+                            "Explorer pulse timed {0} ns before the previous one; nothing integrated",
+                            lastTick - now);
+        }
+        double dt = lastTick == 0 ? 0 : Math.clamp((now - lastTick) / 1e9, 0, .1);
+        lastTick = Math.max(lastTick, now);
         if (mode != Mode.FREE) {
             bodyPulse(now, camera, dt);
             return;

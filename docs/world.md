@@ -26,11 +26,12 @@ An authored asymmetric-grid test verifies orientation and exact clicked fileID. 
 Click the viewport to focus it. WASD moves horizontally, Space or E ascends and Q or X descends,
 mouse drag or arrow keys changes view direction, Shift increases movement speed,
 and the wheel moves along the view direction (Shift+wheel changes speed).
-**Walk with collision** (or F) and **Fly with collision** (or G) move a body
+**Walk with collision** and **Fly with collision** (F cycles free camera, walk and fly; G switches walk and fly) move a body
 that the camera follows: walking runs at 7 yards/s with gravity, Space to jump, a
 slope limit and step-up; flying goes at least the 32 yards/s taxi speed. The
-wheel or C zooms down to first person. The body is drawn as a murloc that
-stands, walks and runs, hidden in first person. It collides with the terrain,
+wheel or C zooms down to first person. The walking body is drawn as a murloc
+that stands, walks and runs, and the flying body as a gryphon; both are hidden
+in first person. It collides with the terrain,
 buildings and doodads. **Smooth motion** eases the free camera only. See
 [walk and fly movement](world-walk-fly-movement-checkpoint.md).
 **Bookmark this view** saves the camera with its map identity and tile. Below the

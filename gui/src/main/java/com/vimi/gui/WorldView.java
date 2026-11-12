@@ -220,8 +220,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
     // The distance the current stream controller was started with.
     private ViewDistance streamingDistance = WorldStreamGpuOwner.VIEW_DISTANCE;
     // Free camera when neither is ticked; at most one of the two is.
-    private final CheckBox walkMode = new CheckBox("Walk with collision (F)");
-    private final CheckBox flyMode = new CheckBox("Fly with collision (G)");
+    private final CheckBox walkMode = new CheckBox("Walk with collision");
+    private final CheckBox flyMode = new CheckBox("Fly with collision");
+    // How to change mode, from the current bindings: the game menu's Movement section shows it.
+    private final Label modeKeys = new Label();
+    // The mode key's name, for the status line's "next mode" hint.
+    private String modeKey = "F";
     private final CheckBox smoothMotion = new CheckBox("Smooth motion");
     private final javafx.scene.control.Slider lookSensitivity = new javafx.scene.control.Slider(
             WorldControls.MIN_SENSITIVITY, WorldControls.MAX_SENSITIVITY, WorldControls.DEFAULT_SENSITIVITY);
@@ -235,7 +239,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     // Session-only until the application's library store is installed (bookmarks(...)).
     private WorldControls.Store controlsStore = WorldControls.memory();
     private boolean showingControls, controlsEdited, captureFallbackLogged;
-    private final Label motionStatus = new Label("Free flight · no collision");
+    private final Label motionStatus = new Label("Free camera · no collision · F: walk");
     private final WorldExplorerInput input = new WorldExplorerInput(new WorldExplorerInput.Host() {
         @Override public TerrainRenderer.Camera camera() { return camera; }
         @Override public void camera(TerrainRenderer.Camera next) { camera = next; }
@@ -246,11 +250,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         @Override public boolean fastCadence() { return streamingMode || gpu != null && gpu.ready(); }
         @Override public boolean idleFrames() { return viewport.isFocused() && viewportActive(); }
         @Override public void groundStatus(ExplorerMotion.Ground ground) { WorldView.this.groundStatus(ground); }
-        @Override public void toggleWalk() {
-            walkMode.setSelected(!walkMode.isSelected());
-            flyMode.setSelected(false);
-            motionChanged();
-        }
+        @Override public void toggleWalk() { nextMode(); }
         @Override public void toggleFly() {
             boolean fly = !flyMode.isSelected();
             flyMode.setSelected(fly);
@@ -288,7 +288,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     // HUD step 2: status icons bottom-left; the existing controls stay their models.
     private ExplorerMotion.Ground motionGround = ExplorerMotion.Ground.FREE;
     private final WorldStatusIcons icons = new WorldStatusIcons(new WorldStatusIcons.Actions() {
-        @Override public void toggleWalk() { walkMode.fire(); }
+        @Override public void toggleWalk() { nextMode(); }
         @Override public void nextSpeed() {
             var all = WorldControls.Speed.values();
             var now = flightSpeed.getValue();
@@ -707,6 +707,18 @@ final class WorldView extends BorderPane implements AutoCloseable {
             showLayoutChoice(controls);
             hud.mapKey(mapKey(controls));
             hideHudKey = boundKeys(controls, WorldControls.Action.HIDE_HUD);
+            modeKey = java.util.Objects.requireNonNullElse(
+                    boundKeys(controls, WorldControls.Action.WALK), "the mode key (unbound)");
+            String flyKey = java.util.Objects.requireNonNullElse(
+                    boundKeys(controls, WorldControls.Action.FLY), "the walk/fly key (unbound)");
+            modeKeys.setText(modeKey + ": next mode (free camera → walk → fly → free camera) · "
+                    + flyKey + ": walk or fly");
+            // Relabel the status line with the new key: now in free camera, at the next pulse in
+            // a body mode.
+            bodyMode = null;
+            if (motionMode() == WorldExplorerInput.Mode.FREE)
+                motionStatus.setText("Free camera · no collision"
+                        + WorldExplorerInput.Mode.FREE.nextHint(modeKey));
             hudButton.setText(hideHudButton(hideHudKey));
             hudHint.setText(hudHint(hideHudKey, fullscreen.active()));
             devOverlay.key(controls.byAction().get(WorldControls.Action.DEV_OVERLAY).stream()
@@ -890,6 +902,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
         gpuEnabled.setSelected(gpu != null);
         gpuEnabled.setDisable(gpu == null);
         gpuEnabled.setId("world-gpu-enabled");
+        modeKeys.setId("world-mode-keys");
+        modeKeys.setWrapText(true);
         walkMode.setId("world-walk-mode");
         walkMode.setFocusTraversable(false);
         walkMode.setOnAction(e -> {
@@ -1630,9 +1644,17 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (explorer) focusViewport();
     }
 
+    /** The mode key: free camera, walk, fly, one press each ({@link WorldExplorerInput.Mode#next}). */
+    private void nextMode() {
+        var next = motionMode().next();
+        walkMode.setSelected(next == WorldExplorerInput.Mode.WALK);
+        flyMode.setSelected(next == WorldExplorerInput.Mode.FLY);
+        motionChanged();
+    }
+
     private void groundStatus(ExplorerMotion.Ground next) {
         if (motionMode() != WorldExplorerInput.Mode.FREE) return;
-        motionStatus.setText("Free flight · no collision");
+        motionStatus.setText("Free camera · no collision" + WorldExplorerInput.Mode.FREE.nextHint(modeKey));
         motionGround = next;
         refreshIcons();
     }
@@ -1652,7 +1674,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         bodyShown = status;
         bodySpeedShown = speed;
         objectsShown = ready;
-        motionStatus.setText(bodyText(mode, status, speed, ready));
+        motionStatus.setText(bodyText(mode, status, speed, ready) + mode.nextHint(modeKey));
         motionGround = status == WalkController.Status.LOADING ? ExplorerMotion.Ground.UNAVAILABLE
                 : ExplorerMotion.Ground.FOLLOWING;
         refreshIcons();
@@ -2358,7 +2380,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         var layoutRow = new HBox(10, new Label("Layout"), qwerty, azerty);
         layoutRow.setAlignment(Pos.CENTER_LEFT);
         menu.page(WorldGameMenu.Page.CONTROLS).getChildren().setAll(
-                WorldGameMenu.section("Movement", speedRow, smoothMotion, walkMode, flyMode, motionStatus),
+                WorldGameMenu.section("Movement", speedRow, smoothMotion, walkMode, flyMode, modeKeys, motionStatus),
                 WorldGameMenu.section("Look", sensitivityRow, invertLook, lookStatus),
                 WorldGameMenu.section("Keys", layoutRow, keyBindings),
                 keyHelp, inspectHint());
@@ -4214,7 +4236,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     /** The body of the current motion mode: the gryphon flies, the murloc walks. */
     private long bodyDisplay() {
-        return input.mode() == WorldExplorerInput.Mode.FLY ? WorldBodyModel.GRYPHON : WorldBodyModel.MURLOC;
+        return WorldBodyModel.display(input.mode());
     }
 
     /** The one display-model component the bodies are read through, opened on first use. */
