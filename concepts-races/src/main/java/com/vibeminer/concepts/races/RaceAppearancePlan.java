@@ -997,6 +997,45 @@ final class RaceAppearancePlan {
         if (previous != null) {
             return previous;
         }
+        // The component's reverse relation index answers without scanning the table; a filtered
+        // page scan cost about 36 ms per texture resource (most of a humanoid NPC's plan). The
+        // page stays for relations the index does not serve and for partial tables, whose
+        // readable rows it keeps.
+        var lookup =
+                value < 0 || value > 0xffffffffL
+                        ? null
+                        : owner.relations
+                                .lookup(
+                                        data.name,
+                                        field,
+                                        value,
+                                        256,
+                                        TableTypes.Priority.INTERACTIVE,
+                                        token)
+                                .join();
+        var state =
+                lookup == null
+                        ? com.vibeminer.concepts.core.RelationIndexes.State.UNSUPPORTED
+                        : lookup.state();
+        switch (state) {
+            case NOT_READABLE, STALE ->
+                    throw new RacesService.Unreadable(
+                            data.name + ": filtered texture relationship is " + lookup.state());
+            case OK -> {
+                if (lookup.matches() > 256) {
+                    throw data.unsupported(
+                            "Filtered texture relationship is unavailable or exceeds bounds");
+                }
+                if (lookup.complete()) {
+                    var rows = lookup.rows().stream().map(TableTypes.Row::row).toList();
+                    if (queries.size() < 512) {
+                        queries.put(key, rows);
+                    }
+                    return rows;
+                }
+            }
+            default -> {}
+        }
         var page =
                 tables.page(
                                 new TableTypes.PageRequest(
