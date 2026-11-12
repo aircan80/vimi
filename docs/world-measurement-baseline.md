@@ -513,7 +513,7 @@ Every run also has one ~3 s accept gap right after the stationary phase, as in s
 
 ## Splat terrain memory (#491)
 
-Splat terrain blending (`-Dvimi.world.splat`) adds splat masks to every terrain
+Splat terrain blending (on by default; `-Dvimi.world.splat=false` turns it off) adds splat masks to every terrain
 atlas the parent retains (`TerrainAtlasPool`) and to every terrain slot on the
 GPU. The pool is bounded by bytes (`TerrainAtlasPool.MAX_BYTES`, 22 atlases
 with 1024² masks, about 110.5 MiB; #583) as well as by count; the GPU side is
@@ -541,3 +541,17 @@ The pool stayed at about 55 % of its byte bound in the worst case, with no
 `POOL_BUSY` refusal. The GPU splat masks match the budget exactly: ten NEAR
 slots of a 1024² mask chain (5.33 MiB each) and twenty-six FAR slots of a 512²
 chain (1.33 MiB each).
+
+With splat on by default, the same runs give the frame cost (CPU side; the
+driver's GPU timer queries read about 0 here, so no GPU time is given) and the
+memory at both view distances, splat off against on:
+
+| | Pool charge | GPU memory used | GPU textures | Frame render p50 / p95 | Render submit p50 / p95 |
+|---|---|---|---|---|---|
+| NEAR, off | 12.2 MiB | 228 MiB | 60 MiB | 0.472 / 0.665 ms | 0.438 / 0.783 ms |
+| NEAR, on | 60.2 MiB | 301 MiB | 124 MiB | 0.494 / 0.690 ms | 0.442 / 0.784 ms |
+| FAR, off | 30.5 MiB | 330 MiB | 92 MiB | 0.528 / 0.712 ms | 0.480 / 0.871 ms |
+| FAR, on | 60.5 MiB | 381 MiB | 137 MiB | 0.546 / 0.756 ms | 0.480 / 0.922 ms |
+
+Frame render is `child.frame.bgfxFrameRender`, render submit
+`child.frame.bgfxCpuRender`.
