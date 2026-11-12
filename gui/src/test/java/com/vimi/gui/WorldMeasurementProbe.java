@@ -192,7 +192,7 @@ public final class WorldMeasurementProbe {
                                         null,
                                         issue -> say("PROBE " + issue),
                                         DEADLINE - System.nanoTime(),
-                                        List.of("creatures", "displays", "body", "races", "raceSkin")
+                                        List.of("creatures", "displays", "body", "races", "raceSkin", "fetch")
                                                 .contains(
                                                         System.getProperty(
                                                                 "probe.mode", "stream"))));
@@ -226,6 +226,7 @@ public final class WorldMeasurementProbe {
                             case "body" -> body(opened);
                             case "races" -> races(opened);
                             case "raceSkin" -> raceSkin(opened);
+                            case "fetch" -> fetch(opened);
                             case "creatures" -> creatures(opened, handle, catalog);
                             case "displays" -> displays(opened);
                             default -> stream(handle, catalog);
@@ -502,6 +503,38 @@ public final class WorldMeasurementProbe {
                 scenario.name(), placements.size(), merged.placements(), byBuilding.size(), doodads,
                 merged.bytes() / 1048576.0, seconds(System.nanoTime() - began), within, checked, worst, worstId, skipped));
         return merged;
+    }
+
+    /**
+     * Reads -Pprobe.files (FileDataIDs) whole through the build's files; with -Pprobe.online=true
+     * the work is the app's online one, so files missing from this measurement copy are fetched
+     * from the CDN into it. For private checks only; nothing fetched is committed.
+     */
+    private static void fetch(WorldMeasurementOpen opened) throws Exception {
+        if (!Boolean.getBoolean("probe.online")) throw new IllegalStateException("fetch needs -Pprobe.online=true");
+        var files = opened.files();
+        for (var text : System.getProperty("probe.files", "").split(",")) {
+            if (text.isBlank()) continue;
+            long id = Long.parseLong(text.strip());
+            var open = files.openRead(com.vibeminer.files.FileTypes.FileRef.id(id), Cancellation.NONE)
+                    .get(5, TimeUnit.MINUTES);
+            long read = 0;
+            if (open.stream() != null) {
+                try (var stream = open.stream()) {
+                    var buffer = java.nio.ByteBuffer.allocate(1 << 16);
+                    while (true) {
+                        buffer.clear();
+                        int n = stream.read(buffer, Cancellation.NONE).get(5, TimeUnit.MINUTES);
+                        if (n <= 0) break;
+                        read += n;
+                    }
+                    say("PROBE fetch " + id + ": " + open.state() + ", " + read + " of " + stream.length()
+                            + " bytes, holes " + stream.holes().size());
+                }
+            } else {
+                say("PROBE fetch " + id + ": " + open.state() + " " + open.code() + " " + open.message());
+            }
+        }
     }
 
     /** Rows of {@code table} whose {@code column} equals one of {@code values}, as name=value maps. */
