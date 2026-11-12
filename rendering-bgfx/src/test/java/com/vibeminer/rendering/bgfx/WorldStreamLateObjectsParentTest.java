@@ -114,6 +114,30 @@ class WorldStreamLateObjectsParentTest {
     }
 
     @Test
+    void aMissingReplyAllowsOneResendAndAGiveUpRecordsFailed() {
+        var state = ready(true);
+        var resident = resident(state, 7, 19, List.of(), new WorldStreamState.Lease(1, 1, 2));
+        assertTrue(state.admitLateObjects(resident));
+        var command = state.lateObjects(resident, 4096, SHA, 0, 512, SHA);
+        assertTrue(command.hasPack());
+        assertEquals(512, command.packLength());
+        state.status(done(resident, WorldStreamStatus.LateOutcome.MISSING));
+        assertSame(WorldStreamStatus.LateOutcome.MISSING, resident.late);
+        assertFalse(state.lateObjectsPending());
+        // The same resident goes once more, in a new epoch and without a pack.
+        var resend = state.lateObjects(resident, 4096, SHA, 1, 0, null);
+        assertEquals(1, resend.epoch());
+        assertFalse(resend.hasPack());
+        assertNull(resident.late);
+        state.status(done(resident, WorldStreamStatus.LateOutcome.MISSING));
+        // Not sent a third time: the transport gives up, recorded like a child failure.
+        state.lateObjectsGaveUp(resident);
+        assertSame(WorldStreamStatus.LateOutcome.FAILED, resident.late);
+        assertThrows(IllegalStateException.class, () -> state.lateObjects(resident, 4096, SHA));
+        assertThrows(IllegalStateException.class, () -> state.lateObjectsGaveUp(resident));
+    }
+
+    @Test
     void heldLateObjectsMayBeReplacedAndKeepTheirSetWhateverTheReplacementDoes() {
         var state = ready(true);
         var resident = resident(state, 7, 19, List.of(), new WorldStreamState.Lease(1, 1, 2));

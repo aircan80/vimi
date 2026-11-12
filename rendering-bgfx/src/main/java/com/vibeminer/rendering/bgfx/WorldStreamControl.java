@@ -125,6 +125,12 @@ final class WorldStreamControl {
      * replace} ({@code OBJECTS_REPLACE}) the generation already holds late objects and the new set
      * takes their place only once it is fully built; until then, and whenever it does not attach,
      * the held set stays drawn.
+     *
+     * <p>#380 stage 4: the file may name models and images by digest. {@code epoch} is the parent's
+     * asset store epoch ({@link WorldStreamAssetStore}): a new one empties the child's store first.
+     * The asset pack {@code assets-<txn>.wsa} ({@code packLength} and {@code packSha256}; 0 and
+     * null without one) carries the named assets the parent's mirror says the child lacks. A file
+     * naming an asset neither holds is answered {@code MISSING}.
      */
     record LateObjects(
             WorldStreamState.Nonce nonce,
@@ -132,7 +138,10 @@ final class WorldStreamControl {
             WorldStreamState.Lease lease,
             int length,
             String sha256,
-            boolean replace)
+            boolean replace,
+            long epoch,
+            int packLength,
+            String packSha256)
             implements Command {
         LateObjects(
                 WorldStreamState.Nonce nonce,
@@ -141,6 +150,16 @@ final class WorldStreamControl {
                 int length,
                 String sha256) {
             this(nonce, transaction, lease, length, sha256, false);
+        }
+
+        LateObjects(
+                WorldStreamState.Nonce nonce,
+                long transaction,
+                WorldStreamState.Lease lease,
+                int length,
+                String sha256,
+                boolean replace) {
+            this(nonce, transaction, lease, length, sha256, replace, 0, 0, null);
         }
 
         LateObjects {
@@ -152,6 +171,24 @@ final class WorldStreamControl {
                     || length > WorldStreamObjectsFile.MAX_BYTES) {
                 throw new IllegalArgumentException("Invalid objects length");
             }
+            if (epoch < 0) {
+                throw new IllegalArgumentException("Invalid asset epoch");
+            }
+            if (packSha256 == null) {
+                if (packLength != 0) {
+                    throw new IllegalArgumentException("Asset pack length without digest");
+                }
+            } else {
+                digest(packSha256);
+                if (packLength < WorldStreamAssetPack.HEADER_BYTES
+                        || packLength > WorldStreamObjectsFile.MAX_BYTES) {
+                    throw new IllegalArgumentException("Invalid asset pack length");
+                }
+            }
+        }
+
+        boolean hasPack() {
+            return packSha256 != null;
         }
     }
 
@@ -455,7 +492,17 @@ final class WorldStreamControl {
                                     + " "
                                     + c.length()
                                     + " "
-                                    + c.sha256();
+                                    + c.sha256()
+                                    + " "
+                                    + c.epoch()
+                                    + (c.hasPack()
+                                            ? " "
+                                                    + WorldStreamAssetPack.basename(c.transaction())
+                                                    + " "
+                                                    + c.packLength()
+                                                    + " "
+                                                    + c.packSha256()
+                                            : "");
                     case Horizon c ->
                             "HORIZON 1 " + Horizon.BASENAME + " " + c.length() + " " + c.sha256();
                     case BodyModel c ->
@@ -592,9 +639,16 @@ final class WorldStreamControl {
                                             integer(parts[5]), number(parts[6]), number(parts[4])));
                         }
                         case "OBJECTS", "OBJECTS_REPLACE" -> {
-                            arity(parts, 10);
+                            // ... <objects file> <length> <sha> <epoch> [<pack> <length> <sha>]
+                            if (parts.length != 11) {
+                                arity(parts, 14);
+                            }
                             long tx = number(parts[3]);
                             basename(parts[7], WorldStreamObjectsFile.basename(tx));
+                            boolean pack = parts.length == 14;
+                            if (pack) {
+                                basename(parts[11], WorldStreamAssetPack.basename(tx));
+                            }
                             yield new LateObjects(
                                     nonce,
                                     tx,
@@ -602,7 +656,10 @@ final class WorldStreamControl {
                                             integer(parts[5]), number(parts[6]), number(parts[4])),
                                     integer(parts[8]),
                                     parts[9],
-                                    parts[2].equals("OBJECTS_REPLACE"));
+                                    parts[2].equals("OBJECTS_REPLACE"),
+                                    number(parts[10]),
+                                    pack ? integer(parts[12]) : 0,
+                                    pack ? parts[13] : null);
                         }
                         case "HORIZON" -> {
                             arity(parts, 7);

@@ -508,7 +508,7 @@ public final class WorldStreamObjectsMaterialProof {
         return chain.flip();
     }
 
-    private static ByteBuffer solid(int width, int height, int r, int g, int b, int a) {
+    static ByteBuffer solid(int width, int height, int r, int g, int b, int a) {
         var pixels = ByteBuffer.allocate(width * height * 4);
         for (int i = 0; i < width * height; i++) {
             pixels.put((byte) r).put((byte) g).put((byte) b).put((byte) a);
@@ -517,15 +517,15 @@ public final class WorldStreamObjectsMaterialProof {
     }
 
     /** Frame column {@code offset} focal lengths from the center. */
-    private static int at(double offset) {
+    static int at(double offset) {
         return (int) Math.round(WIDTH * .5 + offset * TerrainCamera.focalPixels(WIDTH));
     }
 
-    private static int pixel(WorldStreamTransport.Frame frame, int x, int y) {
+    static int pixel(WorldStreamTransport.Frame frame, int x, int y) {
         return frame.pixels().get(y * frame.width() + x);
     }
 
-    private static int channel(int pixel, int shift) {
+    static int channel(int pixel, int shift) {
         return (pixel >>> shift) & 255;
     }
 
@@ -535,8 +535,8 @@ public final class WorldStreamObjectsMaterialProof {
         }
     }
 
-    private static WorldStreamTransport.TileReservation reserve(
-            WorldStreamTransport.Session session) throws Exception {
+    static WorldStreamTransport.TileReservation reserve(WorldStreamTransport.Session session)
+            throws Exception {
         long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
         while (System.nanoTime() < until) {
             var value = session.tryReserveTile(7, 19);
@@ -548,7 +548,7 @@ public final class WorldStreamObjectsMaterialProof {
         throw new AssertionError("No genuine tile credit");
     }
 
-    private static WorldStreamTransport.Frame frame(
+    static WorldStreamTransport.Frame frame(
             WorldStreamTransport.Session session, long content, long policy) throws Exception {
         long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
         while (System.nanoTime() < until) {

@@ -49,6 +49,14 @@ final class WorldStreamSession {
             Executors.newSingleThreadExecutor(
                     Thread.ofVirtual().name("world-v2-objects-decoder").factory());
     private CompletableFuture<LateDecoded> objectsDecoding;
+
+    /**
+     * The model and image assets late objects files may name by digest (#380 stage 4), mirrored by
+     * the parent. Changed only on the objects decoder, one command at a time; the owner loop reads
+     * its report once that command's decode is joined, or while none runs.
+     */
+    private final WorldStreamAssetStore<Object> assets = new WorldStreamAssetStore<>();
+
     // The horizon WDL (#372): read and parsed on its own worker, never on the tile decoder.
     private final AtomicBoolean horizonCanceled = new AtomicBoolean();
     private final java.util.concurrent.ExecutorService horizonDecoder =
@@ -723,6 +731,7 @@ final class WorldStreamSession {
             throw new IllegalStateException("Second late objects command in flight");
         }
         if (admitted != WorldStreamState.Result.OK) {
+            assets.begin();
             sendObjects(command, WorldStreamStatus.LateOutcome.DROPPED);
             return;
         }
@@ -744,7 +753,8 @@ final class WorldStreamSession {
                                                 coordinate % 64,
                                                 coordinate / 64,
                                                 objectsCanceled::get,
-                                                objectFormats),
+                                                objectFormats,
+                                                assets),
                                         null);
                             } catch (Throwable error) {
                                 return new LateDecoded(null, error);
@@ -969,21 +979,104 @@ final class WorldStreamSession {
             java.util.function.BooleanSupplier canceled,
             int objectFormats)
             throws IOException {
+        return decodeLateObjects(
+                session,
+                directory,
+                command,
+                tileX,
+                tileY,
+                canceled,
+                objectFormats,
+                new WorldStreamAssetStore<>());
+    }
+
+    /**
+     * As above, with the session's asset store (#380 stage 4): a command of a new epoch empties it
+     * first; the file's named assets come from it or the command's asset pack, and {@link
+     * WorldStreamObjectsFile.MissingAssets} names those neither holds. A file whose every asset was
+     * found is applied to the store ({@link WorldStreamAssetStore#apply}) before packing, so a
+     * later failure keeps what it delivered.
+     */
+    static WorldStreamPackedObjects decodeLateObjects(
+            WorldStreamEnvelope.Session session,
+            Path directory,
+            WorldStreamControl.LateObjects command,
+            int tileX,
+            int tileY,
+            java.util.function.BooleanSupplier canceled,
+            int objectFormats,
+            WorldStreamAssetStore<Object> store)
+            throws IOException {
+        store.begin();
         if (!session.exteriorObjects()) {
             throw new IOException("Late objects outside the session profile");
         }
+        if (store.epoch() != command.epoch()) {
+            store.reset(command.epoch());
+        }
+        var identity =
+                new WorldStreamObjectsFile.Identity(
+                        session.nonce(),
+                        session.scope(),
+                        command.transaction(),
+                        command.lease(),
+                        tileX,
+                        tileY);
+        long packRead = WorldStageTimings.start();
+        var pack =
+                command.hasPack()
+                        ? WorldStreamAssetPack.read(
+                                directory.resolve(
+                                        WorldStreamAssetPack.basename(command.transaction())),
+                                identity,
+                                new WorldStreamObjectsFile.Reference(
+                                        command.packLength(), command.packSha256()),
+                                canceled)
+                        : WorldStreamAssetPack.Pack.EMPTY;
+        if (command.hasPack()) {
+            WorldStageTimings.stop("child.objects.assetPack.read", packRead);
+        }
+        var models =
+                new java.util.HashMap<
+                        WorldStreamObjectAssets.Digest, WorldStreamObjectAssets.ModelPart>();
+        var images =
+                new java.util.HashMap<
+                        WorldStreamObjectAssets.Digest, WorldStreamObjectAssets.ImagePart>();
+        store.values()
+                .forEach(
+                        (digest, value) -> {
+                            if (value instanceof WorldStreamObjectAssets.ModelPart model) {
+                                models.put(digest, model);
+                            } else if (value instanceof WorldStreamObjectAssets.ImagePart image) {
+                                images.put(digest, image);
+                            }
+                        });
+        models.putAll(pack.models());
+        images.putAll(pack.images());
+        var named =
+                new java.util.concurrent.atomic.AtomicReference<
+                        WorldStreamObjectsFile.References>();
         var data =
                 WorldStreamObjectsFile.read(
                         directory.resolve(WorldStreamObjectsFile.basename(command.transaction())),
-                        new WorldStreamObjectsFile.Identity(
-                                session.nonce(),
-                                session.scope(),
-                                command.transaction(),
-                                command.lease(),
-                                tileX,
-                                tileY),
+                        identity,
                         new WorldStreamObjectsFile.Reference(command.length(), command.sha256()),
-                        canceled);
+                        new WorldStreamAssetPack.Pack(models, images),
+                        canceled,
+                        named::set);
+        var received =
+                new java.util.HashMap<
+                        WorldStreamObjectAssets.Digest, WorldStreamAssetStore.Received<Object>>();
+        pack.sizes()
+                .forEach(
+                        (digest, size) -> {
+                            Object value = pack.models().get(digest);
+                            if (value == null) {
+                                value = pack.images().get(digest);
+                            }
+                            received.put(digest, new WorldStreamAssetStore.Received<>(size, value));
+                        });
+        store.apply(WorldStreamAssetStore.order(named.get()), received);
         long packing = WorldStageTimings.start();
         var packed = WorldStreamPackedObjects.pack(data, canceled, objectFormats);
         WorldStageTimings.stop("child.objects.pack", packing);
@@ -1001,7 +1094,9 @@ final class WorldStreamSession {
             if (result.objects() != null) {
                 result.objects().close();
             }
+            boolean missing = result.error() instanceof WorldStreamObjectsFile.MissingAssets;
             if (!closing.get()
+                    && !missing
                     && !(result.error() instanceof java.util.concurrent.CancellationException)) {
                 objectsRejections.reject(command.transaction(), result.error());
             }
@@ -1010,9 +1105,11 @@ final class WorldStreamSession {
             if (!closing.get()) {
                 sendObjects(
                         command,
-                        live
-                                ? WorldStreamStatus.LateOutcome.FAILED
-                                : WorldStreamStatus.LateOutcome.DROPPED);
+                        !live
+                                ? WorldStreamStatus.LateOutcome.DROPPED
+                                : missing
+                                        ? WorldStreamStatus.LateOutcome.MISSING
+                                        : WorldStreamStatus.LateOutcome.FAILED);
             }
             return;
         }
@@ -1047,7 +1144,9 @@ final class WorldStreamSession {
                         + command.transaction()
                         + leaseText(command.lease())
                         + " "
-                        + outcome.name());
+                        + outcome.name()
+                        + " "
+                        + assets.report().text());
     }
 
     private Decoded decodeCommit(WorldStreamControl.Commit command) {

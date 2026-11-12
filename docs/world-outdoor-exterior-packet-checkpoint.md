@@ -32,6 +32,21 @@ the tile's terrain has committed, and exteriors are **on by default** again.
 
   The objects file format is unchanged; its identity is the resident tile's nonce, scope,
   transaction, lease and coordinates.
+
+  Since #380 stage 4, both lines carry the session's asset store, which lets a file name doodad
+  models and images by digest instead of carrying them (`WorldStreamAssetStore`):
+  - `OBJECTS ... <sha256> <epoch> [assets-<txn>.wsa <length> <sha256>]`. The asset pack holds
+    the named assets the parent's mirror says the child lacks. A new epoch empties the child's
+    store first.
+  - `OBJECTS_DONE ... <outcome> <epoch> <applied> <evicted> <entries> <bytes> <hash>`. These are
+    what the child's store holds after the command. The parent applies the same file to its
+    mirror, and starts a new epoch when the two differ.
+  - The `MISSING` outcome means the file named an asset the child neither held nor was sent. The
+    parent resends it once, inline and in a new epoch.
+
+  The parent names assets only with `-Dvimi.world.objectReferences=true` (off by default). It names
+  every image, and every model without a portal set, animation entry or liquid. Buildings with
+  portals and creature models stay inline.
 - **Parent** (`WorldStreamTransport.Session.attachObjects`).
   - At most one delivery is in flight; a second is refused `RETRY_LATER`. It uses its own
     reliable-command credit; offer, cancel, commit and objects together stay within the existing

@@ -29,7 +29,7 @@ class WorldStreamLateObjectsCodecTest {
                         + WorldStreamObjectsFile.MAX_BYTES
                         + " "
                         + "a".repeat(64)
-                        + "\n",
+                        + " 0\n",
                 new String(encoded, StandardCharsets.US_ASCII));
         assertEquals(command, WorldStreamControl.decode(encoded, encoded.length));
         var widest =
@@ -51,6 +51,57 @@ class WorldStreamLateObjectsCodecTest {
         assertTrue(
                 WorldStreamControl.encode(widestReplacement).length
                         <= WorldStreamControl.MAX_LINE_BYTES);
+        // With the widest epoch and an asset pack (#380 stage 4).
+        var widestPack =
+                new WorldStreamControl.LateObjects(
+                        NONCE,
+                        Long.MAX_VALUE - 1,
+                        new WorldStreamState.Lease(9, Long.MAX_VALUE, Long.MAX_VALUE),
+                        WorldStreamObjectsFile.MAX_BYTES,
+                        "f".repeat(64),
+                        true,
+                        Long.MAX_VALUE,
+                        WorldStreamObjectsFile.MAX_BYTES,
+                        "e".repeat(64));
+        byte[] packed = WorldStreamControl.encode(widestPack);
+        assertTrue(packed.length <= WorldStreamControl.MAX_LINE_BYTES);
+        assertEquals(widestPack, WorldStreamControl.decode(packed, packed.length));
+    }
+
+    @Test
+    void objectsCommandCarriesItsAssetEpochAndPack() throws IOException {
+        var command =
+                new WorldStreamControl.LateObjects(
+                        NONCE, 4, LEASE, 4096, "a".repeat(64), false, 3, 512, "b".repeat(64));
+        byte[] encoded = WorldStreamControl.encode(command);
+        assertEquals(
+                PREFIX
+                        + "OBJECTS 4 37 9 23 tile-4.wso 4096 "
+                        + "a".repeat(64)
+                        + " 3 assets-4.wsa 512 "
+                        + "b".repeat(64)
+                        + "\n",
+                new String(encoded, StandardCharsets.US_ASCII));
+        assertEquals(command, WorldStreamControl.decode(encoded, encoded.length));
+        assertTrue(command.hasPack());
+        String sha = "a".repeat(64), pack = "b".repeat(64);
+        for (String tail :
+                List.of(
+                        "OBJECTS 4 37 9 23 tile-4.wso 4096 " + sha,
+                        "OBJECTS 4 37 9 23 tile-4.wso 4096 " + sha + " 3 assets-5.wsa 512 " + pack,
+                        "OBJECTS 4 37 9 23 tile-4.wso 4096 " + sha + " 3 assets-4.wsa 255 " + pack,
+                        "OBJECTS 4 37 9 23 tile-4.wso 4096 " + sha + " 3 assets-4.wsa 512",
+                        "OBJECTS 4 37 9 23 tile-4.wso 4096 " + sha + " -1",
+                        "OBJECTS 4 37 9 23 tile-4.wso 4096 " + sha + " 03")) {
+            byte[] line = (PREFIX + tail + "\n").getBytes(StandardCharsets.US_ASCII);
+            assertThrows(
+                    IOException.class, () -> WorldStreamControl.decode(line, line.length), tail);
+        }
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        new WorldStreamControl.LateObjects(
+                                NONCE, 4, LEASE, 4096, sha, false, 0, 512, null));
     }
 
     @Test
@@ -59,11 +110,11 @@ class WorldStreamLateObjectsCodecTest {
                 new WorldStreamControl.LateObjects(NONCE, 4, LEASE, 4096, "a".repeat(64), true);
         byte[] encoded = WorldStreamControl.encode(command);
         assertEquals(
-                PREFIX + "OBJECTS_REPLACE 4 37 9 23 tile-4.wso 4096 " + "a".repeat(64) + "\n",
+                PREFIX + "OBJECTS_REPLACE 4 37 9 23 tile-4.wso 4096 " + "a".repeat(64) + " 0\n",
                 new String(encoded, StandardCharsets.US_ASCII));
         assertEquals(command, WorldStreamControl.decode(encoded, encoded.length));
         byte[] foreign =
-                (PREFIX + "OBJECTS_REPLACE 4 37 9 23 tile-5.wso 4096 " + "a".repeat(64) + "\n")
+                (PREFIX + "OBJECTS_REPLACE 4 37 9 23 tile-5.wso 4096 " + "a".repeat(64) + " 0\n")
                         .getBytes(StandardCharsets.US_ASCII);
         assertThrows(IOException.class, () -> WorldStreamControl.decode(foreign, foreign.length));
     }
@@ -86,7 +137,7 @@ class WorldStreamLateObjectsCodecTest {
                         "OBJECTS 4 0 9 23 tile-4.wso 4096 " + sha,
                         "OBJECTS 4 37 9 23 tile-4.wso 4096 " + "A".repeat(64),
                         "OBJECTS 4 37 9 23 tile-4.wso 04096 " + sha,
-                        "OBJECTS 4 37 9 23 tile-4.wso 4096")) {
+                        "OBJECTS 4 37 9 23 tile-4.wso 4096 0")) {
             byte[] line = (PREFIX + tail + "\n").getBytes(StandardCharsets.US_ASCII);
             assertThrows(
                     IOException.class, () -> WorldStreamControl.decode(line, line.length), tail);
@@ -95,20 +146,47 @@ class WorldStreamLateObjectsCodecTest {
 
     @Test
     void objectsDoneDecodesEveryOutcomeAndRefusesOthers() throws IOException {
+        String store = " 2 0 0 5 1234 00000000000000ff";
         for (var outcome : WorldStreamStatus.LateOutcome.values()) {
-            var done = (WorldStreamStatus.ObjectsDone) status("OBJECTS_DONE 4 37 9 23 " + outcome);
+            var done =
+                    (WorldStreamStatus.ObjectsDone)
+                            status("OBJECTS_DONE 4 37 9 23 " + outcome + store);
             assertEquals(4, done.transaction());
             assertEquals(LEASE, done.lease());
             assertSame(outcome, done.outcome());
+            assertEquals(
+                    new WorldStreamAssetStore.Report(2, false, 0, 5, 1234, 255), done.assets());
         }
+        // The widest report fits the status line, and reads back.
+        var widest =
+                new WorldStreamAssetStore.Report(
+                        Long.MAX_VALUE,
+                        true,
+                        Integer.MAX_VALUE,
+                        Integer.MAX_VALUE,
+                        Long.MAX_VALUE,
+                        -1);
+        var done =
+                (WorldStreamStatus.ObjectsDone)
+                        status(
+                                "OBJECTS_DONE 9223372036854775806 9223372036854775807 25"
+                                        + " 9223372036854775807 ATTACHED "
+                                        + widest.text());
+        assertEquals(widest, done.assets());
         for (String body :
                 List.of(
                         "OBJECTS_DONE 4 37 9 23",
-                        "OBJECTS_DONE 4 37 9 23 DRAWN",
-                        "OBJECTS_DONE 4 37 9 23 attached",
-                        "OBJECTS_DONE 0 37 9 23 ATTACHED",
-                        "OBJECTS_DONE 4 37 9 0 ATTACHED",
-                        "OBJECTS_DONE 4 37 9 23 ATTACHED x")) {
+                        "OBJECTS_DONE 4 37 9 23 ATTACHED",
+                        "OBJECTS_DONE 4 37 9 23 DRAWN" + store,
+                        "OBJECTS_DONE 4 37 9 23 attached" + store,
+                        "OBJECTS_DONE 0 37 9 23 ATTACHED" + store,
+                        "OBJECTS_DONE 4 37 9 0 ATTACHED" + store,
+                        "OBJECTS_DONE 4 37 9 23 ATTACHED" + store + " x",
+                        "OBJECTS_DONE 4 37 9 23 ATTACHED 2 2 0 5 1234 00000000000000ff",
+                        "OBJECTS_DONE 4 37 9 23 ATTACHED 2 0 1 5 1234 00000000000000ff",
+                        "OBJECTS_DONE 4 37 9 23 ATTACHED 2 0 0 5 1234 ff",
+                        "OBJECTS_DONE 4 37 9 23 ATTACHED 2 0 0 5 1234 00000000000000FF",
+                        "OBJECTS_DONE 4 37 9 23 MISSING 2 1 0 5 1234 00000000000000ff")) {
             assertThrows(IOException.class, () -> status(body), body);
         }
     }

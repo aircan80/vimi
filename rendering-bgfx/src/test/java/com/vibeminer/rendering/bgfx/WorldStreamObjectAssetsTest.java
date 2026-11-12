@@ -51,6 +51,12 @@ class WorldStreamObjectAssetsTest {
         assertEquals(WorldStreamObjectAssets.Kind.MODEL, a.get(0).kind());
         // Section tag and mesh count, the mesh's three counts, vertices, colours, u16 indices.
         assertEquals(8 + 12 + 4 * (32 + 4) + 6 * 2, a.get(0).bytes());
+        // An image asset's bytes are its payload's: format, width, height and chain.
+        var data = quad(0, 10, 0);
+        assertEquals(
+                WorldStreamObjectAssets.imagePayload(data, 0).bytes().length, a.get(1).bytes());
+        assertEquals(
+                WorldStreamObjectAssets.modelPayload(data, 0).bytes().length, a.get(0).bytes());
     }
 
     @Test

@@ -103,18 +103,45 @@ final class WorldStreamStatus {
          * The session's shared objects GPU budget had no room; nothing was attached and the parent
          * may offer the same generation again later. Terrain is untouched.
          */
-        BUDGET
+        BUDGET,
+        /**
+         * The file named an asset the child neither held nor was sent (#380 stage 4); nothing was
+         * attached and the parent may send the same generation once more, with the assets.
+         */
+        MISSING
     }
 
+    /**
+     * The reply to a late objects command, with what the child's asset store holds after it ({@link
+     * WorldStreamAssetStore.Report}): the parent's mirror follows it.
+     */
     record ObjectsDone(
             WorldStreamState.Nonce nonce,
             long transaction,
             WorldStreamState.Lease lease,
-            LateOutcome outcome)
+            LateOutcome outcome,
+            WorldStreamAssetStore.Report assets)
             implements Message {
+        ObjectsDone(
+                WorldStreamState.Nonce nonce,
+                long transaction,
+                WorldStreamState.Lease lease,
+                LateOutcome outcome) {
+            this(
+                    nonce,
+                    transaction,
+                    lease,
+                    outcome,
+                    new WorldStreamAssetStore.Report(0, false, 0, 0, 0, 0));
+        }
+
         ObjectsDone {
             java.util.Objects.requireNonNull(lease);
             java.util.Objects.requireNonNull(outcome);
+            java.util.Objects.requireNonNull(assets);
+            if (outcome == LateOutcome.MISSING && assets.applied()) {
+                throw new IllegalArgumentException("A MISSING file was applied");
+            }
         }
     }
 
@@ -265,9 +292,22 @@ final class WorldStreamStatus {
                     yield new Staged(nonce, tx, lease, outcome, coverage, objects);
                 }
                 case "OBJECTS_DONE" -> {
-                    arity(p, 8);
+                    // ... <outcome> <epoch> <applied> <evicted> <entries> <bytes> <hash>
+                    arity(p, 14);
+                    require(p[9].equals("0") || p[9].equals("1"));
+                    require(p[13].matches("[0-9a-f]{16}"));
                     yield new ObjectsDone(
-                            nonce, transaction(p[3]), lease(p, 4), LateOutcome.valueOf(p[7]));
+                            nonce,
+                            transaction(p[3]),
+                            lease(p, 4),
+                            LateOutcome.valueOf(p[7]),
+                            new WorldStreamAssetStore.Report(
+                                    number(p[8]),
+                                    p[9].equals("1"),
+                                    integer(p[10]),
+                                    integer(p[11]),
+                                    number(p[12]),
+                                    Long.parseUnsignedLong(p[13], 16)));
                 }
                 case "HORIZON_DONE" -> {
                     arity(p, 5);

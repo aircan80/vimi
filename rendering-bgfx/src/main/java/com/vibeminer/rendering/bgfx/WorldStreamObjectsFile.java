@@ -1696,9 +1696,24 @@ final class WorldStreamObjectsFile {
             WorldStreamAssetPack.Pack assets,
             BooleanSupplier canceled)
             throws IOException {
+        return read(path, identity, reference, assets, canceled, named -> {});
+    }
+
+    /**
+     * As above, giving {@code named} the file's references once its length and digest held, before
+     * any {@link MissingAssets} is raised.
+     */
+    static Data read(
+            Path path,
+            Identity identity,
+            Reference reference,
+            WorldStreamAssetPack.Pack assets,
+            BooleanSupplier canceled,
+            java.util.function.Consumer<References> named)
+            throws IOException {
         long started = WorldStageTimings.start();
         try {
-            return readTimed(path, identity, reference, assets, canceled);
+            return readTimed(path, identity, reference, assets, canceled, named);
         } finally {
             WorldStageTimings.stop("child.objectsFile.read", started);
         }
@@ -1709,7 +1724,8 @@ final class WorldStreamObjectsFile {
             Identity identity,
             Reference reference,
             WorldStreamAssetPack.Pack assets,
-            BooleanSupplier canceled)
+            BooleanSupplier canceled,
+            java.util.function.Consumer<References> named)
             throws IOException {
         Objects.requireNonNull(assets);
         Objects.requireNonNull(identity);
@@ -2284,6 +2300,7 @@ final class WorldStreamObjectsFile {
                     || !HexFormat.of().formatHex(digest.digest()).equals(reference.sha256())) {
                 throw new IOException("Objects bytes or digest differ");
             }
+            named.accept(references);
             if (!missing.isEmpty()) {
                 throw new MissingAssets(missing);
             }
