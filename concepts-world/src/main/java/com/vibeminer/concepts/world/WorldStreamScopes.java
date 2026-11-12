@@ -2421,6 +2421,8 @@ final class WorldStreamScopes {
     private Source readDerived(
             long id, int limit, Cancellation token, boolean classifyUnavailable) {
         token.check();
+        long keys = files.keyRevision();
+        sources.keyRevision(keys);
         var cached = sources.file(id);
         if (cached != null) {
             if (cached.bytes().length > limit) {
@@ -2433,7 +2435,9 @@ final class WorldStreamScopes {
         }
         var source = read(id, limit, token, classifyUnavailable);
         sources.putFile(
-                id, new WorldSourceCache.File(source.key(), source.bytes(), source.declaredLength));
+                id,
+                new WorldSourceCache.File(source.key(), source.bytes(), source.declaredLength),
+                keys);
         return source;
     }
 

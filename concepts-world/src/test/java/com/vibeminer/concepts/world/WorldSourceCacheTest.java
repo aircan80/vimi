@@ -27,7 +27,7 @@ class WorldSourceCacheTest {
     void aFileIsKeptWithItsBindingAndEveryReaderGetsItsOwnCopy() {
         var cache = new WorldSourceCache(1 << 20);
         var original = file(100, (byte) 7);
-        cache.putFile(5, original);
+        cache.putFile(5, original, 0);
         original.bytes()[0] = 1; // the caller's array is not the cache's
         var first = cache.file(5);
         assertNotNull(first);
@@ -47,12 +47,12 @@ class WorldSourceCacheTest {
     @Test
     void filesAndParsedValuesShareOneBudgetLeastRecentlyUsedFirst() {
         var cache = new WorldSourceCache(3 * (100 + E));
-        cache.putFile(1, file(100, (byte) 1));
+        cache.putFile(1, file(100, (byte) 1), 0);
         var value = new Object();
         cache.putParsed(parsed(2), value, 100 + E);
-        cache.putFile(3, file(100, (byte) 3));
+        cache.putFile(3, file(100, (byte) 3), 0);
         assertNotNull(cache.file(1)); // 1 is now the most recent; 2 the eldest
-        cache.putFile(4, file(100, (byte) 4));
+        cache.putFile(4, file(100, (byte) 4), 0);
         assertNull(cache.parsed(parsed(2)), "the eldest went, whatever its kind");
         assertNotNull(cache.file(1));
         assertNotNull(cache.file(3));
@@ -78,8 +78,8 @@ class WorldSourceCacheTest {
     @Test
     void anEntryOverTheWholeBudgetIsNotKeptAndDisplacesNothing() {
         var cache = new WorldSourceCache(200 + E);
-        cache.putFile(1, file(100, (byte) 1));
-        cache.putFile(2, file(300, (byte) 2));
+        cache.putFile(1, file(100, (byte) 1), 0);
+        cache.putFile(2, file(300, (byte) 2), 0);
         assertNull(cache.file(2));
         assertNotNull(cache.file(1));
         assertEquals(0, cache.evictions());
@@ -88,7 +88,7 @@ class WorldSourceCacheTest {
     @Test
     void removeIfAndClearReleaseTheirBytes() {
         var cache = new WorldSourceCache(1 << 20);
-        cache.putFile(1, file(100, (byte) 1));
+        cache.putFile(1, file(100, (byte) 1), 0);
         var keyed = new Object();
         cache.putParsed(parsed(2), keyed, 64);
         cache.putParsed(parsed(3), new Object(), 64);
@@ -99,6 +99,26 @@ class WorldSourceCacheTest {
         assertEquals(0, cache.bytes());
         assertEquals(0, cache.entries());
         assertNull(cache.file(1));
+    }
+
+    @Test
+    void aKeyRevisionChangeDropsKeptFilesButNotParsedValues() {
+        var cache = new WorldSourceCache(1 << 20);
+        cache.keyRevision(7);
+        cache.putFile(1, file(100, (byte) 1), 7);
+        var parsed = new Object();
+        cache.putParsed(parsed(2), parsed, 64);
+        cache.keyRevision(7);
+        assertNotNull(cache.file(1), "the same revision keeps the file");
+        cache.keyRevision(8);
+        assertNull(cache.file(1), "keys changed: the file may be one they no longer give");
+        assertSame(parsed, cache.parsed(parsed(2)), "parsed values are their readers' to forget");
+        assertEquals(64, cache.bytes());
+        // A read started under the old keys and finished after the change is not kept.
+        cache.putFile(3, file(100, (byte) 3), 7);
+        assertNull(cache.file(3));
+        cache.putFile(3, file(100, (byte) 3), 8);
+        assertNotNull(cache.file(3));
     }
 
     @Test
@@ -113,7 +133,7 @@ class WorldSourceCacheTest {
     @Test
     void collisionKeepsItsParsedSourcesInTheSharedCache() {
         var cache = new WorldSourceCache(1 << 20);
-        cache.putFile(77, file(100, (byte) 1));
+        cache.putFile(77, file(100, (byte) 1), 0);
         var reader = new WorldTileCollision((id, token) -> new byte[0], cache);
         assertEquals(0, reader.cachedEntries());
         cache.putParsed(

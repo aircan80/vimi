@@ -64,6 +64,11 @@ final class WorldSourceCache {
     private final LinkedHashMap<Key, Sized> entries = new LinkedHashMap<>(256, .75f, true);
     private long held, peak, hits, misses, evictions;
 
+    /** The key revision kept files were read under, once one was noted. */
+    private long keys;
+
+    private boolean keysKnown;
+
     WorldSourceCache() {
         this(BYTES);
     }
@@ -100,11 +105,39 @@ final class WorldSourceCache {
         return new File(file.contentKey(), file.bytes().clone(), file.declaredLength());
     }
 
-    /** Keeps a copy of a complete file's bytes. */
-    void putFile(long fileDataId, File file) {
+    /**
+     * Keeps a copy of a complete file's bytes, read under decryption key revision {@code
+     * keyRevision}; not kept when the keys changed since ({@link #keyRevision}), as the bytes may
+     * then be ones the current keys no longer give.
+     */
+    void putFile(long fileDataId, File file, long keyRevision) {
         Objects.requireNonNull(file);
+        // The copy outside the lock; the revision check and the insert in one critical section
+        // (put), so no file read under dropped keys can be kept after keyRevision dropped them.
         var copy = new File(file.contentKey(), file.bytes().clone(), file.declaredLength());
-        put(new Key(FILE, 0, fileDataId), copy, copy.bytes().length + ENTRY_BYTES);
+        put(new Key(FILE, 0, fileDataId), copy, copy.bytes().length + ENTRY_BYTES, keyRevision);
+    }
+
+    /**
+     * Notes the build's decryption key revision ({@code BuildFiles#keyRevision}) before a file is
+     * looked up or read. When it changed, every kept file is dropped in the same critical section:
+     * an encrypted file read with keys since removed must not be served, and kept files do not
+     * record whether they were encrypted.
+     *
+     * <p>Parsed values are not dropped: a reader's parse of an encrypted file stays served after
+     * its keys are removed. Readers forget only what they choose to (walking collision forgets the
+     * absences it found for lack of keys, so a file it could not read is tried again).
+     */
+    synchronized void keyRevision(long revision) {
+        if (keysKnown && revision == keys) {
+            return;
+        }
+        boolean changed = keysKnown;
+        keys = revision;
+        keysKnown = true;
+        if (changed) {
+            removeIf((key, value) -> FILE.equals(key.kind()));
+        }
     }
 
     /** A reader's parsed value, or null. The value is shared: parsed values must be immutable. */
@@ -121,7 +154,7 @@ final class WorldSourceCache {
         if (FILE.equals(key.kind())) {
             throw new IllegalArgumentException("Not a parsed key");
         }
-        put(key, Objects.requireNonNull(value), bytes);
+        put(key, Objects.requireNonNull(value), bytes, null);
     }
 
     /** Drops every entry the test accepts. */
@@ -190,12 +223,19 @@ final class WorldSourceCache {
         return sum;
     }
 
-    private void put(Key key, Object value, long bytes) {
+    /**
+     * Inserts an entry; with {@code keyRevision}, only while the noted key revision is still that
+     * one, checked in the same critical section as the insert.
+     */
+    private void put(Key key, Object value, long bytes, Long keyRevision) {
         if (bytes < 0) {
             throw new IllegalArgumentException("Entry bytes");
         }
         long held;
         synchronized (this) {
+            if (keyRevision != null && keysKnown && keyRevision != keys) {
+                return; // read under keys since changed
+            }
             if (bytes > budget) {
                 return; // never displaces the whole cache for one entry
             }
