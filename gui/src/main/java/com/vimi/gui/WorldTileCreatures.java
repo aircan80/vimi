@@ -343,6 +343,21 @@ final class WorldTileCreatures implements AutoCloseable {
                 MeshAppearance appearance, Cancellation token) throws Exception {
             return null;
         }
+
+        /**
+         * {@link #appearance} as a future, so a tile can ask ahead (#175); null when this source
+         * answers only synchronously.
+         */
+        default java.util.concurrent.CompletableFuture<RaceNpcs.Appearance> appearanceAsync(
+                long extendedDisplayInfoId, Cancellation token) {
+            return null;
+        }
+
+        /** {@link #idle} as a future; null when this source answers only synchronously. */
+        default java.util.concurrent.CompletableFuture<com.vibeminer.rendering.models.PreviewAnimation> idleAsync(
+                long extendedDisplayInfoId, MeshAppearance appearance, Cancellation token) {
+            return null;
+        }
     }
 
     /** Production NPC appearances from the workspace's races component, when it is open. */
@@ -364,6 +379,22 @@ final class WorldTileCreatures implements AutoCloseable {
                 var idle = await(handle.npcIdle(extendedDisplayInfoId, appearance, token), token);
                 return idle.animation() != null && idle.animation().matches(appearance) ? idle.animation() : null;
             }
+
+            @Override
+            public java.util.concurrent.CompletableFuture<RaceNpcs.Appearance> appearanceAsync(
+                    long extendedDisplayInfoId, Cancellation token) {
+                var handle = races.get();
+                return handle == null ? null : handle.npcAppearance(extendedDisplayInfoId, token);
+            }
+
+            @Override
+            public java.util.concurrent.CompletableFuture<com.vibeminer.rendering.models.PreviewAnimation> idleAsync(
+                    long extendedDisplayInfoId, MeshAppearance appearance, Cancellation token) {
+                var handle = races.get();
+                return handle == null ? null : handle.npcIdle(extendedDisplayInfoId, appearance, token)
+                        .thenApply(idle -> idle.animation() != null && idle.animation().matches(appearance)
+                                ? idle.animation() : null);
+            }
         };
     }
 
@@ -384,6 +415,9 @@ final class WorldTileCreatures implements AutoCloseable {
         if (!future.isDone()) token.check();
         return future.join();
     }
+
+    /** A spawn's lookup that found no choice (counted as failed when its turn comes). */
+    private static final Object NO_CHOICE = new Object();
 
     /** A policy choice and the client-data scale of its display (null when not recorded). */
     record Chosen(CreatureModelPolicy.Choice choice, Double scale) {
@@ -464,6 +498,32 @@ final class WorldTileCreatures implements AutoCloseable {
          * and the preview answers instead.
          */
         default DisplayModelTypes.Reference reference(long displayId, Cancellation token) throws Exception {
+            return null;
+        }
+
+        /** Whether this source answers the futures below, so a tile may ask it ahead (#175). */
+        default boolean asksAhead() {
+            return false;
+        }
+
+        /**
+         * {@link #reference} as a future, so a tile can ask ahead (#175); null when this source
+         * answers only synchronously (it is then not asked ahead at all).
+         */
+        default java.util.concurrent.CompletableFuture<DisplayModelTypes.Reference> referenceAsync(
+                long displayId, Cancellation token) {
+            return null;
+        }
+
+        /** {@link #preview} as a future; null when this source answers only synchronously. */
+        default java.util.concurrent.CompletableFuture<DisplayModelTypes.Preview> previewAsync(
+                long displayId, Cancellation token) {
+            return null;
+        }
+
+        /** {@link #worldIdle} as a future; null when this source answers only synchronously. */
+        default java.util.concurrent.CompletableFuture<DisplayModelTypes.Idle> worldIdleAsync(
+                long displayId, Cancellation token) {
             return null;
         }
     }
@@ -601,6 +661,12 @@ final class WorldTileCreatures implements AutoCloseable {
     private final Chooser chooser;
     private final Previews previews;
     private final Npcs npcs;
+
+    /** Whether tiles ask ahead for upcoming displays' remote parts (#175); tests compare both ways. */
+    private volatile boolean prefetch = true;
+
+    /** The answers the current tile's conversions use: prefetched, or straight from the sources. */
+    private Answers answers;
     private final Map<Long, Chosen> choices = lru(CHOICE_CACHE);
     private final ModelCache models = new ModelCache(MODEL_CACHE_BYTES);
 
@@ -696,6 +762,189 @@ final class WorldTileCreatures implements AutoCloseable {
         this.revision = Objects.requireNonNull(revision);
         this.chooser = Objects.requireNonNull(chooser);
         this.previews = Objects.requireNonNull(previews);
+        answers = direct;
+    }
+
+    /** Whether tiles ask ahead for upcoming displays (on by default; tests compare both ways). */
+    void prefetch(boolean on) {
+        prefetch = on;
+    }
+
+    /** The remote answers a display's conversion reads: its reference, preview, Stand and NPC. */
+    private interface Answers {
+        DisplayModelTypes.Reference reference(long display, Cancellation token) throws Exception;
+
+        DisplayModelTypes.Preview preview(long display, Cancellation token) throws Exception;
+
+        DisplayModelTypes.Idle worldIdle(long display, Cancellation token) throws Exception;
+
+        RaceNpcs.Appearance appearance(long display, long extended, Cancellation token) throws Exception;
+
+        com.vibeminer.rendering.models.PreviewAnimation idle(long display, long extended, MeshAppearance appearance,
+                Cancellation token) throws Exception;
+    }
+
+    /** Straight from the sources. */
+    private final Answers direct = new Answers() {
+        public DisplayModelTypes.Reference reference(long display, Cancellation token) throws Exception {
+            return previews.reference(display, token);
+        }
+
+        public DisplayModelTypes.Preview preview(long display, Cancellation token) throws Exception {
+            return previews.preview(display, token);
+        }
+
+        public DisplayModelTypes.Idle worldIdle(long display, Cancellation token) throws Exception {
+            return previews.worldIdle(display, token);
+        }
+
+        public RaceNpcs.Appearance appearance(long display, long extended, Cancellation token) throws Exception {
+            return npcs.appearance(extended, token);
+        }
+
+        public com.vibeminer.rendering.models.PreviewAnimation idle(long display, long extended,
+                MeshAppearance appearance, Cancellation token) throws Exception {
+            return npcs.idle(extended, appearance, token);
+        }
+    };
+
+    /** A remote answer asked ahead; {@code applies} false when the conversion will not need it. */
+    private record Ahead<T>(boolean applies, long extended, Object input, T value) {
+        static <T> Ahead<T> skip() {
+            return new Ahead<>(false, 0, null, null);
+        }
+    }
+
+    /**
+     * A tile's displays' remote parts asked ahead (#175): while the tile converts one display, the
+     * next few displays' references, previews, Stands and NPC appearances are already being read
+     * by their own components, which otherwise idle in turn. Only asking moves earlier: the
+     * conversions, the budgets, the busy handling and the caches run as before, in spawn order,
+     * taking an answer from here when it was asked ahead and from the source otherwise. An answer
+     * is taken once; anything not taken is canceled with the tile.
+     */
+    private final class Prefetch implements Answers {
+        /** Displays asked ahead and not yet converted, at most. */
+        static final int AHEAD = 4;
+        /** Spawns looked at ahead of the current one, at most. */
+        static final int LOOK = 32;
+
+        final Cancellation token = new Cancellation();
+        final Map<Long, java.util.concurrent.CompletableFuture<Ahead<DisplayModelTypes.Reference>>> references =
+                new HashMap<>();
+        final Map<Long, java.util.concurrent.CompletableFuture<Ahead<DisplayModelTypes.Preview>>> previewsAhead =
+                new HashMap<>();
+        final Map<Long, java.util.concurrent.CompletableFuture<Ahead<DisplayModelTypes.Idle>>> stands =
+                new HashMap<>();
+        final Map<Long, java.util.concurrent.CompletableFuture<Ahead<RaceNpcs.Appearance>>> appearances =
+                new HashMap<>();
+        final Map<Long, java.util.concurrent.CompletableFuture<Ahead<com.vibeminer.rendering.models.PreviewAnimation>>>
+                idles = new HashMap<>();
+        final HashSet<Long> started = new HashSet<>(), pending = new HashSet<>();
+
+        /** Asks for {@code display}'s remote parts; {@code carry}: its Stand will be carried. */
+        void start(long display, boolean carry) {
+            var reference = previews.referenceAsync(display, token);
+            if (reference == null) return;
+            started.add(display);
+            pending.add(display);
+            var asked = reference.thenApply(value -> new Ahead<>(true, 0, null, value));
+            references.put(display, asked);
+            var preview = asked.thenCompose(r -> extended(r.value()) > 0 ? done(Ahead.<DisplayModelTypes.Preview>skip())
+                    : wrap(previews.previewAsync(display, token), null));
+            previewsAhead.put(display, preview);
+            // The NPC a humanoid display draws: named by its reference, or else by its preview.
+            var npc = asked.thenCombine(preview, (r, p) -> extended(r.value()) > 0 ? extended(r.value())
+                    : p.applies() && p.value() != null ? extended(p.value().reference()) : 0L);
+            stands.put(display, preview.thenCombine(npc, (p, e) -> new Object[] {p, e}).thenCompose(pe -> {
+                var p = (Ahead<?>) pe[0];
+                var value = (DisplayModelTypes.Preview) p.value();
+                return (long) pe[1] > 0 || !p.applies() || value == null || value.appearance() == null
+                        ? done(Ahead.<DisplayModelTypes.Idle>skip())
+                        : wrap(previews.worldIdleAsync(display, token), null);
+            }));
+            var appearance = npc.thenCompose(e -> e > 0 ? wrap(npcs.appearanceAsync(e, token), e)
+                    : done(Ahead.<RaceNpcs.Appearance>skip()));
+            appearances.put(display, appearance);
+            if (carry) {
+                idles.put(display, appearance.thenCompose(a -> {
+                    var answer = a.value();
+                    var drawn = answer == null || answer.refusal() != null || answer.result() == null ? null
+                            : answer.result().appearance();
+                    if (!a.applies() || drawn == null) return done(Ahead.skip());
+                    var idle = npcs.idleAsync(a.extended(), drawn, token);
+                    return idle == null ? done(Ahead.skip())
+                            : idle.thenApply(value -> new Ahead<>(true, a.extended(), drawn, value));
+                }));
+            }
+        }
+
+        private static long extended(DisplayModelTypes.Reference reference) {
+            return reference == null || reference.extendedDisplayInfoId() == null ? 0
+                    : reference.extendedDisplayInfoId();
+        }
+
+        private static <T> java.util.concurrent.CompletableFuture<Ahead<T>> done(Ahead<T> value) {
+            return java.util.concurrent.CompletableFuture.completedFuture(value);
+        }
+
+        private static <T> java.util.concurrent.CompletableFuture<Ahead<T>> wrap(
+                java.util.concurrent.CompletableFuture<T> future, Long extended) {
+            return future == null ? done(Ahead.skip())
+                    : future.thenApply(value -> new Ahead<>(true, extended == null ? 0 : extended, null, value));
+        }
+
+        /** The answer asked ahead, taken once; null when none applies (the source is asked). */
+        private <T> Ahead<T> take(Map<Long, java.util.concurrent.CompletableFuture<Ahead<T>>> asked, long display,
+                Cancellation tile) {
+            var future = asked.remove(display);
+            if (future == null) return null;
+            var answer = await(future, tile);
+            return answer.applies() ? answer : null;
+        }
+
+        public DisplayModelTypes.Reference reference(long display, Cancellation tile) throws Exception {
+            var answer = take(references, display, tile);
+            return answer != null ? answer.value() : direct.reference(display, tile);
+        }
+
+        public DisplayModelTypes.Preview preview(long display, Cancellation tile) throws Exception {
+            var answer = take(previewsAhead, display, tile);
+            return answer != null ? answer.value() : direct.preview(display, tile);
+        }
+
+        public DisplayModelTypes.Idle worldIdle(long display, Cancellation tile) throws Exception {
+            var answer = take(stands, display, tile);
+            return answer != null ? answer.value() : direct.worldIdle(display, tile);
+        }
+
+        public RaceNpcs.Appearance appearance(long display, long extended, Cancellation tile) throws Exception {
+            var answer = take(appearances, display, tile);
+            return answer != null && answer.extended() == extended ? answer.value()
+                    : direct.appearance(display, extended, tile);
+        }
+
+        public com.vibeminer.rendering.models.PreviewAnimation idle(long display, long extended,
+                MeshAppearance appearance, Cancellation tile) throws Exception {
+            var answer = take(idles, display, tile);
+            return answer != null && answer.extended() == extended && answer.input() == appearance ? answer.value()
+                    : direct.idle(display, extended, appearance, tile);
+        }
+
+        /** {@code display} was converted: what was asked ahead for it and not taken is dropped. */
+        void converted(long display) {
+            if (!pending.remove(display)) return;
+            references.remove(display);
+            previewsAhead.remove(display);
+            stands.remove(display);
+            appearances.remove(display);
+            idles.remove(display);
+        }
+
+        /** Ends the tile: whatever is still asked ahead is canceled. */
+        void close() {
+            token.cancel();
+        }
     }
 
     /**
@@ -848,6 +1097,32 @@ final class WorldTileCreatures implements AutoCloseable {
         }
 
         @Override
+        public boolean asksAhead() {
+            return true;
+        }
+
+        @Override
+        public java.util.concurrent.CompletableFuture<DisplayModelTypes.Reference> referenceAsync(
+                long displayId, Cancellation token) {
+            var models = component();
+            return models == null ? null : models.reference(displayId, token);
+        }
+
+        @Override
+        public java.util.concurrent.CompletableFuture<DisplayModelTypes.Preview> previewAsync(
+                long displayId, Cancellation token) {
+            var models = component();
+            return models == null ? null : models.worldPreview(displayId, token);
+        }
+
+        @Override
+        public java.util.concurrent.CompletableFuture<DisplayModelTypes.Idle> worldIdleAsync(
+                long displayId, Cancellation token) {
+            var models = component();
+            return models == null ? null : models.worldIdle(displayId, token);
+        }
+
+        @Override
         public List<DisplayModelTypes.Idle> stands(long displayId, Cancellation token) {
             var models = component();
             if (models == null) {
@@ -919,9 +1194,30 @@ final class WorldTileCreatures implements AutoCloseable {
                         && WorldBookmarks.tileIndex(spawn.y()) == tile.y());
         var placing = new Placing(builder, allowance, spawns, tileChooser(nearby.placed(), tile, token), token);
         var deferred = new ArrayList<Deferred>();
-        for (var spawn : nearby.placed()) {
+        var ahead = prefetch && previews.asksAhead() ? new Prefetch() : null;
+        var registration = ahead == null ? null : token.onCancel(ahead.token::cancel);
+        answers = ahead != null ? ahead : direct;
+        try {
+            return appendPlaced(placing, nearby, tile, ahead, deferred);
+        } finally {
+            answers = direct;
+            if (ahead != null) {
+                ahead.close();
+                registration.close();
+            }
+        }
+    }
+
+    /** The tile's placing pass, its busy retries and its summary (see {@link #append}). */
+    private Summary appendPlaced(Placing placing, WorldSpawns.Nearby nearby, WorldFormats.Tile tile, Prefetch ahead,
+            List<Deferred> deferred) {
+        var token = placing.token;
+        var placed = nearby.placed();
+        for (int i = 0; i < placed.size(); i++) {
+            var spawn = placed.get(i);
             token.check();
             if (WorldBookmarks.tileIndex(spawn.x()) != tile.x() || WorldBookmarks.tileIndex(spawn.y()) != tile.y()) continue;
+            if (ahead != null) placing.lookAhead(ahead, placed, i, tile);
             placing.place(spawn, null, deferred);
         }
         // A display refused because the model reader was busy is asked again before the tile's
@@ -1186,19 +1482,64 @@ final class WorldTileCreatures implements AutoCloseable {
 
         /** The spawn's choice, or null after counting why it has none. */
         private Chosen choose(WorldSpawns.Spawn spawn) {
+            Object found = chosenAhead.containsKey(spawn) ? chosenAhead.remove(spawn) : lookup(spawn);
+            if (found instanceof Chosen chosen) return chosen;
+            counts[Count.FAILED.ordinal()]++;
+            return null;
+        }
+
+        /** The spawn's choice, or {@link #NO_CHOICE} when it has none (not counted here). */
+        private Object lookup(WorldSpawns.Spawn spawn) {
             try {
                 return chosen(tileChooser, spawn.npcId(), token);
             } catch (CancellationException canceled) {
                 // Only this tile's cancellation propagates; a component's own is a failed lookup.
                 if (token.isCanceled()) throw canceled;
             } catch (ChoiceLater later) {
-                // Counted as failed below.
+                // Counted as failed by choose.
             } catch (Exception failed) {
                 token.check();
                 WorldDiagnostics.degraded("creature lookups", "World creature model lookup failed", failed);
             }
-            counts[Count.FAILED.ordinal()]++;
-            return null;
+            return NO_CHOICE;
+        }
+
+        // Choices looked up ahead for displays to ask ahead (#175), taken by choose in order.
+        private final java.util.IdentityHashMap<WorldSpawns.Spawn, Object> chosenAhead =
+                new java.util.IdentityHashMap<>();
+        private int lookedTo;
+
+        /**
+         * Asks ahead for the displays of the spawns after {@code at} (and its own) that are not yet
+         * converted on this tile or cached, up to {@link Prefetch#AHEAD} at a time and within the
+         * tile's preview budget, choosing those spawns ahead to know their displays.
+         */
+        void lookAhead(Prefetch ahead, List<WorldSpawns.Spawn> placed, int at, WorldFormats.Tile tile) {
+            if (placements == TILE_PLACEMENTS || builder.placementRoom() == 0 || builder.drawRoom() == 0) return;
+            for (int j = Math.max(at, lookedTo); j < placed.size() && j < at + Prefetch.LOOK; j++) {
+                if (ahead.pending.size() >= Prefetch.AHEAD
+                        || previewsTried + ahead.pending.size() >= TILE_PREVIEWS) return;
+                lookedTo = j + 1;
+                var spawn = placed.get(j);
+                if (WorldBookmarks.tileIndex(spawn.x()) != tile.x() || WorldBookmarks.tileIndex(spawn.y()) != tile.y())
+                    continue;
+                Object found = chosenAhead.get(spawn);
+                if (found == null) {
+                    found = lookup(spawn);
+                    chosenAhead.put(spawn, found);
+                }
+                if (!(found instanceof Chosen chosen)
+                        || chosen.choice().state() != CreatureModelPolicy.State.QUALIFIED
+                        || chosen.choice().displayId() == null) continue;
+                long display = chosen.choice().displayId();
+                if (added.containsKey(display) || busyDisplays.containsKey(display)
+                        || ahead.started.contains(display)) continue;
+                synchronized (WorldTileCreatures.this) {
+                    if (models.get(display) != null) continue;
+                }
+                ahead.start(display, animation && nearCamera(spawn.x(), spawn.y())
+                        && WorldTileCreatures.this.animation(display) == null);
+            }
         }
 
         /**
@@ -1298,21 +1639,29 @@ final class WorldTileCreatures implements AutoCloseable {
      * creature's Stand is not carried. The model cache holds the model without its animation.
      */
     private Converted load(long display, Cancellation token, boolean idle) {
+        try {
+            return loadAnswered(display, token, idle);
+        } finally {
+            if (answers instanceof Prefetch ahead) ahead.converted(display);
+        }
+    }
+
+    private Converted loadAnswered(long display, Cancellation token, boolean idle) {
         Converted converted;
         try {
             // A humanoid NPC's display draws its race appearance: its preview (the character model,
             // read whole) is not needed, only its extended display info.
-            var reference = previews.reference(display, token);
+            var reference = answers.reference(display, token);
             token.check();
             Long extended = reference == null ? null : reference.extendedDisplayInfoId();
             if (extended != null && extended > 0) {
-                converted = npc(extended, token, idle);
+                converted = npc(display, extended, token, idle);
             } else {
-                var preview = previews.preview(display, token);
+                var preview = answers.preview(display, token);
                 token.check();
                 extended = preview == null || preview.reference() == null ? null
                         : preview.reference().extendedDisplayInfoId();
-                converted = extended != null && extended > 0 ? npc(extended, token, idle)
+                converted = extended != null && extended > 0 ? npc(display, extended, token, idle)
                         : stand(display, preview, token, idle);
             }
         } catch (Exception failed) {
@@ -1361,7 +1710,7 @@ final class WorldTileCreatures implements AutoCloseable {
         int[] leftOut = new int[0];
         com.vibeminer.rendering.models.PreviewAnimation animation = null;
         try {
-            var idle = previews.worldIdle(display, token);
+            var idle = answers.worldIdle(display, token);
             token.check();
             if (idle == null || idle.state() != DisplayModelTypes.IdleState.AVAILABLE) {
                 restPose = idle == null ? "no idle result" : idle.message();
@@ -1456,7 +1805,13 @@ final class WorldTileCreatures implements AutoCloseable {
 
     /** As above; with {@code carry} false, the race idle is not evaluated (the NPC stands still). */
     Converted npc(long extendedDisplayInfoId, Cancellation token, boolean carry) throws Exception {
-        var answer = npcs.appearance(extendedDisplayInfoId, token);
+        return npc(-1, extendedDisplayInfoId, token, carry);
+    }
+
+    /** As above, for display {@code display}, whose answers may have been asked ahead. */
+    private Converted npc(long display, long extendedDisplayInfoId, Cancellation token, boolean carry)
+            throws Exception {
+        var answer = answers.appearance(display, extendedDisplayInfoId, token);
         token.check();
         if (answer == null) return Converted.refused(Count.CHARACTER_APPEARANCE, "no NPC appearance");
         if (answer.refusal() != null)
@@ -1482,7 +1837,7 @@ final class WorldTileCreatures implements AutoCloseable {
         com.vibeminer.rendering.models.PreviewAnimation idle = null;
         long idling = com.vibeminer.formats.world.WorldStageTimings.start();
         try {
-            if (carry) idle = npcs.idle(extendedDisplayInfoId, result.appearance(), token);
+            if (carry) idle = answers.idle(display, extendedDisplayInfoId, result.appearance(), token);
         } catch (Exception failed) {
             token.check();
             if (busy(failed) || failed instanceof CancellationException) throw failed;
