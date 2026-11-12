@@ -8,6 +8,7 @@ import com.vibeminer.formats.tables.AuthoredNativeMap;
 import com.vibeminer.formats.world.WorldFormats;
 import com.vibeminer.rendering.bgfx.AuthoredPacketDestination;
 import com.vibeminer.rendering.bgfx.WorldStreamTileWriter;
+import com.vibeminer.rendering.world.LiquidSurface;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.CancellationException;
@@ -155,6 +156,8 @@ public final class WorldStreamSourceBridgeTest {
         @Override public int colour(int layer) { return layer == 2 ? 0xD06800 : -1; }
         /** Layer 0 is ocean; the others are river or lake water. */
         @Override public boolean ocean(int layer) { return layer == 0; }
+        /** Layer 2 is LiquidType 3, magma; the rest have no LiquidType. */
+        @Override public int liquidType(int layer) { return layer == 2 ? 3 : 0; }
         @Override public float north(int vertex) {
             var at = locate(vertex);
             return at[1] / width(at[0]) + at[2] / 2;
@@ -211,6 +214,13 @@ public final class WorldStreamSourceBridgeTest {
                     : WorldStreamTileWriter.Water.RIVER;
             check(kind == expectedKind, "Vertex " + v + " kind " + kind);
         }
+        // Swimming keeps every source cell, merged or not, and what liquid each layer is.
+        check(copy.surface().cells() == 64 + 64 + 3,
+                "Every source cell reaches the liquid surface: " + copy.surface().cells());
+        check(WorldStreamSourceBridge.WaterCopy.kind(source, 0) == LiquidSurface.Kind.OCEAN
+                        && WorldStreamSourceBridge.WaterCopy.kind(source, 1) == LiquidSurface.Kind.WATER
+                        && WorldStreamSourceBridge.WaterCopy.kind(source, 2) == LiquidSurface.Kind.MAGMA,
+                "Ocean, water and magma layers keep their kind");
         var indices = water.indices();
         for (int q = 0; q < water.cells(); q++) {
             int b = q * 4;
@@ -236,6 +246,8 @@ public final class WorldStreamSourceBridgeTest {
         check(copy.capped() && copy.layers() == 128 && copy.water().cells() == 8192,
                 "128 sloped full chunks fill the bound and the 129th is left out: "
                         + copy.layers() + " " + copy.water().cells());
+        check(copy.surface().cells() == 129 * 64,
+                "A layer left out of the packet still reaches the liquid surface");
         planar[0] = planar[1] = true;
         var merged = WorldStreamSourceBridge.WaterCopy.of(
                 new AuthoredWater(shape, masks, planar), Cancellation.NONE);

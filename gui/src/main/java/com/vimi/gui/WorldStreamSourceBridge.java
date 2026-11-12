@@ -8,6 +8,7 @@ import com.vibeminer.formats.world.WorldFormats;
 import com.vibeminer.formats.world.WorldStageTimings;
 import com.vibeminer.rendering.bgfx.WorldStreamTileWriter;
 import com.vibeminer.rendering.bgfx.WorldStreamTransport;
+import com.vibeminer.rendering.world.LiquidSurface;
 import com.vibeminer.rendering.world.TerrainTileAtlas;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -59,6 +60,12 @@ final class WorldStreamSourceBridge {
         }
 
         private volatile WorldObjectPicks.Tile picks;
+        private volatile LiquidSurface.Tile liquids;
+
+        /** This tile's terrain liquid surface, or null when it has none or it was not read. */
+        LiquidSurface.Tile liquids() {
+            return liquids;
+        }
 
         /** Records the pick geometry and sources of this tile's attached late objects. */
         void picks(WorldObjectPicks.Tile tile) {
@@ -733,7 +740,10 @@ final class WorldStreamSourceBridge {
                 local = new Prepared(written);
                 check(stopping, cancellation);
                 // Water reports its own cancellation; the MOVE below observes stopping too.
-                var waterCopy = water == null ? null : prepareWater(written, cancellation);
+                var copied = water == null ? null : prepareWater(written, cancellation);
+                var waterCopy = copied == null ? null : copied.water();
+                // Swimming reads every source cell, whether or not the packet carries it.
+                local.liquids = copied == null ? null : copied.surface();
                 BooleanSupplier stop = () -> stopping.getAsBoolean() || cancellation.isCanceled();
                 var attached = new boolean[1];
                 written.withWrittenResource(file -> {
@@ -806,7 +816,7 @@ final class WorldStreamSourceBridge {
          * water owner immediately; no water Source credit outlives this call. Optional: clean
          * refusals and unexpected water failures leave terrain intact. Cancellation propagates.
          */
-        private WorldStreamTileWriter.Water prepareWater(
+        private WaterCopy prepareWater(
                 WorldTerrainStreaming.WrittenTile<WorldStreamTileWriter.PacketFile> written,
                 Cancellation cancellation) {
             try (var prepared = water.prepareAndWrite(written, cancellation, WaterCopy::of)) {
@@ -825,7 +835,7 @@ final class WorldStreamSourceBridge {
                         + (copy[0].capped() ? " capped at " + copy[0].layers() + " of "
                                 + facts.admittedLayers() + " layers" : "")
                         + (facts.issues().isEmpty() ? "" : "; " + String.join("; ", facts.issues()));
-                return copy[0].water();
+                return copy[0];
             } catch (CancellationException canceled) {
                 throw canceled;
             } catch (WorldTerrainStreaming.Refusal refused) {
@@ -992,7 +1002,7 @@ final class WorldStreamSourceBridge {
      */
     record WaterCopy(
             WorldStreamTileWriter.Water water, int sourceCells, int layers, boolean capped,
-            int finest) implements AutoCloseable {
+            int finest, LiquidSurface.Tile surface) implements AutoCloseable {
         /** The scalar water facts the copy reads: one actual Source borrow, or a test fixture. */
         interface Cells {
             int vertices();
@@ -1011,6 +1021,11 @@ final class WorldStreamSourceBridge {
 
             /** The layer's flat colour, 0xRRGGBB, or -1 for the water colour. */
             int colour(int layer);
+
+            /** The layer's LiquidType ID (MH2O instance), or 0 when unknown. */
+            default int liquidType(int layer) {
+                return 0;
+            }
 
             /** True when the client draws this water layer as ocean (#171). */
             boolean ocean(int layer);
@@ -1035,6 +1050,7 @@ final class WorldStreamSourceBridge {
                 @Override public boolean planar(int layer) { return borrow.planar(layer); }
                 @Override public int colour(int layer) { return borrow.colour(layer); }
                 @Override public boolean ocean(int layer) { return borrow.ocean(layer); }
+                @Override public int liquidType(int layer) { return borrow.rawType(layer); }
                 @Override public float north(int vertex) { return borrow.north(vertex); }
                 @Override public float west(int vertex) { return borrow.west(vertex); }
                 @Override public float up(int vertex) { return borrow.up(vertex); }
@@ -1231,7 +1247,42 @@ final class WorldStreamSourceBridge {
             return new WaterCopy(
                     new WorldStreamTileWriter.Water(
                             positions, depths, colours, kinds, indices, copied),
-                    sourceCells, copied, capped, finest);
+                    sourceCells, copied, capped, finest, surface(borrow, sources, token));
+        }
+
+        /**
+         * Every present cell of every layer, drawn or capped, for a swimming body: the cell's
+         * NW corner and its four corner heights, and what liquid it is.
+         */
+        static LiquidSurface.Tile surface(Cells borrow, int[] sources, Cancellation token) {
+            var builder = new LiquidSurface.Builder();
+            for (int l = 0; l < sources.length; l++) {
+                token.check();
+                var kind = kind(borrow, l);
+                int cells = Long.bitCount(borrow.mask(l));
+                for (int c = 0; c < cells; c++) {
+                    int v = sources[l] + c * 4;
+                    builder.cell(borrow.north(v), borrow.west(v), borrow.up(v), borrow.up(v + 1),
+                            borrow.up(v + 2), borrow.up(v + 3), kind);
+                }
+            }
+            return builder.build();
+        }
+
+        /**
+         * Water layers (no flat colour) are water or ocean as drawn; a coloured layer is magma
+         * or slime by its LiquidType ID (3 and 4, the client's base magma and slime rows), and
+         * any other coloured liquid stays {@link LiquidSurface.Kind#OTHER}.
+         */
+        static LiquidSurface.Kind kind(Cells borrow, int layer) {
+            if (borrow.colour(layer) < 0) {
+                return borrow.ocean(layer) ? LiquidSurface.Kind.OCEAN : LiquidSurface.Kind.WATER;
+            }
+            return switch (borrow.liquidType(layer)) {
+                case 3 -> LiquidSurface.Kind.MAGMA;
+                case 4 -> LiquidSurface.Kind.SLIME;
+                default -> LiquidSurface.Kind.OTHER;
+            };
         }
 
         private static void put(Cells borrow, int vertex,

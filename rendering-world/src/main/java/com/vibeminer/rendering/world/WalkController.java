@@ -9,6 +9,16 @@ import java.util.Objects;
  * from {@link MovementParity}. Velocity changes instantly (the client has no ramp), and a jump
  * keeps its take-off velocity until landing (no air steering yet: unmeasured).
  *
+ * <p>A walking body whose feet sink {@link MovementParity#SWIM_DEPTH_FRACTION} of its height below
+ * the terrain's liquid surface ({@link LiquidSurface}) swims: no gravity, swim speeds, forward
+ * follows the view's pitch (diving or rising), the up key (jump) rises and the down key sinks. It
+ * never rises above that floating depth, so at the surface it floats, and it stays at its depth
+ * when no key is held; a floating body follows a sloping surface; only walkable ground lifts it out
+ * of the water (a steep bank is a wall). It walks again once walkable ground under it lifts its
+ * feet above the floating depth by {@link MovementParity#SWIM_EXIT_MARGIN} of its height (the
+ * shore), or falls where the liquid ends. Water in buildings (WMO liquid) is not known, so a body
+ * walks through it.
+ *
  * <p>Where the box around the body still has no collision data a walking body waits: it does not
  * move into the unknown area, and does not fall while its own footprint is unknown. A flying body
  * keeps going, colliding with what is known, and reports {@link Status#LOADING}. A body that falls
@@ -37,7 +47,9 @@ public final class WalkController {
         /** Waiting for collision data around the body. */
         LOADING,
         /** Fell out of the known world and was put back where it last stood. */
-        RETURNED
+        RETURNED,
+        /** Swimming in liquid deeper than {@link MovementParity#SWIM_DEPTH_FRACTION}. */
+        SWIMMING
     }
 
     /**
@@ -90,7 +102,9 @@ public final class WalkController {
     private Mode mode = Mode.WALK;
     private Status status = Status.LOADING;
     private double x, y, z, vx, vy, vz, carry;
-    private boolean grounded, placed, hasSafe, firm;
+    private boolean grounded, placed, hasSafe, firm, swimming;
+    private LiquidSurface liquids = LiquidSurface.empty();
+    private LiquidSurface.Kind liquid;
     private double safeX, safeY, safeZ;
     // Normal of the last surface a slide touched, or null.
     private double[] touched;
@@ -113,6 +127,7 @@ public final class WalkController {
         mode = Objects.requireNonNull(next);
         vx = vy = vz = 0;
         grounded = false;
+        swimming = false;
         status = next == Mode.FLY ? Status.FLYING : Status.FALLING;
     }
 
@@ -122,6 +137,21 @@ public final class WalkController {
 
     public boolean grounded() {
         return grounded;
+    }
+
+    /** True while the body swims ({@link Status#SWIMMING}, or waiting for collision in liquid). */
+    public boolean swimming() {
+        return swimming;
+    }
+
+    /** The liquid the body swims in, or null when it does not swim. */
+    public LiquidSurface.Kind liquid() {
+        return swimming ? liquid : null;
+    }
+
+    /** Feet depth below the surface at which this body swims and floats, yards. */
+    public double swimDepth() {
+        return shape.height() * MovementParity.SWIM_DEPTH_FRACTION;
     }
 
     public double x() {
@@ -151,7 +181,24 @@ public final class WalkController {
      * drop} yards and stands on it; with none known yet the body waits or falls from there.
      */
     public void place(double x, double y, double z, double drop, CollisionWorld world) {
+        place(x, y, z, drop, world, LiquidSurface.empty());
+    }
+
+    /**
+     * As {@link #place(double, double, double, double, CollisionWorld)}; a walking body whose
+     * ground lies deeper than {@link #swimDepth} below the liquid surface floats at that depth,
+     * swimming, unless it was placed below it.
+     */
+    public void place(
+            double x,
+            double y,
+            double z,
+            double drop,
+            CollisionWorld world,
+            LiquidSurface liquids) {
         Objects.requireNonNull(world);
+        this.liquids = Objects.requireNonNull(liquids);
+        swimming = false;
         this.x = clamp(x);
         this.y = clamp(y);
         this.z = clamp(z);
@@ -171,6 +218,12 @@ public final class WalkController {
             status = Status.STANDING;
             remember();
         }
+        var surface = liquids.at(this.x, this.y);
+        if (surface != null && surface.height() - this.z > swimDepth()) {
+            // Float at the surface rather than stand on the bed, unless placed deeper than that.
+            this.z = Math.max(this.z, Math.min(clamp(z), surface.height() - swimDepth()));
+            swim(surface);
+        }
     }
 
     /**
@@ -178,8 +231,14 @@ public final class WalkController {
      * Returns true when the body moved.
      */
     public boolean step(Input input, double seconds, CollisionWorld world) {
+        return step(input, seconds, world, LiquidSurface.empty());
+    }
+
+    /** As {@link #step(Input, double, CollisionWorld)}, swimming in {@code liquids}. */
+    public boolean step(Input input, double seconds, CollisionWorld world, LiquidSurface liquids) {
         Objects.requireNonNull(input);
         Objects.requireNonNull(world);
+        this.liquids = Objects.requireNonNull(liquids);
         if (!Double.isFinite(seconds) || seconds < 0) {
             throw new IllegalArgumentException("Invalid walk step");
         }
@@ -196,8 +255,16 @@ public final class WalkController {
         for (int i = 0; i < steps; i++) {
             if (mode == Mode.FLY) {
                 fly(input, world);
+            } else if (swimming) {
+                swim(input, world);
             } else {
                 walk(input, world);
+                var surface = liquids.at(x, y);
+                if (status != Status.LOADING
+                        && surface != null
+                        && surface.height() - z > swimDepth()) {
+                    swim(surface);
+                }
             }
         }
         return x != ox || y != oy || z != oz;
@@ -341,6 +408,108 @@ public final class WalkController {
                 status = Status.SLIDING;
             }
         }
+    }
+
+    /** Starts swimming where the body is: any fall stops. */
+    private void swim(LiquidSurface.Sample surface) {
+        swimming = true;
+        liquid = surface.kind();
+        grounded = false;
+        vx = vy = vz = 0;
+        status = Status.SWIMMING;
+    }
+
+    /**
+     * One swimming step: forward along the view (pitch dives or rises), strafe level, the up and
+     * down keys straight up and down, at the swim speed (backwards at the swim-back speed), with no
+     * gravity, sliding along everything, and never above the floating depth.
+     */
+    private void swim(Input input, CollisionWorld world) {
+        double dt = MovementParity.STEP_SECONDS;
+        double r = shape.radius();
+        if (world.coverage(x - r, y - r, x + r, y + r) == CollisionWorld.Coverage.LOADING) {
+            vx = vy = vz = 0;
+            status = Status.LOADING;
+            return;
+        }
+        double cp = Math.cos(input.pitch()), sp = Math.sin(input.pitch());
+        double cy = Math.cos(input.yaw()), sy = Math.sin(input.yaw());
+        double fx = input.forward() * cp * cy + input.strafe() * sy;
+        double fy = input.forward() * cp * sy - input.strafe() * cy;
+        double fz = input.forward() * sp + input.vertical();
+        double len = Math.sqrt(fx * fx + fy * fy + fz * fz);
+        double speed =
+                input.forward() < 0 ? MovementParity.SWIM_BACK_SPEED : MovementParity.SWIM_SPEED;
+        if (len > 1e-9) {
+            fx = fx / len * speed;
+            fy = fy / len * speed;
+            fz = fz / len * speed;
+        } else {
+            fx = fy = fz = 0;
+        }
+        double dx = fx * dt, dy = fy * dt, dz = fz * dt;
+        if (world.coverage(
+                        Math.min(x, x + dx) - r,
+                        Math.min(y, y + dy) - r,
+                        Math.max(x, x + dx) + r,
+                        Math.max(y, y + dy) + r)
+                == CollisionWorld.Coverage.LOADING) {
+            dx = dy = 0;
+        }
+        // Rising stops at the floating depth: at the surface the body floats.
+        var ahead = liquids.at(x + dx, y + dy);
+        double top = ahead == null ? Double.POSITIVE_INFINITY : ahead.height() - swimDepth();
+        var here = liquids.at(x, y);
+        boolean floating = here != null && z >= here.height() - swimDepth() - 1e-3;
+        if (floating && ahead != null && dz >= 0) {
+            // A floating body follows the surface up and down a sloping river or lake.
+            double most = MovementParity.SWIM_SPEED * dt;
+            dz = Math.clamp(top - z, -most, most);
+        } else {
+            dz = Math.min(dz, Math.max(0, top - z));
+        }
+        collision.gather(world, shape, x, y, z, dx, dy, dz, 1);
+        unstick();
+        double ox = x, oy = y, oz = z;
+        double[] moved = slide(x, y, z, dx, dy, dz, false);
+        if (moved[2] > Math.max(oz, top) + 1e-9) {
+            // Sliding up a bank out of the water: only walkable ground lifts the body, as when
+            // walking; a steep bank is a wall.
+            moved = slide(x, y, z, dx, dy, dz, true);
+        }
+        set(moved[0], moved[1], moved[2]);
+        vx = (x - ox) / dt;
+        vy = (y - oy) / dt;
+        vz = (z - oz) / dt;
+        var surface = liquids.at(x, y);
+        double exit =
+                shape.height()
+                        * (MovementParity.SWIM_DEPTH_FRACTION - MovementParity.SWIM_EXIT_MARGIN);
+        if (surface == null) {
+            // The liquid ended: walk again, landing or falling.
+            swimming = false;
+            grounded = false;
+            vz = 0;
+            status = Status.FALLING;
+            return;
+        }
+        if (surface.height() - z < exit) {
+            // The shore lifted the feet out: walk again where the body can stand. Over a steep
+            // bank or a rim it keeps swimming, so it does not fall back in and switch every step.
+            double probe = .1;
+            var below = collision.sweep(shape, x, y, z, 0, 0, -probe);
+            if (below != null && below.faceNz() >= walkable && below.nz() > 0) {
+                z -= below.t() * probe - SKIN;
+                swimming = false;
+                grounded = true;
+                firm = below.nz() >= walkable;
+                vz = 0;
+                status = input.moving() ? Status.MOVING : Status.STANDING;
+                return;
+            }
+        }
+        liquid = surface.kind();
+        status = Status.SWIMMING;
     }
 
     private void fly(Input input, CollisionWorld world) {
