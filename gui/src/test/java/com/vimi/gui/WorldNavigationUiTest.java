@@ -470,7 +470,7 @@ public final class WorldNavigationUiTest {
         view.coordinatesCopy(WorldCoordinatesPill::systemClipboard);
         // HUD step 5: every control that was a row is on an Escape menu page; nothing is removed.
         var pages=java.util.Map.of(
-                "controls",new String[] {"#world-flight-speed","#world-smooth-motion","#world-walk-mode","#world-motion-status",
+                "controls",new String[] {"#world-flight-speed","#world-smooth-motion","#world-walk-mode","#world-fly-mode","#world-motion-status",
                         "#world-look-sensitivity","#world-invert-look","#world-look-status","#world-layout-qwerty",
                         "#world-layout-azerty","#world-key-bindings-open"},
                 "audio",new String[] {"#world-audio","#world-music","#world-ambience","#world-music-volume",
@@ -1253,11 +1253,15 @@ public final class WorldNavigationUiTest {
         require(!editor.controls().keys().containsKey(KeyCode.J),"Escape cancels the capture");
     }
 
-    /** Walk mode over an authored qualified ADT18 surface and over the unqualified fixture mesh. */
+    /**
+     * Walking with collision over the unqualified fixture mesh (no collision: the body waits) and
+     * over an authored qualified ADT18 surface (it stands and walks), then flying and back.
+     */
     private static void walk(WorldView view,AnimationTimer timer,Node viewport) {
         var walk=(javafx.scene.control.CheckBox)get(view,"walkMode");
+        var fly=(javafx.scene.control.CheckBox)get(view,"flyMode");
         var status=(javafx.scene.control.Label)view.lookup("#world-motion-status");
-        require(!walk.isSelected(),"Free flight is the default");
+        require(!walk.isSelected() && !fly.isSelected(),"Free flight is the default");
         key(viewport,KeyCode.F,true);
         key(viewport,KeyCode.F,true);
         key(viewport,KeyCode.F,false);
@@ -1266,29 +1270,49 @@ public final class WorldNavigationUiTest {
         var held=new TerrainRenderer.Camera(10000-SIZE/2,20000-SIZE/2,500,0,0);
         set(view,"camera",held);
         input(view).idle();
-        key(viewport,KeyCode.SPACE,true);
         key(viewport,KeyCode.W,true);
         timer.handle(3_000_000_000L);
         timer.handle(3_100_000_000L);
-        key(viewport,KeyCode.SPACE,false);
         key(viewport,KeyCode.W,false);
-        var unqualified=(TerrainRenderer.Camera)get(view,"camera");
-        require(unqualified.z()==500,"Walking without qualified ground holds altitude and ignores Space");
-        require(Math.abs(unqualified.x()-held.x()-.7)<1e-9,"Walking uses the walk speed, not flight speed");
-        require(status.getText().contains("altitude held"),"Unavailable ground is reported: "+status.getText());
+        var body=input(view).body().body();
+        require(body.x()==held.x() && body.status()==com.vibeminer.rendering.world.WalkController.Status.LOADING,
+                "Without collision data the body waits: "+body.x()+" "+body.status());
+        require(status.getText().contains("waiting for terrain collision"),"Waiting is reported: "+status.getText());
         var surface=com.vibeminer.rendering.world.TerrainGround.of(List.of(
                 com.vibeminer.rendering.world.TerrainGround.Tile.of(new com.vibeminer.rendering.world.TerrainScene.Tile(X,Y,
                         WorldFormats.adt(authoredRoot(10000,20000),() -> false)))));
         set(view,"ground",surface);
+        // A jump to just above the surface places the body on it.
+        double ground=surface.heightAt(held.x(),held.y());
+        set(view,"camera",new TerrainRenderer.Camera(held.x(),held.y(),ground+10,0,0));
         input(view).idle();
-        timer.handle(4_000_000_000L);
-        timer.handle(4_100_000_000L);
-        var grounded=(TerrainRenderer.Camera)get(view,"camera");
-        double eye=surface.heightAt(grounded.x(),grounded.y())+com.vibeminer.rendering.world.ExplorerMotion.EYE_HEIGHT;
-        require(Double.isFinite(eye) && Math.abs(grounded.z()-eye)<1e-9,"Walking follows the rendered surface: "+grounded.z()+" vs "+eye);
-        require(status.getText().startsWith("Walking · eye"),"Following ground is reported: "+status.getText());
+        long t=4_000_000_000L;
+        timer.handle(t);
+        timer.handle(t+=100_000_000L);
+        // The capsule rests on the highest ground under its footprint (the fixture has steps).
+        double r=body.shape().radius(),highest=-Double.MAX_VALUE;
+        for(double dx=-r;dx<=r;dx+=r/8) for(double dy=-r;dy<=r;dy+=r/8)
+            if(dx*dx+dy*dy<=r*r) highest=Math.max(highest,surface.heightAt(held.x()+dx,held.y()+dy));
+        require(body.grounded() && body.z()>=ground-.01 && body.z()<=highest+.05,
+                "The body stands on the surface: "+body.z()+" in "+ground+".."+highest);
+        require(status.getText().startsWith("Walking · collides with terrain"),"Walking is reported: "+status.getText());
+        double startX=body.x();
+        key(viewport,KeyCode.W,true);
+        for(int i=0;i<10;i++) timer.handle(t+=100_000_000L);
+        key(viewport,KeyCode.W,false);
+        require(body.x()>startX+1,"W walks the body forward: "+(body.x()-startX));
+        var camera=(TerrainRenderer.Camera)get(view,"camera");
+        require(camera.x()<body.x(),"The camera follows behind: "+camera.x()+" vs "+body.x());
+        key(viewport,KeyCode.G,true);
+        key(viewport,KeyCode.G,false);
+        timer.handle(t+=100_000_000L);
+        require(fly.isSelected() && !walk.isSelected() && status.getText().startsWith("Flying"),
+                "G flies: "+status.getText());
+        key(viewport,KeyCode.G,true);
+        key(viewport,KeyCode.G,false);
+        require(walk.isSelected() && !fly.isSelected(),"G again walks");
         walk.fire();
-        require(!walk.isSelected(),"Walking can be turned off");
+        require(!walk.isSelected() && !fly.isSelected(),"Walking can be turned off");
         require(status.getText().startsWith("Free flight"),"Free flight is reported");
         smoothDefault(view);
     }

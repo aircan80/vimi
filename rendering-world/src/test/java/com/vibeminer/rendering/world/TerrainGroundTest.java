@@ -111,6 +111,75 @@ class TerrainGroundTest {
     }
 
     @Test
+    void coverageTellsHolesFromUnloadedGround() {
+        var grid = WorldFormats.adtGrid(root(true), () -> false);
+        var ground = TerrainGround.of(List.of(TerrainGround.Tile.of(tile(true))));
+        double unit = WorldFormats.TILE_SIZE / 256;
+        int holes = 0, rendered = 0;
+        for (var chunk : grid.chunks()) {
+            for (int cell = 0; cell < 64; cell++) {
+                int row = cell / 8, col = cell % 8;
+                double x = chunk.originX() - (2 * row + 1) * unit,
+                        y = chunk.originY() - (2 * col + 1) * unit;
+                if ((chunk.holes() >>> cell & 1) != 0) {
+                    assertEquals(TerrainGround.Coverage.HOLE, ground.coverage(x, y));
+                    holes++;
+                } else {
+                    assertEquals(TerrainGround.Coverage.GROUND, ground.coverage(x, y));
+                    rendered++;
+                }
+            }
+        }
+        assertTrue(holes > 10 && rendered > 1000);
+        assertEquals(TerrainGround.Coverage.UNLOADED, ground.coverage(ORIGIN_X + 1, ORIGIN_Y - 10));
+        assertEquals(TerrainGround.Coverage.UNLOADED, ground.coverage(Double.NaN, 0));
+        assertEquals(
+                TerrainGround.Coverage.UNLOADED,
+                TerrainGround.empty().coverage(ORIGIN_X - 1, ORIGIN_Y - 1));
+        assertTrue(ground.covers(ORIGIN_X - 30, ORIGIN_Y - 30, ORIGIN_X - 10, ORIGIN_Y - 10));
+        assertFalse(ground.covers(ORIGIN_X - 30, ORIGIN_Y - 30, ORIGIN_X + 10, ORIGIN_Y - 10));
+        assertFalse(ground.covers(ORIGIN_X - 10, ORIGIN_Y - 10, ORIGIN_X - 30, ORIGIN_Y - 30));
+    }
+
+    @Test
+    void trianglesInABoxAreTheRenderedOnesAndMatchTheHeights() {
+        var source = tile(true);
+        var ground = TerrainGround.of(List.of(TerrainGround.Tile.of(source)));
+        double x0 = ORIGIN_X - 120, y0 = ORIGIN_Y - 140, x1 = ORIGIN_X - 80, y1 = ORIGIN_Y - 100;
+        int[] count = {0};
+        ground.triangles(
+                x0,
+                y0,
+                x1,
+                y1,
+                (ax, ay, az, bx, by, bz, cx, cy, cz) -> {
+                    count[0]++;
+                    double x = (ax + bx + cx) / 3, y = (ay + by + cy) / 3, z = (az + bz + cz) / 3;
+                    assertEquals(z, ground.heightAt(x, y), 1e-3);
+                });
+        // Every rendered point of the box is under one of the emitted triangles' cells.
+        double cell = WorldFormats.TILE_SIZE / 128;
+        int cells = 0;
+        for (double x = x0; x <= x1; x += cell / 2) {
+            for (double y = y0; y <= y1; y += cell / 2) {
+                if (ground.coverage(x, y) == TerrainGround.Coverage.GROUND) {
+                    cells++;
+                }
+            }
+        }
+        assertTrue(count[0] > 0 && cells > 0);
+        assertTrue(count[0] % 4 == 0, "whole fans");
+        int[] none = {0};
+        ground.triangles(
+                ORIGIN_X + 10,
+                ORIGIN_Y + 10,
+                ORIGIN_X + 20,
+                ORIGIN_Y + 20,
+                (a, b, c, d, e, f, g, h, i) -> none[0]++);
+        assertEquals(0, none[0]);
+    }
+
+    @Test
     void differentMeshLayoutsAreNotQualified() {
         var source = tile(false);
         float[] vertices = new float[source.vertexCount() * 3];

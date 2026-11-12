@@ -339,13 +339,16 @@ final class WorldStreamSourceBridge {
         /**
          * {@code objectFormats}: the BC formats the session's child samples as blocks (bit per
          * format code, {@code WorldStreamTransport.Session.objectFormats()}), 0 for RGBA8 only.
+         * {@code creatureBytes}: the most bytes this tile's creatures may add ({@link
+         * WorldTileCreatures#AREA_BYTES} less what the resident tiles' creatures hold), 0 for none.
          */
         ExteriorCopy prepare(
                 WorldTerrainStreaming source,
                 WorldTerrainStreaming.Scope scope,
                 WorldFormats.Tile tile,
                 Cancellation cancellation,
-                int objectFormats);
+                int objectFormats,
+                long creatureBytes);
     }
 
     /** Appends one tile's creatures after its buildings; only cancellation may propagate. */

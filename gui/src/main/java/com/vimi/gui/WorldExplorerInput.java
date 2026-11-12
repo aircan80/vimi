@@ -1,8 +1,12 @@
 package com.vimi.gui;
 
+import com.vibeminer.rendering.world.BodyMotion;
+import com.vibeminer.rendering.world.CollisionWorld;
 import com.vibeminer.rendering.world.ExplorerMotion;
+import com.vibeminer.rendering.world.MovementParity;
 import com.vibeminer.rendering.world.TerrainGround;
 import com.vibeminer.rendering.world.TerrainRenderer;
+import com.vibeminer.rendering.world.WalkController;
 import java.util.HashSet;
 import java.util.Objects;
 import java.util.Set;
@@ -25,8 +29,20 @@ import javafx.scene.input.MouseButton;
  * still inspects. Movement is summed between pulses and applied once per pulse, so a burst of
  * mouse events costs one camera update and at most one frame request. Movement owed while no
  * pulse runs is dropped, never applied later as one jump.
+ *
+ * <p>Three motion modes: {@link Mode#FREE} is the free camera ({@link ExplorerMotion}); {@link
+ * Mode#WALK} and {@link Mode#FLY} move a body with collision ({@link BodyMotion}) that the camera
+ * follows. In body modes mouse look turns the body, the up key jumps (walking) or climbs (flying),
+ * and the wheel zooms the follow camera down to first person.
  */
 final class WorldExplorerInput {
+    /** Free camera, or a body walking or flying with collision. */
+    enum Mode {
+        FREE,
+        WALK,
+        FLY
+    }
+
     /** View hooks; every method is called on the FX thread from an input event or pulse. */
     interface Host {
         TerrainRenderer.Camera camera();
@@ -44,6 +60,17 @@ final class WorldExplorerInput {
         void groundStatus(ExplorerMotion.Ground ground);
 
         void toggleWalk();
+
+        /** The walk/fly key: switch the body between walking and flying. */
+        default void toggleFly() {}
+
+        /** Collision for a body; the retained terrain unless the view knows more. */
+        default CollisionWorld collision() {
+            return CollisionWorld.terrain(ground());
+        }
+
+        /** What the body is doing, after every body pulse. */
+        default void bodyStatus(Mode mode, WalkController.Status status) {}
 
         /**
          * A HUD command key was pressed ({@link WorldControls.Action#command}): once per physical
@@ -135,6 +162,9 @@ final class WorldExplorerInput {
         return legacyScene || streamingMode && streamPresent;
     }
 
+    /** Follow-camera zoom per wheel notch with a body, yards. */
+    static final double ZOOM_YARDS = 1.5;
+
     /** Wheel dolly per notch, as seconds of travel at the current speed. */
     static final double DOLLY_SECONDS = .25;
 
@@ -144,6 +174,8 @@ final class WorldExplorerInput {
 
     private final Host host;
     private final ExplorerMotion motion = new ExplorerMotion();
+    private final BodyMotion body = new BodyMotion();
+    private Mode mode = Mode.FREE;
     private final Set<KeyCode> keys = new HashSet<>();
     private long lastTick, lastRender, lastNearby;
     private WorldControls controls = WorldControls.DEFAULTS;
@@ -164,10 +196,43 @@ final class WorldExplorerInput {
         this.host = Objects.requireNonNull(host);
     }
 
-    /** Applies the walk and smoothing toggles; drops retained velocity. */
-    void motion(boolean walk, boolean smooth) {
-        motion.mode(walk ? ExplorerMotion.Mode.WALK : ExplorerMotion.Mode.FLY);
+    /**
+     * Applies the motion mode and the smoothing toggle (free camera only; bodies move without
+     * smoothing, as the client does); drops retained velocity. Entering a body mode from the free
+     * camera places the body under the camera on the next pulse; switching between walking and
+     * flying keeps it where it is.
+     */
+    void motion(Mode next, boolean smooth) {
+        Objects.requireNonNull(next);
+        if (next != Mode.FREE && (mode == Mode.FREE || body.mode() != bodyMode(next))) {
+            if (mode == Mode.FREE) body.release();
+            body.mode(bodyMode(next));
+        }
+        mode = next;
+        motion.mode(ExplorerMotion.Mode.FLY);
         motion.smooth(smooth);
+    }
+
+    Mode mode() {
+        return mode;
+    }
+
+    /** The body (walking or flying), for status and tests. */
+    BodyMotion body() {
+        return body;
+    }
+
+    private static WalkController.Mode bodyMode(Mode mode) {
+        return mode == Mode.FLY ? WalkController.Mode.FLY : WalkController.Mode.WALK;
+    }
+
+    /**
+     * Flight speed with a body: the taxi speed, or the speed preset when it is faster (beyond the
+     * game's speeds), doubled while sprint is held.
+     */
+    double flySpeed() {
+        return Math.max(MovementParity.TAXI_SPEED, speed())
+                * (held(WorldControls.Action.SPRINT) ? ExplorerMotion.FLY_SPRINT : 1);
     }
 
     WorldControls controls() {
@@ -189,7 +254,11 @@ final class WorldExplorerInput {
 
     /** Effective speed for the status line: the current mode with the held sprint key. */
     double effectiveSpeed() {
-        return motion.speed(speed(), held(WorldControls.Action.SPRINT));
+        return switch (mode) {
+            case FREE -> motion.speed(speed(), held(WorldControls.Action.SPRINT));
+            case WALK -> axes().forward() < 0 ? MovementParity.BACKPEDAL_SPEED : MovementParity.RUN_SPEED;
+            case FLY -> flySpeed();
+        };
     }
 
     /** True while the sprint key is held (the HUD speed chip brightens). */
@@ -215,7 +284,24 @@ final class WorldExplorerInput {
         if (!fresh) return;
         var action = controls.keys().get(code);
         if (action == WorldControls.Action.WALK) host.toggleWalk();
+        else if (action == WorldControls.Action.FLY) host.toggleFly();
+        else if (action == WorldControls.Action.FIRST_PERSON) firstPerson();
         else if (action != null && action.command) host.command(action);
+    }
+
+    /** Remembered follow distance for leaving first person with the key. */
+    private double thirdPerson = MovementParity.CAMERA_START_DISTANCE;
+
+    /** The first-person key: from the eye, or back to the last follow distance. */
+    private void firstPerson() {
+        if (mode == Mode.FREE) return;
+        var camera = body.camera();
+        if (camera.firstPerson()) {
+            camera.distance(thirdPerson);
+        } else {
+            thirdPerson = camera.distance();
+            camera.distance(0);
+        }
     }
 
     void keyReleased(KeyCode code) {
@@ -388,12 +474,17 @@ final class WorldExplorerInput {
         }
         var camera = host.camera();
         if (camera == null || !host.wheelReady()) return;
+        if (mode != Mode.FREE) {
+            // Wheel toward the view zooms in, as in the client; the next pulse frames it.
+            body.zoom(-Math.copySign(Math.min(Math.abs(delta) / 40, 3) * ZOOM_YARDS, delta));
+            return;
+        }
         double step =
                 Math.copySign(
                         Math.min(Math.abs(delta) / 40, 3)
                                 * Math.clamp(
                                         motion.speed(speed(), false) * DOLLY_SECONDS,
-                                        motion.mode() == ExplorerMotion.Mode.WALK ? .5 : 2,
+                                        2,
                                         32),
                         delta);
         var zoomed = motion.dolly(camera, step, host.ground());
@@ -431,6 +522,10 @@ final class WorldExplorerInput {
         }
         double dt = lastTick == 0 ? 0 : Math.min(.1, (now - lastTick) / 1e9);
         lastTick = now;
+        if (mode != Mode.FREE) {
+            bodyPulse(now, camera, dt);
+            return;
+        }
         boolean looked = pendingX != 0 || pendingY != 0;
         if (looked) {
             double s = controls.sensitivity();
@@ -446,7 +541,7 @@ final class WorldExplorerInput {
                         || input.vertical() != 0
                         || input.turn() != 0
                         || input.tilt() != 0;
-        if (!steering && !motion.coasting() && motion.mode() != ExplorerMotion.Mode.WALK) {
+        if (!steering && !motion.coasting()) {
             if (looked) frame();
             else showFinal();
             rested();
@@ -476,6 +571,53 @@ final class WorldExplorerInput {
             host.loadNext();
         }
         if (stepped.resting()) rested();
+    }
+
+    /**
+     * One body pulse: mouse look turns the body, the keys move it through the collision, and the
+     * follow camera is shown when it changed (always after a look, else at the movement cadence).
+     */
+    private void bodyPulse(long now, TerrainRenderer.Camera camera, double dt) {
+        boolean looked = pendingX != 0 || pendingY != 0;
+        if (looked) {
+            double s = controls.sensitivity();
+            body.look(-pendingX * s, (controls.invertY() ? pendingY : -pendingY) * s);
+            pendingX = pendingY = 0;
+        }
+        var input = axes();
+        var walker = body.body();
+        double x = walker.x(), y = walker.y(), z = walker.z();
+        boolean placed = body.placed() && camera.equals(body.shown());
+        var stepped = body.step(camera, input.forward(), input.strafe(), input.vertical(), input.turn(),
+                input.tilt(), flySpeed(), dt, host.collision());
+        host.bodyStatus(mode, stepped.status());
+        // Only the body travelling is movement; a look or a zoom only swings the camera.
+        // Placing the body under a new camera is not travel either.
+        boolean travelled = placed && (walker.x() != x || walker.y() != y || walker.z() != z);
+        // Fixed simulation steps: a short pulse may integrate none, which is not a stop.
+        boolean busy = input.forward() != 0 || input.strafe() != 0 || input.vertical() != 0
+                || stepped.status() == WalkController.Status.FALLING
+                || stepped.status() == WalkController.Status.SLIDING;
+        if (!stepped.moved()) {
+            if (looked) frame();
+            else showFinal();
+            if (!busy) rested();
+            return;
+        }
+        host.camera(stepped.camera());
+        if (travelled) moving = true;
+        else if (!looked && !busy) rested();
+        unshown = true;
+        long cadence = host.fastCadence() ? FAST_CADENCE_NANOS : SLOW_CADENCE_NANOS;
+        if (looked || now - lastRender > cadence) {
+            lastRender = now;
+            frame();
+        }
+        host.abandonUnusableCandidate();
+        if (now - lastNearby > NEARBY_NANOS) {
+            lastNearby = now;
+            host.loadNext();
+        }
     }
 
     /** Reports the end of a movement once; no-op while already at rest. */

@@ -140,5 +140,33 @@ class GitWalkTest(unittest.TestCase):
             )
 
 
+class WindowTest(unittest.TestCase):
+    def test_until_leaves_out_a_commit_backdated_after_it(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            repo = Path(temporary)
+
+            def commit(npc, date):
+                env = dict(os.environ, GIT_AUTHOR_DATE=date, GIT_COMMITTER_DATE=date)
+                folder = repo / "data" / "wowf" / "1.60.1.70862"
+                folder.mkdir(parents=True, exist_ok=True)
+                (folder / "creature_details.enUS.json").write_text(json.dumps(details(**{npc: shown(1)})))
+                for args in (["add", "-A"], ["commit", "-q", "-m", npc]):
+                    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, env=env)
+
+            subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "test"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.invalid"], check=True)
+            commit("1", "2026-10-01T00:00:00Z")
+            commit("2", "2026-10-03T00:00:00Z")
+            inside = history.read_commits(repo, 60, "wowf", "enUS", "2026-09-01", "2026-10-02T00:00:00Z")
+            self.assertEqual(["2026-10-01T00:00:00Z"], [c.committed_at for c in inside])
+            self.assertEqual({(1, "1.60.1.70862")}, set(history.merge(inside)))
+            both = history.read_commits(repo, 60, "wowf", "enUS", "2026-09-01", "2026-10-04T00:00:00Z")
+            self.assertEqual(2, len(both))
+            text = history.notice(b"x\n", "wowf", "enUS", inside, history.merge(inside),
+                                  "--since 2026-09-01 --until 2026-10-02T00:00:00Z")
+            self.assertIn("Window: --since 2026-09-01 --until 2026-10-02T00:00:00Z.", text)
+
+
 if __name__ == "__main__":
     unittest.main()
