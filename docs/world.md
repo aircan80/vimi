@@ -26,10 +26,12 @@ An authored asymmetric-grid test verifies orientation and exact clicked fileID. 
 Click the viewport to focus it. WASD moves horizontally, Space or E ascends and Q or X descends,
 mouse drag or arrow keys changes view direction, Shift increases movement speed,
 and the wheel moves along the view direction (Shift+wheel changes speed).
-**Walk on terrain** (or F) keeps the eye two yards above the rendered terrain
-surface at 7 yards/s, Shift sprinting at twice that; **Smooth motion** eases
-velocity and downward settling. Walking is surface sampling only, not collision:
-see [walk and fly movement](world-walk-fly-movement-checkpoint.md).
+**Walk with collision** (or F) and **Fly with collision** (or G) move a body
+that the camera follows: walking runs at 7 yards/s with gravity, Space to jump, a
+slope limit and step-up; flying goes at least the 32 yards/s taxi speed. The
+wheel or C zooms down to first person. Collision covers terrain so far, not yet
+buildings or objects. **Smooth motion** eases the free camera only. See
+[walk and fly movement](world-walk-fly-movement-checkpoint.md).
 **Bookmark this view** saves the camera with its map identity and tile. Below the
 tile inventory, **Bookmarks & travel** searches saved bookmarks and accepts typed
 native coordinates; jumps are validated against the current build first. See

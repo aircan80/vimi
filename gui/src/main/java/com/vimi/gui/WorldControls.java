@@ -44,7 +44,9 @@ record WorldControls(
         LOOK_UP("Look up"),
         LOOK_DOWN("Look down"),
         SPRINT("Faster (hold; with the wheel: speed)"),
-        WALK("Walk on terrain (toggle)"),
+        WALK("Walk with collision (toggle; again: free camera)"),
+        FLY("Walk or fly with collision (toggle)"),
+        FIRST_PERSON("First or third person while walking or flying (toggle)"),
         MAP_PANEL("Map panel (toggle)", true),
         HIDE_HUD("Hide or show the HUD (toggle)", true),
         DEV_OVERLAY("Developer overlay (next page)", true),
@@ -93,7 +95,10 @@ record WorldControls(
         }
     }
 
-    /** Flight speed presets in yards per second; walking on terrain keeps its own speed. */
+    /**
+     * Flight speed presets in yards per second. Walking keeps the game's own speeds; flying with a
+     * body goes at least the taxi speed (32 yd/s) and takes a faster preset.
+     */
     enum Speed {
         STROLL("Stroll", 7),
         MOUNT("Mount", 14),
@@ -159,6 +164,9 @@ record WorldControls(
             keys.put(KeyCode.DOWN, Action.LOOK_DOWN);
             keys.put(KeyCode.SHIFT, Action.SPRINT);
             keys.put(KeyCode.F, Action.WALK);
+            // G and C sit in the same place on QWERTY and AZERTY.
+            keys.put(KeyCode.G, Action.FLY);
+            keys.put(KeyCode.C, Action.FIRST_PERSON);
             // M is a letter on both layouts, so the key labelled M opens the map on either.
             keys.put(KeyCode.M, Action.MAP_PANEL);
             // H is a letter on both layouts too, and free in both presets.
@@ -298,7 +306,9 @@ record WorldControls(
                 + "/" + keysOf.apply(Action.LOOK_UP) + "/" + keysOf.apply(Action.LOOK_DOWN) + " to look · "
                 + keysOf.apply(Action.SPRINT) + " faster · wheel zooms"
                 + (modifier == null ? "" : " · " + modifier.getName() + "+wheel changes speed")
-                + " · " + keysOf.apply(Action.WALK) + " walks · " + keysOf.apply(Action.MAP_PANEL)
+                + " · " + keysOf.apply(Action.WALK) + " walks · " + keysOf.apply(Action.FLY)
+                + " walks or flies · " + keysOf.apply(Action.FIRST_PERSON) + " first person · "
+                + keysOf.apply(Action.MAP_PANEL)
                 + " map · " + keysOf.apply(Action.HIDE_HUD) + " hides the HUD · click inspects · "
                 + keysOf.apply(Action.INSPECT_PIN) + " pins the card · "
                 + keysOf.apply(Action.BOOKMARKS) + " bookmarks · "

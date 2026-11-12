@@ -1,8 +1,12 @@
 package com.vimi.gui;
 
+import com.vibeminer.rendering.world.CollisionWorld;
 import com.vibeminer.rendering.world.ExplorerMotion;
+import com.vibeminer.rendering.world.FollowCamera;
+import com.vibeminer.rendering.world.MovementParity;
 import com.vibeminer.rendering.world.TerrainGround;
 import com.vibeminer.rendering.world.TerrainRenderer;
+import com.vibeminer.rendering.world.WalkController;
 import java.util.ArrayList;
 import java.util.List;
 import javafx.scene.input.KeyCode;
@@ -55,10 +59,12 @@ public final class WorldExplorerInputTest {
         pulseIntegratesHeldKeysAtTheEstablishedRates();
         pulseRequestsFramesAtCadenceAndNearbyLoadsThrottled();
         idleRestartsIntegrationAtZeroSeconds();
-        walkAtRestStillReportsTheGround();
+        walkingPlacesTheBodyAndTheCameraFollowsIt();
+        walkFlyAndFirstPersonKeysReachTheirHooks();
+        flyingWithABodyGoesAtLeastTaxiSpeed();
         smoothReleaseCoastsThenFramesTheRestingStep();
         theCameraComingToRestIsReportedOncePerStop();
-        walkWheelMovesAlongTheHeadingOnly();
+        bodyWheelZoomsTheFollowCamera();
         System.out.println(
                 "World explorer input: key axes, rebinding and AZERTY, walk toggle,"
                         + " right-button captured look (edge warps, event echoes, rounding, slow"
@@ -82,6 +88,14 @@ public final class WorldExplorerInputTest {
         @Override public boolean fastCadence() { return fast; }
         @Override public void groundStatus(ExplorerMotion.Ground ground) { calls.add("ground:" + ground); }
         @Override public void toggleWalk() { toggles++; }
+        int flyToggles;
+        @Override public void toggleFly() { flyToggles++; }
+        CollisionWorld collision = FLOOR;
+        @Override public CollisionWorld collision() { return collision; }
+        final List<String> statuses = new ArrayList<>();
+        @Override public void bodyStatus(WorldExplorerInput.Mode mode, WalkController.Status status) {
+            statuses.add(mode + ":" + status);
+        }
         @Override public void requestFrame() { calls.add("frame"); }
         @Override public void abandonUnusableCandidate() { calls.add("abandon"); }
         @Override public void loadNext() { calls.add("nearby"); }
@@ -178,9 +192,24 @@ public final class WorldExplorerInputTest {
                 "Help names the map and hide HUD keys: " + WorldControls.DEFAULTS.help());
     }
 
+    /** A flat floor at height 40 everywhere near START, known everywhere. */
+    static final CollisionWorld FLOOR = new CollisionWorld() {
+        @Override
+        public void triangles(double x0, double y0, double z0, double x1, double y1, double z1,
+                com.vibeminer.rendering.world.TerrainGround.TriangleSink sink) {
+            sink.triangle(-10_000, -10_000, 40, 10_000, -10_000, 40, 10_000, 10_000, 40);
+            sink.triangle(-10_000, -10_000, 40, 10_000, 10_000, 40, -10_000, 10_000, 40);
+        }
+
+        @Override
+        public Coverage coverage(double x0, double y0, double x1, double y1) {
+            return Coverage.READY;
+        }
+    };
+
     private static WorldExplorerInput exact(Host host) {
         var input = new WorldExplorerInput(host);
-        input.motion(false, false);
+        input.motion(WorldExplorerInput.Mode.FREE, false);
         return input;
     }
 
@@ -292,7 +321,7 @@ public final class WorldExplorerInputTest {
                 WorldControls.Action.LEFT, WorldControls.Action.RIGHT, WorldControls.Action.UP,
                 WorldControls.Action.DOWN, WorldControls.Action.TURN_LEFT, WorldControls.Action.TURN_RIGHT,
                 WorldControls.Action.LOOK_UP, WorldControls.Action.LOOK_DOWN, WorldControls.Action.SPRINT,
-                WorldControls.Action.WALK);
+                WorldControls.Action.WALK, WorldControls.Action.FLY, WorldControls.Action.FIRST_PERSON);
         for (var layout : WorldControls.Layout.values()) {
             var keys = layout.keys();
             require(keys.get(KeyCode.V) == WorldControls.Action.SPAWNS
@@ -1019,16 +1048,99 @@ public final class WorldExplorerInputTest {
         require(host.camera == null, "No camera: the pulse does nothing");
     }
 
-    /** Walking keeps sampling the ground every pulse, even with no key held. */
-    private static void walkAtRestStillReportsTheGround() {
+    /**
+     * Walking places the body on the floor under the camera on the first pulse, reports its status
+     * every pulse, and the follow camera sits behind it; held keys move it at the run speed, and a
+     * camera moved by someone else (a jump) places it again.
+     */
+    private static void walkingPlacesTheBodyAndTheCameraFollowsIt() {
         var host = new Host();
         var input = new WorldExplorerInput(host);
-        input.motion(true, false);
-        input.pulse(1_000_000_000L);
-        input.pulse(1_016_000_000L);
-        require(host.camera.equals(START), "No keys: walking holds the camera");
-        require(host.calls.equals(List.of("ground:UNAVAILABLE", "ground:UNAVAILABLE")),
-                "Each walking pulse reports the ground, never frames: " + host.calls);
+        input.motion(WorldExplorerInput.Mode.WALK, true);
+        input.holdCadence();
+        long t = 1_000_000_000L;
+        input.pulse(t);
+        var walker = input.body().body();
+        require(walker.grounded() && Math.abs(walker.z() - 40) < .02, "Stands on the floor: " + walker.z());
+        require(Math.abs(host.camera.x() - (START.x() - MovementParity.CAMERA_START_DISTANCE)) < 1e-6,
+                "The camera follows behind: " + host.camera);
+        require(host.statuses.equals(List.of("WALK:STANDING")), "Status every pulse: " + host.statuses);
+        input.keyPressed(KeyCode.W);
+        for (int i = 0; i < 60; i++) input.pulse(t += 16_666_667L);
+        input.keyReleased(KeyCode.W);
+        require(Math.abs(walker.x() - START.x() - MovementParity.RUN_SPEED) < .2,
+                "A second at the run speed, no smoothing: " + (walker.x() - START.x()));
+        require(host.statuses.getLast().equals("WALK:MOVING"), "Moving: " + host.statuses.getLast());
+        require(input.effectiveSpeed() == MovementParity.RUN_SPEED, "Run speed on the speed chip");
+        host.camera = new TerrainRenderer.Camera(500, 600, 90, 1, 0);
+        input.pulse(t += 16_666_667L);
+        require(Math.abs(walker.x() - 500) < 1e-6 && Math.abs(walker.y() - 600) < 1e-6,
+                "A jump places the body again: " + walker.x() + ", " + walker.y());
+        // Leaving and re-entering a body mode places the body under the free camera again.
+        input.motion(WorldExplorerInput.Mode.FREE, true);
+        host.camera = new TerrainRenderer.Camera(-300, 0, 70, 0, 0);
+        input.motion(WorldExplorerInput.Mode.WALK, true);
+        input.pulse(t += 16_666_667L);
+        require(Math.abs(walker.x() + 300) < 1e-6, "Re-entering places the body: " + walker.x());
+        // Without collision data the body waits.
+        host.collision = CollisionWorld.NONE;
+        input.motion(WorldExplorerInput.Mode.FREE, true);
+        input.motion(WorldExplorerInput.Mode.WALK, true);
+        input.pulse(t += 16_666_667L);
+        input.pulse(t += 16_666_667L);
+        require(host.statuses.getLast().equals("WALK:LOADING"), "Waits for collision: " + host.statuses.getLast());
+    }
+
+    /** F toggles walking, G walking or flying, and C first person, once per press. */
+    private static void walkFlyAndFirstPersonKeysReachTheirHooks() {
+        var host = new Host();
+        var input = exact(host);
+        input.keyPressed(KeyCode.G);
+        input.keyPressed(KeyCode.G);
+        input.keyReleased(KeyCode.G);
+        require(host.flyToggles == 1 && host.toggles == 0, "G toggles flying once per press");
+        input.motion(WorldExplorerInput.Mode.WALK, false);
+        input.keyPressed(KeyCode.C);
+        input.keyReleased(KeyCode.C);
+        require(input.body().camera().firstPerson(), "C is first person");
+        input.body().zoom(0);
+        input.keyPressed(KeyCode.C);
+        input.keyReleased(KeyCode.C);
+        require(input.body().camera().distance() == MovementParity.CAMERA_START_DISTANCE,
+                "C again returns to the follow distance: " + input.body().camera().distance());
+        require(host.commands.isEmpty(), "Walk, fly and first person are not HUD commands");
+        input.motion(WorldExplorerInput.Mode.FLY, false);
+        require(input.body().mode() == WalkController.Mode.FLY, "Fly mode flies the body");
+        input.motion(WorldExplorerInput.Mode.FREE, false);
+        input.keyPressed(KeyCode.C);
+        require(input.body().camera().distance() == MovementParity.CAMERA_START_DISTANCE,
+                "C does nothing for the free camera");
+    }
+
+    /** A flying body goes at least taxi speed; faster presets and sprint take it beyond. */
+    private static void flyingWithABodyGoesAtLeastTaxiSpeed() {
+        var host = new Host();
+        var input = exact(host);
+        input.motion(WorldExplorerInput.Mode.FLY, false);
+        input.controls(WorldControls.DEFAULTS.withSpeed(WorldControls.Speed.STROLL));
+        require(input.flySpeed() == MovementParity.TAXI_SPEED && input.effectiveSpeed() == MovementParity.TAXI_SPEED,
+                "Slow presets fly at taxi speed: " + input.flySpeed());
+        input.controls(WorldControls.DEFAULTS.withSpeed(WorldControls.Speed.TURBO));
+        require(input.flySpeed() == 200, "Turbo flies at 200: " + input.flySpeed());
+        input.keyPressed(KeyCode.SHIFT);
+        require(input.flySpeed() == 400, "Sprint doubles it: " + input.flySpeed());
+        input.keyReleased(KeyCode.SHIFT);
+        input.holdCadence();
+        long t = 1_000_000_000L;
+        input.pulse(t);
+        double z = input.body().body().z();
+        for (int i = 0; i < 30; i++) input.pulse(t += 16_666_667L);
+        require(input.body().body().z() == z && host.statuses.getLast().equals("FLY:FLYING"),
+                "No gravity while flying: " + host.statuses.getLast());
+        input.keyPressed(KeyCode.W);
+        for (int i = 0; i < 6; i++) input.pulse(t += 16_666_667L);
+        require(Math.abs(input.body().body().x() - START.x() - 20) < .5,
+                "A tenth of a second at 200 yd/s: " + (input.body().body().x() - START.x()));
     }
 
     /**
@@ -1038,7 +1150,7 @@ public final class WorldExplorerInputTest {
     private static void smoothReleaseCoastsThenFramesTheRestingStep() {
         var host = new Host();
         var input = new WorldExplorerInput(host);
-        input.motion(false, true);
+        input.motion(WorldExplorerInput.Mode.FREE, true);
         input.holdCadence();
         input.keyPressed(KeyCode.W);
         long t = 1_000_000_000L;
@@ -1074,7 +1186,7 @@ public final class WorldExplorerInputTest {
         for (int mode = 0; mode < 3; mode++) {
             var host = new Host();
             var input = new WorldExplorerInput(host);
-            input.motion(mode == 2, mode == 1);
+            input.motion(mode == 2 ? WorldExplorerInput.Mode.WALK : WorldExplorerInput.Mode.FREE, mode == 1);
             String label = new String[] {"flight", "smooth flight", "walk"}[mode];
             input.pulse(t[0] += 16_000_000L);
             require(host.rests == 0, label + ": a camera that never moved is not a stop");
@@ -1104,28 +1216,26 @@ public final class WorldExplorerInputTest {
     }
 
     /**
-     * Walking dollies along the heading only (pitch ignored) by one notch of walk speed times
-     * the dolly time: 1.75 yd, above the 0.5 yd walking floor. With no ground the altitude is
-     * held.
+     * With a body the wheel zooms the follow camera (toward the view zooms in) by whole notches
+     * of {@link WorldExplorerInput#ZOOM_YARDS}, down to first person; it never moves the camera
+     * itself.
      */
-    private static void walkWheelMovesAlongTheHeadingOnly() {
+    private static void bodyWheelZoomsTheFollowCamera() {
         var host = new Host();
         var input = new WorldExplorerInput(host);
-        input.motion(true, false);
-        host.camera = new TerrainRenderer.Camera(100, 200, 50, .7, -.8);
+        input.motion(WorldExplorerInput.Mode.WALK, false);
+        double start = input.body().camera().distance();
         input.scroll(40, false, false);
-        double dx = host.camera.x() - 100, dy = host.camera.y() - 200;
-        double notch = Math.max(.5, ExplorerMotion.WALK_SPEED * WorldExplorerInput.DOLLY_SECONDS);
-        require(Math.abs(Math.hypot(dx, dy) - notch) < 1e-9 && host.camera.z() == 50,
-                "Walk notch is " + notch + " yd along the heading: " + host.camera);
-        require(Math.abs(Math.atan2(dy, dx) - .7) < 1e-9, "Along the heading");
-        require(host.calls.getFirst().equals("ground:UNAVAILABLE"), "Walk wheel reports the ground");
-        // A fractional notch scales the step; a tiny one would still respect the 0.5 yd floor
-        // only through the clamp on the speed term, never below a whole-notch fraction.
-        host.camera = START;
-        input.scroll(4, false, false);
-        require(Math.abs(Math.hypot(host.camera.x() - START.x(), host.camera.y() - START.y())
-                - .1 * notch) < 1e-9, "A tenth of a notch moves a tenth");
+        require(host.camera.equals(START), "The wheel does not move the camera itself");
+        require(Math.abs(input.body().camera().distance() - (start - WorldExplorerInput.ZOOM_YARDS)) < 1e-9,
+                "One notch in: " + input.body().camera().distance());
+        input.scroll(-80, false, false);
+        require(Math.abs(input.body().camera().distance() - (start + WorldExplorerInput.ZOOM_YARDS)) < 1e-9,
+                "Two notches out");
+        for (int i = 0; i < 40; i++) input.scroll(120, false, false);
+        require(input.body().camera().firstPerson(), "All the way in is first person");
+        for (int i = 0; i < 40; i++) input.scroll(-120, false, false);
+        require(input.body().camera().distance() == FollowCamera.MAX_DISTANCE, "And out to the farthest");
     }
 
     private static boolean near(double a, double b) {

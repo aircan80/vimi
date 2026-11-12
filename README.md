@@ -110,12 +110,14 @@ Click the view to give it the keyboard.
 | Key | Action |
 | --- | --- |
 | `W` `A` `S` `D` | Move |
-| `Space` or `E` | Go up |
+| `Space` or `E` | Go up (walking: jump) |
 | `Q` or `X` | Go down |
 | Mouse drag or arrow keys | Look around |
 | `Shift` | Move faster |
 | Mouse wheel | Move along the view direction (`Shift` + wheel changes speed) |
-| `F` | Walk on the ground instead of flying |
+| `F` | Walk with collision (press again for the free camera) |
+| `G` | Switch between walking and flying with collision |
+| `C` | First or third person while walking or flying (the wheel zooms too) |
 | `M` | Map panel |
 | `F11` or `Alt` + `Enter` | Full screen |
 | `H` (or `Alt` + `Z`, which always works) | Hide the HUD |

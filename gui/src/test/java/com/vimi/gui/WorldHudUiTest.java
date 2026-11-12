@@ -68,7 +68,7 @@ public final class WorldHudUiTest {
         stage.show();
         try {
             var row = icons.node();
-            // Mode: wings for flight, boots for walking, amber when walking has no terrain.
+            // Mode: wings for flight, boots for walking, amber while walking waits for collision.
             var mode = button(row, "mode");
             icons.mode(WorldStatusIcons.Mode.FLY, "Free flight · no collision");
             require(icons.mode() == WorldStatusIcons.Mode.FLY && !amber(mode)
@@ -76,11 +76,11 @@ public final class WorldHudUiTest {
                             && mode.getTooltip().getText().endsWith("to walk"),
                     "Fly: " + mode.getTooltip().getText());
             var wings = glyph(mode);
-            icons.mode(WorldStatusIcons.Mode.WALK, "Walking · eye 2 yd above rendered terrain · no collision");
+            icons.mode(WorldStatusIcons.Mode.WALK, "Walking · collides with terrain (not yet buildings or objects)");
             require(!amber(mode) && !glyph(mode).equals(wings) && mode.getTooltip().getText().endsWith("to fly"),
                     "Walk: boots, white");
-            icons.mode(WorldStatusIcons.Mode.WALK_NO_TERRAIN, "Walking · no rendered terrain here; altitude held");
-            require(amber(mode) && mode.getTooltip().getText().contains("altitude held"), "Walk with no terrain: amber");
+            icons.mode(WorldStatusIcons.Mode.WALK_NO_TERRAIN, "Walking · waiting for terrain collision here");
+            require(amber(mode) && mode.getTooltip().getText().contains("waiting"), "Walk with no collision yet: amber");
             // Speed chip: the live number, brighter while sprinting.
             var speed = button(row, "speed");
             icons.speed(20, false, "Fly · 20 yd/s preset");
