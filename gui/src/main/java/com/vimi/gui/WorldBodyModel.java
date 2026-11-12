@@ -28,6 +28,11 @@ final class WorldBodyModel {
     /** The flying body's creature display: a gryphon (model 792), the taxi gryphon. */
     static final long GRYPHON = 1149;
 
+    /** The body of a movement mode: the gryphon flies, the murloc walks (and waits in free camera). */
+    static long display(WorldExplorerInput.Mode mode) {
+        return mode == WorldExplorerInput.Mode.FLY ? GRYPHON : MURLOC;
+    }
+
     /**
      * The packed file, the capsule from the recorded box and scale (null when the tables do not
      * say), and each sequence's loop length and move speed by AnimationData ID.

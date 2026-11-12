@@ -38,9 +38,33 @@ import javafx.scene.input.MouseButton;
 final class WorldExplorerInput {
     /** Free camera, or a body walking or flying with collision. */
     enum Mode {
-        FREE,
-        WALK,
-        FLY
+        FREE("free camera"),
+        WALK("walk"),
+        FLY("fly");
+
+        /** How the status line and help name the mode. */
+        final String label;
+
+        Mode(String label) {
+            this.label = label;
+        }
+
+        /**
+         * The mode the mode key moves to: free camera, then walk, then fly, then free camera
+         * again, one press each.
+         */
+        Mode next() {
+            return switch (this) {
+                case FREE -> WALK;
+                case WALK -> FLY;
+                case FLY -> FREE;
+            };
+        }
+
+        /** The status line's hint: the key that moves on, and the mode it moves to. */
+        String nextHint(String modeKey) {
+            return " · " + modeKey + ": " + next().label;
+        }
     }
 
     /** View hooks; every method is called on the FX thread from an input event or pulse. */
@@ -59,6 +83,7 @@ final class WorldExplorerInput {
 
         void groundStatus(ExplorerMotion.Ground ground);
 
+        /** The mode key: the next mode of free camera, walk, fly ({@link Mode#next}). */
         void toggleWalk();
 
         /** The walk/fly key: switch the body between walking and flying. */
@@ -553,7 +578,8 @@ final class WorldExplorerInput {
             pendingX = pendingY = 0;
             return;
         }
-        double dt = lastTick == 0 ? 0 : Math.min(.1, (now - lastTick) / 1e9);
+        // A pulse timed before the last one (two clocks disagreeing) integrates nothing.
+        double dt = lastTick == 0 ? 0 : Math.clamp((now - lastTick) / 1e9, 0, .1);
         lastTick = now;
         if (mode != Mode.FREE) {
             bodyPulse(now, camera, dt);

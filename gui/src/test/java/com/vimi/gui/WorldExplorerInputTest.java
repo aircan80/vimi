@@ -23,6 +23,9 @@ public final class WorldExplorerInputTest {
         aDrawnBodyPlaysItsSequencesAndKeepsFramingWhileItStands();
         keysMapToClampedAxes();
         walkToggleIgnoresKeyRepeat();
+        theModeKeyCyclesFreeWalkFlyAndSwapsTheBody();
+        aPulseTimedBeforeTheLastOneDoesNotStepBackwards();
+        storedBindingsKeepTheModeKey();
         commandKeysFireOncePerPressAndNeverMove();
         devOverlayKeyCommandsOncePerPress();
         hudKeysDefaultWithoutClashes();
@@ -254,6 +257,68 @@ public final class WorldExplorerInputTest {
         input.keyReleased(KeyCode.F);
         input.keyPressed(KeyCode.F);
         require(host.toggles == 2, "A second press toggles again");
+    }
+
+    /**
+     * The mode key moves free camera to walk to fly and back to free camera, one press each; the
+     * body follows the mode (the murloc walks, the gryphon flies) and the status line names the key
+     * and the next mode.
+     */
+    private static void theModeKeyCyclesFreeWalkFlyAndSwapsTheBody() {
+        var mode = WorldExplorerInput.Mode.FREE;
+        var seen = new java.util.ArrayList<WorldExplorerInput.Mode>();
+        var bodies = new java.util.ArrayList<Long>();
+        for (int press = 0; press < 4; press++) {
+            mode = mode.next();
+            seen.add(mode);
+            bodies.add(WorldBodyModel.display(mode));
+        }
+        require(seen.equals(List.of(WorldExplorerInput.Mode.WALK, WorldExplorerInput.Mode.FLY,
+                        WorldExplorerInput.Mode.FREE, WorldExplorerInput.Mode.WALK)),
+                "Free camera, then walk, then fly, then free camera: " + seen);
+        require(bodies.equals(List.of(WorldBodyModel.MURLOC, WorldBodyModel.GRYPHON,
+                        WorldBodyModel.MURLOC, WorldBodyModel.MURLOC)),
+                "Walking draws the murloc, flying the gryphon: " + bodies);
+        require(WorldExplorerInput.Mode.FREE.nextHint("F").equals(" · F: walk")
+                        && WorldExplorerInput.Mode.WALK.nextHint("F").equals(" · F: fly")
+                        && WorldExplorerInput.Mode.FLY.nextHint("F").equals(" · F: free camera"),
+                "The status line names the key and the next mode");
+        // Each physical press of the mode key asks the view for the next mode once.
+        var host = new Host();
+        var input = exact(host);
+        for (int press = 1; press <= 3; press++) {
+            input.keyPressed(KeyCode.F);
+            input.keyReleased(KeyCode.F);
+            require(host.toggles == press, "Press " + press + " asks for the next mode once");
+        }
+    }
+
+    /** A pulse whose time is before the last one's (two clocks) moves nothing and never throws. */
+    private static void aPulseTimedBeforeTheLastOneDoesNotStepBackwards() {
+        var host = new Host();
+        var input = exact(host);
+        input.motion(WorldExplorerInput.Mode.WALK, false);
+        input.pulse(5_000_000_000L);
+        input.pulse(6_000_000_000L);
+        input.pulse(1_000_000_000L);
+        input.pulse(1_100_000_000L);
+    }
+
+    /**
+     * Stored bindings name the mode key's action as before (WALK), so a saved value keeps its key
+     * and nothing needs migrating; the walk/fly key keeps G.
+     */
+    private static void storedBindingsKeepTheModeKey() {
+        var stored = WorldControls.decode("v1;keys=F:WALK,G:FLY,W:FORWARD");
+        require(stored.keys().get(KeyCode.F) == WorldControls.Action.WALK
+                        && stored.keys().get(KeyCode.G) == WorldControls.Action.FLY,
+                "A saved value keeps F as the mode key and G as walk/fly: " + stored.keys());
+        var moved = WorldControls.decode("v1;keys=M:WALK");
+        require(moved.keys().get(KeyCode.M) == WorldControls.Action.WALK
+                        && moved.help().contains("M next mode"),
+                "A rebound mode key stays rebound: " + moved.help());
+        require(WorldControls.DEFAULTS.encode().contains("F:WALK"),
+                "The stored name of the mode key's action is unchanged: " + WorldControls.DEFAULTS.encode());
     }
 
     private static void devOverlayKeyCommandsOncePerPress() {
@@ -921,12 +986,14 @@ public final class WorldExplorerInputTest {
     private static void helpFollowsTheBindings() {
         var help = WorldControls.DEFAULTS.help();
         require(help.startsWith("W A S D move") && help.contains("Shift+wheel changes speed")
-                && help.contains("F walks"), "Default help: " + help);
+                && help.contains("F next mode (free camera, walk, fly)") && help.contains("G walk or fly"),
+                "Default help: " + help);
         var azerty = WorldControls.DEFAULTS.withKeys(WorldControls.Layout.AZERTY.keys()).help();
         require(azerty.startsWith("Z Q S D move") && azerty.contains("A/X down"), "AZERTY help: " + azerty);
         var control = WorldControls.DEFAULTS.unbind(WorldControls.Action.SPRINT)
                 .bind(KeyCode.CONTROL, WorldControls.Action.SPRINT).unbind(WorldControls.Action.WALK).help();
-        require(control.contains("Ctrl+wheel changes speed") && control.contains("unbound walks"), "Rebound help: " + control);
+        require(control.contains("Ctrl+wheel changes speed") && control.contains("unbound next mode"),
+                "Rebound help: " + control);
     }
 
     private static void bindingsAndSpeedEncodeDecodeLeniently() {

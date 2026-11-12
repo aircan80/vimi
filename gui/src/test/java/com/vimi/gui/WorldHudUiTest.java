@@ -70,14 +70,15 @@ public final class WorldHudUiTest {
             var row = icons.node();
             // Mode: wings for flight, boots for walking, amber while walking waits for collision.
             var mode = button(row, "mode");
-            icons.mode(WorldStatusIcons.Mode.FLY, "Free flight · no collision");
+            icons.mode(WorldStatusIcons.Mode.FLY, "Free camera · no collision · F: walk");
             require(icons.mode() == WorldStatusIcons.Mode.FLY && !amber(mode)
-                            && mode.getTooltip().getText().startsWith("Free flight · no collision")
-                            && mode.getTooltip().getText().endsWith("to walk"),
+                            && mode.getTooltip().getText().startsWith("Free camera · no collision · F: walk")
+                            && mode.getTooltip().getText().endsWith("next mode: free camera, walk, fly"),
                     "Fly: " + mode.getTooltip().getText());
             var wings = glyph(mode);
             icons.mode(WorldStatusIcons.Mode.WALK, "Walking · collides with terrain, buildings and objects");
-            require(!amber(mode) && !glyph(mode).equals(wings) && mode.getTooltip().getText().endsWith("to fly"),
+            require(!amber(mode) && !glyph(mode).equals(wings)
+                            && mode.getTooltip().getText().endsWith("next mode: free camera, walk, fly"),
                     "Walk: boots, white");
             icons.mode(WorldStatusIcons.Mode.WALK_NO_TERRAIN, "Walking · waiting for terrain collision here");
             require(amber(mode) && mode.getTooltip().getText().contains("waiting"), "Walk with no collision yet: amber");

@@ -1,16 +1,25 @@
 # World walk and fly movement checkpoint
 
 Issue #179 and the walk/fly body work. The World explorer has three motion
-modes:
+modes. The mode key (F by default, rebindable) moves to the next one on each
+press: free camera, walk, fly, then free camera again. G (rebindable) switches
+directly between walking and flying. The status line names the current mode
+and the key that moves on (for example "Walking · ... · F: fly"), the mode
+icon's tooltip says the same, and the game menu's Movement section lists both
+keys beside the Walk and Fly checkboxes.
 
 - **Free camera** (default) keeps the established controls: WASD, Space/E up,
   Q/X down, arrows/drag to look, Shift ×2, wheel dolly along the view
   direction, speed presets 1 to 5. No collision.
-- **Walk with collision** (checkbox or F; F again returns to the free camera)
+- **Walk with collision** (checkbox, the first press of F, or G from flying)
   moves a body through the terrain with an upright capsule. The camera follows
   it.
-- **Fly with collision** (checkbox or G; G again walks) moves the same body
-  without gravity.
+- **Fly with collision** (checkbox, F from walking, or G from walking or the
+  free camera) moves the same body without gravity. F from flying returns to
+  the free camera.
+
+Stored key bindings keep their keys: the mode key's action keeps its stored
+name, so a saved binding for it (F or a rebound key) now cycles the modes.
 
 The body is drawn as a murloc (creature display 441) that stands, walks and
 runs with its movement, and is hidden in first person. It collides with the
@@ -146,7 +155,8 @@ not all.
 Flying down onto ground stops there; flying never lands by itself (as since
 #704). A flying body that is still on walkable ground rests there: the status
 line says "resting on the ground (the walk/fly key lands)", the gryphon plays
-Stand, and it stays in fly mode until the walk/fly key switches to walking.
+Stand, and it stays in fly mode until the walk/fly key (G) switches to walking
+or the mode key (F) to the free camera.
 
 The flying body is a gryphon (creature display 1149, model 792, the taxi
 gryphon); see "Drawn body" below. Its capsule is large (radius 2.30, height
