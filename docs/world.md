@@ -166,8 +166,8 @@ Water and live creatures are not picked, and no identity is inferred.
 
 In GPU streaming mode the same ray is also tested against the BASIC exterior
 objects the hot child draws: buildings, MDDF doodads, WMO set doodads and the
-opt-in creature models (`-Dvimi.world.creatures=true`; picking tests their baked
-pose, not the idle a near one plays, #384). The nearer of the terrain hit and the
+creature models (on by default, `-Dvimi.world.creatures=false` turns them off; picking
+tests their baked pose, not the idle a near one plays, #384). The nearer of the terrain hit and the
 object hit wins, as under the depth test.
 
 - **Exact geometry.** When a tile's late objects attach, the GUI compiles

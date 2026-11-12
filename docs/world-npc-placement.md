@@ -203,10 +203,10 @@ with the model cache raised to 256 MiB for the animations' 0.4 MB a model (at mo
 0.8 MB). Of 362 drawn spawns, 248 carry their idle (all non-humanoid creatures with a
 Stand, and humanoids whose surfaces are opaque or alpha-keyed).
 
-Creatures are **opt-in** until they are measured on real data: start the GUI with
-`-Dvimi.world.creatures=true` (exteriors must also be on). While they are on, a tile's
-buildings are delivered only after its creature work ends: the first spawn index load, choice
-lookups and up to 48 preview loads.
+Creatures are **on by default** since #175 measured them on real data (they need exteriors
+on); start the GUI with `-Dvimi.world.creatures=false` to turn them off. A tile's buildings
+are delivered first, without creatures, and its creatures follow in a later pass that replaces
+the drawn set (#734), so buildings never wait for creature work.
 
 ## Limitations
 

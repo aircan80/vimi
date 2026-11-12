@@ -1502,11 +1502,27 @@ public final class WorldTileCreaturesTest {
         var summary = broken.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
         require(summary.drawn() == 0 && summary.note().contains("spawn source failed"),
                 "A failed spawn source is a note, never a tile failure");
+        // A source without spawns says why, in its own words; the World learns it without waiting.
+        String[] revision = {"r1"};
         var none = new WorldTileCreatures(t -> WorldSpawns.unavailable(
-                com.vibeminer.concepts.locations.LocationTypes.State.UNKNOWN, "Polestar disabled"),
+                com.vibeminer.concepts.locations.LocationTypes.State.UNSUPPORTED,
+                "Polestar is disabled; no other source records world-yard spawn points."),
+                () -> revision[0], (npc, t) -> qualified(7, null), (display, t) -> null);
+        require(none.unavailable() == null, "Not known before the index is loaded");
+        var unexplained = none.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(unexplained.note().equals("Polestar is disabled; no other source records world-yard spawn points."),
+                "The index's own reason is disclosed: " + unexplained.note());
+        require(WorldStreamSourceController.creatureDetail(unexplained, 0)
+                        .equals("; creatures: Polestar is disabled; no other source records world-yard spawn points."),
+                "The status shows it");
+        require(unexplained.note().equals(none.unavailable()), "Known once loaded: " + none.unavailable());
+        revision[0] = "r2";
+        require(none.unavailable() == null, "A new revision may have spawns: no longer known");
+        var reasonless = new WorldTileCreatures(t -> WorldSpawns.unavailable(
+                com.vibeminer.concepts.locations.LocationTypes.State.UNKNOWN, ""),
                 () -> "r1", (npc, t) -> qualified(7, null), (display, t) -> null);
-        require(none.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE).note()
-                .equals("no prepared spawn source"), "No source is disclosed");
+        require(reasonless.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE).note()
+                .equals("no prepared spawn source"), "Without a reason of its own, the generic note");
     }
 
     private static void statusDisclosure() {

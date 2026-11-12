@@ -87,6 +87,7 @@ public final class WorldStreamSourceControllerTest {
         budgetRefusedObjectsRetryAfterAReleaseOnly();
         creaturesShareTheirBytesAndYieldToBuildings();
         buildingsComeFirstAndCreaturesReplaceThemLater();
+        aSpawnSourceWithoutSpawnsSchedulesNoCreaturePasses();
         aSessionThatDrawsCreaturesWarmsItsPreparerOffItsThread();
         creaturePassesReuseTheBuildingsTheirBuildingsPassKept();
         keptBuildingsSurviveAPreemptionAndCloseOnceOnRetirement();
@@ -1476,6 +1477,60 @@ public final class WorldStreamSourceControllerTest {
             Thread.sleep(2);
         check(preparer.sets.get() == 1 && preparer.closes.get(1).get() == 1,
                 "The held pass's kept set was closed once: " + preparer.closes);
+    }
+
+    /**
+     * While the spawn source holds no spawns, no creature pass is scheduled (none would draw
+     * anything) and the tiles say why; once a new revision has spawns, their creature passes come.
+     */
+    private static void aSpawnSourceWithoutSpawnsSchedulesNoCreaturePasses() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 2);
+        fixture.exteriors = true;
+        var unavailable = new java.util.concurrent.atomic.AtomicReference<String>("No reviewed world-yard spawn source applies to this build.");
+        var creaturePasses = new java.util.concurrent.atomic.AtomicInteger();
+        var preparer = new WorldStreamSourceBridge.ExteriorPreparer() {
+            @Override
+            public WorldStreamSourceBridge.ExteriorCopy prepare(
+                    com.vibeminer.concepts.world.WorldTerrainStreaming source,
+                    com.vibeminer.concepts.world.WorldTerrainStreaming.Scope scope,
+                    com.vibeminer.formats.world.WorldFormats.Tile tile,
+                    com.vibeminer.access.Cancellation cancellation, int formats, long creatureBytes) {
+                if (creatureBytes == BUILDINGS_ONLY)
+                    return new WorldStreamSourceBridge.ExteriorCopy(building(), 1, false, "authored");
+                creaturePasses.incrementAndGet();
+                return new WorldStreamSourceBridge.ExteriorCopy(building(), 1, false, "authored",
+                        WorldTileCreatures.Summary.drawn(1, 1, 1 << 20));
+            }
+
+            @Override
+            public boolean appendsCreatures() {
+                return true;
+            }
+
+            @Override
+            public String creaturesUnavailable() {
+                return unavailable.get();
+            }
+        };
+        try {
+            fixture.start(fixture.gpu::start, () -> {}, preparer);
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 2));
+            fixture.untilPresented(() -> fixture.objectLines().size() == 2
+                    && fixture.controller.snapshot().detail().contains("creatures: No reviewed world-yard spawn source"));
+            for (int i = 0; i < 50; i++) { fixture.pump(); Thread.sleep(2); }
+            check(creaturePasses.get() == 0 && fixture.objectLines().size() == 2,
+                    "No creature pass without spawns: " + creaturePasses + " " + fixture.objectLines());
+            // A new revision of the source has spawns: the waiting tiles get their creatures.
+            unavailable.set(null);
+            fixture.camera(2);
+            fixture.untilPresented(() -> creaturePasses.get() == 2 && !fixture.controller.loadingObjects()
+                    && fixture.objectLines().stream().filter(line -> line.contains("REPLACE ATTACHED")).count() == 2);
+        } finally {
+            fixture.close();
+
+        }
     }
 
     /**
