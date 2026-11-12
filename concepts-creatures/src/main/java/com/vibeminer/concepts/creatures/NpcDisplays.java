@@ -47,34 +47,59 @@ public final class NpcDisplays {
 
     /**
      * One outside source's displays for the NPC, with the provenance shown beside them (for EG
-     * Link: the dataset, license, product, build and collection date).
+     * Link: the dataset, license, product, build and collection date). {@code problem} is set when
+     * the source records the NPC but its displays could not be read (a malformed record); such a
+     * source lists no candidate and is stated as malformed, never as recording no display.
      */
-    public record External(String provenance, List<Candidate> candidates) {
+    public record External(String provenance, List<Candidate> candidates, String problem) {
         public External {
             Objects.requireNonNull(provenance);
             candidates = List.copyOf(candidates);
+            if (problem != null && !candidates.isEmpty()) {
+                throw new IllegalArgumentException("A malformed record lists no display");
+            }
+        }
+
+        public External(String provenance, List<Candidate> candidates) {
+            this(provenance, candidates, null);
+        }
+
+        public boolean malformed() {
+            return problem != null;
         }
     }
 
     /**
      * The resolution: where the candidates came from, all of them (one per display ID, in shown
-     * order), the one shown (null when none), the provenance and a readable detail.
+     * order), the one shown (null when none), the provenance and a readable detail. {@code
+     * malformed} counts the outside sources tried whose record for the NPC is malformed.
      */
     public record Resolution(
             Source source,
             List<Candidate> candidates,
             Candidate shown,
             String provenance,
-            String detail) {
+            String detail,
+            int malformed) {
         public Resolution {
             Objects.requireNonNull(source);
             candidates = List.copyOf(candidates);
             Objects.requireNonNull(provenance);
             Objects.requireNonNull(detail);
             if ((source == Source.NONE) != (shown == null)
-                    || shown != null && !candidates.contains(shown)) {
+                    || shown != null && !candidates.contains(shown)
+                    || malformed < 0) {
                 throw new IllegalArgumentException("Inconsistent display resolution");
             }
+        }
+
+        public Resolution(
+                Source source,
+                List<Candidate> candidates,
+                Candidate shown,
+                String provenance,
+                String detail) {
+            this(source, candidates, shown, provenance, detail, 0);
         }
     }
 
@@ -132,7 +157,8 @@ public final class NpcDisplays {
                                     + " CreatureDisplayInfo"
                             : "The client Creature record declares no display";
         }
-        int passed = 0;
+        int passed = 0, malformed = 0;
+        String problem = null;
         for (var external : externals == null ? List.<External>of() : externals) {
             var listed = new LinkedHashMap<Long, Candidate>();
             for (var candidate : external.candidates()) {
@@ -141,35 +167,73 @@ public final class NpcDisplays {
                 }
             }
             if (!listed.isEmpty()) {
-                return chosen(
-                        Source.EXTERNAL,
-                        listed.values(),
-                        external.provenance(),
-                        clientDetail
-                                + "; observed displays"
-                                + (passed == 0
-                                        ? ""
-                                        : passed == 1
-                                                ? " (one newer source had none in this build)"
-                                                : " ("
-                                                        + passed
-                                                        + " newer sources had none in this"
-                                                        + " build)"));
+                var resolution =
+                        chosen(
+                                Source.EXTERNAL,
+                                listed.values(),
+                                external.provenance(),
+                                clientDetail
+                                        + "; observed displays"
+                                        + (passed == 0
+                                                ? ""
+                                                : passed == 1
+                                                        ? " (one newer source had none in this"
+                                                                + " build)"
+                                                        : " ("
+                                                                + passed
+                                                                + " newer sources had none in this"
+                                                                + " build)")
+                                        + malformed(malformed, problem));
+                return new Resolution(
+                        resolution.source(),
+                        resolution.candidates(),
+                        resolution.shown(),
+                        resolution.provenance(),
+                        resolution.detail(),
+                        malformed);
             }
             passed++;
+            if (external.malformed()) {
+                malformed++;
+                if (problem == null) {
+                    problem = external.provenance() + ": " + external.problem();
+                }
+            }
         }
+        int sources = externals == null ? 0 : externals.size();
         return new Resolution(
                 Source.NONE,
                 List.of(),
                 null,
                 clientProvenance,
                 clientDetail
-                        + (externals == null || externals.isEmpty()
+                        + (sources == 0
                                 ? "; no outside display source applies"
-                                : externals.size() == 1
-                                        ? "; the outside source records no display for this NPC"
-                                        : "; no outside source records a display for this NPC"
-                                                + " in this build"));
+                                : malformed == sources
+                                        ? "; the outside "
+                                                + (malformed == 1 ? "source's record" : "records")
+                                                + " for this NPC "
+                                                + (malformed == 1 ? "is" : "are")
+                                                + " malformed"
+                                        : sources == 1
+                                                ? "; the outside source records no display for"
+                                                        + " this NPC"
+                                                : "; no outside source records a display for this"
+                                                        + " NPC in this build")
+                        + malformed(malformed == sources ? 0 : malformed, null)
+                        + (problem == null ? "" : " (" + problem + ")"),
+                malformed);
+    }
+
+    /** The detail's note of malformed records passed over, or nothing. */
+    private static String malformed(int count, String problem) {
+        if (count == 0) {
+            return "";
+        }
+        return (count == 1
+                        ? "; one outside record for this NPC is malformed"
+                        : "; " + count + " outside records for this NPC are malformed")
+                + (problem == null ? "" : " (" + problem + ")");
     }
 
     /** Null when the client record can supply displays, else why not. */

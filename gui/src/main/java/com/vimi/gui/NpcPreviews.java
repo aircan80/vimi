@@ -286,6 +286,12 @@ final class NpcPreviews {
      */
     static java.util.function.LongPredicate absentDisplays(
             BuildCreatures handle, Cancellation token) {
+        return absentDisplays(handle, TableTypes.Priority.INTERACTIVE, token);
+    }
+
+    /** As above, reading at {@code priority} (the World reads in the background). */
+    static java.util.function.LongPredicate absentDisplays(
+            BuildCreatures handle, TableTypes.Priority priority, Cancellation token) {
         var known = new java.util.HashMap<Long, Boolean>();
         return displayId -> {
             if (handle == null) return false;
@@ -295,9 +301,7 @@ final class NpcPreviews {
                     id -> {
                         try {
                             var state =
-                                    handle.displayChain(id, TableTypes.Priority.INTERACTIVE, token)
-                                            .join()
-                                            .state();
+                                    handle.displayChain(id, priority, token).join().state();
                             return state
                                             == com.vibeminer.concepts.creatures.CreatureTypes
                                                     .CreatureDisplayChainState.DISPLAY_ABSENT
@@ -400,15 +404,7 @@ final class NpcPreviews {
                 // Chosen once: each source's provenance and displays come from the same snapshot.
                 for (var snapshot : snapshots.get()) {
                     token.check();
-                    String provenance =
-                            "EG Link creature_details ("
-                                    + com.vibeminer.eglink.EgLinkTypes.LICENSE
-                                    + "), "
-                                    + snapshot.build().product()
-                                    + " build "
-                                    + snapshot.build().version()
-                                    + ", commit "
-                                    + snapshot.build().revision().substring(0, 12);
+                    String provenance = provenance(snapshot);
                     Optional<com.vibeminer.eglink.EgLinkTypes.CreatureDisplays> recorded;
                     try {
                         recorded = lookup.displays(snapshot, npcId, network);
@@ -426,23 +422,112 @@ final class NpcPreviews {
                                         List.of()));
                         continue;
                     }
-                    result.add(
-                            new NpcDisplays.External(
-                                    recorded.map(d -> provenance + ", collected " + d.collectedOn())
-                                            .orElse(provenance),
-                                    recorded.map(NpcPreviews::candidates).orElse(List.of())));
+                    result.add(external(provenance, recorded));
+                }
+            }
+            result.addAll(bundledExternals(bundled.get(), npcId, build));
+            return List.copyOf(result);
+        };
+    }
+
+    /** A downloaded snapshot's provenance: EG Link, its license, product, build and commit. */
+    private static String provenance(com.vibeminer.eglink.EgLinkTypes.Snapshot snapshot) {
+        return "EG Link creature_details ("
+                + com.vibeminer.eglink.EgLinkTypes.LICENSE
+                + "), "
+                + snapshot.build().product()
+                + " build "
+                + snapshot.build().version()
+                + ", commit "
+                + snapshot.build().revision().substring(0, 12);
+    }
+
+    /**
+     * One snapshot's answer for one NPC as a source: its displays, none when it does not record
+     * the NPC, or a malformed record stated as such.
+     */
+    static NpcDisplays.External external(
+            String provenance,
+            Optional<com.vibeminer.eglink.EgLinkTypes.CreatureDisplays> recorded) {
+        if (recorded.isEmpty()) return new NpcDisplays.External(provenance, List.of());
+        var displays = recorded.get();
+        String collected = provenance + ", collected " + displays.collectedOn();
+        return displays.malformed()
+                ? new NpcDisplays.External(collected, List.of(), displays.problem())
+                : new NpcDisplays.External(collected, candidates(displays));
+    }
+
+    /** The bundled history's sources for one NPC, in {@link #bundledOrder}. */
+    private static List<NpcDisplays.External> bundledExternals(
+            com.vibeminer.eglink.BundledNpcHistory history, long npcId, BuildInfo build) {
+        if (history == null || build == null || !history.product().equals(build.product())) {
+            return List.of();
+        }
+        var out = new ArrayList<NpcDisplays.External>();
+        for (var entry : bundledOrder(history.entries(npcId), build.version())) {
+            out.add(
+                    new NpcDisplays.External(
+                            entry.provenance(),
+                            entry.displays().stream().map(NpcPreviews::candidate).toList()));
+        }
+        return out;
+    }
+
+    /** Several NPCs' lookup in one downloaded snapshot. */
+    @FunctionalInterface
+    interface BatchLookup {
+        java.util.Map<Long, Optional<com.vibeminer.eglink.EgLinkTypes.CreatureDisplays>> displays(
+                com.vibeminer.eglink.EgLinkTypes.Snapshot snapshot,
+                java.util.Collection<Long> npcIds,
+                com.vibeminer.network.Cancellation token)
+                throws Exception;
+    }
+
+    /**
+     * The World's EG Link lookups: the sources of {@link #egLink} in the same order, read for many
+     * NPCs at once ({@link DataSourcesService#npcDisplays(com.vibeminer.eglink.EgLinkTypes.Snapshot,
+     * String, java.util.Collection, com.vibeminer.network.Cancellation)}). A snapshot that cannot be
+     * read fails the call, so the World asks again later instead of remembering no display.
+     */
+    static WorldNpcDisplays.Observed egLinkBatch(
+            DataSourcesService sources, BuildInfo build, String locale) {
+        if (sources == null) return WorldNpcDisplays.Observed.NONE;
+        return egLinkBatch(
+                () -> sources.npcDisplaySnapshots(build, locale),
+                (snapshot, npcIds, token) -> sources.npcDisplays(snapshot, locale, npcIds, token),
+                com.vibeminer.eglink.BundledNpcHistory::bundled,
+                build);
+    }
+
+    @SuppressWarnings("try")
+    static WorldNpcDisplays.Observed egLinkBatch(
+            Supplier<List<com.vibeminer.eglink.EgLinkTypes.Snapshot>> snapshots,
+            BatchLookup lookup,
+            Supplier<com.vibeminer.eglink.BundledNpcHistory> bundled,
+            BuildInfo build) {
+        return (npcIds, token) -> {
+            var ids = new java.util.LinkedHashSet<>(npcIds);
+            var result = new java.util.LinkedHashMap<Long, List<NpcDisplays.External>>();
+            for (long id : ids) result.put(id, new ArrayList<>());
+            var network = new com.vibeminer.network.Cancellation();
+            try (var registration = token.onCancel(network::cancel)) {
+                for (var snapshot : snapshots.get()) {
+                    token.check();
+                    String provenance = provenance(snapshot);
+                    var found = lookup.displays(snapshot, List.copyOf(ids), network);
+                    token.check();
+                    for (long id : ids) {
+                        var recorded = found.get(id);
+                        result.get(id)
+                                .add(external(provenance, recorded == null ? Optional.empty() : recorded));
+                    }
                 }
             }
             var history = bundled.get();
-            if (history != null && build != null && history.product().equals(build.product())) {
-                for (var entry : bundledOrder(history.entries(npcId), build.version())) {
-                    result.add(
-                            new NpcDisplays.External(
-                                    entry.provenance(),
-                                    entry.displays().stream().map(NpcPreviews::candidate).toList()));
-                }
-            }
-            return List.copyOf(result);
+            for (long id : ids) result.get(id).addAll(bundledExternals(history, id, build));
+            var out = new java.util.LinkedHashMap<Long, List<NpcDisplays.External>>();
+            result.forEach((id, list) -> out.put(id, List.copyOf(list)));
+            return java.util.Collections.unmodifiableMap(out);
         };
     }
 

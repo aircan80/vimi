@@ -258,6 +258,8 @@ final class WorldObjectPicks {
                 .append(" · model FileDataID ");
         if (choice.modelFileDataId() == null) text.append("unknown");
         else text.append(choice.modelFileDataId()).append(' ').append(name(names, choice.modelFileDataId()));
+        // Where the display came from: the client record or an outside source, and how it was chosen.
+        text.append(" · display choice: ").append(choice.detail());
         var evidence = spawn.evidence();
         text.append(" · spawn ").append(evidence.dataset()).append(" record ").append(evidence.record())
                 .append(" · static rest pose facing north (facing is not recorded)");

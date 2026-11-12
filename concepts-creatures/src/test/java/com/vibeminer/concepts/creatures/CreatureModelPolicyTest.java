@@ -235,6 +235,35 @@ class CreatureModelPolicyTest {
         assertNull(CreatureModelPolicy.scale(null, 5));
     }
 
+    @Test
+    void anObservedDisplayIsQualifiedOnlyWhenItsChainReachesAModelFile() {
+        var drawn =
+                CreatureModelPolicy.observed(
+                        51,
+                        chain(51, CreatureDisplayChainState.METADATA_RESOLVED, 7L, 70L),
+                        3,
+                        "Display 51 of 3 (observed)");
+        assertEquals(CreatureModelPolicy.State.QUALIFIED, drawn.state());
+        assertEquals(CreatureModelPolicy.Reason.OBSERVED_DISPLAY, drawn.reason());
+        assertEquals(3, drawn.displays());
+        assertEquals(70L, drawn.modelFileDataId());
+        assertEquals(
+                "Display 51 of 3 (observed) → CreatureModelData 7 → FileDataID 70", drawn.detail());
+        var stops =
+                CreatureModelPolicy.observed(
+                        51,
+                        chain(51, CreatureDisplayChainState.MODEL_ABSENT, 7L, null),
+                        1,
+                        "Display 51 (observed)");
+        assertEquals(CreatureModelPolicy.State.UNRESOLVED, stops.state());
+        assertEquals(CreatureModelPolicy.Reason.MODEL_ABSENT, stops.reason());
+        var none = CreatureModelPolicy.observed(51, null, 1, "Display 51 (observed)");
+        assertEquals(CreatureModelPolicy.Reason.DISPLAY_UNREADABLE, none.reason());
+        // The display's own client-data scale, as for a declared display.
+        assertEquals(1.5, CreatureModelPolicy.scale(scaled(51, "1.5", "1")));
+        assertEquals(null, CreatureModelPolicy.scale((CreatureDisplayChain) null));
+    }
+
     private static CreatureDisplayChain scaled(int displayId, String display, String model) {
         return new CreatureDisplayChain(
                 new CreatureDisplaySlot(0, displayId, 1, CreatureSlotState.DECLARED),

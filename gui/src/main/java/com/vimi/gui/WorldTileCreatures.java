@@ -303,6 +303,14 @@ final class WorldTileCreatures implements AutoCloseable {
     @FunctionalInterface
     interface Chooser {
         Chosen choose(long npcId, Cancellation token) throws Exception;
+
+        /**
+         * A chooser for these NPCs (one tile's, not yet chosen) that may read what they share at
+         * once, such as their outside displays; this one by default.
+         */
+        default Chooser forNpcs(java.util.Collection<Long> npcIds, Cancellation token) throws Exception {
+            return this;
+        }
     }
 
     @FunctionalInterface
@@ -550,7 +558,10 @@ final class WorldTileCreatures implements AutoCloseable {
         };
     }
 
-    /** Production chooser: the data-only creature chain of the opened build. */
+    /**
+     * The client-only chooser: the data-only creature chain of the opened build. The World uses
+     * {@link WorldNpcDisplays}, which falls back to outside sources.
+     */
     static Chooser chooser(Supplier<BuildCreatures> creatures) {
         return (npcId, token) -> {
             var handle = creatures.get();
@@ -698,6 +709,7 @@ final class WorldTileCreatures implements AutoCloseable {
         int restPosed = 0, billboardsLeftOut = 0;
         // Builder model indices whose Stand pose left out billboard triangles.
         var billboardModels = new HashSet<Integer>();
+        var tileChooser = tileChooser(nearby.placed(), tile, token);
         for (var spawn : nearby.placed()) {
             token.check();
             if (WorldBookmarks.tileIndex(spawn.x()) != tile.x() || WorldBookmarks.tileIndex(spawn.y()) != tile.y()) continue;
@@ -708,7 +720,7 @@ final class WorldTileCreatures implements AutoCloseable {
             }
             Chosen chosen;
             try {
-                chosen = chosen(spawn.npcId(), token);
+                chosen = chosen(tileChooser, spawn.npcId(), token);
             } catch (CancellationException canceled) {
                 // Only this tile's cancellation propagates; a component's own is a failed lookup.
                 if (token.isCanceled()) throw canceled;
@@ -806,12 +818,39 @@ final class WorldTileCreatures implements AutoCloseable {
         return new double[] {spawn.x(), spawn.y(), spawn.z(), scale, -1, 0};
     }
 
-    private Chosen chosen(long npcId, Cancellation token) throws Exception {
+    /**
+     * The chooser for one tile: the NPCs of its spawns not chosen yet are handed to {@link
+     * Chooser#forNpcs} together. A failure there leaves each NPC to be chosen by itself.
+     */
+    private Chooser tileChooser(List<WorldSpawns.Spawn> spawns, WorldFormats.Tile tile, Cancellation token) {
+        var ids = new java.util.LinkedHashSet<Long>();
+        synchronized (this) {
+            for (var spawn : spawns) {
+                if (WorldBookmarks.tileIndex(spawn.x()) == tile.x() && WorldBookmarks.tileIndex(spawn.y()) == tile.y()
+                        && !choices.containsKey(spawn.npcId())) {
+                    ids.add(spawn.npcId());
+                }
+            }
+        }
+        if (ids.isEmpty()) return chooser;
+        try {
+            return Objects.requireNonNull(chooser.forNpcs(List.copyOf(ids), token));
+        } catch (CancellationException canceled) {
+            if (token.isCanceled()) throw canceled;
+            return chooser;
+        } catch (Exception failed) {
+            token.check();
+            WorldDiagnostics.degraded("creature lookups", "World creature display lookup failed", failed);
+            return chooser;
+        }
+    }
+
+    private Chosen chosen(Chooser tileChooser, long npcId, Cancellation token) throws Exception {
         synchronized (this) {
             var cached = choices.get(npcId);
             if (cached != null) return cached;
         }
-        var chosen = chooser.choose(npcId, token);
+        var chosen = tileChooser.choose(npcId, token);
         token.check();
         synchronized (this) {
             if (!closed) choices.put(npcId, chosen);

@@ -134,7 +134,8 @@ public final class WorldObjectPicksTest {
                 new WorldObjectPicks.Creature(guard, index.npc(1).orElseThrow(), choice, 1, key(100))))), eye, ray, 2200)
                 .orElseThrow(), 0, null, id -> id == 123456 ? "creature/authored/guard.m2" : null);
         require(c.startsWith("Creature model · Authored guard · NPC ID 1 · display ID 7 → CreatureModelData 20"
-                        + " · model FileDataID 123456 creature/authored/guard.m2 · spawn ")
+                        + " · model FileDataID 123456 creature/authored/guard.m2 · display choice: "
+                        + choice.detail() + " · spawn ")
                         && c.contains("facing is not recorded"),
                 "Creature record: " + c);
         String unnamed = WorldObjectPicks.describe(WorldObjectPicks.pick(List.of(wall(32, 100, List.of(
