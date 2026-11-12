@@ -350,4 +350,25 @@ final class M2ReadersTest {
         assertNull(M2Combiners.admit(1, 0x8024).profile());
         assertEquals("Combiners_Opaque_Alpha", M2Combiners.name(2, 0x8017).pixelShader());
     }
+
+    /**
+     * #104: a UV-transform lookup entry past the model's declared texture transforms names no
+     * transform; the skin reads and records it (shipped drakes on 70862 hold a 0 with no tracks).
+     */
+    @Test
+    void aTransformLookupEntryPastTheDeclaredTracksIsRecordedNotRefused() {
+        byte[] bytes = golden("model-274.m2");
+        var buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
+        // MD21 data begins at 40 in the golden; its transform lookup (header 0x98) has one entry.
+        int md = 40;
+        assertEquals(1, buffer.getInt(md + 0x98));
+        int entry = md + buffer.getInt(md + 0x9c);
+        assertEquals(0xffff, buffer.getShort(entry) & 0xffff);
+        buffer.putShort(entry, (short) 0);
+        var model = M2ModelReader.read(AssetSource.bytes(bytes)).join();
+        assertEquals(List.of(0), model.textureTransforms());
+        var skin = M2SkinReader.read(AssetSource.bytes(golden("skin-274.skin")), model).join();
+        var batch = skin.batches().getFirst();
+        assertEquals(0, model.textureTransforms().get(batch.textureTransformComboIndex()));
+    }
 }

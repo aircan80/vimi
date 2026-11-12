@@ -278,4 +278,36 @@ final class M2AppearanceTest {
         assertEquals(M2Appearance.Refusal.MATERIAL_UNSUPPORTED, result.decline().reason());
         assertFalse(result.decline().message().isBlank());
     }
+
+    /**
+     * #104: a UV-transform entry that is neither 65535 nor a declared track is declined, never
+     * drawn untransformed: the client's handling of it is not documented.
+     */
+    @Test
+    void aUvTransformEntryNamingNoDeclaredTrackIsDeclined() {
+        Parsed p = parsed("simple");
+        byte[] bytes = p.modelBytes.clone();
+        var buffer = java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        int md = 8;
+        assertEquals(1, buffer.getInt(md + 0x98));
+        int entry = md + buffer.getInt(md + 0x9c);
+        assertEquals(0xffff, buffer.getShort(entry) & 0xffff);
+        buffer.putShort(entry, (short) 0);
+        var model = M2ModelReader.read(AssetSource.bytes(bytes)).join();
+        var skin =
+                M2GeometrySkinReader.read(
+                                AssetSource.bytes(p.skinBytes), model, null, Cancellation.NONE)
+                        .join();
+        var plan =
+                M2Appearance.read(
+                                AssetSource.bytes(bytes),
+                                model,
+                                AssetSource.bytes(p.skinBytes),
+                                skin,
+                                Cancellation.NONE)
+                        .join();
+        assertEquals(M2Appearance.Refusal.TEXTURE_TRANSFORM, plan.decline().reason());
+        assertEquals("UV-transform entry names no declared track.", plan.decline().message());
+        assertTrue(plan.draws().isEmpty());
+    }
 }
