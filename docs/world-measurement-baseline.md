@@ -108,6 +108,12 @@ The report goes to stdout and to
 `gui/build/world-measurement/report.txt`. The task also writes
 `gui/build/world-measurement/gc.log` (`-Xlog:gc*`) and the helper's table.
 
+In stream mode, `-Pvimi.world.creatures=true` adds creatures as the World view does, and
+`-Pvimi.world.creatureAnimation=false` keeps them in their baked pose (#384). The fill line
+then also prints the creature status. `-Pprobe.camera=x,y,z,yaw,pitch` (native) replaces the
+tile-centre seed. `-Pprobe.stillSeconds=N` holds the camera still for N seconds after the
+fill and reports what the child redrew on its own (the creatures' idle).
+
 **Creatures mode** (#553, `-Pprobe.mode=creatures`) counts creature and humanoid NPC outcomes
 for a `probe.size` square (default 3) around each scenario centre, over `probe.passes` passes
 (default 2). Each tile goes through the production bridge, chooser, display previews and NPC

@@ -469,7 +469,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private WorldService.Catalog catalog;
     private WorldService.Inventory inventory;
     private WorldFormats.Tile selected, origin;
-    private TerrainRenderer.Camera camera;
+    // Volatile: creature preparation reads it off the FX thread to carry idles near it (#384).
+    private volatile TerrainRenderer.Camera camera;
     private TerrainRenderer.Scene terrainScene;
     private double originX, originY;
     private boolean explorer, loadingTile, catalogLoading;
@@ -4202,6 +4203,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
     void attachCreatures(WorldTileCreatures source) {
         if (creatures != null || closed) throw new IllegalStateException("Creature models already attached");
         creatures = java.util.Objects.requireNonNull(source);
+        // Only spawns near the camera carry their idle (#384).
+        source.camera(() -> {
+            var at = camera;
+            return at == null ? null : new double[] {at.x(), at.y()};
+        });
     }
 
     /**

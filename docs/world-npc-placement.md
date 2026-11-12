@@ -150,6 +150,59 @@ own daemon thread, and preempted object work waits for it without cancelling it.
 is reused for one minute within its revision, so a broken source does not cost one load per
 tile. Creatures are independent of the **NPC spawns** marker toggle.
 
+## Idle animation (#384)
+
+Creature models play their idle (Stand) loop near the camera. The model carries the
+display's World Stand sequence; a humanoid NPC carries its race's Stand fitted to its
+appearance, with attached items following their bones. Each one is serialized over
+just the rest vertices the model draws (a character's surface holds every geoset,
+some 43,000 vertices, of which its sections draw about a tenth). It travels in the
+tile's objects file, version 10, which adds an animation section after the portal
+tables: at most 64 models and 16 MiB per tile, 6 MiB per model. The baked copy stays
+as before (the Stand pose at 0 ms, or a humanoid's rest pose) and is what draws
+wherever a placement does not animate.
+
+The child skins on the CPU, as it does the walking body. Each animated model gets up
+to four poses, one per phase of its loop, each a dynamic vertex buffer re-skinned when
+the clock advances a 40 ms step. Every placement plays the phase a hash of its
+position chooses, so a crowd of one model does not move in lockstep, while skinning
+stays bounded by models times phases, not placements. Only placements within 100 yd
+of the camera animate, at most 384 a frame. Skinning is bounded at 100,000 vertices a
+frame (about 4 ms), and pose buffers at 24 MiB inside the object budget. A placement
+outside these bounds draws its baked pose; a pose over the skin budget is drawn one
+step late. Models with a blended or additive range stay static, because the sorted
+pass is not animated. Nothing is specific to a creature, model or map.
+
+While a frame drew anything animated, the child redraws an unchanged camera every
+80 ms, the walking body's idle cadence, so the idle keeps playing without input.
+A still scene without animation costs no frames. Streaming stops when the World view
+is not active, and so does the animation. The child reuses one parsed animation for
+the same model on several resident tiles. `-Dvimi.world.creatureAnimation=false`
+keeps every model in its baked pose. The status line adds, for example, `447 playing
+their idle near the camera`.
+
+Measured on build 70862 around Goldshire (Elwynn, 3 x 3, camera at -9530, 40), with
+`probe.camera`, probe stage timings and `-Pvimi.world.creatures=true`, animation on
+against off:
+
+| | on | off |
+|---|---|---|
+| placements drawn animated per frame (p50 / p95 / max) | 3 / 10 / 11 | 0 |
+| animatable placements beyond 100 yd per frame (p50) | 58 | |
+| child draw submit CPU, ms (p50 / p95) | 0.59 / 1.04 | 0.46 / 0.87 |
+| poses re-skinned per frame (p95), vertices (p95 / max) | 6, 3,285 / 5,676 | 0 |
+| re-skin cost | 41 ns a vertex | |
+| pose GPU bytes (max) | 457 KB | 0 |
+| frames with a still camera, 10 s | 125 (every 80 ms) | 0 |
+| objects files for the 9 tiles | 147.8 MB | 143.8 MB |
+| object set packing in the child, ms (mean) | 14.7 | 8.9 |
+
+Around Stormwind's centre, a cold creature pass over the 3 x 3 took 96 s instead of
+73 s, because humanoid NPCs now also evaluate their race idle. A warm pass took 30 s,
+with the model cache raised to 256 MiB for the animations' 0.4 MB a model (at most
+0.8 MB). Of 362 drawn spawns, 248 carry their idle (all non-humanoid creatures with a
+Stand, and humanoids whose surfaces are opaque or alpha-keyed).
+
 Creatures are **opt-in** until they are measured on real data: start the GUI with
 `-Dvimi.world.creatures=true` (exteriors must also be on). While they are on, a tile's
 buildings are delivered only after its creature work ends: the first spawn index load, choice
@@ -160,8 +213,10 @@ lookups and up to 48 preview loads.
 - Markers are drawn **over** the frame and are not depth-tested, so terrain does not hide
   them. Streaming frames can trail the camera by a frame, so markers may move ahead of the
   terrain slightly during fast motion.
-- Creature models are static rest poses: the idle (Stand) animation the models lane evaluates
-  in software is not played in the World yet, and facing is unknown. Lighting is the BASIC
+- Only the idle plays, and only near the camera; far placements stand in their baked pose,
+  and models with blended or additive surfaces do not animate. Facing is unknown. A
+  placement crossing the 100 yd radius switches between its baked pose and its phase of
+  the loop, which can be a small jump. Lighting is the BASIC
   object approximation, not client parity. Alpha-keyed parts (fur cards, leaves, hair) are left
   out, so some models show holes. Ambiguous creatures stay undrawn until a source records the
   per-spawn display, and character-model NPCs stay undrawn until their appearance is evaluated.
@@ -184,7 +239,9 @@ lookups and up to 48 preview loads.
 ./gradlew :concepts-locations:check :gui:worldSpawnsTest :gui:dataSourcesTest
 ./gradlew :concepts-creatures:test --tests '*CreatureModelPolicyTest' :gui:worldSpawnModelsTest
 ./gradlew :gui:worldTileCreaturesTest :gui:worldStreamSourceBridgeTest :gui:worldStreamSourceControllerTest
-./gradlew :rendering-bgfx:test --tests '*WorldStreamObjectsFileTest'
+./gradlew :rendering-bgfx:test --tests '*WorldStreamObjectsFileTest' --tests '*WorldObjectAnimationTest'
+# Actual GPU (Vulkan by default): animated poses, phases, the clock and the redraw cadence.
+./gradlew :rendering-bgfx:nativeGpuWorldStreamObjectAnimationProof
 # Requires a working JavaFX display:
 ./gradlew :gui:worldSpawnsUiTest -PworldSpawnsScreenshot=/absolute/path.png
 ```

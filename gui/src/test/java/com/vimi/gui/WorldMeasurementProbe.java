@@ -192,10 +192,20 @@ public final class WorldMeasurementProbe {
                                         null,
                                         issue -> say("PROBE " + issue),
                                         DEADLINE - System.nanoTime(),
+                                        // The library's community TACT keys, as the World view
+                                        // has: the creature and race modes need them, and so does
+                                        // stream mode with creatures on, whose humanoid NPCs read
+                                        // the encrypted rows of CreatureDisplayInfoOption.
                                         List.of("creatures", "displays", "body", "races", "raceSkin", "fetch", "m2")
-                                                .contains(
-                                                        System.getProperty(
-                                                                "probe.mode", "stream"))));
+                                                        .contains(
+                                                                System.getProperty(
+                                                                        "probe.mode", "stream"))
+                                                || "stream"
+                                                                .equals(
+                                                                        System.getProperty(
+                                                                                "probe.mode",
+                                                                                "stream"))
+                                                        && WorldStreamGpuOwner.CREATURES));
         try {
             BuildWorld handle = opened.world();
             var catalog =
@@ -231,7 +241,7 @@ public final class WorldMeasurementProbe {
                             case "m2" -> m2(opened);
                             case "creatures" -> creatures(opened, handle, catalog);
                             case "displays" -> displays(opened);
-                            default -> stream(handle, catalog);
+                            default -> stream(opened, handle, catalog);
                         }
                         return null;
                     });
@@ -1247,6 +1257,13 @@ public final class WorldMeasurementProbe {
             return answer;
         }
 
+        @Override
+        public com.vibeminer.rendering.models.PreviewAnimation idle(long extendedDisplayInfoId,
+                com.vibeminer.rendering.models.MeshAppearance appearance, Cancellation token)
+                throws Exception {
+            return inner.idle(extendedDisplayInfoId, appearance, token);
+        }
+
         static String outcome(com.vibeminer.concepts.races.RaceNpcs.Appearance answer) {
             if (answer == null) return "refused: no NPC appearance";
             if (answer.refusal() != null)
@@ -1987,6 +2004,13 @@ public final class WorldMeasurementProbe {
                     }
                     var scope = source.createScope(map, Cancellation.NONE);
                     source.activate(scope);
+                    // As the World view: idles are carried near the camera, here the centre tile's
+                    // centre (#384); probe.idleEverywhere=true carries them on every tile.
+                    double[] centre = {
+                        (31.5 - scenario.x()) * WorldFormats.TILE_SIZE,
+                        (31.5 - scenario.y()) * WorldFormats.TILE_SIZE
+                    };
+                    tiles.camera(Boolean.getBoolean("probe.idleEverywhere") ? null : () -> centre);
                     for (int pass = 1; pass <= passes && beforeDeadline(); pass++) {
                         long began = System.nanoTime();
                         var sum = WorldTileCreatures.Summary.NONE;
@@ -2013,6 +2037,10 @@ public final class WorldMeasurementProbe {
                         }
                         if (done < area.size()) incomplete = true;
                         say(creatureLine(scenario, pass, done, area.size(), sum, began));
+                        for (var series : WorldStageTimings.snapshot().series().values())
+                            if (series.name().startsWith("parent.creatures."))
+                                say(String.format(Locale.ROOT, "PROBE   %s n=%d total=%.1f ms",
+                                        series.name(), series.count(), series.sum() / 1e6));
                     }
                 }
                 // The Creature table as the chooser reads it: its state and row counts, through the
@@ -2125,12 +2153,42 @@ public final class WorldMeasurementProbe {
         }
     }
 
-    private static void stream(BuildWorld handle, WorldService.Catalog catalog) throws Exception {
+    /**
+     * The World view's creature source for the stream mode, as WorldView builds it, while {@code
+     * vimi.world.creatures} is on (#384 measures their animation); null otherwise.
+     */
+    private static WorldTileCreatures streamCreatures;
+
+    /** The stream camera's native x and y, for creature idles near it (#384); null before one. */
+    private static volatile double[] streamCamera;
+
+    /** The stream mode's NPC appearance outcomes, per distinct humanoid display (#384). */
+    private static NpcAnswers streamNpcs;
+
+    private static void stream(WorldMeasurementOpen opened, BuildWorld handle, WorldService.Catalog catalog)
+            throws Exception {
         var scenarios =
                 Scenario.parse(
                         System.getProperty("probe.scenarios", "elwynn:0:49:31,stormwind:0:48:30"));
         Platform.startup(() -> Platform.setImplicitExit(false));
         var gpu = GpuPreviewService.application();
+        NativePreparationWork.MeasurementCreatures measured = null;
+        if (WorldStreamGpuOwner.CREATURES) {
+            var sources = opened.sources();
+            var build = opened.build;
+            measured = busy(() -> opened.openCreatures(Cancellation.NONE));
+            var open = measured;
+            streamCreatures =
+                    new WorldTileCreatures(
+                            token -> sources.worldSpawns(build, token),
+                            () -> "probe",
+                            new WorldNpcDisplays(open::creatures,
+                                    NpcPreviews.egLinkBatch(sources, build, "enUS"), build.version()),
+                            new WorldTileCreatures.DisplayPreviews(opened::displays, () -> "probe"),
+                            streamNpcs = new NpcAnswers(WorldTileCreatures.npcs(open::races)));
+            say("PROBE stream creatures: on, animation " + WorldTileCreatures.ANIMATION);
+            streamCreatures.camera(() -> streamCamera);
+        }
         try {
             for (var scenario : scenarios) {
                 if (System.nanoTime() > DEADLINE - TimeUnit.SECONDS.toNanos(45)) {
@@ -2175,6 +2233,8 @@ public final class WorldMeasurementProbe {
         } finally {
             busy(() -> gpu.closeAsync().get(HELPER_CLOSE_SECONDS, TimeUnit.SECONDS));
             Platform.exit();
+            if (streamCreatures != null) streamCreatures.close();
+            if (measured != null) measured.close();
         }
     }
 
@@ -2260,6 +2320,8 @@ public final class WorldMeasurementProbe {
             // As the World view: every map draws its interiors (#280, #383), and their roots
             // carry portal sets the renderer culls with.
             var interiors = probeInteriors(map);
+            var creatureSource = streamCreatures;
+            long creatureMap = map.id();
             WorldStreamSourceBridge.ExteriorPreparer preparer =
                     (source, scope, tile, cancellation, formats, creatureBytes) ->
                             WorldStreamSourceBridge.prepareExterior(
@@ -2267,7 +2329,15 @@ public final class WorldMeasurementProbe {
                                     scope,
                                     tile,
                                     cancellation,
-                                    null,
+                                    creatureSource == null
+                                            ? null
+                                            : (builder, owned, token) ->
+                                                    creatureSource.append(
+                                                            builder,
+                                                            creatureMap,
+                                                            owned,
+                                                            creatureBytes,
+                                                            token),
                                     detail,
                                     interiors,
                                     formats);
@@ -2383,10 +2453,24 @@ public final class WorldMeasurementProbe {
                                                     : controller
                                                             .areaAt(camera.x(), camera.y())
                                                             .label())));
+            say("PROBE fill status: " + fx(() -> controller.snapshot().detail()));
+            say("PROBE fill creatures: " + fx(() -> controller.creatureStatus()));
+            if (streamNpcs != null)
+                streamNpcs.tally().forEach((outcome, n) ->
+                        say(String.format(Locale.ROOT, "PROBE fill humanoid displays %6d  %s", n, outcome)));
             var position = fx(() -> camera == null ? null : new double[] {camera.x(), camera.y(), camera.z()});
             say("PROBE sky: " + (position == null ? "no camera" : sky(handle, scenario.map(), position)));
             var fillTimings = WorldStageTimings.snapshot();
             var fillDecode = FileDecodeTimings.snapshot();
+            // 2a. Optional (probe.stillSeconds, default 0): the camera still at the seed, where only
+            // what the child redraws on its own (the creatures' idle, #384) costs frames.
+            long stillNanos = TimeUnit.SECONDS.toNanos(Long.getLong("probe.stillSeconds", 0));
+            WorldStageTimings.Snapshot stillTimings = null;
+            if (stillNanos > 0 && beforeDeadline()) {
+                WorldStageTimings.reset();
+                sleepBounded(stillNanos);
+                stillTimings = WorldStageTimings.snapshot();
+            }
             // 2. Rotate in place: frame cost and delivery with every object resident.
             WorldStageTimings.reset();
             long rotateAllocated = allocatedBytes();
@@ -2455,6 +2539,10 @@ public final class WorldMeasurementProbe {
                             rotateAllocatedBytes / 1048576.0 / Math.max(1e-9, seconds(rotateNanos))));
             say("PROBE --- " + scenario.name() + " fly and settle ---");
             print(flyTimings, false);
+            if (stillTimings != null) {
+                say("PROBE --- " + scenario.name() + " still camera ---");
+                print(stillTimings, true);
+            }
             say(
                     String.format(
                             Locale.ROOT,
@@ -2522,6 +2610,7 @@ public final class WorldMeasurementProbe {
         }
 
         void sendCamera() {
+            streamCamera = new double[] {camera.x(), camera.y()};
             long revision = control.incrementAndGet();
             requested.put(revision, System.nanoTime());
             if (requested.size() > 20_000) requested.clear();
@@ -2558,6 +2647,19 @@ public final class WorldMeasurementProbe {
                 camera = snapshot.seed().camera().software();
                 originX = snapshot.seed().originX();
                 originY = snapshot.seed().originY();
+                // probe.camera=x,y,z,yaw,pitch (native; #384 measures a street of creatures)
+                // replaces the tile-centre seed.
+                String place = System.getProperty("probe.camera");
+                if (place != null) {
+                    var v = place.split(",");
+                    camera =
+                            new TerrainRenderer.Camera(
+                                    Double.parseDouble(v[0]),
+                                    Double.parseDouble(v[1]),
+                                    Double.parseDouble(v[2]),
+                                    Double.parseDouble(v[3]),
+                                    Double.parseDouble(v[4]));
+                }
                 sendCamera();
                 neighborhood();
             }

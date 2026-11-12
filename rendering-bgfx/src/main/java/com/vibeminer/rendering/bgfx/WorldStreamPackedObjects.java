@@ -60,6 +60,50 @@ final class WorldStreamPackedObjects implements AutoCloseable {
      */
     private final WorldStreamObjectTextures.Key[] keys;
 
+    /**
+     * Per model: its idle animation (#384), or null for a static model. Parsed and checked here on
+     * the decoder worker; an entry that does not fit its model is dropped (counted in {@link
+     * #refusedAnimations}) and the model stays static.
+     */
+    final ObjectAnimation[] animations;
+
+    /** Animation entries dropped because they did not fit their model. */
+    final int refusedAnimations;
+
+    /**
+     * One animated model's child-side data (#384): its idle animation, the rest vertex each of its
+     * vertices (all its meshes, in order) is skinned from, and those vertices in the GPU layout
+     * ({@link #GPU_VERTEX_BYTES} each), whose texture coordinates and colours a re-skin keeps.
+     */
+    static final class ObjectAnimation {
+        final com.vibeminer.rendering.models.PreviewAnimation animation;
+        final int[] sources;
+        final byte[] vertices;
+
+        /** Per mesh of the model (in order): its first vertex within {@link #vertices}. */
+        final int[] meshOffsets;
+
+        ObjectAnimation(
+                com.vibeminer.rendering.models.PreviewAnimation animation,
+                int[] sources,
+                byte[] vertices,
+                int[] meshOffsets) {
+            this.animation = animation;
+            this.sources = sources;
+            this.vertices = vertices;
+            this.meshOffsets = meshOffsets;
+        }
+
+        int vertexCount() {
+            return sources.length;
+        }
+
+        /** Heap bytes this entry holds besides its animation's own arrays. */
+        long bytes() {
+            return sources.length * 4L + vertices.length;
+        }
+    }
+
     ByteBuffer vertices, indices, pixels;
 
     private WorldStreamPackedObjects(
@@ -94,6 +138,21 @@ final class WorldStreamPackedObjects implements AutoCloseable {
         meshGroups = data.meshGroups.clone();
         placementParents = data.placementParents.clone();
         placementGroups = data.placementGroups.clone();
+        animations = new ObjectAnimation[data.modelCount()];
+        int refused = 0;
+        for (int i = 0; i < data.animations.count(); i++) {
+            check(canceled);
+            int model = data.animations.models[i];
+            var parsed =
+                    animation(
+                            data, model, data.animations.sources[i], data.animations.animations[i]);
+            if (parsed == null) {
+                refused++;
+            } else {
+                animations[model] = parsed;
+            }
+        }
+        refusedAnimations = refused;
         portals = new WmoPortalTraversal[data.modelCount()];
         portalSets = data.portalSetCount();
         for (int set = 0; set < portalSets; set++) {
@@ -103,6 +162,51 @@ final class WorldStreamPackedObjects implements AutoCloseable {
         this.vertices = vertices;
         this.indices = indices;
         this.pixels = pixels;
+    }
+
+    /**
+     * One animation entry as the child uses it, or null when it does not fit its model: an
+     * unreadable or camera-facing animation, or a source outside its rest surface.
+     */
+    static ObjectAnimation animation(
+            WorldStreamObjectsFile.Data data, int model, int[] sources, byte[] bytes) {
+        var animation = WorldObjectAnimation.parse(bytes);
+        if (animation == null) {
+            return null;
+        }
+        if (animation.viewDependent() || animation.durationMillis() <= 0) {
+            return null;
+        }
+        for (int source : sources) {
+            if (source >= animation.vertexCount()) {
+                return null;
+            }
+        }
+        int firstMesh = data.models[model * 2], meshCount = data.models[model * 2 + 1];
+        var offsets = new int[meshCount];
+        var out =
+                ByteBuffer.allocate(sources.length * GPU_VERTEX_BYTES)
+                        .order(ByteOrder.nativeOrder());
+        int at = 0;
+        int stride = WorldStreamObjectsFile.VERTEX_FLOATS;
+        for (int m = 0; m < meshCount; m++) {
+            int mesh = firstMesh + m,
+                    first = data.meshes[mesh * 6],
+                    count = data.meshes[mesh * 6 + 1];
+            offsets[m] = at;
+            for (int v = first; v < first + count; v++, at++) {
+                int to = at * GPU_VERTEX_BYTES;
+                for (int f = 0; f < stride; f++) {
+                    out.putFloat(to + f * 4, data.vertices[v * stride + f]);
+                }
+                int colour = data.colours[v];
+                out.put(to + 32, (byte) colour);
+                out.put(to + 33, (byte) (colour >>> 8));
+                out.put(to + 34, (byte) (colour >>> 16));
+                out.put(to + 35, (byte) 0);
+            }
+        }
+        return new ObjectAnimation(animation, sources.clone(), out.array(), offsets);
     }
 
     /** Packs with every compressed format sampled: chains stay as stored. */

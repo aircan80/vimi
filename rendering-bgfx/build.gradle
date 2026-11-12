@@ -378,6 +378,18 @@ tasks.register('nativeGpuWorldStreamBodySessionProof', JavaExec) {
     args layout.buildDirectory.dir('native-world-stream-body-session').get().asFile.absolutePath
 }
 
+tasks.register('nativeGpuWorldStreamObjectAnimationProof', JavaExec) {
+    group = 'verification'
+    description = 'Draws an animated object model near the camera from per-phase poses (#384).'
+    dependsOn testClasses, tasks.named('verifyWorldStreamShaders'), tasks.named('verifyWorldWmoShaders'), tasks.named('verifyShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.WorldStreamObjectAnimationProof'
+    timeout = java.time.Duration.ofMinutes(2)
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    systemProperty 'vimi.worldProof.backend', providers.gradleProperty('worldProofBackend').getOrElse('vulkan')
+    args([providers.gradleProperty('objectAnimationProofOutput').getOrElse(layout.buildDirectory.dir('native-world-object-animation').get().asFile.absolutePath)])
+}
+
 tasks.register('nativeGpuWorldStreamBodyProof', JavaExec) {
     group = 'verification'
     description = 'Draws the walking body standing, walking and running from the follow camera.'
