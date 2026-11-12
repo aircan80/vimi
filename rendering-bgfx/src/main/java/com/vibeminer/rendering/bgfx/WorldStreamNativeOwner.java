@@ -734,6 +734,9 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                     framing);
             if (rendering) {
                 frameStats();
+                // Splat masks on the GPU (#491): the per-slot mask chains the terrain budget
+                // counts.
+                WorldStageTimings.value("child.gpu.splatMaskKiB", renderer.splatMaskBytes() >> 10);
                 WorldStageTimings.value(
                         "child.objects.textureHandles", renderer.objectTexturesHeld());
                 WorldStageTimings.value(

@@ -175,6 +175,7 @@ public final class TerrainAtlasPool {
                 }
                 charged += atlas.retainedBytes() - entry.charge;
                 entry.charge = atlas.retainedBytes();
+                recordCharge();
                 if (completeCacheKey != null && cache.containsKey(completeCacheKey)) {
                     throw new IllegalStateException("Duplicate ready atlas cache publication");
                 }
@@ -280,6 +281,7 @@ public final class TerrainAtlasPool {
         Entry reserved = new Entry(free, charge);
         slots[free] = reserved;
         charged += charge;
+        recordCharge();
         return Optional.of(new Reservation(reserved, maskSide));
     }
 
@@ -343,6 +345,14 @@ public final class TerrainAtlasPool {
                             });
         }
         return result;
+    }
+
+    /**
+     * The pool's charge, for the measurement probe (#491): its maximum over a run is the most the
+     * pool held against {@link #MAX_BYTES}. A no-op unless stage timings are on.
+     */
+    private void recordCharge() {
+        com.vibeminer.formats.world.WorldStageTimings.value("atlasPool.chargedKiB", charged >> 10);
     }
 
     private void requireOpen() {

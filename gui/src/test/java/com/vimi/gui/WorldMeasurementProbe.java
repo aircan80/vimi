@@ -2456,6 +2456,9 @@ public final class WorldMeasurementProbe {
             // As the World view: buildings first, creatures in a later pass (#175).
             var preparer =
                     WorldStreamSourceBridge.preparer(creatureSource, creatureMap, detail, interiors);
+            // As the World view: the splat mask side for this tier and view distance (1024 only
+            // for NEAR with HIGH detail), so the probe measures the masks the app composes.
+            WorldStreamGpuOwner.splatMasks(detail, WorldStreamGpuOwner.VIEW_DISTANCE);
             var holder = new WorldStreamSourceController[1];
             controller =
                     new WorldStreamSourceController(
@@ -2487,7 +2490,7 @@ public final class WorldMeasurementProbe {
             say(
                     String.format(
                             Locale.ROOT,
-                            "PROBE scenario %s map %d centre tile %d,%d (view distance %s, exteriors %s, creatures %s, object textures %s)",
+                            "PROBE scenario %s map %d centre tile %d,%d (view distance %s, exteriors %s, creatures %s, object textures %s, splat masks " + com.vibeminer.concepts.world.WorldTerrainStreaming.splatMaskSide() + ")",
                             scenario.name(),
                             scenario.map(),
                             scenario.x(),

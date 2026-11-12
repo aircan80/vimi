@@ -510,3 +510,34 @@ Every run also has one ~3 s accept gap right after the stationary phase, as in s
   WAITING_CAPACITY hypothesis is not re-checked there: both runs reached READY with every tile.
 - **Scope:** one build, one machine, one run per scenario. Creatures are off. HIGH object
   textures are not measured.
+
+## Splat terrain memory (#491)
+
+Splat terrain blending (`-Dvimi.world.splat`) adds splat masks to every terrain
+atlas the parent retains (`TerrainAtlasPool`) and to every terrain slot on the
+GPU. The pool is bounded by bytes (`TerrainAtlasPool.MAX_BYTES`, 22 atlases
+with 1024² masks, about 110.5 MiB; #583) as well as by count; the GPU side is
+counted in each view distance's terrain budget (`ViewDistance.slotGpuBytes`,
+`terrainGpuBytes`; #173).
+
+The stream probe records both: the pool's charge (`atlasPool.chargedKiB`,
+parent, on each reservation and publication) and the slots' splat masks on
+the GPU (`child.gpu.splatMaskKiB`, helper, each frame), next to bgfx's texture
+and total GPU memory. The probe sets the mask side for its tier and view
+distance as the World view does (1024 only for NEAR with HIGH detail).
+
+Build 70862, Elwynn (49,31), Linux Vulkan, HIGH object textures, a fill then a
+30 s flight across one tile (`-Pprobe.mode=stream -Pvimi.world.splat=true
+-Pvimi.world.objectTextures=high -Pvimi.world.viewDistance=near|far
+-Pprobe.flySeconds=30`), peaks over the run:
+
+| | Splat masks | Pool charge | GPU splat masks | GPU textures (bgfx) | GPU memory used |
+|---|---|---|---|---|---|
+| NEAR, splat off | none | 12.2 MiB | 0 | 60 MiB | 228 MiB |
+| NEAR, splat on (worst case) | 1024² | 60.2 MiB | 53.3 MiB | 124 MiB | 301 MiB |
+| FAR, splat on | 512² | 60.5 MiB | 34.7 MiB | 137 MiB | 381 MiB |
+
+The pool stayed at about 55 % of its byte bound in the worst case, with no
+`POOL_BUSY` refusal. The GPU splat masks match the budget exactly: ten NEAR
+slots of a 1024² mask chain (5.33 MiB each) and twenty-six FAR slots of a 512²
+chain (1.33 MiB each).
