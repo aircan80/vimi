@@ -986,6 +986,9 @@ final class WorldPreparedTerrain {
                                         scopes.whenClosed(),
                                         CompletableFuture.failedFuture(startFailure));
                     }
+                    // Reads still in flight when the cache was cleared may keep their files on
+                    // completion; once every source operation drained, clear it again.
+                    scopeDrain.whenComplete((ignored, error) -> scopes.sources().clear());
                     for (var value : retired) {
                         try {
                             value.close();

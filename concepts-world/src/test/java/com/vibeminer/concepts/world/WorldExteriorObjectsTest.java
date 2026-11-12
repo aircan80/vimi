@@ -1446,6 +1446,13 @@ class WorldExteriorObjectsTest {
             assertEquals(group, f.files.opens.get(GROUP).get(), "the group is read once");
             assertTrue(cache.hits() >= hits + 2);
             assertTrue(cache.bytes(WorldSourceCache.FILE) > 0);
+            // Changed decryption keys drop the kept files: the next set reads them again.
+            f.files.keyRevision++;
+            try (var set = f.run()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+            }
+            assertEquals(root + 1, f.files.opens.get(ROOT).get(), "read again under new keys");
+            assertEquals(group + 1, f.files.opens.get(GROUP).get());
         }
     }
 

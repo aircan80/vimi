@@ -166,6 +166,7 @@ public final class WorldTileCollision {
     private static Source files(BuildFiles files, WorldSourceCache sources) {
         Source read =
                 (id, token) -> {
+                    sources.keyRevision(files.keyRevision());
                     var cached = sources.file(id);
                     if (cached != null) {
                         return cached.bytes();

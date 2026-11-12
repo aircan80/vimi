@@ -64,6 +64,11 @@ final class WorldSourceCache {
     private final LinkedHashMap<Key, Sized> entries = new LinkedHashMap<>(256, .75f, true);
     private long held, peak, hits, misses, evictions;
 
+    /** The key revision kept files were read under, once one was noted. */
+    private long keys;
+
+    private boolean keysKnown;
+
     WorldSourceCache() {
         this(BYTES);
     }
@@ -100,11 +105,41 @@ final class WorldSourceCache {
         return new File(file.contentKey(), file.bytes().clone(), file.declaredLength());
     }
 
-    /** Keeps a copy of a complete file's bytes. */
-    void putFile(long fileDataId, File file) {
+    /**
+     * Keeps a copy of a complete file's bytes, read under decryption key revision {@code
+     * keyRevision}; not kept when the keys changed since ({@link #keyRevision}), as the bytes may
+     * then be ones the current keys no longer give.
+     */
+    void putFile(long fileDataId, File file, long keyRevision) {
         Objects.requireNonNull(file);
         var copy = new File(file.contentKey(), file.bytes().clone(), file.declaredLength());
+        synchronized (this) {
+            if (keysKnown && keyRevision != keys) {
+                return;
+            }
+        }
         put(new Key(FILE, 0, fileDataId), copy, copy.bytes().length + ENTRY_BYTES);
+    }
+
+    /**
+     * Notes the build's decryption key revision ({@code BuildFiles#keyRevision}) before a file is
+     * looked up or read. When it changed, every kept file is dropped: an encrypted file read with
+     * keys since removed must not be served, and kept files do not record whether they were
+     * encrypted. Parsed values are their readers' to forget.
+     */
+    void keyRevision(long revision) {
+        synchronized (this) {
+            if (keysKnown && revision == keys) {
+                return;
+            }
+            boolean changed = keysKnown;
+            keys = revision;
+            keysKnown = true;
+            if (!changed) {
+                return;
+            }
+        }
+        removeIf((key, value) -> FILE.equals(key.kind()));
     }
 
     /** A reader's parsed value, or null. The value is shared: parsed values must be immutable. */

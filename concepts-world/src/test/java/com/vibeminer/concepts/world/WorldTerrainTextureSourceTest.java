@@ -251,6 +251,9 @@ class WorldTerrainTextureSourceTest {
 
         volatile long protectedId, changedId, wrongId;
 
+        /** The build's decryption key revision ({@link BuildFiles#keyRevision}). */
+        volatile long keyRevision;
+
         /** File IDs the build's names give paths; a path lookup outside it is UNKNOWN_FILE. */
         final Map<String, Long> paths = new ConcurrentHashMap<>();
 
@@ -363,6 +366,7 @@ class WorldTerrainTextureSourceTest {
                             (proxy, method, args) ->
                                     switch (method.getName()) {
                                         case "build" -> BUILD;
+                                        case "keyRevision" -> keyRevision;
                                         case "locale" -> "enUS";
                                         case "stat", "statContent" -> {
                                             var ref = (FileTypes.FileRef) args[0];
