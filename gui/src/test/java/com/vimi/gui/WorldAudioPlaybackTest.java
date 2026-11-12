@@ -1075,23 +1075,43 @@ public final class WorldAudioPlaybackTest {
             if (rising.get(i).peak() < rising.get(i - 1).peak())
                 throw new AssertionError("New track must only ramp up");
         if (next.getFirst().peak() > 6000) throw new AssertionError("New track must fade in");
+        // The old fade starts with the new track's first block, and both fade by frame position,
+        // so compare them at the same frame since that start, never by which thread wrote first:
+        // a late-scheduled thread (CI runners) would otherwise pair different fade positions.
+        // Its fade-out, past its own fade-in at the start: from the first write ending below full
+        // after the line reached full.
+        int fadeOut = 0;
+        while (fadeOut < old.size() && old.get(fadeOut).peak() < 16000) fadeOut++;
+        while (fadeOut < old.size() && old.get(fadeOut).end() >= 16000) fadeOut++;
+        var oldFade = old.subList(fadeOut, old.size());
         // While the new track is mid-fade the old one is still clearly audible.
         boolean overlap = false;
-        int lastOld = 0x4000;
-        for (var w : lines.writes) {
-            if (w.line() == 0) lastOld = w.peak();
-            else if (w.peak() > 2000 && w.peak() < 14000 && lastOld > 2000) overlap = true;
+        long at = 0;
+        for (var w : next) {
+            if (w.peak() > 2000 && w.peak() < 14000 && peakAt(oldFade, at) > 2000) overlap = true;
+            at += w.bytes() / 2;
         }
         if (!overlap) throw new AssertionError("Fades never overlapped");
         // Equal power: the two voices' summed power stays near full through the crossfade.
-        lastOld = 0x4000;
-        for (var w : lines.writes) {
-            if (w.line() == 0) lastOld = w.peak();
-            else if (w.peak() >= 16000) break;
-            else if ((double) lastOld * lastOld + (double) w.peak() * w.peak()
-                    < 0.6 * 0x4000 * 0x4000)
-                throw new AssertionError("Crossfade power dips: " + lastOld + " " + w.peak());
+        at = 0;
+        for (var w : next) {
+            if (w.peak() >= 16000) break;
+            int before = peakAt(oldFade, at);
+            if ((double) before * before + (double) w.peak() * w.peak() < 0.6 * 0x4000 * 0x4000)
+                throw new AssertionError("Crossfade power dips: " + before + " " + w.peak());
+            at += w.bytes() / 2;
         }
+    }
+
+    /** The peak of the write holding frame {@code frame} of these writes; 0 past their end. */
+    private static int peakAt(java.util.List<Timed> writes, long frame) {
+        long start = 0;
+        for (var w : writes) {
+            long end = start + w.bytes() / 2;
+            if (frame < end) return w.peak();
+            start = end;
+        }
+        return 0;
     }
 
     /** Muting while the next track loads fades the held one out instead of holding it. */
@@ -1236,6 +1256,52 @@ public final class WorldAudioPlaybackTest {
         if (frames < 8000 * WorldAudioPlayback.FADE_SECONDS * 0.9)
             throw new AssertionError("Fade-out stopped with the 400-frame file: " + frames);
         if (lastHeard(fading) > 500) throw new AssertionError("Ambience was cut");
+    }
+
+    /**
+     * The track is replaced exactly as its file's pass ends (the decoder holds its end until the
+     * change is made): the ambience is still handed off and fades while looping, instead of its
+     * line closing on what it holds. This is the moment a short file's ambience was cut.
+     */
+    private static void aReplacementAsThePassEndsStillFades() throws Exception {
+        var lines = new Timeline();
+        var atEnd = new java.util.concurrent.CountDownLatch(1);
+        var replaced = new java.util.concurrent.CountDownLatch(1);
+        var opened = new AtomicInteger();
+        var playback = new WorldAudioPlayback(lines::open, (bytes, canceled) -> {
+            if (opened.incrementAndGet() > 1) return new FakePcm(400);
+            // 40 passes' worth in one file, so the line reaches full volume before the end.
+            return new FakePcm(16000) {
+                @Override
+                public int read(byte[] buffer, int offset, int length, BooleanSupplier stop)
+                        throws IOException {
+                    int count = super.read(buffer, offset, length, stop);
+                    if (count < 0 && atEnd.getCount() > 0) {
+                        atEnd.countDown();
+                        try {
+                            replaced.await(10, TimeUnit.SECONDS);
+                        } catch (InterruptedException interrupted) {
+                            throw new IOException("interrupted");
+                        }
+                    }
+                    return count;
+                }
+            };
+        }, status -> {});
+        playback.ambience.volume(1);
+        playback.ambience.track(track(WorldAreaAudio.Kind.AMBIENCE, 100, 0), FILES);
+        playback.ambience.enabled(true);
+        if (!atEnd.await(10, TimeUnit.SECONDS)) throw new AssertionError("pass did not end");
+        long change = System.nanoTime();
+        playback.ambience.track(null, null);
+        replaced.countDown();
+        await(() -> lines.closed(0), "ambience did not fade out");
+        playback.closeAsync().get(10, TimeUnit.SECONDS);
+        var fading = lines.line(0).stream().filter(w -> w.nanos() > change).toList();
+        long frames = heardFrames(fading);
+        if (frames < 8000 * WorldAudioPlayback.FADE_SECONDS * 0.9)
+            throw new AssertionError("Replaced at the pass end: fade-out " + frames + " frames");
+        if (lastHeard(fading) > 500) throw new AssertionError("Ambience was cut at the pass end");
     }
 
     /** Closing mid-crossfade releases every decoder and line. */
@@ -1700,6 +1766,7 @@ public final class WorldAudioPlaybackTest {
         supersededLoadsPassTheHeldTrackOn();
         singleLineDevicesYieldTheLine();
         replacedAmbienceLoopsWhileItFades();
+        aReplacementAsThePassEndsStillFades();
         closeDuringACrossfadeReleasesEverything();
         singleLineDevicesYieldEveryTail();
         formatRefusalsKeepTheOldTrackFading();

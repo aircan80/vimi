@@ -664,78 +664,67 @@ class WorldStreamLaunchOwnerTest {
 
     @Test
     void aChildThatKeepsShowingProgressOutlastsTheQuietWindowAndAHungOneDoesNot() throws Exception {
-        // Ready after 600 ms with progress every 20 ms: more than twice the 250 ms quiet window,
-        // with room for scheduling jitter both within a window and before the 1 s cap.
-        var ready = new CountDownLatch(1);
+        // The startup clock is the test's own: only the test moves it, so no scheduling delay
+        // (a slow CI host, a coarse Windows sleep) can make quiet time pass. Ready after 600 ms
+        // of progress every 20 ms: more than twice the 250 ms quiet window, within the 1 s cap.
+        var now = new java.util.concurrent.atomic.AtomicLong(1_000_000_000L);
         var busy =
                 WorldStreamLaunchOwner.launch(
                         WorldStreamPreparedFiles.create(directory, SESSION, null),
                         arguments -> new Child(),
-                        (process, handle) ->
-                                Thread.ofVirtual()
-                                        .start(
-                                                () -> {
-                                                    long until =
-                                                            System.nanoTime()
-                                                                    + TimeUnit.MILLISECONDS.toNanos(
-                                                                            600);
-                                                    while (System.nanoTime() < until) {
-                                                        handle.progress();
-                                                        try {
-                                                            Thread.sleep(20);
-                                                        } catch (InterruptedException e) {
-                                                            return;
-                                                        }
-                                                    }
-                                                    handle.initialized();
-                                                    ready.countDown();
-                                                }),
+                        (process, handle) -> {},
                         0,
                         1000,
-                        250);
-        assertTrue(ready.await(5, TimeUnit.SECONDS));
-        Thread.sleep(300);
+                        250,
+                        now::get);
+        for (int ms = 0; ms < 600; ms += 20) {
+            now.addAndGet(TimeUnit.MILLISECONDS.toNanos(20));
+            busy.progress();
+            watched();
+            assertFalse(busy.stopping(), "progress keeps a slow child starting at " + ms + " ms");
+        }
+        busy.initialized();
+        // Long after, on the test's clock: a ready child is no longer judged on startup.
+        now.addAndGet(TimeUnit.SECONDS.toNanos(5));
+        watched();
         assertFalse(busy.stopping(), "a slow child that shows progress starts");
         busy.closeAsync().get(3, TimeUnit.SECONDS);
-        // Progress forever without becoming ready: stopped at the cap of four windows.
-        var stop = new java.util.concurrent.atomic.AtomicBoolean();
+        // Progress forever without becoming ready: stopped at the cap of four 100 ms windows.
         var spinning =
                 WorldStreamLaunchOwner.launch(
                         WorldStreamPreparedFiles.create(directory, SESSION, null),
                         arguments -> new Child(),
-                        (process, handle) ->
-                                Thread.ofVirtual()
-                                        .start(
-                                                () -> {
-                                                    while (!stop.get()) {
-                                                        handle.progress();
-                                                        try {
-                                                            Thread.sleep(10);
-                                                        } catch (InterruptedException e) {
-                                                            return;
-                                                        }
-                                                    }
-                                                }),
+                        (process, handle) -> {},
                         0,
                         1000,
-                        100);
-        try {
-            long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
-            while (!spinning.stopping() && System.nanoTime() < until) {
-                Thread.sleep(2);
-            }
-            assertTrue(spinning.stopping(), "a child that never becomes ready is stopped");
-            assertTrue(
-                    spinning.failure().getMessage().contains("still not ready"),
-                    spinning.failure().getMessage());
-        } finally {
-            stop.set(true);
+                        100,
+                        now::get);
+        for (int ms = 0; ms < 390; ms += 10) {
+            now.addAndGet(TimeUnit.MILLISECONDS.toNanos(10));
+            spinning.progress();
+            watched();
+            assertFalse(spinning.stopping(), "within the cap at " + ms + " ms");
         }
+        now.addAndGet(TimeUnit.MILLISECONDS.toNanos(20));
+        spinning.progress();
+        long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        while (!spinning.stopping() && System.nanoTime() < until) {
+            Thread.sleep(2);
+        }
+        assertTrue(spinning.stopping(), "a child that never becomes ready is stopped");
+        assertTrue(
+                spinning.failure().getMessage().contains("still not ready"),
+                spinning.failure().getMessage());
         try {
             spinning.closeAsync().get(3, TimeUnit.SECONDS);
         } catch (java.util.concurrent.ExecutionException expected) {
             // The startup failure.
         }
+    }
+
+    /** Lets the startup watcher (which polls every 5 ms) see the latest clock and progress. */
+    private static void watched() throws InterruptedException {
+        Thread.sleep(15);
     }
 
     @Test
