@@ -413,7 +413,9 @@ public final class WmoFormats {
     /**
      * One MODD definition in WMO-local axes, raw. {@code reference} is the low 24 bits (an index
      * into MODI when present, a MODN offset otherwise) and {@code flags} the high 8 bits. The
-     * quaternion is stored x, y, z, w; nothing here checks finiteness, unit length or scale.
+     * quaternion is stored x, y, z, w; nothing here checks finiteness, unit length or scale. {@code
+     * colour} is the raw CImVector (B, G, R, A bytes of a little-endian u32): the doodad's interior
+     * light colour, its alpha naming a MOLT light or 255 for none.
      */
     public record DoodadDefinition(
             int reference,
@@ -425,7 +427,8 @@ public final class WmoFormats {
             float qy,
             float qz,
             float qw,
-            float scale) {}
+            float scale,
+            int colour) {}
 
     /**
      * Recorded doodad declarations. {@code retained} is false when MODS or MODD is absent, when any
@@ -1108,7 +1111,8 @@ public final class WmoFormats {
                             input.getFloat(at + 20),
                             input.getFloat(at + 24),
                             input.getFloat(at + 28),
-                            input.getFloat(at + 32)));
+                            input.getFloat(at + 32),
+                            input.getInt(at + 36)));
         }
         var fileIds = new long[idCount];
         for (int i = 0; i < idCount; i++) {

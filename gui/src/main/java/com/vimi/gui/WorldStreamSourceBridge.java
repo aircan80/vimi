@@ -710,7 +710,7 @@ final class WorldStreamSourceBridge {
                 int parent = p.portalGroup() < 0 ? -1 : buildingAt.getOrDefault(p.uniqueId(), -1);
                 placed.add(new Placed(p.kind() == WorldExteriorObjects.Kind.BUILDING, p.model(), p.x(), p.y(), p.z(),
                         p.scale(), p.rotation().rowMajor(), WorldObjectPicks.Recorder.exterior(set, p, parents),
-                        parent, parent < 0 ? -1 : p.portalGroup()));
+                        parent, parent < 0 ? -1 : p.portalGroup(), light(p.light())));
             }
             return new ObjectSet((builder, cancellation) -> copyMeshes(builder, set, cancellation), draws, placed,
                     WorldStreamSourceBridge.buildings(set), set.compressedFormats());
@@ -723,10 +723,17 @@ final class WorldStreamSourceBridge {
      * group; otherwise both are -1.
      */
     record Placed(boolean building, int model, double x, double y, double z, double scale, double[] rotation,
-            WorldObjectPicks.Source source, int parent, int group) {
+            WorldObjectPicks.Source source, int parent, int group, float[] light) {
         Placed {
             rotation = rotation.clone();
+            light = light == null ? null : light.clone();
             Objects.requireNonNull(source);
+        }
+
+        /** A placement lit by the World light. */
+        Placed(boolean building, int model, double x, double y, double z, double scale, double[] rotation,
+                WorldObjectPicks.Source source, int parent, int group) {
+            this(building, model, x, y, z, scale, rotation, source, parent, group, null);
         }
 
         /** A placement tied to no group. */
@@ -734,6 +741,14 @@ final class WorldStreamSourceBridge {
                 WorldObjectPicks.Source source) {
             this(building, model, x, y, z, scale, rotation, source, -1, -1);
         }
+    }
+
+    /** A doodad's interior light as the objects file carries it, or null for the World light. */
+    static float[] light(WorldExteriorObjects.DoodadLight light) {
+        return light == null ? null : new float[] {
+            light.ambientR(), light.ambientG(), light.ambientB(),
+            light.directR(), light.directG(), light.directB(),
+            light.towardX(), light.towardY(), light.towardZ()};
     }
 
     /**
@@ -1200,7 +1215,8 @@ final class WorldStreamSourceBridge {
             draws += cost;
             int parent = placement.parent() >= 0 && placement.parent() < i ? written[placement.parent()] : -1;
             builder.placement(placement.model(), placement.x(), placement.y(), placement.z(),
-                    placement.scale(), placement.rotation(), parent, parent < 0 ? -1 : placement.group());
+                    placement.scale(), placement.rotation(), parent, parent < 0 ? -1 : placement.group(),
+                    placement.light());
             written[i] = copied++;
             recorded.add(placement.source());
         }

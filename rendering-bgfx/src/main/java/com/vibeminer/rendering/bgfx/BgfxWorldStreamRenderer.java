@@ -543,6 +543,15 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
          */
         final int[] placementParents, placementGroups;
 
+        /** Per placement: its light in {@link #lights}, or -1 for the World light. */
+        final int[] placementLights;
+
+        /** Distinct placement lights ({@link WorldStreamPackedObjects#lights}). */
+        final float[] lights;
+
+        /** Per model: whether any of its placements has its own light. */
+        final boolean[] litModels;
+
         short vertices = INVALID, indices = INVALID;
         long bytes;
 
@@ -677,6 +686,14 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             meshGroups = source.meshGroups;
             placementParents = source.placementParents;
             placementGroups = source.placementGroups;
+            placementLights = source.placementLights;
+            lights = source.lights;
+            litModels = new boolean[models.length / 2];
+            for (int p = 0; p < placementLights.length; p++) {
+                if (placementLights[p] >= 0) {
+                    litModels[placementModels[p]] = true;
+                }
+            }
             animations = source.animations;
             int animatedCount = 0;
             for (int p = 0; p < placementModels.length; p++) {
@@ -888,6 +905,23 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
 
     // The u_wmoMaterial class last set this frame, or -1.
     private int frameMaterial;
+
+    /**
+     * This frame's World light uniform ({@link WorldLight#uniform}): direction, diffuse, ambient.
+     */
+    private final float[] frameWorldLight = new float[12];
+
+    /**
+     * The placement light now in u_worldLight: its set and index, or a null set for the frame's
+     * World light. Submits latch uniforms, so a placement light is set before its draws and the
+     * World light restored after them.
+     */
+    private SlotObjects lightSet;
+
+    private int lightIndex = -1;
+
+    /** Placement light switches this frame (u_worldLight sets beyond the frame's own). */
+    private int frameLightSwitches;
 
     // The walking body: its model on the GPU once attached, and this frame's pose (null: none).
     private WorldStreamBodyDraw body;
@@ -2541,10 +2575,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             bgfx_set_uniform(worldSkyTop, stack.floats(fog.topUniform()), 1);
             bgfx_set_uniform(worldFogRange, stack.floats(fog.rangeUniform()), 1);
             // The recorded direct and ambient light of the camera's sky, when it has one (#177).
-            bgfx_set_uniform(
-                    worldLight,
-                    stack.floats(light.withRecorded(recordedSky).uniform(terrainLighting)),
-                    3);
+            float[] worldLightValues = light.withRecorded(recordedSky).uniform(terrainLighting);
+            bgfx_set_uniform(worldLight, stack.floats(worldLightValues), 3);
+            System.arraycopy(worldLightValues, 0, frameWorldLight, 0, frameWorldLight.length);
             var view =
                     objectCulling
                             ? WorldStreamObjectCulling.View.of(camera, width, height, fog.cut())
@@ -2582,6 +2615,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             frameWaterSubmits = frameWaterCulled = 0;
             portalCulling.frame(view);
             frameMaterial = -1;
+            lightSet = null;
+            lightIndex = -1;
+            frameLightSwitches = 0;
             frameBodySubmits = 0;
             frameAnimated = frameAnimatedStatic = frameSkins = frameSkinVertices = 0;
             frameStalePoses = frameAnimatedFar = frameAnimatedRefused = 0;
@@ -2601,6 +2637,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                         drawObjects(frame, view, objects, origin);
                     }
                 }
+                worldLightBack(frame);
                 if (bodyDrawn) {
                     drawBody(frame, origin, false);
                 }
@@ -2664,6 +2701,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             // Alpha-blended object ranges last, after water, farthest placement first.
             if (wmoProgram != INVALID) {
                 drawBlended(frame, view, origin);
+                worldLightBack(frame);
                 if (bodyDrawn) {
                     drawBody(frame, origin, true);
                 }
@@ -3106,6 +3144,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             // Still one placement at a time, back to front: a one-instance draw. A portal root
             // (#383) reuses the groups its opaque pass walked this frame.
             frame.single[0] = p;
+            placementLight(frame, objects, objects.placementLights[p]);
             int drawn = instances(frame, objects, frame.single, 0, 1, origin);
             drawSortedRanges(
                     frame,
@@ -3132,6 +3171,62 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             int p) {
         int m = placementModels[p];
         return blendedModels[m] && visible[p] && !(unsortedModels[m] && dropped[p]);
+    }
+
+    /**
+     * Sets u_worldLight to placement light {@code index} of {@code objects} for the next submits
+     * (the World shader's light, {@code ambient + direct * max(0, n . toward)}), or back to the
+     * frame's World light for -1. The frame light's w components (terrain's switches) are kept.
+     */
+    private void placementLight(ObjectFrame frame, SlotObjects objects, int index) {
+        if (index < 0) {
+            worldLightBack(frame);
+            return;
+        }
+        if (lightSet == objects && lightIndex == index) {
+            return;
+        }
+        int at = index * WorldStreamObjectsFile.Lights.FLOATS;
+        float[] l = objects.lights;
+        var buffer = frame.light;
+        buffer.clear();
+        buffer.put(l[at + 6]).put(l[at + 7]).put(l[at + 8]).put(frameWorldLight[3]);
+        buffer.put(l[at + 3]).put(l[at + 4]).put(l[at + 5]).put(frameWorldLight[7]);
+        buffer.put(l[at]).put(l[at + 1]).put(l[at + 2]).put(frameWorldLight[11]);
+        buffer.flip();
+        bgfx_set_uniform(worldLight, buffer, 3);
+        lightSet = objects;
+        lightIndex = index;
+        frameLightSwitches++;
+    }
+
+    /** Restores the frame's World light after placement lights. */
+    private void worldLightBack(ObjectFrame frame) {
+        if (lightIndex < 0 || frame == null) {
+            return;
+        }
+        var buffer = frame.light;
+        buffer.clear();
+        buffer.put(frameWorldLight).flip();
+        bgfx_set_uniform(worldLight, buffer, 3);
+        lightSet = null;
+        lightIndex = -1;
+    }
+
+    /**
+     * Orders {@code order[first, first + count)} by placement light, World-lit placements first,
+     * then each light's placements together, so each run draws as one group. Returns nothing; the
+     * runs are read back from {@code lights}. Insertion sort: lit groups are small.
+     */
+    static void sortByLight(int[] order, int first, int count, int[] lights) {
+        for (int i = first + 1; i < first + count; i++) {
+            int p = order[i], key = lights[p], j = i - 1;
+            while (j >= first && lights[order[j]] > key) {
+                order[j + 1] = order[j];
+                j--;
+            }
+            order[j + 1] = p;
+        }
     }
 
     /**
@@ -3204,7 +3299,31 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             if (count == 0 || !objects.unsortedModels[m]) {
                 continue;
             }
-            if (objectInstancing) {
+            if (objects.litModels[m]) {
+                // Placements with their own light (interior set doodads) draw in runs of one light.
+                sortByLight(objects.order, first, count, objects.placementLights);
+                int run = first;
+                while (run < first + count) {
+                    int light = objects.placementLights[objects.order[run]], end = run + 1;
+                    while (end < first + count
+                            && objects.placementLights[objects.order[end]] == light) {
+                        end++;
+                    }
+                    placementLight(frame, objects, light);
+                    if (objectInstancing) {
+                        int drawn =
+                                instances(frame, objects, objects.order, run, end - run, origin);
+                        drawRanges(frame, objects, m, drawn, null);
+                    } else {
+                        for (int i = run; i < end; i++) {
+                            int drawn = instances(frame, objects, objects.order, i, 1, origin);
+                            drawRanges(frame, objects, m, drawn, null);
+                        }
+                    }
+                    run = end;
+                }
+                worldLightBack(frame);
+            } else if (objectInstancing) {
                 int drawn = instances(frame, objects, objects.order, first, count, origin);
                 drawRanges(frame, objects, m, drawn, null);
             } else {
@@ -3282,9 +3401,34 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             for (int i = 0; i < members; i++) {
                 objects.grouped[objects.poseMembers[i]] = false;
             }
-            int drawn = instances(frame, objects, objects.poseMembers, 0, members, origin);
+            int drawn = 0;
+            if (objects.litModels[m]) {
+                // Members with their own light draw in runs of one light.
+                sortByLight(objects.poseMembers, 0, members, objects.placementLights);
+                int run = 0;
+                while (run < members) {
+                    int light = objects.placementLights[objects.poseMembers[run]], end = run + 1;
+                    while (end < members
+                            && objects.placementLights[objects.poseMembers[end]] == light) {
+                        end++;
+                    }
+                    placementLight(frame, objects, light);
+                    int part =
+                            instances(frame, objects, objects.poseMembers, run, end - run, origin);
+                    if (part > 0) {
+                        drawRangesStep(frame, objects, m, part, STEP_UNSORTED, null, pose);
+                    }
+                    drawn += part;
+                    run = end;
+                }
+                worldLightBack(frame);
+            } else {
+                drawn = instances(frame, objects, objects.poseMembers, 0, members, origin);
+                if (drawn > 0) {
+                    drawRangesStep(frame, objects, m, drawn, STEP_UNSORTED, null, pose);
+                }
+            }
             if (drawn > 0) {
-                drawRangesStep(frame, objects, m, drawn, STEP_UNSORTED, null, pose);
                 // Only what was drawn animated asks for idle redraws (animationRevision).
                 frameAnimated += drawn;
                 long millis =
@@ -3492,8 +3636,12 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
 
         final long cutoutState;
 
+        /** u_worldLight values for a placement light or the World light, filled per switch. */
+        final java.nio.FloatBuffer light;
+
         private ObjectFrame(MemoryStack stack, boolean coverage) {
             instances = org.lwjgl.bgfx.BGFXInstanceDataBuffer.malloc(stack);
+            light = stack.mallocFloat(12);
             for (int kind = 0; kind <= WorldStreamObjectsFile.ADDITIVE; kind++) {
                 for (int unlit = 0; unlit < 2; unlit++) {
                     for (int interior = 0; interior < 2; interior++) {

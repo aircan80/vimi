@@ -52,8 +52,9 @@ import java.util.function.BooleanSupplier;
  * model, vertex count and animation byte length, the rest vertex of each of the model's vertices,
  * and the animation's bytes padded to four. Then the liquid section ({@link Liquids}): per entry
  * the mesh whose group holds it, its kind and colour, its grid's vertex counts and corner, one
- * height per grid vertex and one live byte per tile padded to four. Every count, offset, index and
- * float is validated; reserved bytes must be zero.
+ * height per grid vertex and one live byte per tile padded to four. Then the light section ({@link
+ * Lights}): per entry its placement, ambient and direct colour and direction toward the light.
+ * Every count, offset, index and float is validated; reserved bytes must be zero.
  */
 final class WorldStreamObjectsFile {
     // Version 5 (#367): range classes add ADDITIVE and the UNLIT flag, on #420's version 4.
@@ -67,7 +68,9 @@ final class WorldStreamObjectsFile {
     // (#384): an animation section after the portal tables ({@link Animations}), whose entry count
     // and byte length follow at header bytes 172-179. Version 11: a liquid section after the
     // animations ({@link Liquids}, building water), its entry count and byte length at 180-187.
-    static final int VERSION = 11, HEADER_BYTES = 256;
+    // Version 12: a light section after the liquids ({@link Lights}, set doodads lit by their
+    // interior light), its entry count and byte length at 188-195.
+    static final int VERSION = 12, HEADER_BYTES = 256;
     // The tables are the sums of the producer's pools (ExteriorObjectLimits): opaque buildings,
     // their cutout and blended surfaces, and doodads. Creature models share whatever room remains.
     static final int MAX_MODELS = ExteriorObjectLimits.MODELS;
@@ -219,7 +222,8 @@ final class WorldStreamObjectsFile {
                                     WmoPortalSet.MAX_TILE_VERTICES,
                                     WmoPortalSet.MAX_TILE_REFS)
                             + MAX_ANIMATION_BYTES
-                            + Liquids.maxBytes());
+                            + Liquids.maxBytes()
+                            + Lights.maxBytes());
 
     private static int ceilingMiB(int bytes) {
         return (bytes + (1 << 20) - 1) >>> 20 << 20;
@@ -399,6 +403,52 @@ final class WorldStreamObjectsFile {
         }
     }
 
+    /**
+     * Placements lit by their own light instead of the World's (set doodads of an interior group,
+     * {@code WorldExteriorObjects.DoodadLight}): per entry the placement (ascending, unique) and
+     * {@link #FLOATS} floats: ambient R, G, B and direct R, G, B in 0..1, then a unit direction
+     * toward the light in native axes. The shader lights such a placement as ambient + direct *
+     * max(0, n . toward), the World light's own form.
+     */
+    static final class Lights {
+        static final int FLOATS = 9, ENTRY_BYTES = 4 + FLOATS * 4;
+
+        static final Lights NONE = new Lights(new int[0], new float[0]);
+
+        final int[] placements;
+        final float[] values;
+
+        Lights(int[] placements, float[] values) {
+            this.placements = Objects.requireNonNull(placements);
+            this.values = Objects.requireNonNull(values);
+            int n = placements.length;
+            require(n <= MAX_PLACEMENTS && values.length == n * FLOATS, "Light counts");
+            for (int i = 0; i < n; i++) {
+                require(i == 0 || placements[i] > placements[i - 1], "Light placements ascend");
+                require(placements[i] >= 0, "Light placement");
+                int at = i * FLOATS;
+                for (int c = 0; c < 6; c++) {
+                    float v = values[at + c];
+                    require(v >= 0 && v <= 1, "Light colour");
+                }
+                double x = values[at + 6], y = values[at + 7], z = values[at + 8];
+                require(Math.abs(Math.sqrt(x * x + y * y + z * z) - 1) < 1e-3, "Light direction");
+            }
+        }
+
+        int count() {
+            return placements.length;
+        }
+
+        int bytes() {
+            return placements.length * ENTRY_BYTES;
+        }
+
+        static int maxBytes() {
+            return MAX_PLACEMENTS * ENTRY_BYTES;
+        }
+    }
+
     /** Validated immutable object set. Arrays are owned; accessors never expose them mutable. */
     static final class Data {
         /** Per model: first mesh, mesh count. */
@@ -476,6 +526,9 @@ final class WorldStreamObjectsFile {
 
         /** Building liquids; {@link Liquids#NONE} without any. */
         final Liquids liquids;
+
+        /** Placements with their own light; {@link Lights#NONE} without any. */
+        final Lights lights;
 
         /**
          * Compressed formats this file charges at their stored size (bit per {@link
@@ -632,10 +685,11 @@ final class WorldStreamObjectsFile {
             this.placementGroups = Objects.requireNonNull(placementGroups);
             this.animations = Animations.NONE;
             this.liquids = Liquids.NONE;
+            this.lights = Lights.NONE;
             draws = validate();
         }
 
-        private Data(Data base, Animations animations, Liquids liquids) {
+        private Data(Data base, Animations animations, Liquids liquids, Lights lights) {
             compressedFormats = base.compressedFormats;
             models = base.models;
             meshes = base.meshes;
@@ -660,6 +714,10 @@ final class WorldStreamObjectsFile {
             draws = base.draws;
             this.animations = Objects.requireNonNull(animations);
             this.liquids = Objects.requireNonNull(liquids);
+            this.lights = Objects.requireNonNull(lights);
+            for (int i = 0; i < lights.count(); i++) {
+                require(lights.placements[i] < placementCount(), "Light placement");
+            }
             for (int i = 0; i < liquids.count(); i++) {
                 require(liquids.meshes[i] >= 0 && liquids.meshes[i] < meshCount(), "Liquid mesh");
             }
@@ -676,14 +734,21 @@ final class WorldStreamObjectsFile {
         Data withAnimations(Animations animations) {
             return animations.count() == 0 && this.animations.count() == 0
                     ? this
-                    : new Data(this, animations, liquids);
+                    : new Data(this, animations, liquids, lights);
         }
 
         /** The same set with building {@code liquids}, checked against its meshes. */
         Data withLiquids(Liquids liquids) {
             return liquids.count() == 0 && this.liquids.count() == 0
                     ? this
-                    : new Data(this, animations, liquids);
+                    : new Data(this, animations, liquids, lights);
+        }
+
+        /** The same set with placement {@code lights}, checked against its placements. */
+        Data withLights(Lights lights) {
+            return lights.count() == 0 && this.lights.count() == 0
+                    ? this
+                    : new Data(this, animations, liquids, lights);
         }
 
         /** Vertices of all of a model's meshes. */
@@ -834,7 +899,8 @@ final class WorldStreamObjectsFile {
                                     portalVertexCount(),
                                     portalRefCount())
                             + animations.bytes()
-                            + liquids.bytes();
+                            + liquids.bytes()
+                            + lights.bytes();
             return bytes > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) bytes;
         }
 
@@ -1350,6 +1416,14 @@ final class WorldStreamObjectsFile {
                         output.writeByte(0);
                     }
                 }
+                var lights = data.lights;
+                for (int i = 0; i < lights.count(); i++) {
+                    output.writeInt(Integer.reverseBytes(lights.placements[i]));
+                    writeFloats(
+                            output,
+                            Arrays.copyOfRange(
+                                    lights.values, i * Lights.FLOATS, (i + 1) * Lights.FLOATS));
+                }
                 output.flush();
                 if (channel.size() != data.bytes()) {
                     throw new IOException("Objects file length differs");
@@ -1430,9 +1504,15 @@ final class WorldStreamObjectsFile {
                             && in.getInt(100) == 0
                             && in.getLong(104) == identity.lease().serial(),
                     "Objects header identity");
-            for (int i = 188; i < HEADER_BYTES; i++) {
+            for (int i = 196; i < HEADER_BYTES; i++) {
                 require(head[i] == 0, "Reserved objects bytes");
             }
+            int lightCount = in.getInt(188), lightBytes = in.getInt(192);
+            require(
+                    lightCount >= 0
+                            && lightCount <= MAX_PLACEMENTS
+                            && lightBytes == lightCount * Lights.ENTRY_BYTES,
+                    "Objects light counts");
             int liquidCount = in.getInt(180), liquidBytes = in.getInt(184);
             require(
                     liquidCount >= 0
@@ -1504,6 +1584,7 @@ final class WorldStreamObjectsFile {
                                                     portalRefs)
                                             + animationBytes
                                             + liquidBytes
+                                            + lightBytes
                                     == reference.length(),
                     "Objects header counts");
             // Bounded by the counts above before any body allocation.
@@ -1625,6 +1706,17 @@ final class WorldStreamObjectsFile {
                 }
             }
             require(liquidLeft == 0, "Liquid section length");
+            int[] lightPlacements = new int[lightCount];
+            float[] lightValues = new float[lightCount * Lights.FLOATS];
+            for (int i = 0; i < lightCount; i++) {
+                lightPlacements[i] = Integer.reverseBytes(input.readInt());
+                System.arraycopy(
+                        floats(input, Lights.FLOATS),
+                        0,
+                        lightValues,
+                        i * Lights.FLOATS,
+                        Lights.FLOATS);
+            }
             check(canceled);
             if (input.read() != -1
                     || channel.size() != reference.length()
@@ -1665,7 +1757,8 @@ final class WorldStreamObjectsFile {
                                     liquidGrids,
                                     liquidCorners,
                                     liquidHeights,
-                                    liquidLive));
+                                    liquidLive))
+                    .withLights(new Lights(lightPlacements, lightValues));
         } catch (EOFException truncated) {
             throw new IOException("Truncated objects file", truncated);
         } catch (IllegalArgumentException invalid) {
@@ -1689,6 +1782,7 @@ final class WorldStreamObjectsFile {
         out.putInt(data.portalRefCount());
         out.putInt(data.animations.count()).putInt(data.animations.bytes());
         out.putInt(data.liquids.count()).putInt(data.liquids.bytes());
+        out.putInt(data.lights.count()).putInt(data.lights.bytes());
         return out.array();
     }
 

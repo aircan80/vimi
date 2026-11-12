@@ -192,6 +192,9 @@ class WorldExteriorObjectsTest {
                 join(extras));
     }
 
+    /** The fixture root's MOHD ambient (root(...)): 0x0b on each channel. */
+    private static final long FIXTURE_AMBIENT = 0xff0b0b0bL;
+
     private static byte[] root(long... gfid) {
         return root(gfid.length, gfid, List.of(new Material(0, IMAGE, 0)));
     }
@@ -8425,6 +8428,73 @@ class WorldExteriorObjectsTest {
             try (var set = f.run()) {
                 assertNull(set.models().getFirst().portals());
                 assertEquals(Map.of(0, -1, 1, -1, 2, -1, 3, -1), portalGroups(set));
+            }
+        }
+    }
+
+    /** The set doodads' lights by MODD ordinal (null for the World light). */
+    private static Map<Integer, WorldExteriorObjects.DoodadLight> lights(
+            WorldExteriorObjects.TileObjects set) {
+        var lights = new java.util.TreeMap<Integer, WorldExteriorObjects.DoodadLight>();
+        for (var p : set.placements()) {
+            if (p.kind() == WorldExteriorObjects.Kind.SET_DOODAD) {
+                lights.put(p.ordinal(), p.light());
+            }
+        }
+        return lights;
+    }
+
+    @Test
+    void setDoodadsAnInteriorGroupListsTakeItsInteriorLight() {
+        // MODD 0: plain; 1: interior lighting (0x2); 2: 0x4 (a MOLT light, not read); 3: listed by
+        // the exterior group only. The interior group is a pure interior (0x2000 without 0x8).
+        int[] flags = {0, 0x2, 0x4, 0};
+        var defs = new ArrayList<Modd>();
+        for (int flag : flags) {
+            defs.add(new Modd(flag << 24, 0, 0, 0, new double[] {0, 0, 0, 1}, 1));
+        }
+        byte[] doodads = doodadChunks(new int[][] {{0, 4}}, new long[] {MODEL}, defs);
+        // MODD colours as stored (B, G, R, A): R 0x30, G 0x20, B 0x10, alpha 255.
+        int colour = 0xff301f10;
+        int modd = indexOf(doodads, "MODD") + 8;
+        for (int i = 0; i < flags.length; i++) {
+            ByteBuffer.wrap(doodads)
+                    .order(ByteOrder.LITTLE_ENDIAN)
+                    .putInt(modd + i * 40 + 36, colour);
+        }
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            putModel(f, MODEL, model());
+            f.files.sources.put(
+                    ROOT,
+                    root(
+                            2,
+                            new long[] {GROUP, INTERIOR},
+                            List.of(new Material(0, IMAGE, 0)),
+                            portalChunks(1, true),
+                            doodads));
+            f.files.sources.put(GROUP, withDoodadRefs(portalRange(group(EXT), 0, 1), 3));
+            f.files.sources.put(INTERIOR, withDoodadRefs(portalRange(group(ROOM), 1, 1), 0, 1, 2));
+            try (var set = f.runInstance()) {
+                var lights = lights(set);
+                assertEquals(4, lights.size());
+                assertEquals(
+                        WorldExteriorObjects.doodadLight(0, colour, FIXTURE_AMBIENT, null),
+                        lights.get(0));
+                var interior = lights.get(1);
+                assertNotNull(interior);
+                // Ambient the building's (0x0b), direct the MODD colour.
+                assertEquals(0x0b / 255f, interior.ambientR(), 1e-6);
+                assertEquals(0x30 / 255f, interior.directR(), 1e-6);
+                assertNull(lights.get(2), "MODD 0x4 keeps the World light");
+                assertNull(lights.get(3), "an exterior group's doodad keeps the World light");
+                assertEquals(2, set.count(WorldExteriorObjects.Count.DOODAD_INTERIOR_LIGHT));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.DOODAD_LIGHT_UNSUPPORTED));
+            }
+            // An interior group also flagged exterior lights its doodads as outdoors.
+            f.files.sources.put(
+                    INTERIOR, withDoodadRefs(portalRange(group(ROOM | 0x8), 1, 1), 0, 1, 2));
+            try (var set = f.runInstance()) {
+                assertTrue(lights(set).values().stream().allMatch(java.util.Objects::isNull));
             }
         }
     }

@@ -219,6 +219,76 @@ final class WorldStreamObjectsFileTest {
         }
     }
 
+    /** Interior light of a placement: ambient, direct, then a unit direction toward the light. */
+    static final float[] LIGHT = {0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0, 0.6f, 0.8f};
+
+    /**
+     * Three placements of one model: the first and third with {@link #LIGHT}, the second without.
+     */
+    static WorldStreamTileWriter.Exterior lit() {
+        var builder = WorldStreamTileWriter.Exterior.builder();
+        builder.image(2, 2, chain(2, 2, rgba(4, 10)));
+        builder.model();
+        builder.mesh(
+                FloatBuffer.wrap(small().data().vertices),
+                IntBuffer.wrap(new int[] {0, 1, 2, 2, 1, 3}),
+                new int[] {0, 6, 0});
+        double[] identity = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+        builder.placement(0, 1, 2, 3, 1, identity, -1, -1, LIGHT);
+        builder.placement(0, 4, 5, 6, 1, identity, -1, -1, null);
+        builder.placement(0, 7, 8, 9, 1, identity, -1, -1, LIGHT);
+        return builder.build();
+    }
+
+    @Test
+    void aLightSectionRoundTripsAndPacksOneLightPerDistinctValue() throws Exception {
+        var exterior = lit();
+        var reference = write(exterior);
+        assertEquals(exterior.bytes(), reference.length());
+        var read = WorldStreamObjectsFile.read(objectsPath(), IDENTITY, reference, () -> false);
+        assertArrayEquals(new int[] {0, 2}, read.lights.placements);
+        assertArrayEquals(LIGHT, java.util.Arrays.copyOfRange(read.lights.values, 9, 18));
+        try (var packed = WorldStreamPackedObjects.pack(read, () -> false)) {
+            assertArrayEquals(new int[] {0, -1, 0}, packed.placementLights, "one shared light");
+            assertArrayEquals(LIGHT, packed.lights);
+        }
+        // A file without lights carries an empty section.
+        Files.delete(objectsPath());
+        var plain =
+                WorldStreamObjectsFile.read(objectsPath(), IDENTITY, write(small()), () -> false);
+        assertEquals(0, plain.lights.count());
+    }
+
+    @Test
+    void aCorruptLightSectionIsRefused() throws Exception {
+        // lit(): two 40-byte entries at the end: placement, then nine floats.
+        int entry = WorldStreamObjectsFile.Lights.ENTRY_BYTES;
+        assertEquals(40, entry);
+        assertEquals(
+                "Light placement",
+                refusedFile(liquidBytes(lit(), b -> b.putInt(b.capacity() - entry, 3))),
+                "past the placements (the last entry's)");
+        assertEquals(
+                "Light placements ascend",
+                refusedFile(liquidBytes(lit(), b -> b.putInt(b.capacity() - entry, 0))),
+                "the last entry repeats the first's placement");
+        assertEquals(
+                "Light colour",
+                refusedFile(liquidBytes(lit(), b -> b.putFloat(b.capacity() - entry + 4, 1.5f))));
+        assertEquals(
+                "Light direction",
+                refusedFile(liquidBytes(lit(), b -> b.putFloat(b.capacity() - 4, 0.5f))));
+        assertEquals(
+                "Objects light counts",
+                refusedFile(liquidBytes(lit(), b -> b.putInt(188, 1))),
+                "counts and bytes disagree");
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        WorldStreamTileWriter.Exterior.builder()
+                                .placement(0, 0, 0, 0, 1, new double[9], -1, -1, new float[8]));
+    }
+
     /** Two meshes of one model, each with a 3 x 2 liquid. */
     static WorldStreamTileWriter.Exterior twoWet() {
         var builder = WorldStreamTileWriter.Exterior.builder();
@@ -567,11 +637,11 @@ final class WorldStreamObjectsFileTest {
         // classes of #367) fails its header check instead of being misread.
         var clean = Files.readAllBytes(objectsPath());
         assertEquals(WorldStreamObjectsFile.VERSION, clean[8]);
-        assertEquals(11, WorldStreamObjectsFile.VERSION);
+        assertEquals(12, WorldStreamObjectsFile.VERSION);
         // Version 5 (#367, before the vertex colours of #375), version 6 (#375, before the
         // portal tables and mesh groups of #383), version 7 (before the INTERIOR_LIGHT range
         // flag of #383) and version 8 (before placement portal ties) are stale as well.
-        for (byte stale : new byte[] {3, 4, 5, 6, 7, 8}) {
+        for (byte stale : new byte[] {3, 4, 5, 6, 7, 8, 11}) {
             var bytes = clean.clone();
             bytes[8] = stale;
             Files.write(objectsPath(), bytes);
@@ -1019,7 +1089,8 @@ final class WorldStreamObjectsFileTest {
         // Within the caps but not the file's length.
         assertEquals("Objects header counts", refused.apply(164, 12));
         // Byte 148 is #466's format mask, BC bits only; bytes 172-179 count the animation section
-        // (#384), bytes 180-187 the liquid section; the reserved bytes from 188 must be zero.
+        // (#384), bytes 180-187 the liquid section, bytes 188-195 the light section; the reserved
+        // bytes from 196 must be zero.
         assertEquals("Objects header counts", refused.apply(148, 1));
         assertEquals("Objects animation counts", refused.apply(172, 1));
         assertEquals("Objects animation counts", refused.apply(176, 4));
@@ -1027,7 +1098,10 @@ final class WorldStreamObjectsFileTest {
         assertEquals("Objects liquid counts", refused.apply(180, 1));
         assertEquals("Objects liquid counts", refused.apply(184, 4));
         assertEquals("Objects liquid counts", refused.apply(180, -1));
-        assertEquals("Reserved objects bytes", refused.apply(188, 1));
+        assertEquals("Objects light counts", refused.apply(188, 1));
+        assertEquals("Objects light counts", refused.apply(192, 40));
+        assertEquals("Objects light counts", refused.apply(188, -1));
+        assertEquals("Reserved objects bytes", refused.apply(196, 1));
         assertEquals("Reserved objects bytes", refused.apply(252, 1));
     }
 
@@ -1724,7 +1798,7 @@ final class WorldStreamObjectsFileTest {
         assertEquals(
                 WorldStreamObjectsFile.ADDITIVE | WorldStreamObjectsFile.UNLIT, read.ranges[11]);
         assertEquals(WorldStreamObjectsFile.OPAQUE | WorldStreamObjectsFile.UNLIT, read.ranges[15]);
-        assertEquals(11, WorldStreamObjectsFile.VERSION);
+        assertEquals(12, WorldStreamObjectsFile.VERSION);
         assertEquals(h, read.placements[8], 0);
         // An unknown class, a scaled matrix or a reflection is refused.
         // Modulate (4) and unknown flag bits stay refused: 0x800 alone and beside a known kind

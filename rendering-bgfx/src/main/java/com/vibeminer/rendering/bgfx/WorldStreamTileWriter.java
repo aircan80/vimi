@@ -253,6 +253,10 @@ public final class WorldStreamTileWriter {
             /** Per placement: its portal tie's parent placement and group, or -1 and -1. */
             private final java.util.ArrayList<int[]> placementTies = new java.util.ArrayList<>();
 
+            /** Per placement: its own light ({@link WorldStreamObjectsFile.Lights}), or null. */
+            private final java.util.ArrayList<float[]> placementLights =
+                    new java.util.ArrayList<>();
+
             private final java.util.ArrayList<int[]> images = new java.util.ArrayList<>();
             private final java.util.ArrayList<float[]> vertexBlocks = new java.util.ArrayList<>();
             private final java.util.ArrayList<int[]> colourBlocks = new java.util.ArrayList<>();
@@ -669,7 +673,28 @@ public final class WorldStreamTileWriter {
                     double[] rotation,
                     int parent,
                     int group) {
+                placement(model, x, y, z, scale, rotation, parent, group, null);
+            }
+
+            /**
+             * As above, lit by its own {@code light} ({@link WorldStreamObjectsFile.Lights#FLOATS}
+             * floats: ambient and direct R, G, B, then a unit direction toward the light) instead
+             * of the World light, or by the World light when null.
+             */
+            public void placement(
+                    int model,
+                    double x,
+                    double y,
+                    double z,
+                    double scale,
+                    double[] rotation,
+                    int parent,
+                    int group,
+                    float[] light) {
                 open();
+                if (light != null && light.length != WorldStreamObjectsFile.Lights.FLOATS) {
+                    throw new IllegalArgumentException("Placement light");
+                }
                 Objects.requireNonNull(rotation);
                 if (placements.size() == WorldStreamObjectsFile.MAX_PLACEMENTS
                         || rotation.length != 9) {
@@ -680,6 +705,7 @@ public final class WorldStreamTileWriter {
                 }
                 placementModels.add(model);
                 placementTies.add(tieFits(parent, group) ? new int[] {parent, group} : null);
+                placementLights.add(light == null ? null : light.clone());
                 var row = new double[WorldStreamObjectsFile.PLACEMENT_DOUBLES];
                 row[0] = x;
                 row[1] = y;
@@ -839,7 +865,32 @@ public final class WorldStreamTileWriter {
                                         parents,
                                         tiedGroups)
                                 .withAnimations(animations())
-                                .withLiquids(liquids()));
+                                .withLiquids(liquids())
+                                .withLights(lights()));
+            }
+
+            private WorldStreamObjectsFile.Lights lights() {
+                int n = 0;
+                for (var light : placementLights) {
+                    n += light == null ? 0 : 1;
+                }
+                var placements = new int[n];
+                var values = new float[n * WorldStreamObjectsFile.Lights.FLOATS];
+                int i = 0;
+                for (int p = 0; p < placementLights.size(); p++) {
+                    var light = placementLights.get(p);
+                    if (light != null) {
+                        placements[i] = p;
+                        System.arraycopy(
+                                light,
+                                0,
+                                values,
+                                i * WorldStreamObjectsFile.Lights.FLOATS,
+                                WorldStreamObjectsFile.Lights.FLOATS);
+                        i++;
+                    }
+                }
+                return new WorldStreamObjectsFile.Lights(placements, values);
             }
 
             private WorldStreamObjectsFile.Liquids liquids() {
