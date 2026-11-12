@@ -185,6 +185,129 @@ final class RepositoryTest {
     }
 
     @Test
+    void creatureDisplaysAreReadInBatchesAndRemembered() throws Exception {
+        var source = new Source();
+        try (var repository = new EgLinkRepository(folder, source)) {
+            var build = repository.check(Cancellation.NONE).join().builds().getFirst();
+            String id = repository.download(build, p -> {}, Cancellation.NONE).join().id();
+            repository.prepare(id, p -> {}, Cancellation.NONE).join();
+            // More IDs than one query reads: every one is answered, recorded or not.
+            var ids = new java.util.ArrayList<Long>();
+            for (long i = 0; i < 1200; i++) {
+                ids.add(i);
+            }
+            var found = repository.creatureDisplays(id, "enUS", ids, Cancellation.NONE).join();
+            assertEquals(1200, found.size());
+            assertTrue(found.get(197L).isPresent());
+            assertEquals(java.util.List.of(), found.get(197L).get().displays());
+            assertEquals("2026-11-01", found.get(197L).get().collectedOn());
+            assertTrue(found.get(5L).isEmpty());
+            // The Imp's display lacks its probability: recorded but unreadable, and the batch
+            // still answers every other creature.
+            assertTrue(found.get(416L).get().malformed());
+            assertEquals(
+                    "Creature display lacks its ID or probability",
+                    found.get(416L).get().problem());
+            // Asked for alone, the malformed record is an error, so the NPC page says so.
+            var alone =
+                    assertThrows(
+                            CompletionException.class,
+                            () ->
+                                    repository
+                                            .creatureDisplays(id, "enUS", 416, Cancellation.NONE)
+                                            .join());
+            assertTrue(alone.getCause() instanceof java.io.IOException, String.valueOf(alone));
+            // A remembered answer returns at once, without a task.
+            var again = repository.creatureDisplays(id, "enUS", 197, Cancellation.NONE);
+            assertTrue(again.isDone());
+            assertEquals(found.get(197L), again.join());
+            // A locale the snapshot does not record answers empty.
+            assertTrue(
+                    repository
+                            .creatureDisplays(id, "deDE", 197, Cancellation.NONE)
+                            .join()
+                            .isEmpty());
+            assertEquals(1, repository.openSnapshotCount().join());
+            // Re-preparing the snapshot closes its handle and forgets its answers.
+            repository.prepare(id, p -> {}, Cancellation.NONE).join();
+            assertEquals(0, repository.openSnapshotCount().join());
+            assertTrue(
+                    repository
+                            .creatureDisplays(id, "enUS", 197, Cancellation.NONE)
+                            .join()
+                            .isPresent());
+            assertEquals(1, repository.openSnapshotCount().join());
+            repository.closeAsync().join();
+            // Closed: even a remembered answer is refused, like every other call.
+            assertThrows(
+                    CompletionException.class,
+                    () -> repository.creatureDisplays(id, "enUS", 197, Cancellation.NONE).join());
+        }
+    }
+
+    /** A source advertising {@code count} wowf builds, each with the same creature records. */
+    static Source builds(int count) throws Exception {
+        var source = new Source();
+        var products = new HashMap<String, Object>();
+        byte[] details = source.files.get("data/wowf/" + VERSION + "/creature_details.enUS.json");
+        for (int i = 0; i < count; i++) {
+            String version = "1.60.1." + (70700 + i);
+            products.put(
+                    version,
+                    Map.of(
+                            "creature_details.enUS",
+                            Map.of("records", 2, "sources", 1, "lastCollectedOn", "2026-11-01")));
+            var parsed = (Map<?, ?>) EgJson.parse(details, 1 << 20);
+            var meta = new HashMap<String, Object>();
+            ((Map<?, ?>) parsed.get("meta")).forEach((k, v) -> meta.put((String) k, v));
+            meta.put("clientBuild", version);
+            source.files.put(
+                    "data/wowf/" + version + "/creature_details.enUS.json",
+                    EgJson.bytes(Map.of("meta", meta, "creatures", parsed.get("creatures"))));
+        }
+        source.files.put(
+                "data/index.json",
+                EgJson.bytes(
+                        Map.of(
+                                "license",
+                                EgLinkTypes.LICENSE,
+                                "attribution",
+                                EgLinkTypes.ATTRIBUTION,
+                                "products",
+                                Map.of("wowf", products))));
+        return source;
+    }
+
+    @Test
+    void atMostFourSnapshotDatabasesStayOpen() throws Exception {
+        var source = builds(5);
+        try (var repository = new EgLinkRepository(folder, source)) {
+            var ids = new java.util.ArrayList<String>();
+            for (var build : repository.check(Cancellation.NONE).join().builds()) {
+                String id = repository.download(build, p -> {}, Cancellation.NONE).join().id();
+                repository.prepare(id, p -> {}, Cancellation.NONE).join();
+                ids.add(id);
+            }
+            assertEquals(5, ids.size());
+            for (String id : ids) {
+                assertTrue(
+                        repository
+                                .creatureDisplays(id, "enUS", 197, Cancellation.NONE)
+                                .join()
+                                .isPresent());
+            }
+            assertEquals(4, repository.openSnapshotCount().join());
+            // The evicted one opens again when asked for something new.
+            assertTrue(
+                    repository
+                            .creatureDisplays(ids.getFirst(), "enUS", 5, Cancellation.NONE)
+                            .join()
+                            .isEmpty());
+            assertEquals(4, repository.openSnapshotCount().join());
+        }
+    }
+
+    @Test
     void invalidUpdateAndCanceledDownloadKeepPreviousState() throws Exception {
         var source = new Source();
         try (var repository = new EgLinkRepository(folder, source)) {

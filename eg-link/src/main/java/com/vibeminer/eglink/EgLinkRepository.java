@@ -421,6 +421,7 @@ public final class EgLinkRepository implements AutoCloseable {
         var manifest = manifest(id);
         verify(manifest, token);
         Build build = build(manifest);
+        forget(id);
         Path destination = database(id),
                 temporary =
                         root.resolve("derived")
@@ -607,51 +608,200 @@ public final class EgLinkRepository implements AutoCloseable {
      */
     public CompletableFuture<Optional<EgLinkTypes.CreatureDisplays>> creatureDisplays(
             String source, String locale, long creatureId, Cancellation token) {
-        if (creatureId < 0 || creatureId > 0xffffffffL) {
-            throw new IllegalArgumentException("Creature ID is uint32");
+        return creatureDisplays(source, locale, List.of(creatureId), token)
+                .thenApply(
+                        found -> {
+                            var answer = found.get(creatureId);
+                            if (answer.isPresent() && answer.get().malformed()) {
+                                // One creature asked for: its malformed record is an error.
+                                throw new java.util.concurrent.CompletionException(
+                                        new IOException(answer.get().problem()));
+                            }
+                            return answer;
+                        });
+    }
+
+    /** The most remembered creature display lookups (one per snapshot, locale and creature). */
+    static final int DISPLAY_CACHE = 16_384;
+
+    /** Creature IDs read per query of a batch lookup. */
+    private static final int DISPLAY_QUERY_IDS = 500;
+
+    /**
+     * As {@link #creatureDisplays(String, String, long, Cancellation)} for several creatures at
+     * once: remembered answers return at once, the rest are read in one task through the snapshot's
+     * open read-only database. A prepared snapshot never changes (its ID is its content), so
+     * answers, absences included, are remembered (bounded). A record whose displays are malformed
+     * is answered as recorded but unreadable ({@link EgLinkTypes.CreatureDisplays#malformed}), so
+     * it never fails the rest of the batch.
+     */
+    public CompletableFuture<Map<Long, Optional<EgLinkTypes.CreatureDisplays>>> creatureDisplays(
+            String source,
+            String locale,
+            java.util.Collection<Long> creatureIds,
+            Cancellation token) {
+        for (long id : creatureIds) {
+            if (id < 0 || id > 0xffffffffL) {
+                throw new IllegalArgumentException("Creature ID is uint32");
+            }
         }
         String dataset = "creature_details." + bounded(locale, 8);
+        synchronized (this) {
+            if (closing) {
+                return CompletableFuture.failedFuture(
+                        new IllegalStateException("EG Link repository is closed"));
+            }
+        }
+        var found = new LinkedHashMap<Long, Optional<EgLinkTypes.CreatureDisplays>>();
+        var missing = new java.util.LinkedHashSet<Long>();
+        synchronized (displayCache) {
+            for (long id : creatureIds) {
+                var hit = displayCache.get(source + "|" + dataset + "|" + id);
+                if (hit != null) {
+                    found.put(id, hit);
+                } else {
+                    missing.add(id);
+                }
+            }
+        }
+        if (missing.isEmpty()) {
+            return CompletableFuture.completedFuture(found);
+        }
         return call(
                 token,
                 () -> {
-                    var manifest = requirePrepared(source);
-                    Build build = build(manifest);
-                    var recorded =
-                            build.datasets().stream()
-                                    .filter(value -> value.name().equals(dataset))
-                                    .findFirst();
-                    if (recorded.isEmpty()) {
-                        return Optional.<EgLinkTypes.CreatureDisplays>empty();
+                    var read = readDisplays(source, dataset, List.copyOf(missing), token);
+                    synchronized (displayCache) {
+                        read.forEach(
+                                (id, value) ->
+                                        displayCache.put(source + "|" + dataset + "|" + id, value));
                     }
-                    Optional<Record> record;
-                    try (var connection =
-                            checkedDatabase(database(source), source, hashUnchecked(manifest))) {
-                        record =
-                                connection.run(
-                                        com.vibeminer.store.Cancellation.NONE,
-                                        false,
-                                        sql ->
-                                                sql
-                                                        .query(
-                                                                "SELECT dataset,collection,id,name,json FROM eg_records WHERE dataset=? AND collection='creatures' AND id=?",
-                                                                dataset,
-                                                                Long.toString(creatureId))
-                                                        .stream()
-                                                        .map(row -> record(source, row))
-                                                        .findFirst());
-                    }
-                    if (record.isEmpty()) {
-                        return Optional.<EgLinkTypes.CreatureDisplays>empty();
-                    }
-                    return Optional.of(
-                            new EgLinkTypes.CreatureDisplays(
-                                    source,
-                                    build.product(),
-                                    build.version(),
-                                    recorded.get().lastCollectedOn(),
-                                    creatureId,
-                                    parseDisplays(record.get().json())));
+                    var answer = new LinkedHashMap<>(found);
+                    answer.putAll(read);
+                    return answer;
                 });
+    }
+
+    /** Worker only: one prepared snapshot's database, opened once and checked once. */
+    private record OpenSnapshot(DerivedSqliteConnection connection, Build build) {}
+
+    private final Map<String, OpenSnapshot> openSnapshots = new LinkedHashMap<>();
+
+    /** Tests: how many snapshot databases are open now (read on the worker). */
+    CompletableFuture<Integer> openSnapshotCount() {
+        return call(Cancellation.NONE, openSnapshots::size);
+    }
+
+    private final Map<String, Optional<EgLinkTypes.CreatureDisplays>> displayCache =
+            new LinkedHashMap<>(256, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(
+                        Map.Entry<String, Optional<EgLinkTypes.CreatureDisplays>> eldest) {
+                    return size() > DISPLAY_CACHE;
+                }
+            };
+
+    /** Worker only. */
+    private OpenSnapshot open(String source) throws Exception {
+        var open = openSnapshots.get(source);
+        if (open == null) {
+            var manifest = requirePrepared(source);
+            if (openSnapshots.size() >= 4) {
+                // A small pool: the oldest open snapshot is closed first.
+                var eldest = openSnapshots.keySet().iterator().next();
+                openSnapshots.remove(eldest).connection().close();
+            }
+            open =
+                    new OpenSnapshot(
+                            checkedDatabase(database(source), source, hashUnchecked(manifest)),
+                            build(manifest));
+            openSnapshots.put(source, open);
+        }
+        return open;
+    }
+
+    /**
+     * Worker only: closes a snapshot's open database handle and forgets its remembered answers.
+     * Call it before replacing or deleting the snapshot's database (pruning included): an open
+     * SQLite file cannot be deleted on Windows.
+     */
+    void forget(String source) throws Exception {
+        var open = openSnapshots.remove(source);
+        if (open != null) {
+            open.connection().close();
+        }
+        synchronized (displayCache) {
+            displayCache.keySet().removeIf(key -> key.startsWith(source + "|"));
+        }
+    }
+
+    /** Worker only. */
+    private Map<Long, Optional<EgLinkTypes.CreatureDisplays>> readDisplays(
+            String source, String dataset, List<Long> ids, Cancellation token) throws Exception {
+        var answer = new LinkedHashMap<Long, Optional<EgLinkTypes.CreatureDisplays>>();
+        var open = open(source);
+        var recorded =
+                open.build().datasets().stream()
+                        .filter(value -> value.name().equals(dataset))
+                        .findFirst();
+        for (long id : ids) {
+            answer.put(id, Optional.empty());
+        }
+        if (recorded.isEmpty()) {
+            return answer;
+        }
+        for (int from = 0; from < ids.size(); from += DISPLAY_QUERY_IDS) {
+            token.check();
+            var chunk = ids.subList(from, Math.min(ids.size(), from + DISPLAY_QUERY_IDS));
+            var parameters = new Object[chunk.size() + 1];
+            parameters[0] = dataset;
+            for (int i = 0; i < chunk.size(); i++) {
+                parameters[i + 1] = Long.toString(chunk.get(i));
+            }
+            String marks = String.join(",", java.util.Collections.nCopies(chunk.size(), "?"));
+            var rows =
+                    open.connection()
+                            .run(
+                                    com.vibeminer.store.Cancellation.NONE,
+                                    false,
+                                    sql ->
+                                            sql.query(
+                                                    "SELECT dataset,collection,id,name,json FROM eg_records WHERE dataset=? AND collection='creatures' AND id IN ("
+                                                            + marks
+                                                            + ")",
+                                                    parameters));
+            for (var row : rows) {
+                long id;
+                try {
+                    id = Long.parseLong(String.valueOf(row[2]));
+                } catch (NumberFormatException unnamed) {
+                    continue; // never one of the numeric IDs asked for
+                }
+                List<EgLinkTypes.CreatureDisplay> displays = List.of();
+                String problem = null;
+                try {
+                    displays = parseDisplays(record(source, row).json());
+                } catch (IOException | RuntimeException malformed) {
+                    // One malformed record never fails the others: recorded, but unreadable.
+                    problem =
+                            malformed.getMessage() == null
+                                    ? malformed.getClass().getSimpleName()
+                                    : malformed.getMessage();
+                }
+                answer.put(
+                        id,
+                        Optional.of(
+                                new EgLinkTypes.CreatureDisplays(
+                                        source,
+                                        open.build().product(),
+                                        open.build().version(),
+                                        recorded.get().lastCollectedOn(),
+                                        id,
+                                        displays,
+                                        problem)));
+            }
+        }
+        return answer;
     }
 
     /** The {@code displays} of one {@code creature_details} creature record, validated. */
@@ -1035,6 +1185,14 @@ public final class EgLinkRepository implements AutoCloseable {
                 () -> {
                     try {
                         while (!worker.awaitTermination(1, TimeUnit.SECONDS)) {}
+                        for (var open : openSnapshots.values()) {
+                            try {
+                                open.connection().close();
+                            } catch (Exception ignored) {
+                                // Read-only handles: nothing to lose.
+                            }
+                        }
+                        openSnapshots.clear();
                         closed.complete(null);
                     } catch (InterruptedException failure) {
                         Thread.currentThread().interrupt();
