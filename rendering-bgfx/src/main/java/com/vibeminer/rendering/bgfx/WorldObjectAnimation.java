@@ -173,14 +173,26 @@ final class WorldObjectAnimation {
         return Math.floorMod(stepped + duration * phase / PHASES, duration);
     }
 
+    private static final java.util.concurrent.atomic.AtomicLong STEP_SETS =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    /** A new objects set's identity for {@link #stepOffset}. */
+    static long nextStepSet() {
+        return STEP_SETS.getAndIncrement();
+    }
+
     /**
-     * The step offset of model {@code model}'s phase {@code phase} pose: phases a quarter step
-     * apart, models spread within the quarter, so at 60 frames a second about one pose in 2.4 steps
-     * per frame instead of every pose every 2.4 frames.
+     * The step offset of set {@code set}'s model {@code model}, phase {@code phase}: phases a
+     * quarter step apart, and each set's models spread within the quarter by a hash of the set and
+     * the model, so poses of all resident sets step in different frames rather than together.
      */
-    static long stepOffset(int model, int phase) {
+    static long stepOffset(long set, int model, int phase) {
         long quarter = STEP_MILLIS / PHASES;
-        return phase * quarter + Math.floorMod(model * 7L, quarter);
+        long bits = set * 0x9E3779B97F4A7C15L + model;
+        bits = (bits ^ (bits >>> 30)) * 0xBF58476D1CE4E5B9L;
+        bits = (bits ^ (bits >>> 27)) * 0x94D049BB133111EBL;
+        bits ^= bits >>> 31;
+        return phase * quarter + Math.floorMod(bits, quarter);
     }
 
     /**

@@ -557,6 +557,13 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         /** Per model and phase: its pose, created when first needed, or null. */
         final WorldObjectAnimation.Pose[] poses;
 
+        /**
+         * This set's share of the animation step offsets ({@link WorldObjectAnimation#stepOffset}):
+         * one per built set, so sets with few animated models do not all step their model 0 in the
+         * same frame.
+         */
+        final long stepSet = WorldObjectAnimation.nextStepSet();
+
         /** GPU bytes of this set's poses, reserved against the object budget. */
         long poseBytes;
 
@@ -3119,7 +3126,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                                 animationClock,
                                 animation.animation.durationMillis(),
                                 phase,
-                                WorldObjectAnimation.stepOffset(m, phase));
+                                WorldObjectAnimation.stepOffset(objects.stepSet, m, phase));
                 pose.used(animationFrame, millis);
                 if (pose.skinned() != millis) {
                     queueSkin(pose);
