@@ -355,6 +355,14 @@ final class WorldStreamSourceBridge {
         }
 
         /**
+         * Why no creature can be drawn now (the spawn source holds none), so creature passes are
+         * not scheduled; null while they may draw something. Never waits.
+         */
+        default String creaturesUnavailable() {
+            return null;
+        }
+
+        /**
          * {@code objectFormats}: the BC formats the session's child samples as blocks (bit per
          * format code, {@code WorldStreamTransport.Session.objectFormats()}), 0 for RGBA8 only.
          * {@code creatureBytes}: the most bytes this tile's creatures may add ({@link
@@ -478,6 +486,11 @@ final class WorldStreamSourceBridge {
             @Override
             public boolean appendsCreatures() {
                 return true;
+            }
+
+            @Override
+            public String creaturesUnavailable() {
+                return creatures.unavailable();
             }
         };
     }

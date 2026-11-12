@@ -1724,6 +1724,19 @@ final class WorldStreamSourceController {
             }
         }
         if (!creaturesLater) return;
+        // A spawn source with no spawns draws no creature: no pass is scheduled (each would prepare
+        // its tile's buildings again for nothing), and the tiles say why. Its tiles stay pending,
+        // so creatures come once a new revision of the source has spawns.
+        String unavailable = exteriorPreparer.creaturesUnavailable();
+        if (unavailable != null) {
+            for (var entry : current) {
+                if (!creaturesPending.contains(entry)) continue;
+                dropKept(entry);
+                if (!unavailable.equals(entry.source().creatures().note()))
+                    entry.source().creatures(WorldTileCreatures.Summary.failed(unavailable));
+            }
+            return;
+        }
         // Every wanted tile's buildings are in: creatures next, still nearest first.
         for (var tile : wanted) {
             for (var entry : current) {

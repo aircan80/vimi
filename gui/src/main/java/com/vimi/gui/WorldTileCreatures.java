@@ -1208,7 +1208,7 @@ final class WorldTileCreatures implements AutoCloseable {
             WorldDiagnostics.degraded("creature spawns", "World creature spawn source failed", failed);
             return Summary.failed("spawn source failed: " + failed.getClass().getSimpleName());
         }
-        if (spawns.spawns() == 0) return Summary.failed("no prepared spawn source");
+        if (spawns.spawns() == 0) return Summary.failed(noSpawns(spawns));
         double size = WorldFormats.TILE_SIZE;
         double centerX = (31.5 - tile.x()) * size, centerY = (31.5 - tile.y()) * size;
         // Only this tile's own points take the query's limit: a dense neighbour tile inside the
@@ -2247,6 +2247,35 @@ final class WorldTileCreatures implements AutoCloseable {
         var chain = com.vibeminer.rendering.world.ObjectTextureMips.build(w, h, rgba, materialClass,
                 (below, lw, lh) -> null, token::isCanceled);
         return new Image(w, h, chain.rgba());
+    }
+
+    /** Why an index holds no spawns: its own reason when it gives one. */
+    private static String noSpawns(WorldSpawns.Index spawns) {
+        return spawns.issues().isEmpty() || spawns.issues().getFirst().isBlank() ? "no prepared spawn source"
+                : spawns.issues().getFirst();
+    }
+
+    /**
+     * Why no creature can be drawn for the current revision, without waiting: the reason of a
+     * loaded spawn index that holds no spawns. Null while it may: not loaded yet, loading, failed
+     * (the next tile reports that), loaded with spawns, or loaded for an earlier revision.
+     */
+    String unavailable() {
+        CompletableFuture<WorldSpawns.Index> loaded;
+        Object loadedFor;
+        synchronized (this) {
+            if (closed) return null;
+            loaded = index;
+            loadedFor = cachedRevision;
+        }
+        if (loaded == null || !loaded.isDone() || loaded.isCompletedExceptionally()) return null;
+        try {
+            if (!Objects.equals(revision.get(), loadedFor)) return null;
+        } catch (RuntimeException unknown) {
+            return null;
+        }
+        var spawns = loaded.join();
+        return spawns.spawns() == 0 ? noSpawns(spawns) : null;
     }
 
     /** The source revision's spawn index, loaded once on its own daemon thread. */
