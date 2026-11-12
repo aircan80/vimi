@@ -54,6 +54,7 @@ public final class WorldTileCreaturesTest {
         theWorldAsksForItsOwnBinding();
         humanoidNpcsDrawWholeOrSayWhy();
         capsStopLookupsAndForeignCancellationIsAFailure();
+        humanoidDisplaysSkipTheirPreview();
         failedIndexLoadsBackOff();
         conversionChecksVertexValuesAndLightsMissingNormals();
         distinctModelsStopAtTheTileTextureBudget();
@@ -1047,6 +1048,35 @@ public final class WorldTileCreaturesTest {
                 // A side that is not a power of two up to IMAGE_SIDE is a programming error.
             }
         }
+    }
+
+    /** A source that knows a display's references draws its humanoid NPCs without their previews. */
+    private static void humanoidDisplaysSkipTheirPreview() {
+        var asked = new java.util.concurrent.ConcurrentLinkedQueue<Long>();
+        WorldTileCreatures.Npcs npcs = (extended, token) -> new com.vibeminer.concepts.races.RaceNpcs.Appearance(
+                new com.vibeminer.concepts.races.RaceAppearanceTypes.Result(
+                        com.vibeminer.concepts.races.RaceTypes.State.READY, appearance(true), Set.of(0), List.of(),
+                        List.of(), false, null), 0, 0, null, false);
+        var previews = new WorldTileCreatures.Previews() {
+            @Override
+            public DisplayModelTypes.Preview preview(long display, Cancellation token) {
+                asked.add(display);
+                return WorldTileCreaturesTest.preview(display, display == 8 ? 80L : 0L, 0L, appearance(true));
+            }
+
+            @Override
+            public DisplayModelTypes.Reference reference(long display, Cancellation token) {
+                return WorldTileCreaturesTest.preview(display, display == 8 ? 80L : 0L, 0L, appearance(true))
+                        .reference();
+            }
+        };
+        var creatures = new WorldTileCreatures(token -> index(List.of(
+                WorldSpawnOverlayTest.spawn(1, 1, -100, -100, 10.0),
+                WorldSpawnOverlayTest.spawn(2, 1, -110, -110, 12.0))), () -> "r1",
+                (npc, token) -> qualified((int) (6 + npc), null), previews, npcs);
+        var summary = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(summary.drawn() == 2 && summary.npcs().drawn() == 1, "The creature and the NPC are drawn");
+        require(List.copyOf(asked).equals(List.of(7L)), "Only the creature's preview is read: " + asked);
     }
 
     private static void capsStopLookupsAndForeignCancellationIsAFailure() {

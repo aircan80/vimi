@@ -521,6 +521,13 @@ public final class WorldMeasurementProbe {
             this.inner = inner;
         }
 
+        /** As the World asks: a humanoid NPC's display is known without its preview. */
+        @Override
+        public com.vibeminer.concepts.models.DisplayModelTypes.Reference reference(
+                long displayId, Cancellation token) throws Exception {
+            return inner.reference(displayId, token);
+        }
+
         @Override
         public com.vibeminer.concepts.models.DisplayModelTypes.Preview preview(
                 long displayId, Cancellation token) throws Exception {

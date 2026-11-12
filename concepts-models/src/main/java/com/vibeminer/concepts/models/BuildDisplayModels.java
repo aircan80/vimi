@@ -19,6 +19,17 @@ public interface BuildDisplayModels extends AutoCloseable {
     }
 
     /**
+     * The display's table relationships only (model, texture variations, extended display info),
+     * without reading its model; null when the display or its model data is not recorded.
+     * Implementations without a cheaper path answer from {@link #worldPreview}.
+     */
+    default CompletableFuture<DisplayModelTypes.Reference> reference(
+            long displayId, Cancellation token) {
+        return worldPreview(displayId, token)
+                .thenApply(preview -> preview == null ? null : preview.reference());
+    }
+
+    /**
      * Lazily qualifies the display's idle (Stand) sequence against the same rest surface that
      * {@link #preview} returns. Implementations without animation support report UNAVAILABLE.
      */

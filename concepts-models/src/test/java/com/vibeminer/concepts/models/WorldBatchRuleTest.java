@@ -141,6 +141,12 @@ class WorldBatchRuleTest {
                 assertTrue(again.issues().contains(DisplayModelService.WORLD_NOTE));
                 var previewAgain = service.preview(1, Cancellation.NONE).join();
                 assertTrue(previewAgain.appearance().surfaces().isEmpty(), "keys do not collide");
+                var reference = service.reference(1, Cancellation.NONE).join();
+                assertEquals(world.reference().modelFileDataId(), reference.modelFileDataId());
+                assertEquals(
+                        world.reference().extendedDisplayInfoId(),
+                        reference.extendedDisplayInfoId());
+                assertNull(service.reference(2, Cancellation.NONE).join(), "an unrecorded display");
             } finally {
                 service.closeAsync().join();
             }

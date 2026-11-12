@@ -119,6 +119,14 @@ public final class DisplayModelService implements BuildDisplayModels {
         return submit(token, request -> load(displayId, true, request));
     }
 
+    /** Reads the display's table relationships on the worker, without its model. */
+    @Override
+    public CompletableFuture<DisplayModelTypes.Reference> reference(
+            long displayId, Cancellation token) {
+        checkDisplay(displayId);
+        return submit(token, request -> resolve(displayId, request, new ArrayList<>()));
+    }
+
     @Override
     public CompletableFuture<DisplayModelTypes.Idle> idle(long displayId, Cancellation token) {
         checkDisplay(displayId);
