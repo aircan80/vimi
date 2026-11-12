@@ -272,11 +272,10 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
                     var generatedStore = work.generatedHandle();
                     world.attachCreatures(new WorldTileCreatures(
                             token -> sources.worldSpawns(job.build(), token),
-                            // The data sources' revision too: a new EG Link snapshot can change a display.
-                            () -> java.util.List.of(sources.worldSpawnsKey(job.build()), work.revision(),
-                                    sources.revision()),
+                            () -> java.util.List.of(sources.worldSpawnsKey(job.build()), work.revision()),
                             new WorldNpcDisplays(work::creaturesHandle,
                                     NpcPreviews.egLinkBatch(sources, job.build(), job.locale()),
+                                    NpcPreviews.egLinkRevision(sources, job.build(), job.locale()),
                                     job.build().version()),
                             new WorldTileCreatures.DisplayPreviews(() -> {
                                 var tables = work.tablesHandle();

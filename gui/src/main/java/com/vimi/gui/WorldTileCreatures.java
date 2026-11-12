@@ -311,6 +311,27 @@ final class WorldTileCreatures implements AutoCloseable {
         default Chooser forNpcs(java.util.Collection<Long> npcIds, Cancellation token) throws Exception {
             return this;
         }
+
+        /**
+         * What the choices depend on besides the World's own revision (outside display sources),
+         * or null. When it changes, choices are made again; converted models, keyed by display,
+         * are kept. Tiles already drawn keep their choices until they are prepared again.
+         */
+        default Object revision() {
+            return null;
+        }
+    }
+
+    /**
+     * A choice that cannot be made now and whose cause was already reported once (an outside
+     * source that could not be read for the tile): counted as failed, not logged again, not cached.
+     */
+    static final class ChoiceLater extends Exception {
+        private static final long serialVersionUID = 1L;
+
+        ChoiceLater(String message) {
+            super(message, null, false, false);
+        }
     }
 
     @FunctionalInterface
@@ -443,6 +464,8 @@ final class WorldTileCreatures implements AutoCloseable {
     private final Map<Long, Chosen> choices = lru(CHOICE_CACHE);
     private final ModelCache models = new ModelCache(MODEL_CACHE_BYTES);
     private Object cachedRevision;
+    /** The chooser's last {@link Chooser#revision}; guarded by this. */
+    private Object choiceRevision;
     private CompletableFuture<WorldSpawns.Index> index;
     private long indexFailedAt;
     private final java.util.function.LongSupplier clock;
@@ -724,6 +747,9 @@ final class WorldTileCreatures implements AutoCloseable {
             } catch (CancellationException canceled) {
                 // Only this tile's cancellation propagates; a component's own is a failed lookup.
                 if (token.isCanceled()) throw canceled;
+                counts[Count.FAILED.ordinal()]++;
+                continue;
+            } catch (ChoiceLater later) {
                 counts[Count.FAILED.ordinal()]++;
                 continue;
             } catch (Exception failed) {
@@ -1311,8 +1337,19 @@ final class WorldTileCreatures implements AutoCloseable {
     /** The source revision's spawn index, loaded once on its own daemon thread. */
     private WorldSpawns.Index index(Cancellation token) {
         CompletableFuture<WorldSpawns.Index> future;
+        Object choicesNow;
+        try {
+            choicesNow = chooser.revision();
+        } catch (RuntimeException unavailable) {
+            choicesNow = choiceRevision; // unknown now: the choices stand
+        }
         synchronized (this) {
             if (closed) throw new CancellationException("Creature models closed");
+            if (!Objects.equals(choicesNow, choiceRevision)) {
+                // Outside display sources changed: choose again, but keep converted models.
+                choices.clear();
+                choiceRevision = choicesNow;
+            }
             var now = revision.get();
             // A failed load is reused within its revision until the back-off ends, so a broken
             // source costs one load per minute, not one per tile.

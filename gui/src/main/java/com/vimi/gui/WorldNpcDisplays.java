@@ -40,24 +40,47 @@ final class WorldNpcDisplays implements WorldTileCreatures.Chooser {
 
     private final Supplier<BuildCreatures> creatures;
     private final Observed observed;
+    private final Supplier<Object> revision;
     private final String build;
 
     /** Outside displays read for the NPCs of one tile at once; null outside {@link #forNpcs}. */
     private final Map<Long, List<NpcDisplays.External>> read;
 
+    /** Why the tile's outside read failed; set on a tile's chooser, which then reads no more. */
+    private final String unavailable;
+
     WorldNpcDisplays(Supplier<BuildCreatures> creatures, Observed observed, String build) {
-        this(creatures, observed, build, null);
+        this(creatures, observed, () -> null, build);
+    }
+
+    /** {@code revision} says what can change the outside displays ({@link #revision()}). */
+    WorldNpcDisplays(
+            Supplier<BuildCreatures> creatures,
+            Observed observed,
+            Supplier<Object> revision,
+            String build) {
+        this(creatures, observed, revision, build, null, null);
     }
 
     private WorldNpcDisplays(
             Supplier<BuildCreatures> creatures,
             Observed observed,
+            Supplier<Object> revision,
             String build,
-            Map<Long, List<NpcDisplays.External>> read) {
+            Map<Long, List<NpcDisplays.External>> read,
+            String unavailable) {
         this.creatures = Objects.requireNonNull(creatures);
         this.observed = Objects.requireNonNull(observed);
+        this.revision = Objects.requireNonNull(revision);
         this.build = build == null || build.isBlank() ? "unknown" : build;
         this.read = read;
+        this.unavailable = unavailable;
+    }
+
+    /** The outside sources in use (snapshots and bundled history): choices are remade when it changes. */
+    @Override
+    public Object revision() {
+        return revision.get();
     }
 
     private String clientProvenance() {
@@ -85,11 +108,22 @@ final class WorldNpcDisplays implements WorldTileCreatures.Chooser {
             }
         }
         if (outside.isEmpty()) return this;
-        var found = observed.displays(outside, token);
+        Map<Long, List<NpcDisplays.External>> found;
+        try {
+            found = observed.displays(outside, token);
+        } catch (java.util.concurrent.CancellationException canceled) {
+            throw canceled;
+        } catch (Exception failed) {
+            // Reported once for the tile; its NPCs without a client display wait for a later tile.
+            token.check();
+            WorldDiagnostics.degraded("creature lookups", "World outside display lookup failed", failed);
+            return new WorldNpcDisplays(creatures, observed, revision, build, Map.of(),
+                    failed.getClass().getSimpleName());
+        }
         token.check();
         var tile = new java.util.HashMap<Long, List<NpcDisplays.External>>();
         for (long npcId : outside) tile.put(npcId, found.getOrDefault(npcId, List.of()));
-        return new WorldNpcDisplays(creatures, observed, build, Map.copyOf(tile));
+        return new WorldNpcDisplays(creatures, observed, revision, build, Map.copyOf(tile), null);
     }
 
     @Override
@@ -112,6 +146,9 @@ final class WorldNpcDisplays implements WorldTileCreatures.Chooser {
                     choice.displayId() == null ? null : CreatureModelPolicy.scale(client, choice.displayId()));
         }
         var externals = read == null ? null : read.get(npcId);
+        if (externals == null && unavailable != null) {
+            throw new WorldTileCreatures.ChoiceLater("outside displays unavailable: " + unavailable);
+        }
         if (externals == null) {
             externals = observed.displays(List.of(npcId), token).getOrDefault(npcId, List.of());
             token.check();

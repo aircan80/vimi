@@ -64,6 +64,7 @@ public final class WorldTileCreaturesTest {
         onlyNpcConversionsUseTheNpcSide();
         npcImagesUseTheSmallerSide();
         aTileHandsItsUnchosenNpcsToTheChooserTogether();
+        aChooserRevisionRemakesChoicesButKeepsModels();
         BridgeAssembly.run();
         System.out.println("WorldTileCreaturesTest passed");
     }
@@ -742,6 +743,39 @@ public final class WorldTileCreaturesTest {
         var empty = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0,
                 new WorldFormats.Tile(10, 10, 1, 0, 0), Cancellation.NONE);
         require(empty.drawn() == 0 && empty.omitted() == 0 && empty.note() == null, "A tile without spawns is empty");
+    }
+
+    /** Outside sources that change remake the choices only; converted models stay cached. */
+    private static void aChooserRevisionRemakesChoicesButKeepsModels() {
+        var outside = new AtomicReference<Object>("snapshot 1");
+        var chooses = new AtomicInteger();
+        var previews = new AtomicInteger();
+        WorldTileCreatures.Chooser chooser = new WorldTileCreatures.Chooser() {
+            @Override
+            public WorldTileCreatures.Chosen choose(long npcId, Cancellation token) {
+                chooses.incrementAndGet();
+                return qualified(7, null);
+            }
+
+            @Override
+            public Object revision() {
+                return outside.get();
+            }
+        };
+        var creatures = new WorldTileCreatures(
+                token -> index(List.of(WorldSpawnOverlayTest.spawn(1, 1, -100, -100, 10.0))), () -> "r1",
+                chooser, (display, token) -> {
+                    previews.incrementAndGet();
+                    return preview(display, 0L, 0L, appearance(true));
+                });
+        creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(chooses.get() == 1 && previews.get() == 1, "Cached while nothing changes");
+        outside.set("snapshot 2");
+        var drawn = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(drawn.drawn() == 1 && chooses.get() == 2 && previews.get() == 1,
+                "A new outside source remakes the choice and keeps the converted model");
+        require(creatures.cached(7) != null, "The model cache survives");
     }
 
     /** The tile's own NPCs not chosen yet go to {@code forNpcs} at once; the rest stay cached. */

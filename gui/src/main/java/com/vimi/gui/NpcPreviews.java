@@ -377,8 +377,54 @@ final class NpcPreviews {
         return egLink(
                 sources == null ? List::of : () -> sources.npcDisplaySnapshots(build, locale),
                 (snapshot, npcId, token) -> sources.npcDisplays(snapshot, locale, npcId, token),
-                com.vibeminer.eglink.BundledNpcHistory::bundled,
+                NpcPreviews::bundled,
                 build);
+    }
+
+    /**
+     * The shipped history, or null when it cannot be read: then there is no bundled source, and
+     * the downloaded snapshots still answer.
+     */
+    static com.vibeminer.eglink.BundledNpcHistory bundled() {
+        return com.vibeminer.eglink.BundledNpcHistory.available().orElse(null);
+    }
+
+    /** {@code bundled}'s history, or null when it fails: no bundled source, never no sources. */
+    private static com.vibeminer.eglink.BundledNpcHistory history(
+            Supplier<com.vibeminer.eglink.BundledNpcHistory> bundled) {
+        try {
+            return bundled.get();
+        } catch (RuntimeException unreadable) {
+            return null;
+        }
+    }
+
+    /**
+     * What can change the World's outside displays, for {@link WorldNpcDisplays}: each snapshot in
+     * use (its ID, build, commit and dataset dates) and the bundled history's range. Other data
+     * source changes (checks, preferences, file names) leave it unchanged.
+     */
+    static Supplier<Object> egLinkRevision(DataSourcesService sources, BuildInfo build, String locale) {
+        return egLinkRevision(
+                sources == null ? List::of : () -> sources.npcDisplaySnapshots(build, locale),
+                NpcPreviews::bundled);
+    }
+
+    static Supplier<Object> egLinkRevision(
+            Supplier<List<com.vibeminer.eglink.EgLinkTypes.Snapshot>> snapshots,
+            Supplier<com.vibeminer.eglink.BundledNpcHistory> bundled) {
+        return () -> {
+            var key = new ArrayList<Object>();
+            for (var snapshot : snapshots.get()) {
+                key.add(List.of(snapshot.id(), snapshot.build().version(), snapshot.build().revision(),
+                        snapshot.build().datasets().toString()));
+            }
+            var history = history(bundled);
+            key.add(history == null ? "no bundled history"
+                    : List.of(history.product(), history.describe().firstCommit(),
+                            history.describe().lastCommit(), history.describe().builds()));
+            return List.copyOf(key);
+        };
     }
 
     /** One downloaded snapshot's lookup. */
@@ -425,7 +471,7 @@ final class NpcPreviews {
                     result.add(external(provenance, recorded));
                 }
             }
-            result.addAll(bundledExternals(bundled.get(), npcId, build));
+            result.addAll(bundledExternals(history(bundled), npcId, build));
             return List.copyOf(result);
         };
     }
@@ -495,7 +541,7 @@ final class NpcPreviews {
         return egLinkBatch(
                 () -> sources.npcDisplaySnapshots(build, locale),
                 (snapshot, npcIds, token) -> sources.npcDisplays(snapshot, locale, npcIds, token),
-                com.vibeminer.eglink.BundledNpcHistory::bundled,
+                NpcPreviews::bundled,
                 build);
     }
 
@@ -523,7 +569,7 @@ final class NpcPreviews {
                     }
                 }
             }
-            var history = bundled.get();
+            var history = history(bundled);
             for (long id : ids) result.get(id).addAll(bundledExternals(history, id, build));
             var out = new java.util.LinkedHashMap<Long, List<NpcDisplays.External>>();
             result.forEach((id, list) -> out.put(id, List.copyOf(list)));

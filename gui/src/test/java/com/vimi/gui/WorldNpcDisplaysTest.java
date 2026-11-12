@@ -27,6 +27,9 @@ public final class WorldNpcDisplaysTest {
         oneTileAsksTheOutsideSourcesOnceForTheNpcsTheClientLeavesOpen();
         aFailedOutsideReadIsAFailureNotARememberedBlank();
         theBatchLookupKeepsTheNpcPageOrderAndStatesMalformedRecords();
+        aFailedTileBatchReadsNoMoreOutsideSourcesForThatTile();
+        anUnreadableBundledHistoryLeavesTheSnapshotsAnswering();
+        theRevisionFollowsOnlyTheOutsideSourcesInUse();
         System.out.println("World NPC displays: client rule, observed choice, batching and malformed records passed");
     }
 
@@ -263,6 +266,55 @@ public final class WorldNpcDisplaysTest {
         var single = NpcPreviews.external("p", Optional.of(new com.vibeminer.eglink.EgLinkTypes.CreatureDisplays(
                 "n", "wowf", "1.60.1.70888", "2026-11-02", 7, List.of(), "bad")));
         assertTrue(single.malformed(), single.toString());
+    }
+
+    static void aFailedTileBatchReadsNoMoreOutsideSourcesForThatTile() throws Exception {
+        var creatures = new Creatures(Map.of(1L, declared(1, 31)), Set.of(), Set.of());
+        int[] reads = {0};
+        var chooser = new WorldNpcDisplays(() -> creatures, (ids, token) -> {
+            reads[0]++;
+            throw new java.io.IOException("snapshot pruned");
+        }, "b");
+        var tile = chooser.forNpcs(List.of(1L, 7L, 8L), Cancellation.NONE);
+        assertEquals(1, reads[0]);
+        for (long npc : new long[] {7, 8, 9}) {
+            try {
+                tile.choose(npc, Cancellation.NONE);
+                throw new AssertionError("expected a later choice for " + npc);
+            } catch (WorldTileCreatures.ChoiceLater expected) {
+                // Counted as failed by the World, without another read or log line.
+            }
+        }
+        assertEquals(1, reads[0]);
+        // The client still answers for its own NPCs.
+        assertEquals(31, tile.choose(1, Cancellation.NONE).choice().displayId());
+    }
+
+    static void anUnreadableBundledHistoryLeavesTheSnapshotsAnswering() throws Exception {
+        var snapshot = snapshot("o", "1.60.1.70862");
+        java.util.function.Supplier<com.vibeminer.eglink.BundledNpcHistory> broken = () -> {
+            throw new IllegalStateException("bundled history unreadable");
+        };
+        var build = new BuildInfo("wowf", null, "1.60.1.70862", null, null, null, false, null, 0);
+        var batch = NpcPreviews.egLinkBatch(() -> List.of(snapshot),
+                (s, ids, token) -> Map.of(7L, Optional.of(displays("o", 7, 21))), broken, build);
+        var found = batch.displays(List.of(7L), Cancellation.NONE).get(7L);
+        assertEquals(1, found.size());
+        assertEquals(21L, found.getFirst().candidates().getFirst().displayId());
+        var single = NpcPreviews.egLink(() -> List.of(snapshot),
+                (s, npc, token) -> Optional.of(displays("o", 7, 21)), broken, build);
+        assertEquals(21L, single.displays(7, Cancellation.NONE).getFirst().candidates().getFirst().displayId());
+        assertTrue(NpcPreviews.egLinkRevision(() -> List.of(snapshot), broken).get().toString()
+                .contains("no bundled history"), "an unreadable history is no bundled source");
+    }
+
+    static void theRevisionFollowsOnlyTheOutsideSourcesInUse() {
+        var snapshots = new java.util.concurrent.atomic.AtomicReference<>(List.of(snapshot("o", "1.60.1.70862")));
+        var revision = NpcPreviews.egLinkRevision(snapshots::get, () -> null);
+        var first = revision.get();
+        assertEquals(first, revision.get());
+        snapshots.set(List.of(snapshot("n", "1.60.1.70888"), snapshot("o", "1.60.1.70862")));
+        assertTrue(!first.equals(revision.get()), "a new snapshot changes the choices' revision");
     }
 
     private static com.vibeminer.eglink.EgLinkTypes.CreatureDisplays displays(String snapshot, long npc, long display) {

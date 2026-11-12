@@ -730,6 +730,11 @@ public final class WorldMeasurementProbe {
             this.examples = examples;
         }
 
+        @Override
+        public Object revision() {
+            return inner.revision();
+        }
+
         /** The World's per-tile batch, still counted here. */
         @Override
         public WorldTileCreatures.Chooser forNpcs(java.util.Collection<Long> npcIds, Cancellation token)
