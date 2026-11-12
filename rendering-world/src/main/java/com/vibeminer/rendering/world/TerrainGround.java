@@ -146,6 +146,77 @@ public final class TerrainGround {
             return Double.NaN;
         }
 
+        /**
+         * Whether a chunk of this tile covers the point: rendered (GROUND), a hole or an unrendered
+         * cell (HOLE), or no chunk here (UNLOADED).
+         */
+        Coverage coverage(double x, double y) {
+            if (x < minX - SEAM || x > maxX + SEAM || y < minY - SEAM || y > maxY + SEAM) {
+                return Coverage.UNLOADED;
+            }
+            var result = Coverage.UNLOADED;
+            for (int chunk = 0; chunk < originX.length; chunk++) {
+                double s = (originX[chunk] - x) / CELL, t = (originY[chunk] - y) / CELL;
+                if (s < -SEAM_CELLS
+                        || s > 8 + SEAM_CELLS
+                        || t < -SEAM_CELLS
+                        || t > 8 + SEAM_CELLS) {
+                    continue;
+                }
+                int row = Math.clamp((int) Math.floor(s), 0, 7),
+                        col = Math.clamp((int) Math.floor(t), 0, 7);
+                if ((rendered[chunk] >>> (row * 8 + col) & 1) != 0) {
+                    return Coverage.GROUND;
+                }
+                result = Coverage.HOLE;
+            }
+            return result;
+        }
+
+        /** Emits the four fan triangles of every rendered cell that overlaps the box. */
+        void triangles(double x0, double y0, double x1, double y1, TriangleSink sink) {
+            if (x1 < minX || x0 > maxX || y1 < minY || y0 > maxY) {
+                return;
+            }
+            for (int chunk = 0; chunk < originX.length; chunk++) {
+                // Rows run toward native -X, columns toward native -Y.
+                int rowFirst = (int) Math.floor((originX[chunk] - x1) / CELL),
+                        rowLast = (int) Math.floor((originX[chunk] - x0) / CELL),
+                        colFirst = (int) Math.floor((originY[chunk] - y1) / CELL),
+                        colLast = (int) Math.floor((originY[chunk] - y0) / CELL);
+                if (rowLast < 0 || rowFirst > 7 || colLast < 0 || colFirst > 7) {
+                    continue;
+                }
+                for (int row = Math.max(0, rowFirst); row <= Math.min(7, rowLast); row++) {
+                    for (int col = Math.max(0, colFirst); col <= Math.min(7, colLast); col++) {
+                        if ((rendered[chunk] >>> (row * 8 + col) & 1) == 0) {
+                            continue;
+                        }
+                        int a = row * 17 + col, b = a + 1, d = a + 17, e = d + 1, m = a + 9;
+                        emit(chunk, a, m, b, sink);
+                        emit(chunk, b, m, e, sink);
+                        emit(chunk, e, m, d, sink);
+                        emit(chunk, d, m, a, sink);
+                    }
+                }
+            }
+        }
+
+        private void emit(int chunk, int p, int q, int r, TriangleSink sink) {
+            double[] pp = position(chunk, p), pq = position(chunk, q), pr = position(chunk, r);
+            int base = chunk * GRID;
+            sink.triangle(
+                    pp[0],
+                    pp[1],
+                    heights[base + p],
+                    pq[0],
+                    pq[1],
+                    heights[base + q],
+                    pr[0],
+                    pr[1],
+                    heights[base + r]);
+        }
+
         private double cellHeight(int chunk, int row, int col, double x, double y) {
             int a = row * 17 + col, b = a + 1, d = a + 17, e = d + 1, m = a + 9;
             double px = originX[chunk], py = originY[chunk];
@@ -207,6 +278,85 @@ public final class TerrainGround {
 
     public int tiles() {
         return tiles.size();
+    }
+
+    /** What the retained terrain says about one native XY point. */
+    public enum Coverage {
+        /** A rendered cell: {@link #heightAt} has a height here. */
+        GROUND,
+        /** A loaded chunk without a rendered cell here: a terrain hole, open for falling. */
+        HOLE,
+        /** No retained chunk covers the point (not loaded, or an unqualified layout). */
+        UNLOADED
+    }
+
+    /** Receives one triangle in native coordinates; winding is the terrain's own. */
+    @FunctionalInterface
+    public interface TriangleSink {
+        void triangle(
+                double ax,
+                double ay,
+                double az,
+                double bx,
+                double by,
+                double bz,
+                double cx,
+                double cy,
+                double cz);
+    }
+
+    /** Coverage of one point: GROUND on a rendered cell, HOLE in a loaded chunk's hole. */
+    public Coverage coverage(double x, double y) {
+        if (!Double.isFinite(x) || !Double.isFinite(y)) {
+            return Coverage.UNLOADED;
+        }
+        var result = Coverage.UNLOADED;
+        for (var tile : tiles) {
+            var here = tile.coverage(x, y);
+            if (here == Coverage.GROUND) {
+                return here;
+            }
+            if (here == Coverage.HOLE) {
+                result = here;
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Whether every point of the box is covered by a retained chunk (rendered or a hole), sampled
+     * at half a cell: false while any part of it is still unloaded.
+     */
+    public boolean covers(double x0, double y0, double x1, double y1) {
+        if (!(x0 <= x1) || !(y0 <= y1)) {
+            return false;
+        }
+        double step = CELL / 2;
+        int nx = (int) Math.ceil((x1 - x0) / step), ny = (int) Math.ceil((y1 - y0) / step);
+        if ((long) (nx + 1) * (ny + 1) > 65_536) {
+            return false;
+        }
+        for (int i = 0; i <= nx; i++) {
+            double x = i == nx ? x1 : x0 + i * step;
+            for (int j = 0; j <= ny; j++) {
+                double y = j == ny ? y1 : y0 + j * step;
+                if (coverage(x, y) == Coverage.UNLOADED) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Emits every rendered triangle of the cells overlapping the box; holes emit nothing. A point
+     * covered by two retained tiles may emit both copies.
+     */
+    public void triangles(double x0, double y0, double x1, double y1, TriangleSink sink) {
+        Objects.requireNonNull(sink);
+        for (var tile : tiles) {
+            tile.triangles(x0, y0, x1, y1, sink);
+        }
     }
 
     /** Rendered terrain height, or NaN for holes, unloaded or unqualified coverage. */

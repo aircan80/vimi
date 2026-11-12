@@ -893,7 +893,8 @@ check.dependsOn preparedBuildReaderTest
 // and geoset outcomes over the whole build, one display per model until -Pprobe.limit or the
 // deadline (#377, #455), with the same keys and store use; -Pprobe.mode=refusals
 // counts terrain texture refusals over whole maps; -Pprobe.mode=water counts water outcomes over
-// every -Pprobe.stride-th tile (#171); -Pprobe.mode=prep times tile prep alone (#422).
+// every -Pprobe.stride-th tile (#171); -Pprobe.mode=prep times tile prep alone (#422); -Pprobe.mode=walk walks a body over each
+// scenario's real 3x3 terrain in eight headings and reports where it ended, slides and falls.
 // -Pvimi.world.viewDistance=far streams the 5x5 neighbourhood instead of the 3x3 (#173).
 tasks.register('worldMeasurementProbe', JavaExec) {
     group = 'verification'

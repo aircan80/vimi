@@ -10,7 +10,10 @@ import com.vibeminer.concepts.world.WorldService;
 import com.vibeminer.formats.world.WorldFormats;
 import com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance;
 import com.vibeminer.rendering.world.ExplorerMotion;
+import com.vibeminer.rendering.world.CollisionWorld;
+import com.vibeminer.rendering.world.MovementParity;
 import com.vibeminer.rendering.world.TerrainGround;
+import com.vibeminer.rendering.world.WalkController;
 import com.vibeminer.rendering.world.TerrainRenderer;
 import com.vibeminer.rendering.world.TerrainScene;
 import com.vibeminer.rendering.world.TerrainCamera;
@@ -209,7 +212,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
             new javafx.scene.control.ChoiceBox<>();
     // The distance the current stream controller was started with.
     private ViewDistance streamingDistance = WorldStreamGpuOwner.VIEW_DISTANCE;
-    private final CheckBox walkMode = new CheckBox("Walk on terrain (F)");
+    // Free camera when neither is ticked; at most one of the two is.
+    private final CheckBox walkMode = new CheckBox("Walk with collision (F)");
+    private final CheckBox flyMode = new CheckBox("Fly with collision (G)");
     private final CheckBox smoothMotion = new CheckBox("Smooth motion");
     private final javafx.scene.control.Slider lookSensitivity = new javafx.scene.control.Slider(
             WorldControls.MIN_SENSITIVITY, WorldControls.MAX_SENSITIVITY, WorldControls.DEFAULT_SENSITIVITY);
@@ -235,7 +240,18 @@ final class WorldView extends BorderPane implements AutoCloseable {
         @Override public void groundStatus(ExplorerMotion.Ground ground) { WorldView.this.groundStatus(ground); }
         @Override public void toggleWalk() {
             walkMode.setSelected(!walkMode.isSelected());
+            flyMode.setSelected(false);
             motionChanged();
+        }
+        @Override public void toggleFly() {
+            boolean fly = !flyMode.isSelected();
+            flyMode.setSelected(fly);
+            walkMode.setSelected(!fly);
+            motionChanged();
+        }
+        @Override public CollisionWorld collision() { return currentCollision(); }
+        @Override public void bodyStatus(WorldExplorerInput.Mode mode, WalkController.Status status) {
+            WorldView.this.bodyStatus(mode, status);
         }
         @Override public void command(WorldControls.Action action) { WorldView.this.command(action); }
         @Override public void requestFrame() { WorldView.this.requestFrame(); }
@@ -866,7 +882,16 @@ final class WorldView extends BorderPane implements AutoCloseable {
         gpuEnabled.setId("world-gpu-enabled");
         walkMode.setId("world-walk-mode");
         walkMode.setFocusTraversable(false);
-        walkMode.setOnAction(e -> motionChanged());
+        walkMode.setOnAction(e -> {
+            if (walkMode.isSelected()) flyMode.setSelected(false);
+            motionChanged();
+        });
+        flyMode.setId("world-fly-mode");
+        flyMode.setFocusTraversable(false);
+        flyMode.setOnAction(e -> {
+            if (flyMode.isSelected()) walkMode.setSelected(false);
+            motionChanged();
+        });
         smoothMotion.setId("world-smooth-motion");
         smoothMotion.setFocusTraversable(false);
         smoothMotion.setSelected(true);
@@ -1099,7 +1124,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         // Change listeners, not invalidation ones: refreshIcons does not read every source each time.
         javafx.beans.value.ChangeListener<Object> iconState = (o, before, after) -> refreshIcons();
         for (javafx.beans.value.ObservableValue<?> source : java.util.List.<javafx.beans.value.ObservableValue<?>>of(
-                walkMode.selectedProperty(),
+                walkMode.selectedProperty(), flyMode.selectedProperty(),
                 smoothMotion.selectedProperty(), motionStatus.textProperty(), flightSpeed.valueProperty(),
                 audio.music().selectedProperty(), audio.ambience().selectedProperty(), audio.status().textProperty(),
                 audio.silent(com.vibeminer.concepts.world.WorldAreaAudio.Kind.MUSIC), audio.silent(com.vibeminer.concepts.world.WorldAreaAudio.Kind.AMBIENCE),
@@ -1531,29 +1556,83 @@ final class WorldView extends BorderPane implements AutoCloseable {
         devOverlay.refresh();
     }
 
+    private TerrainGround collisionGround;
+    private CollisionWorld collision = CollisionWorld.NONE;
+
+    /** Body collision over the current ground, rebuilt only when the ground changes. */
+    private CollisionWorld currentCollision() {
+        var surface = currentGround();
+        if (surface != collisionGround) {
+            collisionGround = surface;
+            collision = CollisionWorld.terrain(surface);
+        }
+        return collision;
+    }
+
     private TerrainGround currentGround() {
         if (!streamingMode) return ground;
         var controller = streaming;
         return controller == null ? TerrainGround.empty() : controller.ground();
     }
 
+    /** The motion mode the two checkboxes choose. */
+    private WorldExplorerInput.Mode motionMode() {
+        return walkMode.isSelected() ? WorldExplorerInput.Mode.WALK
+                : flyMode.isSelected() ? WorldExplorerInput.Mode.FLY : WorldExplorerInput.Mode.FREE;
+    }
+
     private void motionChanged() {
-        input.motion(walkMode.isSelected(), smoothMotion.isSelected());
-        if (!walkMode.isSelected() || camera == null) groundStatus(ExplorerMotion.Ground.FREE);
-        else groundStatus(Double.isNaN(currentGround().heightAt(camera.x(), camera.y()))
-                ? ExplorerMotion.Ground.UNAVAILABLE : ExplorerMotion.Ground.FOLLOWING);
+        var mode = motionMode();
+        input.motion(mode, smoothMotion.isSelected());
+        bodyMode = null;
+        if (mode == WorldExplorerInput.Mode.FREE) groundStatus(ExplorerMotion.Ground.FREE);
+        else bodyStatus(mode, input.body().body().status());
         if (explorer) focusViewport();
     }
 
     private void groundStatus(ExplorerMotion.Ground next) {
-        motionStatus.setText(switch (next) {
-            case FREE -> "Free flight · no collision";
-            case FOLLOWING -> "Walking · eye "
-                    + (int) ExplorerMotion.EYE_HEIGHT + " yd above rendered terrain · no collision";
-            case UNAVAILABLE -> "Walking · no rendered terrain here; altitude held";
-        });
+        if (motionMode() != WorldExplorerInput.Mode.FREE) return;
+        motionStatus.setText("Free flight · no collision");
         motionGround = next;
         refreshIcons();
+    }
+
+    // The body state the status line shows, so a pulse only relabels on a change.
+    private WorldExplorerInput.Mode bodyMode;
+    private WalkController.Status bodyShown;
+    private double bodySpeedShown = -1;
+
+    /** The status line for a walking or flying body; relabels only when something changed. */
+    private void bodyStatus(WorldExplorerInput.Mode mode, WalkController.Status status) {
+        double speed = mode == WorldExplorerInput.Mode.FLY ? input.flySpeed() : 0;
+        if (mode == bodyMode && status == bodyShown && speed == bodySpeedShown) return;
+        bodyMode = mode;
+        bodyShown = status;
+        bodySpeedShown = speed;
+        motionStatus.setText(bodyText(mode, status, speed));
+        motionGround = status == WalkController.Status.LOADING ? ExplorerMotion.Ground.UNAVAILABLE
+                : ExplorerMotion.Ground.FOLLOWING;
+        refreshIcons();
+    }
+
+    /** What a body status says, e.g. "Walking · collides with terrain". */
+    static String bodyText(WorldExplorerInput.Mode mode, WalkController.Status status, double flySpeed) {
+        String collides = " · collides with terrain (not yet buildings or objects)";
+        if (mode == WorldExplorerInput.Mode.FLY) {
+            String speed = String.format(java.util.Locale.ROOT, " · %.0f yd/s", flySpeed)
+                    + (flySpeed > MovementParity.TAXI_SPEED ? ", beyond game speed"
+                            : " (taxi speed; Classic has no player flight, controls approximated)");
+            return status == WalkController.Status.LOADING
+                    ? "Flying · terrain collision not loaded here yet; flying on without it" + speed
+                    : "Flying" + collides + speed;
+        }
+        return switch (status) {
+            case STANDING, MOVING, FLYING -> "Walking" + collides;
+            case FALLING -> "Walking · in the air" + collides;
+            case SLIDING -> "Walking · too steep to stand: sliding" + collides;
+            case LOADING -> "Walking · waiting for terrain collision here";
+            case RETURNED -> "Walking · fell out of the world; put back where you last stood";
+        };
     }
 
     void ensureLoaded() {
@@ -2228,7 +2307,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         var layoutRow = new HBox(10, new Label("Layout"), qwerty, azerty);
         layoutRow.setAlignment(Pos.CENTER_LEFT);
         menu.page(WorldGameMenu.Page.CONTROLS).getChildren().setAll(
-                WorldGameMenu.section("Movement", speedRow, smoothMotion, walkMode, motionStatus),
+                WorldGameMenu.section("Movement", speedRow, smoothMotion, walkMode, flyMode, motionStatus),
                 WorldGameMenu.section("Look", sensitivityRow, invertLook, lookStatus),
                 WorldGameMenu.section("Keys", layoutRow, keyBindings),
                 keyHelp, inspectHint());
@@ -3216,7 +3295,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     /** Recomputes every status icon from the controls and labels it summarises. */
     private void refreshIcons() {
-        icons.mode(!walkMode.isSelected() ? WorldStatusIcons.Mode.FLY
+        icons.mode(motionMode() != WorldExplorerInput.Mode.WALK ? WorldStatusIcons.Mode.FLY
                 : motionGround == ExplorerMotion.Ground.UNAVAILABLE ? WorldStatusIcons.Mode.WALK_NO_TERRAIN
                 : WorldStatusIcons.Mode.WALK, motionStatus.getText());
         icons.smooth(smoothMotion.isSelected());
