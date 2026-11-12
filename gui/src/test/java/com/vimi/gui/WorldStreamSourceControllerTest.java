@@ -89,6 +89,7 @@ public final class WorldStreamSourceControllerTest {
         setsLeavingOutNetworkSourcesArePreparedAgainLater();
         aRetryNoBetterOrWithNothingNewKeepsTheDrawnSet();
         aRetryGivesWayToBuildingsDueNow();
+        aSetThatKeptOnlySomePendingIdsIsPreparedAtTheLongestBackOff();
         buildingsComeFirstAndCreaturesReplaceThemLater();
         aSpawnSourceWithoutSpawnsSchedulesNoCreaturePasses();
         aSessionThatDrawsCreaturesWarmsItsPreparerOffItsThread();
@@ -1021,6 +1022,14 @@ public final class WorldStreamSourceControllerTest {
             java.util.concurrent.ConcurrentHashMap<Integer, java.util.concurrent.atomic.AtomicInteger> asked,
             java.util.function.BiFunction<Integer, Integer, Integer> pending,
             java.util.function.BooleanSupplier readable) {
+        return pendingPreparer(asked, pending, readable, false);
+    }
+
+    private static WorldStreamSourceBridge.ExteriorPreparer pendingPreparer(
+            java.util.concurrent.ConcurrentHashMap<Integer, java.util.concurrent.atomic.AtomicInteger> asked,
+            java.util.function.BiFunction<Integer, Integer, Integer> pending,
+            java.util.function.BooleanSupplier readable,
+            boolean truncated) {
         return new WorldStreamSourceBridge.ExteriorPreparer() {
             @Override
             public WorldStreamSourceBridge.ExteriorCopy prepare(
@@ -1041,8 +1050,10 @@ public final class WorldStreamSourceControllerTest {
                     }
                     cancellation.check();
                 }
-                var summary = new WorldStreamSourceBridge.ExteriorSummary(
-                        1, 0, 0, 0, 0, 0, 0, Math.max(0, left), left > 0 ? List.of(77L) : List.of());
+                // Every pending source's ID, or (truncated) only the first of them.
+                int ids = Math.min(Math.max(0, left), truncated ? 1 : Integer.MAX_VALUE);
+                var summary = new WorldStreamSourceBridge.ExteriorSummary(1, 0, 0, 0, 0, 0, 0, Math.max(0, left),
+                        java.util.stream.LongStream.rangeClosed(1, ids).boxed().toList());
                 return new WorldStreamSourceBridge.ExteriorCopy(
                         building(), 1, false, "authored", WorldTileCreatures.Summary.NONE, summary, null);
             }
@@ -1089,6 +1100,31 @@ public final class WorldStreamSourceControllerTest {
             // Readable again: the next one prepares.
             readable.set(true);
             untilPrepared(fixture, asked, y, 3);
+        } finally {
+            fixture.close();
+        }
+    }
+
+    /**
+     * A set that lacked more sources than it kept the IDs of is prepared again at the longest
+     * back-off even though none of the kept IDs is readable: a later one may be.
+     */
+    private static void aSetThatKeptOnlySomePendingIdsIsPreparedAtTheLongestBackOff() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 6);
+        fixture.exteriors = true;
+        fixture.residents = 4;
+        var asked = new java.util.concurrent.ConcurrentHashMap<Integer, java.util.concurrent.atomic.AtomicInteger>();
+        int y = fixture.tiles.get(0).y();
+        try {
+            fixture.start(fixture.gpu::start, () -> {},
+                    pendingPreparer(asked, (tile, pass) -> 3, () -> false, true));
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 1));
+            fixture.untilPresented(() -> fixture.objectLines().stream()
+                    .anyMatch(line -> line.startsWith(y + " ") && line.endsWith(" ATTACHED")));
+            // Nothing the set kept is readable, yet the back-off reaches its longest and it prepares.
+            untilPrepared(fixture, asked, y, 2);
         } finally {
             fixture.close();
         }

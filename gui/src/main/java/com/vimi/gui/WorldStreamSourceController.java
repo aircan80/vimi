@@ -236,6 +236,9 @@ final class WorldStreamSourceController {
         // A pass again for a drawn set that left out sources only the network had (pendingRetry):
         // the same objects, read again, replacing the drawn set.
         final boolean retry;
+        // A retry first checks whether any source its set lacked can be read now, and prepares
+        // nothing if none can; false skips the check (see startPendingRetry).
+        boolean checkReadable = true;
         // A creature pass: the buildings its tile's buildings pass kept, reused instead of being
         // prepared again, or null. A buildings pass: what it kept (set on the exterior worker).
         WorldStreamSourceBridge.KeptBuildings reuse;
@@ -1844,8 +1847,16 @@ final class WorldStreamSourceController {
                     continue;
                 }
                 WorldStageTimings.add("parent.objects.pendingRetry", 1);
-                prepare(new Exterior(entry, false, true), tile,
-                        creaturesShed.contains(entry) ? 0 : creatureAllowance(), "parent.objects.preparePending");
+                var work = new Exterior(entry, false, true);
+                // A set keeps only the first pending sources' IDs: when it lacked more, a later one
+                // may be the one that became readable, so at the longest back-off the retry
+                // prepares without checking. There is no other anti-starvation counter, by design:
+                // a tile whose known sources stay unreadable is never prepared again for nothing.
+                var drawn = entry.source().exteriorSummary();
+                work.checkReadable = drawn.pending() <= drawn.pendingSources().size()
+                        || pendingRetryDelay((int) retry[1]) < PENDING_RETRY_MAX_NANOS;
+                prepare(work, tile, creaturesShed.contains(entry) ? 0 : creatureAllowance(),
+                        "parent.objects.preparePending");
                 return;
             }
         }
@@ -1922,7 +1933,7 @@ final class WorldStreamSourceController {
                     long preparing = WorldStageTimings.start();
                     try {
                         // A retry reads nothing again until one of the sources it lacked is local.
-                        if (work.retry && !exteriorPreparer.pendingReadable(
+                        if (work.retry && work.checkReadable && !exteriorPreparer.pendingReadable(
                                 lane, work.entry.source().exteriorSummary().pendingSources(), work.cancellation)) {
                             return NOTHING_NEW;
                         }

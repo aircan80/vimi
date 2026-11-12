@@ -2443,7 +2443,11 @@ final class WorldStreamScopes {
 
     /**
      * Whether any of {@code ids} can be read now rather than only from the network: a cheap check
-     * (an open, closed at once) before preparing a tile again for sources it left out.
+     * (an open, closed at once) before preparing a tile again for sources it left out. Online, the
+     * open may fetch: it reads only the file's BLTE header, which the object source serves by range
+     * for a large object (held in memory, nothing stored) or by fetching and storing a small object
+     * whole, so closing the stream at once never leaves a partial store entry, and a small file it
+     * fetched is then local for the pass that follows.
      */
     boolean anyReadableNow(java.util.List<Long> ids, Cancellation token) {
         for (long id : ids) {
