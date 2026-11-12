@@ -3758,6 +3758,124 @@ class WorldExteriorObjectsTest {
                 chunk("MODD", modd.toByteArray()));
     }
 
+    /**
+     * The authored doodad model with one static bone, a Stand (sequence ID 0, 1000 ms, keys in the
+     * model), one texture weight track whose only key, at time 0, is {@code weight} (0 to 32767),
+     * and a weight lookup sending every texture weight combo to that track; with {@code skeleton}
+     * it also names an external skeleton file (SKID), whose Stand the doodad path does not read.
+     */
+    static byte[] weighted(int weight, boolean skeleton) {
+        var file = ByteBuffer.wrap(model()).order(ByteOrder.LITTLE_ENDIAN);
+        var before = new ByteArrayOutputStream();
+        var after = new ByteArrayOutputStream();
+        byte[] md20 = null;
+        while (file.remaining() >= 8) {
+            int tag = file.getInt(), length = file.getInt();
+            byte[] payload = new byte[length];
+            file.get(payload);
+            var chunk = buffer(8 + length).putInt(tag).putInt(length).put(payload).array();
+            if (tag == 0x3132444d) { // MD21
+                md20 = payload;
+            } else if (md20 == null) {
+                before.writeBytes(chunk);
+            } else {
+                after.writeBytes(chunk);
+            }
+        }
+        var body = ByteBuffer.allocate(md20.length + 512).order(ByteOrder.LITTLE_ENDIAN);
+        body.put(md20);
+        body.position((body.position() + 3) & ~3);
+        // One static bone (no key bone, no parent, no keys), which the vertices already name.
+        int bone = body.position();
+        body.position(bone + 88);
+        body.putInt(bone, -1);
+        body.putInt(bone + 4, 512);
+        body.putShort(bone + 8, (short) -1);
+        for (int t : new int[] {16, 36, 56}) {
+            body.putShort(bone + t + 2, (short) -1);
+        }
+        body.putInt(44, 1).putInt(48, bone);
+        // The Stand.
+        int sequence = body.position();
+        body.position(sequence + 64);
+        body.putShort(sequence, (short) 0);
+        body.putInt(sequence + 4, 1000);
+        body.putInt(sequence + 12, 0x20);
+        body.putInt(28, 1).putInt(32, sequence);
+        // One texture weight track, global sequence -1, one keyed slice: time 0 -> weight.
+        int track = body.position();
+        int outerTimes = track + 20, outerValues = outerTimes + 8, keyTimes = outerValues + 8;
+        int keyValues = keyTimes + 4;
+        body.putShort((short) 0).putShort((short) -1);
+        body.putInt(1).putInt(outerTimes).putInt(1).putInt(outerValues);
+        body.putInt(1).putInt(keyTimes);
+        body.putInt(1).putInt(keyValues);
+        body.putInt(0);
+        body.putShort((short) weight);
+        body.position((body.position() + 3) & ~3);
+        body.putInt(88, 1).putInt(92, track);
+        // The weight lookup: combos 0 to 7 all name track 0.
+        int lookup = body.position();
+        for (int i = 0; i < 8; i++) {
+            body.putShort((short) 0);
+        }
+        body.putInt(144, 8).putInt(148, lookup);
+        int length = body.position();
+        var out = new ByteArrayOutputStream();
+        out.writeBytes(before.toByteArray());
+        out.writeBytes(buffer(8).putInt(0x3132444d).putInt(length).array());
+        out.write(body.array(), 0, length);
+        out.writeBytes(after.toByteArray());
+        if (skeleton) {
+            out.writeBytes(buffer(12).putInt(0x44494b53).putInt(4).putInt(9999).array()); // SKID
+        }
+        return out.toByteArray();
+    }
+
+    @Test
+    void standWeightsAreTheTracksAtTheStandSampleOrNullWhenNotDecided() throws Exception {
+        java.util.function.Function<byte[], float[]> weights =
+                bytes -> {
+                    var model =
+                            com.vibeminer.formats.models.M2ModelReader.read(
+                                            com.vibeminer.formats.AssetSource.bytes(bytes))
+                                    .join();
+                    return WorldExteriorObjects.standWeights(bytes, model, Cancellation.NONE);
+                };
+        assertNull(weights.apply(model()), "a model declaring no weights draws every batch");
+        assertArrayEquals(new float[] {0f}, weights.apply(weighted(0, false)), 0f);
+        assertArrayEquals(new float[] {1f}, weights.apply(weighted(32767, false)), 1e-4f);
+        assertNull(
+                weights.apply(weighted(0, true)),
+                "a Stand in an external skeleton is not read: undecided, every batch drawn");
+    }
+
+    @Test
+    void aDoodadBatchWhoseWeightIsZeroAtTheStandIsLeftOut() {
+        var doodads = List.of(Mddf.of(MODEL, 1, 0x40));
+        var files = new OrderedFiles();
+        try (var f = new Fixture(List.of(), files)) {
+            putModel(f, MODEL, weighted(0, false));
+            try (var set = run(f, obj0(List.of(), doodads))) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.MODEL_BATCH_TRANSPARENT));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.MODEL_BATCH_DRAWN));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.DOODAD_DRAWN));
+            }
+            // Neither the read-ahead nor the read opens the image of the left-out batch.
+            assertTrue(files.order.contains(MODEL), "the model was read: " + files.order);
+            assertFalse(files.order.contains(MODEL_IMAGE), "its image was not: " + files.order);
+        }
+        // The same model at full weight draws its batch.
+        try (var f = new Fixture(List.of())) {
+            putModel(f, MODEL, weighted(32767, false));
+            try (var set = run(f, obj0(List.of(), doodads))) {
+                assertEquals(0, set.count(WorldExteriorObjects.Count.MODEL_BATCH_TRANSPARENT));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.MODEL_BATCH_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.DOODAD_DRAWN));
+            }
+        }
+    }
+
     private static void putModel(Fixture f, long id, byte[] bytes) {
         f.files.sources.put(id, bytes);
         f.files.sources.put(SKIN, skin());

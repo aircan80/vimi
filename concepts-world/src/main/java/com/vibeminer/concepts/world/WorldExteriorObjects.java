@@ -260,6 +260,9 @@ public final class WorldExteriorObjects {
      * A doodad model's texture weights (transparency tracks) at the static Stand sample, in track
      * order, NaN for a track whose value is not decided ({@link M2StandWeights}); null when the
      * model declares none or its Stand cannot be read, which leaves every batch drawn as before.
+     * The sample is time 0 of the Stand: a weight that is 0 there and rises later is hidden too, as
+     * the static pose and the creature path's Stand alpha take the same sample. Both reads of a
+     * doodad, the read-ahead's ({@code modelImages}) and {@code readModel}, use it.
      */
     static float[] standWeights(byte[] raw, M2Types.Model model, Cancellation token) {
         boolean declared =
@@ -286,7 +289,8 @@ public final class WorldExteriorObjects {
     /**
      * Whether a doodad batch's first texture is fully transparent at the Stand sample: its texture
      * weight track is decided and 0. The client multiplies the texture by that weight, so it draws
-     * nothing; the model's static pose would otherwise draw it opaque.
+     * nothing there; the model's static pose would otherwise draw it opaque. A weight that rises
+     * after time 0 is left out all the same: the World draws doodads at that one static sample.
      */
     static boolean transparent(List<Integer> weightLookup, int combo, float[] weights) {
         if (weights == null || combo < 0 || combo >= weightLookup.size()) {
@@ -3937,7 +3941,7 @@ public final class WorldExteriorObjects {
                 }
                 reads++;
                 hinted.add(id);
-                var parsed = new java.util.concurrent.atomic.AtomicReference<M2Types.Model>();
+                var parsed = new java.util.concurrent.atomic.AtomicReference<ReadAhead>();
                 admission.prefetch(
                         id,
                         WorldStreamScopes.DerivedKind.M2_MODEL,
@@ -3961,10 +3965,14 @@ public final class WorldExteriorObjects {
                 long id,
                 byte[] bytes,
                 Cancellation cancel,
-                java.util.concurrent.atomic.AtomicReference<M2Types.Model> parsed) {
+                java.util.concurrent.atomic.AtomicReference<ReadAhead> parsed) {
             M2Types.Model model;
+            float[] weights;
             try {
                 model = modelReader.read(id, bytes, cancel).join();
+                // The same Stand weights readModel samples, so the read-ahead skips the same
+                // transparent batches and prefetches no image the main read drops.
+                weights = standWeights(bytes, model, cancel);
             } catch (RuntimeException failed) {
                 return 0;
             }
@@ -3972,9 +3980,14 @@ public final class WorldExteriorObjects {
             if (skins.isEmpty() || skins.getFirst() <= 0) {
                 return 0;
             }
-            parsed.set(model);
+            parsed.set(new ReadAhead(model, weights));
             return skins.getFirst();
         }
+
+        /**
+         * A model the read-ahead parsed, with its Stand texture weights ({@link #standWeights}).
+         */
+        private record ReadAhead(M2Types.Model model, float[] weights) {}
 
         /**
          * The images {@link #resolve} reads for this model's mesh after these SKIN bytes, in its
@@ -3982,11 +3995,11 @@ public final class WorldExteriorObjects {
          * reader and the same {@link #copyModel} over the same bytes, on the read-ahead thread,
          * stopping as soon as that read is canceled (withdrawn, or the tile canceled).
          */
-        private long[] modelImages(
-                long id, M2Types.Model model, byte[] bytes, Cancellation cancel) {
-            if (model == null) {
+        private long[] modelImages(long id, ReadAhead ahead, byte[] bytes, Cancellation cancel) {
+            if (ahead == null) {
                 return new long[0];
             }
+            var model = ahead.model();
             M2Types.Skin skin;
             try {
                 skin =
@@ -4001,7 +4014,7 @@ public final class WorldExteriorObjects {
                             model.skinFileDataIds().getFirst(),
                             model,
                             skin,
-                            null,
+                            ahead.weights(),
                             new int[counts.length],
                             cancel);
             if (pending == null || pending == ALL_BILLBOARD) {
