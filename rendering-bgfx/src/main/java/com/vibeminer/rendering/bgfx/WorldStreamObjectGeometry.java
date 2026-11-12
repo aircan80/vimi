@@ -221,6 +221,35 @@ final class WorldStreamObjectGeometry {
         return freed;
     }
 
+    /**
+     * As {@link #evict(long)}, but keeps the zombies {@code keep} shares: destroying one would free
+     * nothing for that plan, whose set would then create it again.
+     */
+    long evict(long needed, Plan keep) {
+        var kept =
+                java.util.Collections.newSetFromMap(
+                        new java.util.IdentityHashMap<Entry, Boolean>());
+        for (var entry : keep.shared()) {
+            if (entry != null) {
+                kept.add(entry);
+            }
+        }
+        long freed = 0;
+        Iterator<Entry> oldest = zombies.values().iterator();
+        while (freed < needed && oldest.hasNext()) {
+            var entry = oldest.next();
+            if (kept.contains(entry)) {
+                continue;
+            }
+            oldest.remove();
+            zombieBytes -= entry.bytes;
+            evicted++;
+            destroy(entry);
+            freed += entry.bytes;
+        }
+        return freed;
+    }
+
     private long destroyOldestZombie() {
         Iterator<Entry> oldest = zombies.values().iterator();
         var entry = oldest.next();

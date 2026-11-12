@@ -67,6 +67,34 @@ final class WorldStreamObjectAnimationProof {
         return builder.build();
     }
 
+    /**
+     * One still model with sixteen copies of the quad's vertices, at one near placement: a model of
+     * another asset whose geometry outweighs every pose of the animated one.
+     */
+    static WorldStreamTileWriter.Exterior still() throws Exception {
+        var builder = WorldStreamTileWriter.Exterior.builder();
+        var top = ByteBuffer.allocate(4 * 4 * 4);
+        for (int i = 0; i < 16; i++) {
+            top.put((byte) 200).put((byte) 90).put((byte) 40).put((byte) 255);
+        }
+        top.flip();
+        builder.image(4, 4, WorldStreamObjectsFileTest.chain(4, 4, top));
+        builder.model();
+        var plain = WorldStreamObjectsFileTest.small().data().vertices;
+        var vertices = FloatBuffer.allocate(plain.length * 16);
+        for (int copy = 0; copy < 16; copy++) {
+            vertices.put(plain);
+        }
+        vertices.flip();
+        builder.mesh(
+                vertices,
+                IntBuffer.wrap(new int[] {0, 1, 2, 2, 1, 3}),
+                new int[] {0, 6, 0},
+                new int[] {WorldStreamObjectsFile.OPAQUE});
+        builder.placement(0, -12, -14, 10.2, .5, 1, 0);
+        return builder.build();
+    }
+
     @SuppressWarnings("try")
     public static void main(String[] arguments) throws Exception {
         Path output = Files.createDirectories(Path.of(arguments[0]));
@@ -90,6 +118,7 @@ final class WorldStreamObjectAnimationProof {
                             .get(20, TimeUnit.SECONDS);
         }
         require(objects.animations[0] != null, "the packed set carries the model's idle");
+        long poseBytes = WorldObjectAnimation.bytes(objects.animations[0]);
         Path mapping = directory.resolve("frames");
         try (var frames = WorldFrameFileV2.create(mapping, NONCE, WorldStreamNativeProof.SCOPE);
                 var reader = WorldFrameFileV2.open(mapping, NONCE, WorldStreamNativeProof.SCOPE);
@@ -182,6 +211,7 @@ final class WorldStreamObjectAnimationProof {
                     owner.animationCounts().animated() == NEAR,
                     "facing them again re-creates their poses: " + owner.animationCounts());
             require(away.length == back.length, "frames kept their size");
+            underZombies(owner, reader, lease, exterior, poseBytes, session.objectBudgetBytes());
             System.out.println(
                     "ANIMATION pixels changed: 0 -> 400 ms "
                             + changed
@@ -190,6 +220,79 @@ final class WorldStreamObjectAnimationProof {
                             + "; counts "
                             + first);
         }
+    }
+
+    /**
+     * Geometry no set holds (#380) gives its object budget back to a pose and to the body: with a
+     * zombie charged past what a budget leaves them, both still fit.
+     */
+    private static void underZombies(
+            WorldStreamNativeOwner owner,
+            WorldFrameFileV2 reader,
+            WorldStreamState.Lease lease,
+            WorldStreamTileWriter.Exterior animated,
+            long poseBytes,
+            long budget)
+            throws Exception {
+        var still = still();
+        var geometry = owner.objectGeometryForProof();
+        idle(owner, reader);
+        // Replaced by the still set and back: the animated model is revived and the still one
+        // stays a zombie.
+        require(replace(owner, lease, still), "the still set replaces the animated one");
+        require(replace(owner, lease, animated), "the animated set comes back");
+        long zombie = geometry.zombieBytes();
+        long poses = WorldObjectAnimation.PHASES * poseBytes;
+        require(zombie > poses, "the still zombie outweighs every pose: " + zombie);
+        long live = owner.stats().upload().objectBytes() - zombie;
+        owner.objectBudgetForProof(live + poses);
+        frame(owner, reader);
+        require(
+                owner.animationCounts().animated() == NEAR && geometry.zombieBytes() == 0,
+                "a pose evicts the zombie geometry for room: " + owner.animationCounts());
+        owner.objectBudgetForProof(budget);
+
+        // The animated model a zombie now: the body fits only once it is evicted.
+        idle(owner, reader);
+        require(replace(owner, lease, still), "the still set replaces the animated one again");
+        zombie = geometry.zombieBytes();
+        require(zombie > 0, "the animated model stays a zombie");
+        var body = WorldStreamBodyProof.authored();
+        live = owner.stats().upload().objectBytes() - zombie;
+        owner.objectBudgetForProof(live + WorldStreamBodyDraw.gpuBytes(body));
+        owner.attachBody(body);
+        require(geometry.zombieBytes() == 0, "the body evicts the zombie geometry for room");
+        owner.objectBudgetForProof(budget);
+    }
+
+    /** Faces away until every pose is idle, then releases them. */
+    private static void idle(WorldStreamNativeOwner owner, WorldFrameFileV2 reader)
+            throws Exception {
+        for (int i = 0; i < WorldObjectAnimation.IDLE_FRAMES + 1; i++) {
+            frame(owner, reader, AWAY);
+        }
+        owner.releaseIdlePosesForProof();
+        require(owner.animationCounts().poseBytes() == 0, "no pose is held");
+    }
+
+    /** Replaces the lease's objects with {@code exterior}'s; whether they attached. */
+    private static boolean replace(
+            WorldStreamNativeOwner owner,
+            WorldStreamState.Lease lease,
+            WorldStreamTileWriter.Exterior exterior)
+            throws Exception {
+        var late =
+                owner.beginLate(
+                        lease, WorldStreamPackedObjects.pack(exterior.data(), () -> false), true);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
+        while (!late.ready()) {
+            owner.stepLate(late);
+            owner.advance();
+            if (System.nanoTime() > deadline) {
+                throw new AssertionError("Replacement objects did not build");
+            }
+        }
+        return owner.finishLate(late, true) == WorldStreamStatus.LateOutcome.ATTACHED;
     }
 
     private static int differing(int[] a, int[] b) {

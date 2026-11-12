@@ -140,6 +140,27 @@ class WorldStreamObjectGeometryTest {
     }
 
     @Test
+    void evictingForAPlanKeepsTheZombiesItShares() {
+        var library = library(1 << 20);
+        var a = build(library, A);
+        var b = build(library, B);
+        library.release(a[0]);
+        library.release(b[0]);
+        // A is the oldest zombie, but the plan shares it: B goes instead.
+        var plan = library.plan(new WorldStreamObjectAssets.Digest[] {A}, new long[] {100});
+        assertSame(a[0], plan.shared()[0]);
+        assertEquals(100, library.evict(100, plan));
+        assertEquals(1, library.entries());
+        assertEquals(100, library.zombieBytes());
+        assertTrue(a[0].complete(), "the shared zombie is kept");
+        assertEquals(0, library.evict(100, plan), "nothing else to give");
+        var held = library.hold(plan);
+        assertSame(a[0], held[0]);
+        assertEquals(1, library.revived());
+        assertEquals(0, library.zombieBytes());
+    }
+
+    @Test
     void aPlanStaleAfterAnEvictionIsRefused() {
         var library = library(1 << 20);
         library.release(build(library, A)[0]);

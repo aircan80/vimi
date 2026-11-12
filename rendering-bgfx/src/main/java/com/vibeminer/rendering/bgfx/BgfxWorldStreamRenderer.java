@@ -653,15 +653,6 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                     meshIndexBase[mesh] = source.meshes[mesh * 6 + 2] - source.modelIndexFirst[m];
                 }
             }
-            // Held last of the geometry fields: shared buffers are known at once, created ones
-            // once this set makes them (stepObjects).
-            geometry = geometryLibrary.hold(geometryPlan);
-            for (int m = 0; m < modelCount; m++) {
-                if (geometry[m].complete()) {
-                    modelVertices[m] = geometry[m].vertices();
-                    modelIndices[m] = geometry[m].indices();
-                }
-            }
             waterRuns = source.water.runs;
             models = source.models;
             meshes = source.meshes;
@@ -768,8 +759,25 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                     portalVisible[p] = new java.util.BitSet(traversal.groupCount());
                 }
             }
-            // Held last, so a failure above holds nothing.
-            entries = shared.hold(plan);
+            // Held last, so a failure above holds nothing; the geometry is given back if the
+            // textures fail. Shared buffers are known at once, created ones once this set makes
+            // them (stepObjects).
+            var held = geometryLibrary.hold(geometryPlan);
+            try {
+                entries = shared.hold(plan);
+            } catch (RuntimeException | Error failure) {
+                for (var entry : held) {
+                    geometryLibrary.release(entry);
+                }
+                throw failure;
+            }
+            geometry = held;
+            for (int m = 0; m < modelCount; m++) {
+                if (geometry[m].complete()) {
+                    modelVertices[m] = geometry[m].vertices();
+                    modelIndices[m] = geometry[m].indices();
+                }
+            }
             for (int i = 0; i < textures.length; i++) {
                 textures[i] = entries[i].handle();
             }
@@ -1619,15 +1627,11 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 var geometryPlan = planGeometry(source);
                 long need = setNeed(source, plan, geometryPlan);
                 if (!objectsFit(objectBudget, reservedObjectBytes(), need)) {
-                    // Geometry no set holds gives its bytes back first, then animation poses no
-                    // frame drew lately (#384). Evicting may take a model this plan shared, so the
-                    // plan is made again.
-                    objectGeometry.evict(reservedObjectBytes() + need - objectBudget);
-                    geometryPlan = planGeometry(source);
-                    long replanned = setNeed(source, plan, geometryPlan);
-                    releasePosesUntil(
-                            () -> objectsFit(objectBudget, reservedObjectBytes(), replanned));
-                    need = replanned;
+                    // Geometry no set holds gives its bytes back first (all but the models this
+                    // plan shares), then animation poses no frame drew lately (#384).
+                    evictGeometry(reservedObjectBytes(), need, geometryPlan);
+                    long fits = need;
+                    releasePosesUntil(() -> objectsFit(objectBudget, reservedObjectBytes(), fits));
                 }
                 if (!objectsFit(objectBudget, reservedObjectBytes(), need)) {
                     build.budget = true;
@@ -2189,7 +2193,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         int handles = WorldStreamBodyDraw.handles(value);
         long bytes = WorldStreamBodyDraw.gpuBytes(value);
         int heldNow = reservedObjectTextures() - (body == null ? 0 : body.handles());
-        long reservedNow = reservedObjectBytes() - (body == null ? 0 : body.bytes());
+        long replaced = body == null ? 0 : body.bytes();
+        // Geometry no set holds gives its bytes back first, as for an object set.
+        evictGeometry(reservedObjectBytes() - replaced, bytes, null);
+        long reservedNow = reservedObjectBytes() - replaced;
         if (!objectsFit(objectBudget, reservedNow, bytes)
                 || !objectTexturesFit(objectTextureLimit, heldNow, handles)
                 || !objectTexturesFit(liveTextureRoom(), 0, handles)) {
@@ -3433,6 +3440,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         }
         long bytes = WorldObjectAnimation.bytes(animation);
         if (!poseFits(bytes)) {
+            // Geometry no set holds gives object budget back first, as for an object set.
+            evictGeometry(reservedObjectBytes(), bytes, null);
             releasePoses(bytes);
             if (!poseFits(bytes)) {
                 return null;
@@ -3449,6 +3458,22 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         objects.poses[group] = pose;
         objects.poseBytes += bytes;
         return pose;
+    }
+
+    /**
+     * Destroys geometry zombies until {@code need} more bytes fit beside {@code reserved} under the
+     * object budget, or none is left; keeps the zombies {@code keep} (when not null) shares.
+     */
+    private void evictGeometry(long reserved, long need, WorldStreamObjectGeometry.Plan keep) {
+        long shortfall = reserved + need - objectBudget;
+        if (shortfall <= 0) {
+            return;
+        }
+        if (keep == null) {
+            objectGeometry.evict(shortfall);
+        } else {
+            objectGeometry.evict(shortfall, keep);
+        }
     }
 
     private boolean poseFits(long bytes) {
