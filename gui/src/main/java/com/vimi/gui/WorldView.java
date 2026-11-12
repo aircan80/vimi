@@ -257,6 +257,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             motionChanged();
         }
         @Override public CollisionWorld collision() { return currentCollision(); }
+        @Override public com.vibeminer.rendering.world.LiquidSurface liquids() { return currentLiquids(); }
         @Override public void bodyStatus(WorldExplorerInput.Mode mode, WalkController.Status status) {
             WorldView.this.bodyStatus(mode, status);
         }
@@ -1595,6 +1596,13 @@ final class WorldView extends BorderPane implements AutoCloseable {
         return controller.objectsReady(walker.x(), walker.y()) ? ObjectsState.READY : ObjectsState.LOADING;
     }
 
+    /** The stream's terrain liquid under the residents; none outside streaming. */
+    private com.vibeminer.rendering.world.LiquidSurface currentLiquids() {
+        var controller = streamingMode ? streaming : null;
+        return controller == null ? com.vibeminer.rendering.world.LiquidSurface.empty()
+                : controller.liquids();
+    }
+
     private TerrainGround currentGround() {
         if (!streamingMode) return ground;
         var controller = streaming;
@@ -1673,6 +1681,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
             case SLIDING -> "Walking · too steep to stand: sliding" + collides;
             case LOADING -> "Walking · waiting for terrain collision here";
             case RETURNED -> "Walking · fell out of the world; put back where you last stood";
+            case SWIMMING -> "Swimming" + collides
+                    + " · terrain water only (water in buildings not yet)";
         };
     }
 

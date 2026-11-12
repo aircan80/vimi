@@ -196,7 +196,7 @@ public final class WorldMeasurementProbe {
                                         // has: the creature and race modes need them, and so does
                                         // stream mode with creatures on, whose humanoid NPCs read
                                         // the encrypted rows of CreatureDisplayInfoOption.
-                                        List.of("creatures", "displays", "body", "races", "raceSkin", "fetch")
+                                        List.of("creatures", "displays", "body", "races", "raceSkin", "fetch", "m2")
                                                         .contains(
                                                                 System.getProperty(
                                                                         "probe.mode", "stream"))
@@ -232,11 +232,13 @@ public final class WorldMeasurementProbe {
                             case "water" -> water(handle, catalog);
                             case "prep" -> prep(handle, catalog);
                             case "walk" -> walk(opened, handle, catalog);
+                            case "swim" -> swim(handle, catalog);
                             case "collision" -> collision(opened, handle, catalog);
                             case "body" -> body(opened);
                             case "races" -> races(opened);
                             case "raceSkin" -> raceSkin(opened);
                             case "fetch" -> fetch(opened);
+                            case "m2" -> m2(opened);
                             case "creatures" -> creatures(opened, handle, catalog);
                             case "displays" -> displays(opened);
                             default -> stream(opened, handle, catalog);
@@ -456,6 +458,188 @@ public final class WorldMeasurementProbe {
     }
 
     /**
+     * Swimming on real terrain liquid (#716): reads the scenario's 3x3 terrain and MH2O through the
+     * production copy ({@link WorldStreamSourceBridge.WaterCopy#surface}), lists the water per
+     * area, then walks a body from eight shores into the deepest water (or {@code
+     * probe.swimArea}'s) and back out, reporting where it starts and stops swimming, its floating
+     * depth and its swim speed.
+     */
+    private static void swim(BuildWorld handle, WorldService.Catalog catalog) throws Exception {
+        var scenarios = Scenario.parse(System.getProperty("probe.scenarios", "elwynn:0:49:31"));
+        var source = handle.terrainStreaming().orElseThrow(() -> new IllegalStateException("No terrain streaming"));
+        var water = handle.waterPreview().orElseThrow(() -> new IllegalStateException("No water preview"));
+        long wantedArea = Long.getLong("probe.swimArea", -1);
+        for (var scenario : scenarios) {
+            var map = catalog.maps().stream().filter(m -> m.id() == scenario.map()).findFirst().orElseThrow();
+            var inventory = handle.inventory(map, Cancellation.NONE).get(5, TimeUnit.MINUTES);
+            var scope = source.createScope(map, Cancellation.NONE);
+            source.activate(scope);
+            var heights = new ArrayList<com.vibeminer.rendering.world.TerrainGround.Tile>();
+            var liquidTiles = new ArrayList<com.vibeminer.rendering.world.LiquidSurface.Tile>();
+            var chunks = new ArrayList<WorldFormats.AreaChunk>();
+            var kinds = new TreeMap<String, Integer>();
+            for (var tile : inventory.world().tiles()) {
+                if (Math.abs(tile.x() - scenario.x()) > 1 || Math.abs(tile.y() - scenario.y()) > 1) continue;
+                com.vibeminer.rendering.world.TerrainGround.Tile[] built = {null};
+                try (var written = source.prepareAndWrite(scope, tile, Cancellation.NONE, (borrow, token) -> {
+                    built[0] = com.vibeminer.rendering.world.TerrainGround.Tile.of(borrow.geometry());
+                    chunks.addAll(borrow.areas().chunks());
+                    return () -> {};
+                })) {
+                    if (built[0] != null) heights.add(built[0]);
+                    try (var prepared = water.prepareAndWrite(written, Cancellation.NONE, (borrow, token) -> {
+                        var copy = WorldStreamSourceBridge.WaterCopy.of(borrow, token);
+                        if (copy.surface() != null) liquidTiles.add(copy.surface());
+                        var sources = new int[borrow.layers()];
+                        for (int l = 0, at = 0; l < borrow.layers(); l++) {
+                            sources[l] = at;
+                            at += Long.bitCount(borrow.mask(l)) * 4;
+                            kinds.merge(WorldStreamSourceBridge.WaterCopy.kind(new WorldStreamSourceBridge.WaterCopy.Cells() {
+                                @Override public int vertices() { return borrow.vertices(); }
+                                @Override public int indices() { return borrow.indices(); }
+                                @Override public int layers() { return borrow.layers(); }
+                                @Override public int width(int layer) { return borrow.width(layer); }
+                                @Override public int height(int layer) { return borrow.height(layer); }
+                                @Override public long mask(int layer) { return borrow.mask(layer); }
+                                @Override public boolean planar(int layer) { return borrow.planar(layer); }
+                                @Override public int colour(int layer) { return borrow.colour(layer); }
+                                @Override public boolean ocean(int layer) { return borrow.ocean(layer); }
+                                @Override public int liquidType(int layer) { return borrow.rawType(layer); }
+                                @Override public float north(int vertex) { return borrow.north(vertex); }
+                                @Override public float west(int vertex) { return borrow.west(vertex); }
+                                @Override public float up(int vertex) { return borrow.up(vertex); }
+                                @Override public int depth(int vertex) { return borrow.depth(vertex); }
+                            }, l) + " type " + borrow.rawType(l), Long.bitCount(borrow.mask(l)), Integer::sum);
+                        }
+                        return copy;
+                    })) {
+                        say("PROBE swim tile " + tile.x() + "," + tile.y() + ": water " + prepared.facts().state());
+                    } catch (RuntimeException refused) {
+                        say("PROBE swim tile " + tile.x() + "," + tile.y() + ": water refused " + refused);
+                    }
+                }
+            }
+            var ground = com.vibeminer.rendering.world.TerrainGround.of(heights);
+            var liquids = com.vibeminer.rendering.world.LiquidSurface.of(liquidTiles);
+            var world = com.vibeminer.rendering.world.CollisionWorld.terrain(ground);
+            say("PROBE swim " + scenario.name() + ": " + ground.tiles() + " terrain tiles, " + liquids.tiles()
+                    + " liquid tiles; cells by kind and LiquidType " + kinds);
+            // Water per area: cells, surface range, and the deepest point (surface over ground).
+            double cell = WorldFormats.TILE_SIZE / 128, chunkSize = WorldFormats.TILE_SIZE / 16;
+            var perArea = new TreeMap<Long, double[]>();
+            for (var chunk : chunks) {
+                for (int r = 0; r < 8; r++) {
+                    for (int c = 0; c < 8; c++) {
+                        double x = chunk.originX() - (r + .5) * cell, y = chunk.originY() - (c + .5) * cell;
+                        var at = liquids.at(x, y);
+                        double floor = ground.heightAt(x, y);
+                        if (at == null || Double.isNaN(floor)) continue;
+                        double depth = at.height() - floor;
+                        var a = perArea.computeIfAbsent(chunk.areaId(),
+                                k -> new double[] {0, 1e9, -1e9, -1e9, 0, 0, 0});
+                        a[0]++;
+                        a[1] = Math.min(a[1], at.height());
+                        a[2] = Math.max(a[2], at.height());
+                        if (depth > a[3]) {
+                            a[3] = depth;
+                            a[4] = x;
+                            a[5] = y;
+                            a[6] = at.height();
+                        }
+                    }
+                }
+            }
+            perArea.forEach((area, a) -> say(String.format(Locale.ROOT,
+                    "PROBE swim area %d: %d water cells, surface %.2f..%.2f, deepest %.2f yd at %.1f, %.1f",
+                    area, (long) a[0], a[1], a[2], a[3], a[4], a[5])));
+            double[] target = null;
+            long targetArea = -1;
+            for (var e : perArea.entrySet()) {
+                if (wantedArea >= 0 ? e.getKey() == wantedArea : target == null || e.getValue()[3] > target[3]) {
+                    target = e.getValue();
+                    targetArea = e.getKey();
+                }
+            }
+            if (target == null) {
+                say("PROBE swim " + scenario.name() + ": no water to swim in");
+                continue;
+            }
+            double px = target[4], py = target[5];
+            double dt = com.vibeminer.rendering.world.MovementParity.STEP_SECONDS;
+            for (int heading = 0; heading < 8; heading++) {
+                double yaw = heading * Math.PI / 4, cx = Math.cos(yaw), cy = Math.sin(yaw);
+                // March out from the deep point to the shore: no liquid, or ground above it.
+                double out = 0;
+                while (out < 600) {
+                    out += .5;
+                    var at = liquids.at(px + cx * out, py + cy * out);
+                    double floor = ground.heightAt(px + cx * out, py + cy * out);
+                    if (at == null || Double.isNaN(floor) || floor >= at.height()) break;
+                }
+                double sx = px + cx * (out + 8), sy = py + cy * (out + 8);
+                var body = new com.vibeminer.rendering.world.WalkController();
+                body.shape(new com.vibeminer.rendering.world.CapsuleCollision.Shape(
+                        com.vibeminer.rendering.world.MovementParity.DEFAULT_RADIUS,
+                        com.vibeminer.rendering.world.MovementParity.DEFAULT_HEIGHT));
+                body.place(sx, sy, 2_000, 4_000, world, liquids);
+                var in = new com.vibeminer.rendering.world.WalkController.Input(1, 0, 0, yaw + Math.PI, 0, false, 0);
+                var back = new com.vibeminer.rendering.world.WalkController.Input(1, 0, 0, yaw, 0, false, 0);
+                int switches = 0, waiting = 0, steps = 0;
+                boolean was = body.swimming();
+                String entered = "never";
+                double floatGap = Double.NaN, swum = 0;
+                int swimSteps = 0;
+                long began = System.nanoTime();
+                for (; steps < (int) Math.round((out + 8) / 4.0 / dt) && steps < 60 * 60; steps++) {
+                    double ox = body.x(), oy = body.y();
+                    body.step(in, dt, world, liquids);
+                    if (body.status() == com.vibeminer.rendering.world.WalkController.Status.LOADING) waiting++;
+                    if (body.swimming() != was) {
+                        switches++;
+                        was = body.swimming();
+                        if (was) {
+                            var at = liquids.at(body.x(), body.y());
+                            entered = String.format(Locale.ROOT, "%.1f yd from the shore line, ground %.2f yd under the surface, %s",
+                                    out - Math.hypot(body.x() - px, body.y() - py),
+                                    at.height() - ground.heightAt(body.x(), body.y()), at.kind());
+                        }
+                    }
+                    if (body.swimming() && body.status() == com.vibeminer.rendering.world.WalkController.Status.SWIMMING) {
+                        swum += Math.hypot(body.x() - ox, body.y() - oy);
+                        swimSteps++;
+                        var at = liquids.at(body.x(), body.y());
+                        floatGap = at.height() - body.z();
+                    }
+                }
+                int inSwitches = switches;
+                String left = "never";
+                switches = 0;
+                for (int i = 0; i < (int) Math.round((out + 16) / 2.0 / dt) && i < 60 * 60; i++) {
+                    body.step(back, dt, world, liquids);
+                    if (body.swimming() != was) {
+                        switches++;
+                        was = body.swimming();
+                        if (!was) {
+                            double floor = ground.heightAt(body.x(), body.y());
+                            var at = liquids.at(body.x(), body.y());
+                            left = String.format(Locale.ROOT, "%.1f yd from the shore line, ground %s yd under the surface",
+                                    out - Math.hypot(body.x() - px, body.y() - py),
+                                    at == null ? "(no liquid)" : String.format(Locale.ROOT, "%.2f", at.height() - floor));
+                        }
+                    }
+                }
+                say(String.format(Locale.ROOT,
+                        "PROBE swim %s area %d heading %3d deg: shore %.1f yd out; swims from %s; floats %.2f yd"
+                                + " under (swim depth %.2f); swim speed %.3f yd/s; walks out at %s; switches in %d out %d;"
+                                + " waiting %d; %s; %.3f ms per step",
+                        scenario.name(), targetArea, heading * 45, out, entered, floatGap, body.swimDepth(),
+                        swimSteps == 0 ? 0 : swum / (swimSteps * dt), left, inSwitches, switches, waiting,
+                        body.status(), (System.nanoTime() - began) / 1e6 / Math.max(1, steps)));
+            }
+        }
+    }
+
+    /**
      * The buildings and doodads of the scenario's 3x3 through the production reader, with a
      * transform check: each building's collision box against the box its MODF record states.
      */
@@ -544,6 +728,27 @@ public final class WorldMeasurementProbe {
             } else {
                 say("PROBE fetch " + id + ": " + open.state() + " " + open.code() + " " + open.message());
             }
+        }
+    }
+
+    /** For -Pprobe.files (M2 FileDataIDs): texture transform tracks and their lookup table. */
+    private static void m2(WorldMeasurementOpen opened) throws Exception {
+        var models = new com.vibeminer.formats.models.BuildModels(opened.files());
+        for (var text : System.getProperty("probe.files", "").split(",")) {
+            if (text.isBlank()) continue;
+            long id = Long.parseLong(text.strip());
+            var read = models.readModel(com.vibeminer.files.FileTypes.FileRef.id(id), Cancellation.NONE)
+                    .get(5, TimeUnit.MINUTES);
+            if (read.model() == null) {
+                say("PROBE m2 " + id + ": " + read.state());
+                continue;
+            }
+            var m = read.model();
+            var declared = new StringBuilder();
+            for (var d : m.declarations()) declared.append(d.name()).append('=').append(d.count()).append(' ');
+            say("PROBE m2 " + id + ": version " + m.version() + ", skeleton " + m.skeletonFileDataId()
+                    + ", transform lookup " + m.textureTransforms() + ", coordinates " + m.textureCoordinates()
+                    + ", declarations " + declared);
         }
     }
 
@@ -697,7 +902,7 @@ public final class WorldMeasurementProbe {
                             for (double yaw : new double[] {-1.2, 1.9}) {
                                 var frame = com.vibeminer.rendering.models.StaticMeshRenderer.render(result.appearance(),
                                         480, 480,
-                                        new com.vibeminer.rendering.models.StaticMeshRenderer.View(yaw, .1, 1, false,
+                                        new com.vibeminer.rendering.models.StaticMeshRenderer.View(yaw, Double.parseDouble(System.getProperty("probe.racePitch", ".1")), Double.parseDouble(System.getProperty("probe.raceZoom", "1")), false,
                                                 result.visibleParts()),
                                         () -> false);
                                 var image = new java.awt.image.BufferedImage(frame.width(), frame.height(),

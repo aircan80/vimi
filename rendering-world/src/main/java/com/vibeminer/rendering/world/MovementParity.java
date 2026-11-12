@@ -22,6 +22,20 @@ public final class MovementParity {
     /** Swimming forward and backwards, yards per second. Emulator base swim speeds. */
     public static final double SWIM_SPEED = 4.722, SWIM_BACK_SPEED = 2.5;
 
+    /**
+     * How deep the feet must be below a liquid surface, as a share of the body's height, before it
+     * swims; a swimming body floats with its feet this deep. Flagged: unknown for the client (to be
+     * measured by wading into a lake until the swim animation starts).
+     */
+    public static final double SWIM_DEPTH_FRACTION = 0.6;
+
+    /**
+     * How much shallower than {@link #SWIM_DEPTH_FRACTION} (again a share of the body's height) the
+     * feet must come before a swimming body walks again, so a body at the edge does not switch
+     * every step. Flagged: an explorer default.
+     */
+    public static final double SWIM_EXIT_MARGIN = 0.05;
+
     /** Keyboard turning, radians per second: half a turn per second. Emulator base turn rate. */
     public static final double TURN_RATE = Math.PI;
 
