@@ -65,6 +65,7 @@ public final class WorldTileCreaturesTest {
         npcImagesUseTheSmallerSide();
         aTileHandsItsUnchosenNpcsToTheChooserTogether();
         aChooserRevisionRemakesChoicesButKeepsModels();
+        aChoiceMadeAcrossARevisionChangeIsNotCached();
         BridgeAssembly.run();
         System.out.println("WorldTileCreaturesTest passed");
     }
@@ -743,6 +744,43 @@ public final class WorldTileCreaturesTest {
         var empty = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0,
                 new WorldFormats.Tile(10, 10, 1, 0, 0), Cancellation.NONE);
         require(empty.drawn() == 0 && empty.omitted() == 0 && empty.note() == null, "A tile without spawns is empty");
+    }
+
+    /**
+     * Another tile sees new outside sources while a choice is being made: that choice is used for
+     * its tile but not cached, so the next tile chooses again under the new sources.
+     */
+    private static void aChoiceMadeAcrossARevisionChangeIsNotCached() {
+        var outside = new AtomicReference<Object>("snapshot 1");
+        var chooses = new AtomicInteger();
+        var holder = new AtomicReference<WorldTileCreatures>();
+        WorldTileCreatures.Chooser chooser = new WorldTileCreatures.Chooser() {
+            @Override
+            public WorldTileCreatures.Chosen choose(long npcId, Cancellation token) {
+                if (chooses.incrementAndGet() == 1) {
+                    // Meanwhile another tile starts under new outside sources.
+                    outside.set("snapshot 2");
+                    holder.get().append(WorldStreamTileWriter.Exterior.builder(), 0,
+                            new WorldFormats.Tile(10, 10, 1, 0, 0), Cancellation.NONE);
+                }
+                return qualified(7, null);
+            }
+
+            @Override
+            public Object revision() {
+                return outside.get();
+            }
+        };
+        var creatures = new WorldTileCreatures(
+                token -> index(List.of(WorldSpawnOverlayTest.spawn(1, 1, -100, -100, 10.0))), () -> "r1",
+                chooser, (display, token) -> preview(display, 0L, 0L, appearance(true)));
+        holder.set(creatures);
+        var first = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(first.drawn() == 1, "The choice made across the change still draws its tile");
+        creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(chooses.get() == 2, "Not cached across the change: chosen again, " + chooses.get());
+        creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(chooses.get() == 2, "The new choice is cached");
     }
 
     /** Outside sources that change remake the choices only; converted models stay cached. */
