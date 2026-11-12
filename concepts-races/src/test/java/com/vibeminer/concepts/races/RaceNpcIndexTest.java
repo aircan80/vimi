@@ -795,6 +795,30 @@ final class RaceNpcIndexTest {
                     java.nio.ByteBuffer.allocate(4).putInt(session).array(),
                     generated.read(tries).join().bytes());
         }
+        // One handle claims one attempt per composite, however often it is asked: the count moves
+        // by one.
+        generated.delete(List.of(tries)).join();
+        var service = new RacesService(raw, later, generated);
+        try {
+            for (int asked = 0; asked < 3; asked++) {
+                assertTrue(service.npcAppearance(50, Cancellation.NONE).join().result().restored());
+            }
+        } finally {
+            service.closeAsync().join();
+        }
+        assertArrayEquals(
+                java.nio.ByteBuffer.allocate(4).putInt(1).array(),
+                generated.read(tries).join().bytes());
+        generated.delete(List.of(tries)).join();
+        generated
+                .put(
+                        List.of(
+                                new GeneratedTypes.Put(
+                                        tries,
+                                        java.nio.ByteBuffer.allocate(4)
+                                                .putInt(RaceAppearance.RECOMPOSE_TRIES)
+                                                .array())))
+                .join();
         // After that many attempts it is left as it was, even once composing would work.
         assertTrue(ask(raw, files, generated).result().restored());
         assertFalse(present(generated, record));
