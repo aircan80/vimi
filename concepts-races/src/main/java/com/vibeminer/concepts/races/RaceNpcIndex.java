@@ -4,6 +4,7 @@ import com.vibeminer.access.Cancellation;
 import com.vibeminer.files.BuildFiles;
 import com.vibeminer.files.FileTypes;
 import com.vibeminer.formats.images.Blp2Decoder;
+import com.vibeminer.formats.models.M2ModelReader;
 import com.vibeminer.formats.models.M2RestDrawSkinReader;
 import com.vibeminer.formats.tables.BuildTables;
 import com.vibeminer.formats.tables.TableTypes;
@@ -39,16 +40,20 @@ import java.util.concurrent.ConcurrentHashMap;
  * and the NPC is prepared as before:
  *
  * <ul>
- *   <li>The key names the build, the locale, the extended display ID, the codec revisions the
- *       composite key names, and a digest of the NPC path's own code ({@link #code}): a new app
- *       version that changes how an NPC is resolved or planned never reads an older entry.
+ *   <li>The key names the build, the locale and the extended display ID. The entry's scope, stored
+ *       with it and compared on read, adds the index revision, the codec and reader revisions, and
+ *       a digest of every class file of the NPC path ({@link #CODE}): a new app version that
+ *       changes how an NPC is resolved or planned never reads an older entry, and its next write
+ *       replaces it under the same key.
  *   <li>The entry names every table this races handle read through its tables before it was written
  *       ({@link #recording}), with a digest of each one's state, content key, counts, schema, page
  *       identity and client hotfix view ({@link #fingerprint}). A table that changed, or a hotfix
  *       view that is refused or changed, is a miss.
  *   <li>Every file the appearance was composed from (model, bake and layers, skeleton, and the
- *       attached item files when they were composed in this handle) is stated again and must keep
- *       its content key; the composite itself checks its skin and skeleton when restored.
+ *       attached item files) is stated again and must keep its content key, and an encrypted one
+ *       the names of the keys it lacks; the composite itself checks its skin and skeleton when
+ *       restored. The attached item files are recorded beside the composite when it is composed;
+ *       after a restore, an NPC with a helmet or shoulders is written only when that record exists.
  * </ul>
  *
  * <p>Only complete appearances are written, once the composite is in the generated store; an
@@ -82,14 +87,23 @@ final class RaceNpcIndex {
      */
     private final Map<TableTypes.Ref, String> fingerprints = new ConcurrentHashMap<>();
 
+    /** The NPC path's code digest this index reads and writes under ({@link #CODE}). */
+    private final String code;
+
     RaceNpcIndex(BuildTables tables, BuildFiles files, GeneratedStore generated) {
+        this(tables, files, generated, CODE);
+    }
+
+    /** As above, under another code digest (tests). */
+    RaceNpcIndex(BuildTables tables, BuildFiles files, GeneratedStore generated, String code) {
         this.tables = tables;
         this.files = files;
         this.generated = generated;
+        this.code = code;
     }
 
     boolean available() {
-        return files != null && generated != null && CODE != null;
+        return files != null && generated != null && code != null;
     }
 
     /** One finished NPC appearance, as written. Sources map a file to {@link #source}. */
@@ -282,15 +296,26 @@ final class RaceNpcIndex {
 
     // --- Lookup and write ---
 
-    /** The generated-store key of an NPC's entry. */
+    /**
+     * The generated-store key of an NPC's entry: the build, locale and extended display ID only.
+     * Everything else an entry depends on is in its {@link #scope}, stored with it and compared on
+     * read, so an entry of an older generation (another app version, codec or key set) is a miss
+     * and is replaced by the next write instead of lingering under a key nothing reads again.
+     */
     GeneratedKey key(long extendedDisplayInfoId) {
-        return GeneratedKey.hash(scope(extendedDisplayInfoId).getBytes(StandardCharsets.UTF_8));
+        return GeneratedKey.hash(
+                (KEY + "\n" + files.build() + "\n" + files.locale() + "\n" + extendedDisplayInfoId)
+                        .getBytes(StandardCharsets.UTF_8));
     }
+
+    private static final String KEY = "npc-appearance-index";
 
     String scope(long extendedDisplayInfoId) {
         return REVISION
                 + "\n"
-                + CODE
+                + code
+                + "\n"
+                + M2ModelReader.REVISION
                 + "\n"
                 + MeshAppearanceCodec.REVISION
                 + "\n"
@@ -355,13 +380,50 @@ final class RaceNpcIndex {
         }
     }
 
-    /** A file's content key, or {@code !STATE} when it is not found: what a source must keep. */
+    /**
+     * What a source must keep: its content key, or {@code !STATE} when it is not found. An
+     * encrypted file keeps its content key when a key for it is added or removed, so the names of
+     * the keys its bytes still lack are part of it too.
+     */
     String source(long fileDataId, Cancellation token) {
         token.check();
         var stat = files.stat(FileTypes.FileRef.id(fileDataId), token).join();
-        return stat.state() == FileTypes.FileLookupState.FOUND && stat.file() != null
-                ? stat.file().contentKey()
-                : "!" + stat.state();
+        if (stat.state() != FileTypes.FileLookupState.FOUND || stat.file() == null) {
+            return "!" + stat.state();
+        }
+        return stat.file().encrypted()
+                ? stat.file().contentKey() + missingKeys(fileDataId, token)
+                : stat.file().contentKey();
+    }
+
+    /** The key names an encrypted file's bytes lack now, or why it cannot be opened. */
+    private String missingKeys(long fileDataId, Cancellation token) {
+        var open = files.openRead(FileTypes.FileRef.id(fileDataId), token).join();
+        if (open.stream() == null) {
+            return " open " + open.state();
+        }
+        try (var stream = open.stream()) {
+            return " lacks " + stream.chunkKeys();
+        }
+    }
+
+    /**
+     * {@code known} content keys as {@link #source} states them: an encrypted file's missing key
+     * names are added now.
+     */
+    private Map<Long, String> sources(Map<Long, String> known, Cancellation token) {
+        var out = new TreeMap<Long, String>();
+        for (var source : known.entrySet()) {
+            String now = source(source.getKey(), token);
+            // Only the key names are added: the content key stays the one composed from.
+            int space = now.indexOf(' ');
+            out.put(
+                    source.getKey(),
+                    space < 0 || now.startsWith("!")
+                            ? source.getValue()
+                            : source.getValue() + now.substring(space));
+        }
+        return out;
     }
 
     /**
@@ -403,7 +465,7 @@ final class RaceNpcIndex {
                 taken.put(ref, fingerprint);
             }
             var digest = digest(refs, taken, token);
-            var sources = new TreeMap<Long, String>(known);
+            var sources = new TreeMap<Long, String>(sources(known, token));
             for (long fileDataId : others) {
                 if (!sources.containsKey(fileDataId)) {
                     sources.put(fileDataId, source(fileDataId, token));
@@ -440,6 +502,78 @@ final class RaceNpcIndex {
             // Not written; the NPC is prepared again next time.
             token.check();
             return false;
+        }
+    }
+
+    // --- A composite's attachment files ---
+
+    private static GeneratedKey attachmentKey(GeneratedKey composite) {
+        return GeneratedKey.hash(
+                ("npc-composite-attachment-files-v1\n" + composite.hex())
+                        .getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * Records the item files a composite's attachments were read from, beside the composite, so an
+     * entry written after the composite is restored can still name them.
+     */
+    @SuppressWarnings("try")
+    void attachments(GeneratedKey composite, Set<Long> files, Cancellation token) {
+        if (!available() || files.size() > MAX_LIST) {
+            return;
+        }
+        var lower = new com.vibeminer.generated.Cancellation();
+        try (var registration = token.onCancel(lower::cancel)) {
+            var bytes = java.nio.ByteBuffer.allocate(4 + 16 + 4 + 8 * files.size());
+            bytes.putInt(MAGIC).put(composite.bytes()).putInt(files.size());
+            for (long file : new TreeSet<>(files)) {
+                bytes.putLong(file);
+            }
+            var key = attachmentKey(composite);
+            generated.delete(List.of(key), lower).join();
+            generated.put(List.of(new GeneratedTypes.Put(key, bytes.array())), lower).join();
+        } catch (java.util.concurrent.CancellationException canceled) {
+            throw canceled;
+        } catch (RuntimeException failure) {
+            token.check(); // not recorded: an entry after a restore is then not written
+        }
+    }
+
+    /** The item files recorded for a composite's attachments, or null when none are recorded. */
+    @SuppressWarnings("try")
+    Set<Long> attachments(GeneratedKey composite, Cancellation token) {
+        if (!available()) {
+            return null;
+        }
+        var lower = new com.vibeminer.generated.Cancellation();
+        try (var registration = token.onCancel(lower::cancel)) {
+            var read = generated.read(attachmentKey(composite), lower).join();
+            if (read.state() != GeneratedTypes.ReadState.PRESENT || read.bytes() == null) {
+                return null;
+            }
+            var bytes = java.nio.ByteBuffer.wrap(read.bytes());
+            byte[] named = new byte[16];
+            if (bytes.remaining() < 24 || bytes.getInt() != MAGIC) {
+                return null;
+            }
+            bytes.get(named);
+            int count = bytes.getInt();
+            if (!composite.equals(new GeneratedKey(named))
+                    || count < 0
+                    || count > MAX_LIST
+                    || bytes.remaining() != 8L * count) {
+                return null;
+            }
+            var files = new TreeSet<Long>();
+            for (int i = 0; i < count; i++) {
+                files.add(bytes.getLong());
+            }
+            return files;
+        } catch (java.util.concurrent.CancellationException canceled) {
+            throw canceled;
+        } catch (RuntimeException damaged) {
+            token.check();
+            return null;
         }
     }
 
@@ -590,52 +724,42 @@ final class RaceNpcIndex {
     // --- The NPC path's code ---
 
     /**
-     * The classes whose code decides an NPC's resolve, omissions, plan, attachments and result.
-     * Their nested classes are included.
+     * The compiled code that decides an NPC's resolve, omissions, plan, attachments and result:
+     * every class file of the races package (nested, local and anonymous classes included), and the
+     * item and relation readers it calls.
      */
-    static final List<Class<?>> CODE_CLASSES =
+    static final List<String> CODE_PREFIXES =
             List.of(
-                    RaceNpcIndex.class,
-                    RaceNpcs.class,
-                    RacesService.class,
-                    RaceAppearance.class,
-                    RaceAppearancePlan.class,
-                    RaceAppearanceProfiles.class,
-                    RaceAppearanceTypes.class,
-                    RaceClothingGeometry.class,
-                    RaceCustomization.class,
-                    RaceCustomizationTypes.class,
-                    RaceMedia.class,
-                    RaceMediaTypes.class,
-                    RaceModelDefinitions.class,
-                    RaceNpcAttachments.class,
-                    RaceTypes.class,
-                    com.vibeminer.concepts.items.ItemModelFiles.class,
-                    com.vibeminer.concepts.core.RelationIndexes.class);
+                    "com/vibeminer/concepts/races/",
+                    "com/vibeminer/concepts/items/ItemAppearanceReader",
+                    "com/vibeminer/concepts/items/ItemModelFiles",
+                    "com/vibeminer/concepts/core/RelationIndexes");
 
     /**
-     * A digest of {@link #CODE_CLASSES}' compiled code, so an app version that resolves or plans
-     * NPCs differently never reads an entry an earlier one wrote, without a revision to remember to
-     * bump. Null when a class file cannot be read: the index is then off.
+     * A digest of the class files under {@link #CODE_PREFIXES}, so an app version that resolves or
+     * plans NPCs differently never reads an entry an earlier one wrote, without a list of classes
+     * or a revision to keep by hand. Null when they cannot be listed: the index is then off.
      */
-    static final String CODE = code(CODE_CLASSES);
+    static final String CODE = code(RaceNpcIndex.class.getClassLoader(), CODE_PREFIXES);
 
-    static String code(List<Class<?>> classes) {
+    static String code(ClassLoader loader, List<String> prefixes) {
         try {
-            var digest = sha256();
-            var all = new ArrayList<Class<?>>();
-            for (var type : classes) {
-                nested(type, all);
-            }
-            for (var type : all) {
-                String resource = type.getName().replace('.', '/') + ".class";
-                try (InputStream in = type.getClassLoader().getResourceAsStream(resource)) {
-                    if (in == null) {
-                        return null;
-                    }
-                    digest.update(resource.getBytes(StandardCharsets.UTF_8));
-                    digest.update(in.readAllBytes());
+            var classes = new TreeMap<String, byte[]>();
+            for (String prefix : prefixes) {
+                int slash = prefix.lastIndexOf('/');
+                String directory = prefix.substring(0, slash + 1);
+                var found = loader.getResources(directory);
+                while (found.hasMoreElements()) {
+                    collect(found.nextElement(), directory, prefix, classes);
                 }
+            }
+            if (classes.isEmpty()) {
+                return null;
+            }
+            var digest = sha256();
+            for (var each : classes.entrySet()) {
+                digest.update(each.getKey().getBytes(StandardCharsets.UTF_8));
+                digest.update(each.getValue());
             }
             return HexFormat.of().formatHex(Arrays.copyOf(digest.digest(), 16));
         } catch (IOException | RuntimeException unreadable) {
@@ -643,15 +767,46 @@ final class RaceNpcIndex {
         }
     }
 
-    private static void nested(Class<?> type, List<Class<?>> out) {
-        if (out.contains(type)) {
-            return;
-        }
-        out.add(type);
-        var inner = new ArrayList<>(List.of(type.getDeclaredClasses()));
-        inner.sort(java.util.Comparator.comparing(Class::getName));
-        for (var each : inner) {
-            nested(each, out);
+    /** The class files of one directory resource (a folder or a jar entry) starting with prefix. */
+    private static void collect(
+            java.net.URL location, String directory, String prefix, Map<String, byte[]> out)
+            throws IOException {
+        switch (location.getProtocol()) {
+            case "file" -> {
+                java.nio.file.Path folder;
+                try {
+                    folder = java.nio.file.Path.of(location.toURI());
+                } catch (java.net.URISyntaxException invalid) {
+                    throw new IOException(invalid);
+                }
+                try (var listing = java.nio.file.Files.list(folder)) {
+                    for (var file : listing.sorted().toList()) {
+                        String name = directory + file.getFileName();
+                        if (name.startsWith(prefix) && name.endsWith(".class")) {
+                            out.put(name, java.nio.file.Files.readAllBytes(file));
+                        }
+                    }
+                }
+            }
+            case "jar" -> {
+                var connection = (java.net.JarURLConnection) location.openConnection();
+                connection.setUseCaches(false);
+                try (var jar = connection.getJarFile()) {
+                    var entries = jar.entries();
+                    while (entries.hasMoreElements()) {
+                        var entry = entries.nextElement();
+                        String name = entry.getName();
+                        if (name.startsWith(prefix)
+                                && name.endsWith(".class")
+                                && name.indexOf('/', directory.length()) < 0) {
+                            try (InputStream in = jar.getInputStream(entry)) {
+                                out.put(name, in.readAllBytes());
+                            }
+                        }
+                    }
+                }
+            }
+            default -> throw new IOException("Unlisted class location " + location);
         }
     }
 

@@ -488,12 +488,248 @@ final class RaceNpcIndexTest {
     }
 
     @Test
-    void theCodeDigestNamesTheCompiledClasses() {
-        assertNotNull(RaceNpcIndex.CODE, "the NPC path's class files are readable");
-        assertEquals(RaceNpcIndex.CODE, RaceNpcIndex.code(RaceNpcIndex.CODE_CLASSES));
+    void theCodeDigestNamesEveryClassOfTheNpcPath() throws Exception {
+        assertNotNull(RaceNpcIndex.CODE, "the NPC path's class files are listed");
+        var loader = RaceNpcIndex.class.getClassLoader();
+        assertEquals(RaceNpcIndex.CODE, RaceNpcIndex.code(loader, RaceNpcIndex.CODE_PREFIXES));
         assertNotEquals(
                 RaceNpcIndex.CODE,
-                RaceNpcIndex.code(List.of(RaceNpcIndex.class)),
+                RaceNpcIndex.code(loader, List.of("com/vibeminer/concepts/races/RaceNpcIndex")),
                 "other code, another digest");
+        assertNull(RaceNpcIndex.code(loader, List.of("com/vibeminer/concepts/races/NoSuchClass")));
+        // Anonymous and nested classes are part of it: the digest moves with any of them.
+        var all = RaceNpcIndex.code(loader, List.of("com/vibeminer/concepts/races/RaceNpcIndex"));
+        var outer =
+                RaceNpcIndex.code(loader, List.of("com/vibeminer/concepts/races/RaceNpcIndex."));
+        assertNotEquals(all, outer, "the nested classes count");
+    }
+
+    @Test
+    void anEntryOfAnotherCodeDigestIsAMissAndIsReplacedUnderTheSameKey() throws Exception {
+        var raw = raw();
+        var files = files('3');
+        var generated = new MemoryGeneratedStore();
+        var composite = GeneratedKey.hash(new byte[] {9});
+        generated.put(List.of(new GeneratedTypes.Put(composite, new byte[] {1}))).join();
+        var older = new RaceNpcIndex(raw, files, generated, "older-code");
+        older.recording(raw)
+                .schema(
+                        TableTypes.Ref.forName("ChrRaces"),
+                        TableTypes.Priority.INTERACTIVE,
+                        Cancellation.NONE)
+                .join();
+        assertTrue(write(older, composite, result()));
+        assertNotNull(older.find(50, Cancellation.NONE));
+        var newer = new RaceNpcIndex(raw, files, generated, "newer-code");
+        assertEquals(older.key(50), newer.key(50), "one key per NPC across generations");
+        assertNull(newer.find(50, Cancellation.NONE), "another app version's entry is not read");
+        newer.recording(raw)
+                .schema(
+                        TableTypes.Ref.forName("ChrRaces"),
+                        TableTypes.Priority.INTERACTIVE,
+                        Cancellation.NONE)
+                .join();
+        assertTrue(write(newer, composite, result()));
+        assertNotNull(newer.find(50, Cancellation.NONE));
+        assertNull(older.find(50, Cancellation.NONE), "the older generation was replaced");
+    }
+
+    /** Files where 77 is encrypted; its bytes lack key {@code missing}, or none when null. */
+    private static AssetFilesFixture encrypted(String missing) throws Exception {
+        var files = files('3');
+        files.add(
+                new com.vibeminer.files.FileTypes.BuildFile(
+                        77,
+                        null,
+                        com.vibeminer.files.FileTypes.FilePathSource.NONE,
+                        8L,
+                        "7".repeat(32),
+                        com.vibeminer.files.FileTypes.FileFormat.UNKNOWN,
+                        com.vibeminer.files.FileTypes.FileFormatSource.NONE,
+                        com.vibeminer.files.FileTypes.FileStorage.STORED,
+                        true),
+                new byte[8],
+                missing == null
+                        ? List.of()
+                        : List.of(new com.vibeminer.files.FileTypes.FileHole(0, 8, missing)),
+                missing == null ? List.of() : List.of(missing));
+        return files;
+    }
+
+    @Test
+    void aKeyAddedForAnEncryptedSourceIsAMiss() throws Exception {
+        var raw = raw();
+        var generated = new MemoryGeneratedStore();
+        var composite = GeneratedKey.hash(new byte[] {9});
+        generated.put(List.of(new GeneratedTypes.Put(composite, new byte[] {1}))).join();
+        for (boolean known : new boolean[] {false, true}) {
+            var lacking = encrypted("ABCDEF0123456789");
+            var index = new RaceNpcIndex(raw, lacking, generated);
+            index.recording(raw)
+                    .schema(
+                            TableTypes.Ref.forName("ChrRaces"),
+                            TableTypes.Priority.INTERACTIVE,
+                            Cancellation.NONE)
+                    .join();
+            assertTrue(
+                    index.write(
+                            50,
+                            composite,
+                            1234,
+                            result(),
+                            0,
+                            0,
+                            known ? Map.of(77L, "7".repeat(32)) : Map.of(),
+                            known ? Set.of() : Set.of(77L),
+                            Cancellation.NONE));
+            assertNotNull(new RaceNpcIndex(raw, lacking, generated).find(50, Cancellation.NONE));
+            // The same content key, now readable whole: the key was added.
+            assertNull(
+                    new RaceNpcIndex(raw, encrypted(null), generated).find(50, Cancellation.NONE),
+                    "a new key for an encrypted source is a miss ("
+                            + (known ? "prepared" : "stated")
+                            + ")");
+        }
+    }
+
+    /** {@code table} with every field name verified, as the attachment reader requires. */
+    private static MemoryTables.FakeTable verified(MemoryTables.FakeTable table) {
+        var schema = table.schema();
+        var columns =
+                schema.columns().stream()
+                        .map(
+                                c ->
+                                        new com.vibeminer.formats.definitions.TableSchema
+                                                .SchemaColumn(
+                                                c.name(),
+                                                c.kind(),
+                                                c.bits(),
+                                                c.unsigned(),
+                                                c.arrayLength(),
+                                                c.foreignKey(),
+                                                c.id(),
+                                                c.relation(),
+                                                true,
+                                                c.locale(),
+                                                c.columnComment(),
+                                                c.fieldComment()))
+                        .toList();
+        return new MemoryTables.FakeTable(
+                table.entry(),
+                table.columns(),
+                table.rows(),
+                new com.vibeminer.formats.definitions.TableSchema(
+                        columns,
+                        schema.layoutHashes(),
+                        schema.match(),
+                        schema.locale(),
+                        schema.comment()),
+                table.protectedIds(),
+                table.generated());
+    }
+
+    /** NPC 50 with a helmet (slot 0, display 601, whose item model is not in the build). */
+    private static BuildTables helmeted() {
+        var seed = new java.util.ArrayList<>(RaceNpcAppearanceTest.npcFixture());
+        var slots =
+                seed.stream()
+                        .filter(t -> t.entry().name().equals("NPCModelItemSlotDisplayInfo"))
+                        .findFirst()
+                        .orElseThrow();
+        seed.remove(slots);
+        seed.add(
+                new MemoryTables.FakeTable(
+                        slots.entry(),
+                        slots.columns(),
+                        List.of(RaceNpcsTest.row(1, 600, 6, 50), RaceNpcsTest.row(2, 601, 0, 50)),
+                        slots.schema(),
+                        slots.protectedIds(),
+                        slots.generated()));
+        RaceAppearancePlanTest.replace(
+                seed,
+                verified(
+                        RaceAppearancePlanTest.table(
+                                "ItemDisplayInfo",
+                                "9F3AB8A9",
+                                "GeosetGroupOverride,GeosetGroup:6,ModelResourcesID:2,"
+                                        + "ModelMaterialResourcesID:2,HelmetGeosetVis:2",
+                                RaceAppearancePlanTest.row(
+                                        600, "0", "2", "0", "0", "0", "0", "0", "0", "0", "0", "0",
+                                        "0", "0"),
+                                RaceAppearancePlanTest.row(
+                                        601, "0", "0", "0", "0", "0", "0", "0", "55", "0", "0", "0",
+                                        "0", "0"))));
+        return new MemoryTables()
+                .add(BUILD, "enUS", seed)
+                .forBuild(BUILD, "enUS", Cancellation.NONE)
+                .join()
+                .tables();
+    }
+
+    @Test
+    void afterARestoreAnNpcWithAHelmetIsIndexedOnlyWhenItsAttachmentFilesAreRecorded()
+            throws Exception {
+        var raw = helmeted();
+        var files = files('3');
+        var generated = new MemoryGeneratedStore();
+        var first = ask(raw, files, generated);
+        assertNotNull(first.result(), String.valueOf(first));
+        var index = index(raw, files);
+        var key = index.key(50);
+        var entry = RaceNpcIndex.decode(generated.read(key).join().bytes(), index.scope(50));
+        assertNotNull(entry, "indexed when composed, with its attachment files");
+        // Without the entry, the restored composite's recorded attachment files allow a new one.
+        generated.delete(List.of(key)).join();
+        assertTrue(ask(raw, files, generated).result().restored());
+        assertTrue(present(generated, key), "written after a restore with recorded files");
+        // Without that record, a restore writes no entry for an NPC with a helmet.
+        var record =
+                GeneratedKey.hash(
+                        ("npc-composite-attachment-files-v1\n" + entry.composite().hex())
+                                .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        assertTrue(present(generated, record));
+        generated.delete(List.of(key, record)).join();
+        assertTrue(ask(raw, files, generated).result().restored());
+        assertFalse(present(generated, key), "not written: its attachment files are unknown");
+        // The plain fixture (boots only) is written after a restore without any record.
+        var plain = raw();
+        var store = new MemoryGeneratedStore();
+        ask(plain, files, store);
+        var plainKey = index(plain, files).key(50);
+        var plainEntry =
+                RaceNpcIndex.decode(
+                        store.read(plainKey).join().bytes(), index(plain, files).scope(50));
+        store.delete(
+                        List.of(
+                                plainKey,
+                                GeneratedKey.hash(
+                                        ("npc-composite-attachment-files-v1\n"
+                                                        + plainEntry.composite().hex())
+                                                .getBytes(
+                                                        java.nio.charset.StandardCharsets.UTF_8))))
+                .join();
+        ask(plain, files, store);
+        assertTrue(present(store, plainKey));
+    }
+
+    private static RaceAppearanceTypes.Result result() {
+        return new RaceAppearanceTypes.Result(
+                RaceTypes.State.PARTIAL,
+                new com.vibeminer.rendering.models.MeshAppearance(
+                        new com.vibeminer.rendering.models.PreviewMesh(
+                                new float[9],
+                                new int[] {0, 1, 2},
+                                List.of(
+                                        new com.vibeminer.rendering.models.PreviewMesh.Part(
+                                                0, 0, 3))),
+                        new float[6],
+                        new float[9],
+                        List.of(),
+                        List.of()),
+                Set.of(0),
+                List.of(),
+                List.of(),
+                false,
+                null);
     }
 }

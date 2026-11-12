@@ -323,6 +323,15 @@ final class RaceAppearance {
                 false);
     }
 
+    /** Whether an NPC's items include one that may attach a model (a helmet or shoulders). */
+    static boolean attaches(RaceAppearancePlan.Npc npc) {
+        return npc.items().stream()
+                .anyMatch(
+                        item ->
+                                item.slot() == RaceNpcAttachments.HEAD_SLOT
+                                        || item.slot() == RaceNpcAttachments.SHOULDER_SLOT);
+    }
+
     /**
      * Writes a complete NPC appearance to the index: its prepared sources with the content keys the
      * composite's key named, its skeleton, and the attached item files.
@@ -543,13 +552,21 @@ final class RaceAppearance {
                 var result = result(restored.appearance(), visible, plan, issues, true);
                 token.check();
                 remember(prepared, result, restored.skeleton(), restored.skeletonContent());
-                index(
-                        prepared,
-                        result,
-                        restored.skeleton(),
-                        restored.skeletonContent(),
-                        Set.of(),
-                        token);
+                // An NPC whose items may attach models is indexed after a restore only when the
+                // composite recorded the item files its attachments came from.
+                Set<Long> attachedFiles = Set.of();
+                if (prepared.npc() != null && attaches(prepared.npc()) && index != null) {
+                    attachedFiles = index.attachments(key, token);
+                }
+                if (attachedFiles != null) {
+                    index(
+                            prepared,
+                            result,
+                            restored.skeleton(),
+                            restored.skeletonContent(),
+                            attachedFiles,
+                            token);
+                }
                 return result;
             }
             var images = new BlpImages(generated);
@@ -842,6 +859,9 @@ final class RaceAppearance {
                 attachedFiles = attached.files();
                 attached.notes().forEach(text -> note(issues, text));
                 npcFacts(appearance, issues);
+            }
+            if (complete && prepared.npc() != null && index != null) {
+                index.attachments(key, attachedFiles, token);
             }
             if (complete) {
                 save(
