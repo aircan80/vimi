@@ -1,5 +1,6 @@
 package com.vibeminer.eglink;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -17,6 +18,10 @@ final class BundledNpcHistoryTest {
     }
 
     private static byte[] sample(String npcs, String... entries) {
+        return counted(npcs, Integer.toString(entries.length), entries);
+    }
+
+    private static byte[] counted(String npcs, String count, String... entries) {
         var lines =
                 new java.util.ArrayList<>(
                         List.of(
@@ -26,17 +31,23 @@ final class BundledNpcHistoryTest {
                                 "#locale\tenUS",
                                 "#range\t" + COMMIT + "\t" + COMMIT,
                                 "#npcs\t" + npcs,
+                                "#entries\t" + count,
                                 "#source\t0\t1.60.1.70862\t"
                                         + COMMIT
-                                        + "\t2026-11-11T11:27:56Z\t2026-11-10"));
+                                        + "\t2026-11-11T11:27:56Z\t2026-11-10",
+                                "#source\t1\t1.60.1.9999\t"
+                                        + COMMIT
+                                        + "\t2026-11-11T11:27:56Z\t2026-10-01"));
         lines.addAll(List.of(entries));
         return text(lines.toArray(String[]::new));
     }
 
     @Test
     void theShippedHistoryVerifiesAndKeepsAnNpcOnlyAnOlderBuildRecorded() {
+        assertEquals(null, BundledNpcHistory.problem());
         var history = BundledNpcHistory.bundled();
         assertTrue(history.size() > 4000, "bundled NPCs: " + history.size());
+        assertTrue(history.lines() > history.size(), "one line per NPC and build");
         assertEquals("wowf", history.product());
         // Edwin VanCleef: only the 70862 snapshot records him (display 2029).
         var vanCleef = history.displays(639).orElseThrow();
@@ -63,19 +74,60 @@ final class BundledNpcHistoryTest {
     }
 
     @Test
+    void anNpcKeepsOneEntryPerBuildNewestBuildFirstInNumericOrder() throws IOException {
+        // As text, 1.60.1.9999 sorts after 1.60.1.70862; as builds it is older.
+        var history =
+                BundledNpcHistory.parse(
+                        sample("1", "5\t1\t1:1.0:1.0", "5\t0\t2:1.0:1.0"), "notice");
+        assertEquals(1, history.size());
+        assertEquals(2, history.lines());
+        assertEquals(
+                List.of("1.60.1.70862", "1.60.1.9999"),
+                history.entries(5).stream().map(entry -> entry.source().build()).toList());
+        assertEquals(2, history.displays(5).orElseThrow().displays().getFirst().displayId());
+        assertEquals(List.of("1.60.1.9999", "1.60.1.70862"), history.describe().builds());
+    }
+
+    @Test
+    void comparesBuildsNumerically() {
+        assertTrue(BundledNpcHistory.compareBuilds("1.60.1.9999", "1.60.1.70862") < 0);
+        assertTrue(BundledNpcHistory.compareBuilds("1.60.1.70862", "1.60.1.70862") == 0);
+        assertTrue(BundledNpcHistory.compareBuilds("1.61.0.1", "1.60.1.70862") > 0);
+    }
+
+    @Test
+    void aFileThatFailsItsRecordedHashIsRefused() {
+        byte[] data = sample("1", "3\t0\t987:1.0:1.0");
+        String good = "SHA-256 " + BundledNpcHistory.sha256(data);
+        assertDoesNotThrow(
+                () -> BundledNpcHistory.load(good.getBytes(StandardCharsets.UTF_8), data));
+        byte[] changed = data.clone();
+        changed[changed.length - 2] = '9';
+        assertThrows(
+                IOException.class,
+                () -> BundledNpcHistory.load(good.getBytes(StandardCharsets.UTF_8), changed));
+        assertThrows(
+                IOException.class,
+                () -> BundledNpcHistory.load("no hash".getBytes(StandardCharsets.UTF_8), data));
+    }
+
+    @Test
     void refusesInconsistentOrMalformedFiles() {
         assertThrows(
                 IOException.class,
                 () -> BundledNpcHistory.parse(sample("2", "3\t0\t987:1.0:1.0"), "n"));
         assertThrows(
                 IOException.class,
-                () -> BundledNpcHistory.parse(sample("1", "3\t1\t987:1.0:1.0"), "n"));
+                () -> BundledNpcHistory.parse(sample("1", "3\t7\t987:1.0:1.0"), "n"));
+        assertThrows(
+                IOException.class,
+                () -> BundledNpcHistory.parse(counted("1", "2", "3\t0\t987:1.0:1.0"), "n"));
         assertThrows(
                 IOException.class,
                 () -> BundledNpcHistory.parse(sample("1", "3\t0\t0:1.0:1.0"), "n"));
         assertThrows(
                 IOException.class,
-                () -> BundledNpcHistory.parse(sample("2", "3\t0\t1:1:1", "3\t0\t2:1:1"), "n"));
+                () -> BundledNpcHistory.parse(sample("1", "3\t0\t1:1:1", "3\t0\t2:1:1"), "n"));
         byte[] truncated = sample("1", "3\t0\t987:1.0:1.0");
         assertThrows(
                 IOException.class,

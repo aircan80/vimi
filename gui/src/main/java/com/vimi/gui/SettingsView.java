@@ -156,9 +156,8 @@ final class SettingsView extends BorderPane {
                         + " · https://creativecommons.org/licenses/by/4.0/",
                 "Source: " + attribution.upstream(),
                 "Ships with the application and is verified against its notice's hash when it"
-                        + " loads. The NPCs page uses it after the client Creature record and any"
-                        + " downloaded EG Link data; a newer history comes with an application"
-                        + " update.");
+                        + " loads. A newer history comes with an application update; nothing is"
+                        + " downloaded.");
     }
 
     /** Attribution for third-party data that ships with the application (not a data source). */
@@ -178,12 +177,20 @@ final class SettingsView extends BorderPane {
                                 com.vibeminer.formats.definitions.BundledDefinitions.attribution()
                                         .notice(),
                                 "bundled-definitions"));
-        content.getChildren()
-                .addAll(
-                        bundledEntry(
-                                bundledNpcHistoryLines(),
-                                com.vibeminer.eglink.BundledNpcHistory.attribution().notice(),
-                                "bundled-npc-history"));
+        String problem = com.vibeminer.eglink.BundledNpcHistory.problem();
+        if (problem == null) {
+            content.getChildren()
+                    .addAll(
+                            bundledEntry(
+                                    bundledNpcHistoryLines(),
+                                    com.vibeminer.eglink.BundledNpcHistory.attribution().notice(),
+                                    "bundled-npc-history"));
+        } else {
+            // An unreadable history is one line; the other bundled data still shows.
+            Label line = label("EG Link · NPC display history: " + problem, "muted");
+            line.setId("bundled-npc-history-problem");
+            content.getChildren().add(line);
+        }
         content.getChildren()
                 .add(
                         label(

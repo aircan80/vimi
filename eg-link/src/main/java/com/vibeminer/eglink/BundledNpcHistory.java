@@ -14,14 +14,14 @@ import java.util.Optional;
 import java.util.regex.Pattern;
 
 /**
- * The EG Link NPC display history that ships with the application: per NPC, the displays of the
- * newest client build that recorded it across the upstream repository's recent commits, with the
- * build, commit and collection date they came from. Built by hand before a release with {@code
- * scripts/release/eg_link_history.py}; nothing is downloaded. The file is checked against the
- * SHA-256 its NOTICE.md records when it loads.
+ * The EG Link NPC display history that ships with the application: per NPC and client build that
+ * recorded it across the upstream repository's recent commits, the displays of the newest commit
+ * holding that build, with the build, commit and collection date they came from. Built by hand
+ * before a release with {@code scripts/release/eg_link_history.py}; nothing is downloaded. The file
+ * is checked against the SHA-256 its NOTICE.md records when it loads.
  */
 public final class BundledNpcHistory {
-    static final String FORMAT = "vimi-eg-link-npc-history-v1";
+    static final String FORMAT = "vimi-eg-link-npc-history-v2";
     private static final int MAX_BYTES = 8 << 20, MAX_NPCS = 1 << 20, MAX_SOURCES = 4096;
     private static final Pattern BUILD = Pattern.compile("\\d+\\.\\d+\\.\\d+\\.\\d+"),
             COMMIT = Pattern.compile("[0-9a-f]{40}"),
@@ -63,34 +63,82 @@ public final class BundledNpcHistory {
         }
     }
 
-    private final Map<Long, Entry> entries;
+    /** Each NPC's entries, newest build first. */
+    private final Map<Long, List<Entry>> entries;
+
+    private final int lines;
     private final Attribution attribution;
 
-    private BundledNpcHistory(Map<Long, Entry> entries, Attribution attribution) {
-        this.entries = Map.copyOf(entries);
+    private BundledNpcHistory(Map<Long, List<Entry>> entries, Attribution attribution) {
+        var sorted = new HashMap<Long, List<Entry>>();
+        int count = 0;
+        for (var npc : entries.entrySet()) {
+            var list = new ArrayList<>(npc.getValue());
+            list.sort((a, b) -> compareBuilds(b.source().build(), a.source().build()));
+            sorted.put(npc.getKey(), List.copyOf(list));
+            count += list.size();
+        }
+        this.entries = Map.copyOf(sorted);
+        this.lines = count;
         this.attribution = attribution;
     }
 
+    /** The history, or why it could not be read: a bad file is a value, never a class failure. */
+    private record Loaded(BundledNpcHistory history, String problem) {}
+
     private static final class Shared {
-        static final BundledNpcHistory VALUE = load();
+        static final Loaded VALUE = loadShipped();
     }
 
-    /** The bundled history, read and verified once. */
+    /**
+     * The bundled history, read and verified once, or empty when the shipped file is unreadable.
+     */
+    public static Optional<BundledNpcHistory> available() {
+        return Optional.ofNullable(Shared.VALUE.history());
+    }
+
+    /** Why the shipped history could not be read, or null when it was. */
+    public static String problem() {
+        return Shared.VALUE.problem();
+    }
+
+    /** The bundled history; throws {@link IllegalStateException} when it is unreadable. */
     public static BundledNpcHistory bundled() {
-        return Shared.VALUE;
+        return available().orElseThrow(() -> new IllegalStateException(problem()));
     }
 
-    /** The bundled NPC display history's attribution, read from its NOTICE.md. */
+    /**
+     * The bundled NPC display history's attribution, read from its NOTICE.md; throws {@link
+     * IllegalStateException} when the history is unreadable.
+     */
     public static Attribution attribution() {
         return bundled().attribution;
     }
 
-    public Optional<Entry> displays(long npcId) {
-        return Optional.ofNullable(entries.get(npcId));
+    /** The NPC's entries, one per build that recorded it, newest build first. */
+    public List<Entry> entries(long npcId) {
+        return entries.getOrDefault(npcId, List.of());
     }
 
+    /** The NPC's entry from the newest build that recorded it. */
+    public Optional<Entry> displays(long npcId) {
+        var list = entries(npcId);
+        return list.isEmpty() ? Optional.empty() : Optional.of(list.getFirst());
+    }
+
+    /** This history's attribution. */
+    public Attribution describe() {
+        return attribution;
+    }
+
+    /** The number of NPCs. */
     public int size() {
         return entries.size();
+    }
+
+    /** The number of entries (one per NPC and build). */
+    public int lines() {
+        return lines;
     }
 
     /** The product the history was collected for (EG Link's {@code wowf}). */
@@ -98,19 +146,24 @@ public final class BundledNpcHistory {
         return attribution.product();
     }
 
-    private static BundledNpcHistory load() {
+    private static Loaded loadShipped() {
         try {
-            byte[] notice = resource("history/NOTICE.md");
-            byte[] data = resource("history/npc-displays.txt");
-            var digest = DIGEST.matcher(new String(notice, StandardCharsets.UTF_8));
-            if (!digest.find() || !digest.group(1).equals(sha256(data))) {
-                throw new IOException("Bundled NPC history failed its recorded hash");
-            }
-            return parse(data, new String(notice, StandardCharsets.UTF_8));
+            return new Loaded(
+                    load(resource("history/NOTICE.md"), resource("history/npc-displays.txt")),
+                    null);
         } catch (IOException | RuntimeException failure) {
-            throw new IllegalStateException(
-                    "Bundled EG Link NPC history is unreadable: " + failure.getMessage(), failure);
+            return new Loaded(
+                    null, "Bundled EG Link NPC history is unreadable: " + failure.getMessage());
         }
+    }
+
+    /** Verifies {@code data} against the SHA-256 {@code notice} records, then parses it. */
+    static BundledNpcHistory load(byte[] notice, byte[] data) throws IOException {
+        var digest = DIGEST.matcher(new String(notice, StandardCharsets.UTF_8));
+        if (!digest.find() || !digest.group(1).equals(sha256(data))) {
+            throw new IOException("Bundled NPC history failed its recorded hash");
+        }
+        return parse(data, new String(notice, StandardCharsets.UTF_8));
     }
 
     /** Parses the bundled text format; package-private for tests. */
@@ -125,7 +178,8 @@ public final class BundledNpcHistory {
     private static BundledNpcHistory parseChecked(byte[] data, String notice) throws IOException {
         var header = new HashMap<String, String[]>();
         var sources = new HashMap<Integer, Source>();
-        var entries = new HashMap<Long, Entry>();
+        var entries = new HashMap<Long, List<Entry>>();
+        int count = 0;
         String text = new String(data, StandardCharsets.UTF_8);
         if (!text.endsWith("\n")) {
             throw new IOException("Truncated bundled NPC history");
@@ -150,7 +204,7 @@ public final class BundledNpcHistory {
                     throw new IOException("Duplicate bundled NPC history header");
                 }
             } else {
-                if (fields.length != 3 || entries.size() >= MAX_NPCS) {
+                if (fields.length != 3 || count >= MAX_NPCS) {
                     throw new IOException("Malformed bundled NPC history line");
                 }
                 long npc = Long.parseLong(fields[0]);
@@ -175,13 +229,19 @@ public final class BundledNpcHistory {
                         throw new IOException("Invalid bundled NPC display", invalid);
                     }
                 }
-                if (entries.putIfAbsent(npc, new Entry(npc, displays, source)) != null) {
-                    throw new IOException("Duplicate bundled NPC");
+                var list = entries.computeIfAbsent(npc, key -> new ArrayList<>());
+                for (var held : list) {
+                    if (held.source().build().equals(source.build())) {
+                        throw new IOException("Duplicate bundled NPC build");
+                    }
                 }
+                list.add(new Entry(npc, displays, source));
+                count++;
             }
         }
         if (!FORMAT.equals(value(header, "format", 1))
-                || Integer.parseInt(value(header, "npcs", 1)) != entries.size()) {
+                || Integer.parseInt(value(header, "npcs", 1)) != entries.size()
+                || Integer.parseInt(value(header, "entries", 1)) != count) {
             throw new IOException("Unsupported or inconsistent bundled NPC history");
         }
         var builds =
