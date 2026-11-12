@@ -281,6 +281,12 @@ hit is recorded under `source.prefetchWait.*` instead. To compare with the sum a
 `source.prefetchWait.BASIC_EXTERIOR` to `source.read.BASIC_EXTERIOR`. Even then a hit counts
 only the wait, not the overlapped read.
 
+Derived reads (building groups, doodad models and skins, their images) are served from the
+session's source cache (`WorldSourceCache`) when it holds the file: such a read takes well under
+a millisecond and still counts in `source.read.*` or `source.prefetchWait.*`. The counters
+`source.cache.fileHit` and `source.cache.fileMiss` give the split, and `source.cache.heldMiB` the
+bytes held.
+
 **Reading:** 84-86% of objects prep is waiting on about 190 source reads per tile, one at a time.
 Decode, parse, mips and assembly add up to under 0.5 s for nine tiles. Two consequences:
 - Decode-once BLP changes will barely move prep time.

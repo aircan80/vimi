@@ -156,7 +156,10 @@ class WorldBasicWmoTest {
             files.sources.put(6L, group());
             files.sources.put(10L, image());
             nativeMap = new AuthoredNativeMap(files.files());
-            engine = new WorldStreamScopes(nativeMap.tables(), files.files());
+            // Re-read paths are under test here; WorldSourceCacheTest covers kept files.
+            engine =
+                    new WorldStreamScopes(
+                            nativeMap.tables(), files.files(), WorldSourceCache.off());
             scope = engine.create(MAP, Cancellation.NONE);
             scene =
                     new TerrainScene(

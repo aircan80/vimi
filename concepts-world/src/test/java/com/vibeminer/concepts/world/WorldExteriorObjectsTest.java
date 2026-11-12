@@ -575,6 +575,13 @@ class WorldExteriorObjectsTest {
 
         /** Null records leave the authored WDT without an obj0 reference for the tile. */
         Fixture(List<Modf> records, WorldTerrainTextureSourceTest.Files files) {
+            this(records, files, WorldSourceCache.off());
+        }
+
+        Fixture(
+                List<Modf> records,
+                WorldTerrainTextureSourceTest.Files files,
+                WorldSourceCache sources) {
             this.files = files;
             if (records != null) {
                 int offset = 12 + 40 + 8 + 32768 + 8 + (7 * 64 + 19) * 32;
@@ -589,7 +596,8 @@ class WorldExteriorObjectsTest {
             files.sources.put(IMAGE, blp(4, 4, 1, 0xf800));
             files.sources.put(IMAGE2, blp(4, 4, 1, 0x001f));
             nativeMap = new AuthoredNativeMap(files.files());
-            engine = new WorldStreamScopes(nativeMap.tables(), files.files());
+            // Re-read paths are under test with the cache off; kept files where it is given.
+            engine = new WorldStreamScopes(nativeMap.tables(), files.files(), sources);
             scope = engine.create(MAP, Cancellation.NONE);
         }
 
@@ -1402,6 +1410,30 @@ class WorldExteriorObjectsTest {
                                 .meshes()
                                 .size());
             }
+        }
+    }
+
+    @Test
+    void aLaterSetReadsNoSourceTheSessionCacheHolds() {
+        var cache = new WorldSourceCache(1 << 20);
+        try (var f =
+                new Fixture(
+                        List.of(Modf.of(ROOT, 1, 0x8)),
+                        new WorldTerrainTextureSourceTest.Files(),
+                        cache)) {
+            try (var set = f.run()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+            }
+            int root = f.files.opens.get(ROOT).get(), group = f.files.opens.get(GROUP).get();
+            long hits = cache.hits();
+            try (var set = f.run()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+            }
+            assertEquals(root, f.files.opens.get(ROOT).get(), "the root is read once");
+            assertEquals(group, f.files.opens.get(GROUP).get(), "the group is read once");
+            assertTrue(cache.hits() >= hits + 2);
+            assertTrue(cache.bytes(WorldSourceCache.FILE) > 0);
         }
     }
 

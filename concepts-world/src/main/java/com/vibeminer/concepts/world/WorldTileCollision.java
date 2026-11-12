@@ -12,7 +12,6 @@ import com.vibeminer.formats.world.WorldPlacements;
 import com.vibeminer.rendering.world.LiquidSurface;
 import com.vibeminer.rendering.world.ObjectCollision;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -33,15 +32,18 @@ import java.util.function.IntConsumer;
  * swimming ({@link LiquidSurface#with}); a group liquid under a building tilted by pitch or roll is
  * left out and counted.
  *
- * <p>Parsed roots, groups and models are shared across tiles in a cache bounded by bytes ({@link
- * #CACHE_BYTES}). Thread-safe; reads run on the caller's thread.
+ * <p>Parsed roots, groups and models are shared across tiles in the session's source cache ({@link
+ * WorldSourceCache}), bounded by bytes together with the files object sets read; a file that cache
+ * already holds is not read again. Thread-safe; reads run on the caller's thread.
  */
 public final class WorldTileCollision {
     /**
-     * Shared parsed sources. The whole 3x3 around Stormwind measured 35 MiB on 70862 (Ironforge 19,
-     * Orgrimmar 19), placements included, so this holds that neighbourhood with room to move.
+     * The namespace of this reader's parsed sources in the {@link WorldSourceCache}, and its
+     * revision: a change to what a root, group or model parses into takes a new revision.
      */
-    public static final long CACHE_BYTES = 96L << 20;
+    static final String CACHE_KIND = "collision";
+
+    static final int CACHE_REVISION = 1;
 
     static final double MAX_SCALE = WorldExteriorObjects.MAX_SCALE;
     private static final int DIRECT_ID = 0x8, SCALED = 0x4, SETS_FROM_MWDS = 0x80;
@@ -140,24 +142,34 @@ public final class WorldTileCollision {
     private long keys;
 
     private final Source source;
-    private final long budget;
-    private final LinkedHashMap<Long, Object> cache = new LinkedHashMap<>(256, .75f, true);
-    private long cached;
+    private final WorldSourceCache sources;
 
-    WorldTileCollision(BuildFiles files) {
-        this(files(Objects.requireNonNull(files)), CACHE_BYTES);
+    /** A reader of the build's files, sharing the session's source cache. */
+    WorldTileCollision(BuildFiles files, WorldSourceCache sources) {
+        this(files(Objects.requireNonNull(files), Objects.requireNonNull(sources)), sources);
     }
 
     /** A reader over any source, with its own cache budget in bytes (tests). */
     WorldTileCollision(Source source, long budget) {
-        this.source = Objects.requireNonNull(source);
-        this.budget = budget;
+        this(source, new WorldSourceCache(budget));
     }
 
-    /** The build's files; any failure other than cancellation reads as unreadable for now. */
-    private static Source files(BuildFiles files) {
+    WorldTileCollision(Source source, WorldSourceCache sources) {
+        this.source = Objects.requireNonNull(source);
+        this.sources = Objects.requireNonNull(sources);
+    }
+
+    /**
+     * The build's files, first from the source cache (a complete file an object set read); any
+     * failure other than cancellation reads as unreadable for now.
+     */
+    private static Source files(BuildFiles files, WorldSourceCache sources) {
         Source read =
                 (id, token) -> {
+                    var cached = sources.file(id);
+                    if (cached != null) {
+                        return cached.bytes();
+                    }
                     FileTypes.FileOpen opened;
                     try {
                         opened = files.openRead(FileTypes.FileRef.id(id), token).join();
@@ -228,14 +240,14 @@ public final class WorldTileCollision {
                     FileTypes.FileReadState.CORRUPT,
                     FileTypes.FileReadState.TOO_LARGE);
 
-    /** Sources the shared cache holds now. */
-    synchronized int cachedEntries() {
-        return cache.size();
+    /** Parsed sources of this reader the shared cache holds now. */
+    int cachedEntries() {
+        return sources.entries(CACHE_KIND);
     }
 
-    /** Bytes the shared cache holds now. */
-    public synchronized long cachedBytes() {
-        return cached;
+    /** Bytes of this reader's parsed sources the shared cache holds now. */
+    public long cachedBytes() {
+        return sources.bytes(CACHE_KIND);
     }
 
     /** Reads one tile's placements and everything they place. */
@@ -612,43 +624,27 @@ public final class WorldTileCollision {
     }
 
     /** Drops sources refused for their keys once the keys changed, so they are read again. */
-    private synchronized void forgetKeyedAbsences(long revision) {
-        if (revision == keys) {
-            return;
-        }
-        keys = revision;
-        var it = cache.values().iterator();
-        while (it.hasNext()) {
-            var sized = (Sized) it.next();
-            if (sized.value() == KEYED_MISSING) {
-                cached -= sized.bytes();
-                it.remove();
+    private void forgetKeyedAbsences(long revision) {
+        synchronized (this) {
+            if (revision == keys) {
+                return;
             }
+            keys = revision;
         }
+        sources.removeIf((key, value) -> key.kind().equals(CACHE_KIND) && value == KEYED_MISSING);
     }
 
-    private synchronized Object cached(long id) {
-        return cache.get(id) instanceof Sized sized ? sized.value() : null;
+    private static WorldSourceCache.Key key(long id) {
+        return new WorldSourceCache.Key(CACHE_KIND, CACHE_REVISION, id);
     }
 
-    private synchronized void remember(long id, Object value, long bytes) {
-        var previous = cache.put(id, new Sized(value, bytes));
-        if (previous instanceof Sized old) {
-            cached -= old.bytes();
-        }
-        cached += bytes;
-        var it = cache.entrySet().iterator();
-        while (cached > budget && it.hasNext()) {
-            var eldest = it.next();
-            if (eldest.getKey() == id) {
-                continue;
-            }
-            cached -= ((Sized) eldest.getValue()).bytes();
-            it.remove();
-        }
+    private Object cached(long id) {
+        return sources.parsed(key(id));
     }
 
-    private record Sized(Object value, long bytes) {}
+    private void remember(long id, Object value, long bytes) {
+        sources.putParsed(key(id), value, bytes);
+    }
 
     private byte[] read(long id, Cancellation token, Map<String, Integer> skipped, String kind) {
         if (id <= 0) {
