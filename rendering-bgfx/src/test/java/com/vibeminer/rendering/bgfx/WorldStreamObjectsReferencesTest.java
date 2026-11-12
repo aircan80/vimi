@@ -261,6 +261,33 @@ class WorldStreamObjectsReferencesTest {
     }
 
     @Test
+    void aCorruptFileNamingAbsentAssetsIsRefusedAsCorrupt() throws IOException {
+        var data = rich();
+        var n = named(data, new int[] {1}, new int[] {0});
+        var objects =
+                WorldStreamObjectsFile.write(
+                        directory, IDENTITY, data, n.references(), () -> false);
+        var path = directory.resolve(WorldStreamObjectsFile.basename(42));
+        var bytes = Files.readAllBytes(path);
+        // A byte of the first placement's x: read as is, caught only by the file's digest.
+        int at =
+                WorldStreamObjectsFile.HEADER_BYTES
+                        + n.references().bytes()
+                        + data.modelCount() * 8
+                        + data.meshCount() * 24
+                        + data.rangeCount() * WorldStreamObjectsFile.RANGE_INTS * 4
+                        + 8;
+        bytes[at] ^= 1;
+        Files.write(path, bytes);
+        var refused =
+                assertThrows(
+                        IOException.class,
+                        () -> WorldStreamObjectsFile.read(path, IDENTITY, objects, () -> false));
+        assertEquals(IOException.class, refused.getClass(), "corrupt, not missing assets");
+        assertEquals("Objects bytes or digest differ", refused.getMessage());
+    }
+
+    @Test
     void anAssetThatDoesNotFitTheTablesIsRefused() throws IOException {
         // Model 1 named by model 0's asset: its mesh table does not match.
         var data = rich();

@@ -1882,11 +1882,16 @@ final class WorldStreamObjectsFile {
                                 Long.reverseBytes(input.readLong()));
             }
             var references = new References(refModels, refModelDigests, refImages, refImageDigests);
+            // An asset the pack lacks is noted and its place skipped: the rest is still read, and
+            // MissingAssets is raised only once the file's length and digest have held, so a
+            // corrupt file is refused as corrupt whatever it names.
             var missing = new java.util.ArrayList<WorldStreamObjectAssets.Digest>();
             var modelParts = new WorldStreamObjectAssets.ModelPart[models];
             var imageParts = new WorldStreamObjectAssets.ImagePart[images];
+            boolean[] modelNamed = new boolean[models], imageNamed = new boolean[images];
             for (int r = 0; r < referencedModels; r++) {
                 require(refModels[r] < models, "Referenced model");
+                modelNamed[refModels[r]] = true;
                 var part = assets.models().get(refModelDigests[r]);
                 if (part == null) {
                     missing.add(refModelDigests[r]);
@@ -1895,14 +1900,12 @@ final class WorldStreamObjectsFile {
             }
             for (int r = 0; r < referencedImages; r++) {
                 require(refImages[r] < images, "Referenced image");
+                imageNamed[refImages[r]] = true;
                 var part = assets.images().get(refImageDigests[r]);
                 if (part == null) {
                     missing.add(refImageDigests[r]);
                 }
                 imageParts[refImages[r]] = part;
-            }
-            if (!missing.isEmpty()) {
-                throw new MissingAssets(missing);
             }
             // Bounded by the counts above before any body allocation.
             int[] modelTable = ints(input, models * 2);
@@ -1968,13 +1971,15 @@ final class WorldStreamObjectsFile {
                 check(canceled);
                 int at = mesh * 6;
                 var part = referencedMesh(modelParts, modelTable, owners, mesh);
-                if (part != null) {
-                    System.arraycopy(
-                            part.vertices(),
-                            0,
-                            vertexData,
-                            meshTable[at] * VERTEX_FLOATS,
-                            part.vertices().length);
+                if (modelNamed[owners[mesh]]) {
+                    if (part != null) {
+                        System.arraycopy(
+                                part.vertices(),
+                                0,
+                                vertexData,
+                                meshTable[at] * VERTEX_FLOATS,
+                                part.vertices().length);
+                    }
                     continue;
                 }
                 carriedIndices += meshTable[at + 3];
@@ -1986,9 +1991,15 @@ final class WorldStreamObjectsFile {
             for (int mesh = 0; mesh < meshes; mesh++) {
                 int at = mesh * 6;
                 var part = referencedMesh(modelParts, modelTable, owners, mesh);
-                if (part != null) {
-                    System.arraycopy(
-                            part.colours(), 0, colourData, meshTable[at], part.colours().length);
+                if (modelNamed[owners[mesh]]) {
+                    if (part != null) {
+                        System.arraycopy(
+                                part.colours(),
+                                0,
+                                colourData,
+                                meshTable[at],
+                                part.colours().length);
+                    }
                     continue;
                 }
                 for (int i = meshTable[at]; i < meshTable[at] + meshTable[at + 1]; i++) {
@@ -1998,9 +2009,15 @@ final class WorldStreamObjectsFile {
             for (int mesh = 0; mesh < meshes; mesh++) {
                 int at = mesh * 6;
                 var part = referencedMesh(modelParts, modelTable, owners, mesh);
-                if (part != null) {
-                    System.arraycopy(
-                            part.indices(), 0, indexData, meshTable[at + 2], part.indices().length);
+                if (modelNamed[owners[mesh]]) {
+                    if (part != null) {
+                        System.arraycopy(
+                                part.indices(),
+                                0,
+                                indexData,
+                                meshTable[at + 2],
+                                part.indices().length);
+                    }
                     continue;
                 }
                 for (int i = meshTable[at + 2]; i < meshTable[at + 2] + meshTable[at + 3]; i++) {
@@ -2027,14 +2044,17 @@ final class WorldStreamObjectsFile {
                 int stored = ObjectTextureFormats.chainBytes(format, width, height);
                 require((long) pixelAt + stored <= imageBytes, "Image bytes");
                 var part = imageParts[image];
-                if (part != null) {
+                if (imageNamed[image]) {
                     require(
-                            part.format() == format
-                                    && part.width() == width
-                                    && part.height() == height
-                                    && part.chain().length == stored,
+                            part == null
+                                    || part.format() == format
+                                            && part.width() == width
+                                            && part.height() == height
+                                            && part.chain().length == stored,
                             "Referenced image");
-                    System.arraycopy(part.chain(), 0, pixelData, pixelAt, stored);
+                    if (part != null) {
+                        System.arraycopy(part.chain(), 0, pixelData, pixelAt, stored);
+                    }
                 } else {
                     input.readFully(pixelData, pixelAt, stored);
                 }
@@ -2096,7 +2116,11 @@ final class WorldStreamObjectsFile {
             float[] portalVertexData = new float[portalVertices * 3];
             int[] portalRefData = new int[portalRefs * PORTAL_REF_INTS];
             for (int set = 0; set < portalSets; set++) {
-                var part = modelParts[portalSetData[set * PORTAL_SET_INTS]];
+                int owner = portalSetData[set * PORTAL_SET_INTS];
+                var part = modelParts[owner];
+                if (modelNamed[owner] && part == null) {
+                    continue; // a missing asset: raised after the integrity check
+                }
                 fill(
                         input,
                         part == null ? null : part.portals().groups(),
@@ -2105,7 +2129,11 @@ final class WorldStreamObjectsFile {
                         groupAt[set + 1] * PORTAL_GROUP_INTS);
             }
             for (int set = 0; set < portalSets; set++) {
-                var part = modelParts[portalSetData[set * PORTAL_SET_INTS]];
+                int owner = portalSetData[set * PORTAL_SET_INTS];
+                var part = modelParts[owner];
+                if (modelNamed[owner] && part == null) {
+                    continue; // a missing asset: raised after the integrity check
+                }
                 fill(
                         input,
                         part == null ? null : part.portals().boxes(),
@@ -2114,7 +2142,11 @@ final class WorldStreamObjectsFile {
                         groupAt[set + 1] * PORTAL_BOX_FLOATS);
             }
             for (int set = 0; set < portalSets; set++) {
-                var part = modelParts[portalSetData[set * PORTAL_SET_INTS]];
+                int owner = portalSetData[set * PORTAL_SET_INTS];
+                var part = modelParts[owner];
+                if (modelNamed[owner] && part == null) {
+                    continue; // a missing asset: raised after the integrity check
+                }
                 fill(
                         input,
                         part == null ? null : part.portals().vertexCounts(),
@@ -2123,7 +2155,11 @@ final class WorldStreamObjectsFile {
                         portalAt[set + 1]);
             }
             for (int set = 0; set < portalSets; set++) {
-                var part = modelParts[portalSetData[set * PORTAL_SET_INTS]];
+                int owner = portalSetData[set * PORTAL_SET_INTS];
+                var part = modelParts[owner];
+                if (modelNamed[owner] && part == null) {
+                    continue; // a missing asset: raised after the integrity check
+                }
                 fill(
                         input,
                         part == null ? null : part.portals().planes(),
@@ -2132,7 +2168,11 @@ final class WorldStreamObjectsFile {
                         portalAt[set + 1] * PORTAL_PLANE_FLOATS);
             }
             for (int set = 0; set < portalSets; set++) {
-                var part = modelParts[portalSetData[set * PORTAL_SET_INTS]];
+                int owner = portalSetData[set * PORTAL_SET_INTS];
+                var part = modelParts[owner];
+                if (modelNamed[owner] && part == null) {
+                    continue; // a missing asset: raised after the integrity check
+                }
                 fill(
                         input,
                         part == null ? null : part.portals().vertices(),
@@ -2141,7 +2181,11 @@ final class WorldStreamObjectsFile {
                         vertexOf[set + 1] * 3);
             }
             for (int set = 0; set < portalSets; set++) {
-                var part = modelParts[portalSetData[set * PORTAL_SET_INTS]];
+                int owner = portalSetData[set * PORTAL_SET_INTS];
+                var part = modelParts[owner];
+                if (modelNamed[owner] && part == null) {
+                    continue; // a missing asset: raised after the integrity check
+                }
                 fill(
                         input,
                         part == null ? null : part.portals().refs(),
@@ -2234,6 +2278,15 @@ final class WorldStreamObjectsFile {
                         "Liquid meshes ascend");
             }
             require(liquidLeft == 0, "Liquid section length");
+            check(canceled);
+            if (input.read() != -1
+                    || channel.size() != reference.length()
+                    || !HexFormat.of().formatHex(digest.digest()).equals(reference.sha256())) {
+                throw new IOException("Objects bytes or digest differ");
+            }
+            if (!missing.isEmpty()) {
+                throw new MissingAssets(missing);
+            }
             for (int m = 0; m < models; m++) {
                 var part = modelParts[m];
                 if (part == null) {
@@ -2276,12 +2329,6 @@ final class WorldStreamObjectsFile {
                 liquidHeights[l] = (float[]) entry.getValue()[2];
                 liquidLive[l] = (byte[]) entry.getValue()[3];
                 l++;
-            }
-            check(canceled);
-            if (input.read() != -1
-                    || channel.size() != reference.length()
-                    || !HexFormat.of().formatHex(digest.digest()).equals(reference.sha256())) {
-                throw new IOException("Objects bytes or digest differ");
             }
             var data =
                     new Data(
