@@ -65,13 +65,56 @@ final class WorldTileCreatures implements AutoCloseable {
     /** Range class flag: drawn at full intensity, without the light (objects file). */
     static final int UNLIT = com.vibeminer.rendering.world.WorldObjectPicking.UNLIT;
 
-    /** Per tile, on top of the shared objects file profile that buildings use first. */
-    static final int TILE_MODELS = 8, TILE_PLACEMENTS = 32, TILE_PREVIEWS = 16;
+    /**
+     * Per-tile bounds, on top of the shared objects file profile that buildings use first. Sized
+     * from the measured need with the EG Link display fallback (70862): busy town tiles hold up
+     * to 223 spawns and 109 distinct displays. Placements reuse a model and cost little, so up to
+     * {@value #TILE_PLACEMENTS} are drawn. Distinct models are bounded by their texture bytes
+     * ({@link #TILE_TEXTURE_BYTES}), with {@value #TILE_MODELS} as a hard ceiling, and at most
+     * {@value #TILE_PREVIEWS} new displays are converted per tile so one tile cannot stall the
+     * rest. Models converted on an earlier tile are added without a preview load, so what is
+     * capped depends on the cache: a warm pass can draw models a cold pass capped. Creatures are
+     * opt-in, so this memory is spent only when the user enables them.
+     */
+    static final int TILE_MODELS = 64, TILE_PLACEMENTS = 256, TILE_PREVIEWS = 48;
+
+    /**
+     * The texture bytes (RGBA8 mip chains) one tile's distinct creature models may use. A trial
+     * with 24 models a tile measured up to 10.5 MB on the busiest tiles; the shared tile file
+     * holds about 18.7 MB of images in all, and buildings draw first.
+     */
+    static final long TILE_TEXTURE_BYTES = 12L << 20;
+
+    /**
+     * The objects budget share all resident tiles' creatures may hold together ({@link
+     * #gpuBytes}). Creatures share each tile's objects set with its buildings, and the session's
+     * object budget is 212 MiB; the densest Far window measured reserves about 161 MiB for
+     * buildings alone, so creatures stay within what that leaves and never push buildings out.
+     * Unbounded, the creatures of a Far window around Goldshire (EG Link display fallback, 70862)
+     * added about 37 MB; with this share the window's peak stays near 137 MB. Tiles nearest the
+     * camera are prepared first, so they get the share first.
+     */
+    static final long AREA_BYTES = 40L << 20;
 
     /** Whole-model ceiling so one creature never takes a building tile's budget. */
     static final int MODEL_VERTICES = 32_768, MODEL_INDICES = 98_304;
 
-    static final int MODEL_CACHE = 32, CHOICE_CACHE = 4096;
+    static final int CHOICE_CACHE = 4096;
+
+    /**
+     * Converted models are remembered across tiles up to this many bytes (vertices, indices and
+     * texture chains). An area with the EG Link fallback uses 49-189 distinct models; a count of
+     * 32 evicted them, so warm passes converted again.
+     */
+    static final long MODEL_CACHE_BYTES = 128L << 20;
+
+    /**
+     * Humanoid NPC appearances draw their pre-baked texture at most this many pixels a side, a
+     * quarter of the texture memory of {@link #IMAGE_SIDE}: busy town tiles hold dozens of them.
+     * Their canvases are already at most 256 pixels a side, and close-up renders of town NPCs at
+     * 256 and 128 showed no visible difference, so one side serves every distance.
+     */
+    static final int NPC_IMAGE_SIDE = 128;
 
     /** Back-off before a failed spawn index load is tried again within one revision. */
     static final long INDEX_RETRY_NANOS = 60_000_000_000L;
@@ -110,16 +153,18 @@ final class WorldTileCreatures implements AutoCloseable {
     /** One tile's creature outcome; immutable. */
     static final class Summary {
         static final Summary NONE = new Summary(new int[Count.values().length], 0, 0, 0, NpcCounts.NONE, null,
-                List.of());
+                List.of(), 0);
 
         private final int[] counts;
         private final int models, restPosed, billboardsLeftOut;
         private final NpcCounts npcs;
         private final String note;
         private final List<WorldObjectPicks.Creature> placed;
+        private final long bytes;
 
         private Summary(int[] counts, int models, int restPosed, int billboardsLeftOut, NpcCounts npcs,
-                String note, List<WorldObjectPicks.Creature> placed) {
+                String note, List<WorldObjectPicks.Creature> placed, long bytes) {
+            this.bytes = bytes;
             this.counts = counts.clone();
             this.models = models;
             this.restPosed = restPosed;
@@ -129,9 +174,16 @@ final class WorldTileCreatures implements AutoCloseable {
             this.placed = List.copyOf(placed);
         }
 
+        /** Only drawn placements: {@code drawn} of {@code models} models adding {@code bytes}. */
+        static Summary drawn(int drawn, int models, long bytes) {
+            var counts = new int[Count.values().length];
+            counts[Count.DRAWN.ordinal()] = drawn;
+            return new Summary(counts, models, 0, 0, NpcCounts.NONE, null, List.of(), bytes);
+        }
+
         static Summary failed(String note) {
             return new Summary(new int[Count.values().length], 0, 0, 0, NpcCounts.NONE,
-                    Objects.requireNonNull(note), List.of());
+                    Objects.requireNonNull(note), List.of(), 0);
         }
 
         /** Drawn humanoid NPC placements and what their items left undrawn (#385). */
@@ -174,6 +226,11 @@ final class WorldTileCreatures implements AutoCloseable {
             return models;
         }
 
+        /** The bytes the tile's creature models add to its objects set ({@link #gpuBytes}). */
+        long bytes() {
+            return bytes;
+        }
+
         /**
          * One tile's drawn creatures in the order their placements were appended; empty for a sum
          * or a failure.
@@ -192,7 +249,7 @@ final class WorldTileCreatures implements AutoCloseable {
             for (int i = 0; i < sum.length; i++) sum[i] += other.counts[i];
             return new Summary(sum, models + other.models, restPosed + other.restPosed,
                     billboardsLeftOut + other.billboardsLeftOut, npcs.plus(other.npcs),
-                    note != null ? note : other.note, List.of());
+                    note != null ? note : other.note, List.of(), bytes + other.bytes);
         }
     }
 
@@ -277,6 +334,16 @@ final class WorldTileCreatures implements AutoCloseable {
         /** {@link #idle} then {@link #worldIdle}, for measurements; may read the model once. */
         default List<DisplayModelTypes.Idle> stands(long displayId, Cancellation token) throws Exception {
             return List.of(idle(displayId, token), worldIdle(displayId, token));
+        }
+
+        /**
+         * The display's table relationships without its model ({@link
+         * BuildDisplayModels#reference}), so a humanoid NPC's display is known without reading
+         * the character model its preview would load; null when a source cannot tell cheaply,
+         * and the preview answers instead.
+         */
+        default DisplayModelTypes.Reference reference(long displayId, Cancellation token) throws Exception {
+            return null;
         }
     }
 
@@ -366,7 +433,7 @@ final class WorldTileCreatures implements AutoCloseable {
     private final Previews previews;
     private final Npcs npcs;
     private final Map<Long, Chosen> choices = lru(CHOICE_CACHE);
-    private final Map<Long, Converted> models = lru(MODEL_CACHE);
+    private final ModelCache models = new ModelCache(MODEL_CACHE_BYTES);
     private Object cachedRevision;
     private CompletableFuture<WorldSpawns.Index> index;
     private long indexFailedAt;
@@ -397,6 +464,81 @@ final class WorldTileCreatures implements AutoCloseable {
         this.revision = Objects.requireNonNull(revision);
         this.chooser = Objects.requireNonNull(chooser);
         this.previews = Objects.requireNonNull(previews);
+    }
+
+    /**
+     * Converted models by display, least recently used dropped first past {@code limit} bytes
+     * ({@link #bytes}). Not a {@link Map}: only these operations exist, so every change is counted.
+     * The newest entry is kept even when it alone is larger than the limit. Not synchronized; the
+     * owner guards it.
+     */
+    static final class ModelCache {
+        private final long limit;
+        private final LinkedHashMap<Long, Converted> entries = new LinkedHashMap<>(64, .75f, true);
+        private long bytes;
+
+        ModelCache(long limit) {
+            if (limit < 1) throw new IllegalArgumentException("Model cache limit");
+            this.limit = limit;
+        }
+
+        Converted get(long display) {
+            return entries.get(display);
+        }
+
+        boolean contains(long display) {
+            return entries.containsKey(display);
+        }
+
+        void put(long display, Converted converted) {
+            Objects.requireNonNull(converted);
+            var before = entries.put(display, converted);
+            bytes += WorldTileCreatures.bytes(converted) - (before == null ? 0 : WorldTileCreatures.bytes(before));
+            var eldest = entries.values().iterator();
+            while (bytes > limit && entries.size() > 1) {
+                bytes -= WorldTileCreatures.bytes(eldest.next());
+                eldest.remove();
+            }
+        }
+
+        void remove(long display) {
+            var before = entries.remove(display);
+            if (before != null) bytes -= WorldTileCreatures.bytes(before);
+        }
+
+        void clear() {
+            entries.clear();
+            bytes = 0;
+        }
+
+        int size() {
+            return entries.size();
+        }
+
+        long totalBytes() {
+            return bytes;
+        }
+    }
+
+    /** The remembered conversion of a display, or null (tests). */
+    synchronized Converted cached(long display) {
+        return models.get(display);
+    }
+
+    /**
+     * The GPU bytes one model adds to a tile's objects set: its RGBA8 texture chains, its vertices
+     * as the renderer packs them (the objects file's 32-byte vertex and a 4-byte colour) and its
+     * 16-bit indices.
+     */
+    static long gpuBytes(Model m) {
+        return m.pixels() * 4 + (long) m.vertexCount() * 36 + (long) m.indices().length * 2;
+    }
+
+    /** The bytes one remembered conversion holds; a refusal holds next to none. */
+    static long bytes(Converted converted) {
+        var m = converted.model();
+        if (m == null) return 64;
+        return (long) m.vertices().length * 4 + (long) m.indices().length * 4 + m.pixels() * 4 + 256;
     }
 
     private static <V> Map<Long, V> lru(int capacity) {
@@ -451,6 +593,12 @@ final class WorldTileCreatures implements AutoCloseable {
         }
 
         @Override
+        public DisplayModelTypes.Reference reference(long displayId, Cancellation token) {
+            var models = component();
+            return models == null ? null : models.reference(displayId, token).join();
+        }
+
+        @Override
         public DisplayModelTypes.Idle idle(long displayId, Cancellation token) {
             var models = component();
             return models == null ? DisplayModelTypes.Idle.unavailable("Model files are not open")
@@ -501,6 +649,17 @@ final class WorldTileCreatures implements AutoCloseable {
      */
     Summary append(WorldStreamTileWriter.Exterior.Builder builder, long mapId, WorldFormats.Tile tile,
             Cancellation token) {
+        return append(builder, mapId, tile, Long.MAX_VALUE, token);
+    }
+
+    /**
+     * As above, adding models only while their {@link #gpuBytes} stay within {@code allowance}: the
+     * part of {@link #AREA_BYTES} the resident tiles' creatures leave (see
+     * {@code WorldStreamSourceController}). The models past it are counted as capped.
+     */
+    Summary append(WorldStreamTileWriter.Exterior.Builder builder, long mapId, WorldFormats.Tile tile,
+            long allowance, Cancellation token) {
+        if (allowance < 0) throw new IllegalArgumentException("Creature allowance");
         Objects.requireNonNull(builder);
         Objects.requireNonNull(tile);
         Objects.requireNonNull(token);
@@ -527,6 +686,7 @@ final class WorldTileCreatures implements AutoCloseable {
         var added = new HashMap<Long, Integer>();
         var placed = new java.util.ArrayList<WorldObjectPicks.Creature>();
         int placements = 0, previewsTried = 0;
+        long textureBytes = 0, setBytes = 0;
         // Displays whose preview was busy, or whose NPC appearance cannot be read yet, on this
         // tile: not asked again for every later spawn.
         var busyDisplays = new HashMap<Long, Count>();
@@ -598,6 +758,8 @@ final class WorldTileCreatures implements AutoCloseable {
                 }
                 var m = converted.model();
                 if (added.size() == TILE_MODELS
+                        || textureBytes + m.pixels() * 4 > TILE_TEXTURE_BYTES
+                        || gpuBytes(m) > allowance - setBytes
                         || m.ranges().length / 3 > builder.drawRoom()
                         || !builder.fits(m.images().size(), m.pixels(), 1, m.vertexCount(), m.indices().length,
                                 m.ranges().length / 3)) {
@@ -605,6 +767,8 @@ final class WorldTileCreatures implements AutoCloseable {
                     continue;
                 }
                 model = add(builder, m);
+                textureBytes += m.pixels() * 4;
+                setBytes += gpuBytes(m);
                 added.put(display, model);
                 if (m.restPose() != null) restModels.add(model);
                 if (m.billboardTriangles() > 0) billboardModels.add(model);
@@ -628,7 +792,7 @@ final class WorldTileCreatures implements AutoCloseable {
             counts[Count.DRAWN.ordinal()]++;
         }
         return new Summary(counts, added.size(), restPosed, billboardsLeftOut, npcCounts, nearby.omitted() == 0 ? null
-                : nearby.omitted() + " nearby points beyond the query limit were not considered", placed);
+                : nearby.omitted() + " nearby points beyond the query limit were not considered", placed, setBytes);
     }
 
     /**
@@ -658,11 +822,20 @@ final class WorldTileCreatures implements AutoCloseable {
     private Converted load(long display, Cancellation token) {
         Converted converted;
         try {
-            var preview = previews.preview(display, token);
+            // A humanoid NPC's display draws its race appearance: its preview (the character model,
+            // read whole) is not needed, only its extended display info.
+            var reference = previews.reference(display, token);
             token.check();
-            var extended = preview == null || preview.reference() == null ? null
-                    : preview.reference().extendedDisplayInfoId();
-            converted = extended != null && extended > 0 ? npc(extended, token) : stand(display, preview, token);
+            Long extended = reference == null ? null : reference.extendedDisplayInfoId();
+            if (extended != null && extended > 0) {
+                converted = npc(extended, token);
+            } else {
+                var preview = previews.preview(display, token);
+                token.check();
+                extended = preview == null || preview.reference() == null ? null
+                        : preview.reference().extendedDisplayInfoId();
+                converted = extended != null && extended > 0 ? npc(extended, token) : stand(display, preview, token);
+            }
         } catch (Exception failed) {
             // Only this tile's cancellation propagates; a closed or retired component is a failure.
             token.check();
@@ -740,7 +913,7 @@ final class WorldTileCreatures implements AutoCloseable {
         var mesh = result.appearance().mesh();
         if (mesh.parts().stream().noneMatch(part -> visible.contains(part.id())))
             return Converted.refused(Count.VISIBILITY_UNRESOLVED, "the NPC appearance shows no geoset");
-        var converted = surfaces(result.appearance(), visible, token);
+        var converted = surfaces(result.appearance(), visible, new int[0], false, NPC_IMAGE_SIDE, token);
         return converted.model() == null ? converted
                 : new Converted(converted.model()
                         .withNpc(answer.omittedItems(), answer.omittedAttachments())
@@ -817,6 +990,12 @@ final class WorldTileCreatures implements AutoCloseable {
      */
     static Converted surfaces(MeshAppearance appearance, Set<Integer> visibleIds, int[] leftOut,
             boolean sorted, Cancellation token) {
+        return surfaces(appearance, visibleIds, leftOut, sorted, IMAGE_SIDE, token);
+    }
+
+    /** As above, with textures reduced to at most {@code imageSide} pixels a side. */
+    static Converted surfaces(MeshAppearance appearance, Set<Integer> visibleIds, int[] leftOut,
+            boolean sorted, int imageSide, Cancellation token) {
         var mesh = appearance.mesh();
         var billboard = new HashSet<Integer>();
         for (int vertex : leftOut) billboard.add(vertex);
@@ -907,7 +1086,7 @@ final class WorldTileCreatures implements AutoCloseable {
             int key = surface.textureIndex() * 3 + materialClass;
             Integer slot = imageSlots.get(key);
             if (slot == null) {
-                var image = reduce(textures.get(surface.textureIndex()), materialClass, token);
+                var image = reduce(textures.get(surface.textureIndex()), materialClass, imageSide, token);
                 if (image.width() < 1 || image.height() < 1)
                     return Converted.refused(Count.MODEL_UNAVAILABLE, "texture has no pixels");
                 slot = images.size();
@@ -1026,12 +1205,19 @@ final class WorldTileCreatures implements AutoCloseable {
      * coverage matching, as the objects' blended chains do.
      */
     static Image reduce(MeshAppearance.Texture texture, int materialClass, Cancellation token) {
+        return reduce(texture, materialClass, IMAGE_SIDE, token);
+    }
+
+    /** As above, to at most {@code side} pixels a side (a power of two up to {@link #IMAGE_SIDE}). */
+    static Image reduce(MeshAppearance.Texture texture, int materialClass, int side, Cancellation token) {
         if (materialClass != OPAQUE && materialClass != CUTOUT && materialClass != BLENDED)
             throw new IllegalArgumentException("Material class");
+        if (side < 1 || side > IMAGE_SIDE || Integer.bitCount(side) != 1)
+            throw new IllegalArgumentException("Image side");
         int width = texture.width(), height = texture.height();
         long sourcePassing = 0;
-        int w = Math.min(IMAGE_SIDE, Integer.highestOneBit(width));
-        int h = Math.min(IMAGE_SIDE, Integer.highestOneBit(height));
+        int w = Math.min(side, Integer.highestOneBit(width));
+        int h = Math.min(side, Integer.highestOneBit(height));
         if (w < 1 || h < 1) return new Image(Math.max(w, 0), Math.max(h, 0), new byte[0]);
         // A read-only view: the texture's pixels are not copied again for every conversion.
         var argb = texture.argbView();

@@ -36,12 +36,16 @@ public final class BundledNpcHistory {
             displays = List.copyOf(displays);
         }
 
-        /** EG Link, its license, the build and collection date, and that it ships bundled. */
+        /**
+         * EG Link, its license, the build, commit and collection date, and that it ships bundled.
+         */
         public String provenance() {
             return "EG Link creature_details ("
                     + EgLinkTypes.LICENSE
                     + "), build "
                     + source.build()
+                    + ", commit "
+                    + source.commit().substring(0, 12)
                     + ", collected "
                     + (source.collectedOn().isEmpty() ? "unknown" : source.collectedOn())
                     + " (bundled)";

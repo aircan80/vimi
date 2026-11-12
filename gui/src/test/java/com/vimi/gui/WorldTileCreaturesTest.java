@@ -54,8 +54,15 @@ public final class WorldTileCreaturesTest {
         theWorldAsksForItsOwnBinding();
         humanoidNpcsDrawWholeOrSayWhy();
         capsStopLookupsAndForeignCancellationIsAFailure();
+        humanoidDisplaysSkipTheirPreview();
+        aHumanoidDisplayWithoutItsModelFileIsDrawnAsAnNpc();
         failedIndexLoadsBackOff();
         conversionChecksVertexValuesAndLightsMissingNormals();
+        distinctModelsStopAtTheTileTextureBudget();
+        theModelCacheIsBoundedByBytes();
+        tooLargeModelsAreSkippedAndSmallerOnesStillFit();
+        onlyNpcConversionsUseTheNpcSide();
+        npcImagesUseTheSmallerSide();
         BridgeAssembly.run();
         System.out.println("WorldTileCreaturesTest passed");
     }
@@ -428,10 +435,11 @@ public final class WorldTileCreaturesTest {
     }
 
     private static void busyOrClosedPreviewsCostNoBudget() {
-        // Twenty displays whose previews are all refused busy (bare or wrapped): every point is
-        // counted as busy, none is capped by the 16-preview budget and nothing is cached.
+        // More displays than the preview budget, whose previews are all refused busy (bare or
+        // wrapped): every point is counted as busy, none is capped by the budget and nothing is cached.
+        int displays = WorldTileCreatures.TILE_PREVIEWS + 4;
         var rows = new ArrayList<Map<String, Object>>();
-        for (int i = 0; i < 20; i++) rows.add(WorldSpawnOverlayTest.spawn(i + 1, 1, -100 - i, -100, 10.0));
+        for (int i = 0; i < displays; i++) rows.add(WorldSpawnOverlayTest.spawn(i + 1, 1, -100 - i, -100, 10.0));
         var calls = new AtomicInteger();
         var busy = new java.util.concurrent.atomic.AtomicBoolean(true);
         var creatures = new WorldTileCreatures(token -> index(rows), () -> "r1",
@@ -446,13 +454,14 @@ public final class WorldTileCreaturesTest {
                     return preview(display, 0L, 0L, appearance(true));
                 });
         var summary = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
-        require(summary.count(WorldTileCreatures.Count.PREVIEWS_BUSY) == 20
+        require(summary.count(WorldTileCreatures.Count.PREVIEWS_BUSY) == displays
                         && summary.count(WorldTileCreatures.Count.CAPPED) == 0
                         && summary.count(WorldTileCreatures.Count.FAILED) == 0,
                 "Busy or closed previews are their own count and take no preview budget");
         busy.set(false);
         var later = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
-        require(later.drawn() == 8 && calls.get() == 20 + 16,
+        require(later.drawn() == WorldTileCreatures.TILE_PREVIEWS
+                        && calls.get() == displays + WorldTileCreatures.TILE_PREVIEWS,
                 "A busy refusal is not cached: the next tile reads the previews again");
         require(WorldTileCreatures.busy(new RuntimeException(new java.util.concurrent.CompletionException(
                 new DisplayModelTypes.ServiceUnavailable("closed", true, null))))
@@ -736,12 +745,13 @@ public final class WorldTileCreaturesTest {
 
     private static void buildingsKeepTheirBudgetFirst() {
         var rows = new ArrayList<Map<String, Object>>();
-        for (int i = 0; i < 40; i++) rows.add(WorldSpawnOverlayTest.spawn(1, i + 1, -100 - i, -100, 10.0));
+        int spawns = WorldTileCreatures.TILE_PLACEMENTS + 8;
+        for (int i = 0; i < spawns; i++) rows.add(WorldSpawnOverlayTest.spawn(1, i + 1, -100 - i, -100, 10.0));
         var creatures = new WorldTileCreatures(token -> index(rows), () -> "r1",
                 (npc, token) -> qualified(7, null), (display, token) -> preview(display, 0L, 0L, appearance(true)));
         var summary = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
         require(summary.drawn() == WorldTileCreatures.TILE_PLACEMENTS
-                && summary.count(WorldTileCreatures.Count.CAPPED) == 40 - WorldTileCreatures.TILE_PLACEMENTS,
+                && summary.count(WorldTileCreatures.Count.CAPPED) == spawns - WorldTileCreatures.TILE_PLACEMENTS,
                 "Creature placements stop at the per-tile creature cap");
         // A tile whose buildings and doodads leave room for four placements gets four creatures.
         var builder = WorldStreamTileWriter.Exterior.builder();
@@ -751,7 +761,7 @@ public final class WorldTileCreaturesTest {
         builder.mesh(FloatBuffer.wrap(new float[24]), IntBuffer.wrap(new int[] {0, 1, 2}), new int[] {0, 3, 0});
         for (int p = 0; p < room - 4; p++) builder.placement(0, 0, 0, 0, 1, 1, 0);
         var shared = creatures.append(builder, 0, TILE, Cancellation.NONE);
-        require(shared.drawn() == 4 && shared.count(WorldTileCreatures.Count.CAPPED) == 36,
+        require(shared.drawn() == 4 && shared.count(WorldTileCreatures.Count.CAPPED) == spawns - 4,
                 "Buildings keep their placements; creatures fill only what remains");
         require(builder.build().placements() == room, "The shared file stays within its profile");
     }
@@ -906,10 +916,207 @@ public final class WorldTileCreaturesTest {
                 "No NPC source: a stated refusal");
     }
 
+    /**
+     * Distinct models stop at the tile's texture budget before the model ceiling; the spawns past
+     * it are counted as capped.
+     */
+    private static void distinctModelsStopAtTheTileTextureBudget() {
+        var rows = new ArrayList<Map<String, Object>>();
+        int displays = 40;
+        for (int i = 0; i < displays; i++) rows.add(WorldSpawnOverlayTest.spawn(i + 1, 1, -100 - i, -100, 10.0));
+        var big = textured(256);
+        var creatures = new WorldTileCreatures(token -> index(rows), () -> "r1",
+                (npc, token) -> qualified((int) (100 + npc), null), (display, token) -> preview(display, 0L, 0L, big));
+        var builder = WorldStreamTileWriter.Exterior.builder();
+        var summary = creatures.append(builder, 0, TILE, Cancellation.NONE);
+        long perModel = WorldTileCreatures.surfaces(big, Set.of(0), new int[0], false, Cancellation.NONE)
+                .model().pixels() * 4;
+        long fit = WorldTileCreatures.TILE_TEXTURE_BYTES / perModel;
+        require(fit < displays && fit < WorldTileCreatures.TILE_MODELS, "The fixture outgrows the byte budget only");
+        require(summary.models() == fit, "Distinct models stop at the texture budget: " + summary.models());
+        require(summary.drawn() == fit && summary.count(WorldTileCreatures.Count.CAPPED) == displays - fit,
+                "New models past the budget are capped: " + summary.drawn());
+    }
+
+    private static void theModelCacheIsBoundedByBytes() {
+        var model = WorldTileCreatures.surfaces(textured(256), Set.of(0), new int[0], false, Cancellation.NONE);
+        long each = WorldTileCreatures.bytes(model);
+        require(each > model.model().pixels() * 4, "A model's bytes count its texture chains and mesh");
+        var refusal = WorldTileCreatures.Converted.refused(WorldTileCreatures.Count.MODEL_UNAVAILABLE, "no");
+        require(WorldTileCreatures.bytes(refusal) < 1024, "A remembered refusal costs next to nothing");
+        var cache = new WorldTileCreatures.ModelCache(each * 3);
+        for (long key = 1; key <= 3; key++) cache.put(key, model);
+        require(cache.totalBytes() == each * 3, "Every put is counted");
+        cache.get(1L);
+        cache.put(4L, model);
+        require(cache.size() == 3 && cache.contains(1L) && !cache.contains(2L) && cache.totalBytes() == each * 3,
+                "Past its byte bound the least recently used model is dropped");
+        cache.put(4L, refusal);
+        require(cache.totalBytes() == each * 2 + WorldTileCreatures.bytes(refusal),
+                "Replacing an entry counts the difference");
+        cache.remove(3L);
+        cache.remove(3L);
+        require(cache.size() == 2 && cache.totalBytes() == each + WorldTileCreatures.bytes(refusal),
+                "A removed model gives its bytes back once");
+        for (long key = 10; key < 1000; key++) cache.put(key, refusal);
+        require(cache.contains(1L), "Refusals do not push models out by count");
+        var tiny = new WorldTileCreatures.ModelCache(1);
+        tiny.put(1L, model);
+        require(tiny.size() == 1, "One model larger than the bound is still remembered");
+        tiny.put(2L, model);
+        require(tiny.size() == 1 && tiny.contains(2L) && tiny.totalBytes() == each, "The newest one is kept");
+        tiny.clear();
+        require(tiny.size() == 0 && tiny.totalBytes() == 0, "Clearing resets the byte count");
+    }
+
+    /**
+     * The greedy walk skips a model that no longer fits the tile's texture budget and still adds a
+     * later, smaller one; the allowance from the area share bounds the models' bytes the same way.
+     */
+    private static void tooLargeModelsAreSkippedAndSmallerOnesStillFit() {
+        var big = textured(256);
+        var small = textured(1);
+        long perBig = WorldTileCreatures.surfaces(big, Set.of(0), new int[0], false, Cancellation.NONE)
+                .model().pixels() * 4;
+        long perSmall = WorldTileCreatures.surfaces(small, Set.of(0), new int[0], false, Cancellation.NONE)
+                .model().pixels() * 4;
+        long fit = WorldTileCreatures.TILE_TEXTURE_BYTES / perBig;
+        int bigs = (int) fit + 2, smalls = 3;
+        require(WorldTileCreatures.TILE_TEXTURE_BYTES - fit * perBig >= smalls * perSmall,
+                "The fixture leaves room for the small models");
+        // Spawns are taken nearest the tile centre first: the big displays, then the small ones.
+        var rows = new ArrayList<Map<String, Object>>();
+        for (int i = 0; i < bigs + smalls; i++) rows.add(WorldSpawnOverlayTest.spawn(i + 1, 1, -100 - i, -100, 10.0));
+        var creatures = new WorldTileCreatures(token -> index(rows), () -> "r1",
+                (npc, token) -> qualified((int) (100 + npc), null),
+                (display, token) -> preview(display, 0L, 0L, display - 100 <= bigs ? big : small));
+        var summary = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(summary.models() == fit + smalls && summary.count(WorldTileCreatures.Count.CAPPED) == bigs - fit,
+                "Big models past the budget are skipped, the later small ones are added: " + summary.models());
+        // The same walk under an allowance of three big models' bytes.
+        long gpu = WorldTileCreatures.gpuBytes(WorldTileCreatures.surfaces(big, Set.of(0), new int[0], false,
+                Cancellation.NONE).model());
+        var shared = new WorldTileCreatures(token -> index(rows), () -> "r1",
+                (npc, token) -> qualified((int) (100 + npc), null),
+                (display, token) -> preview(display, 0L, 0L, display - 100 <= bigs ? big : small));
+        var allowed = shared.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, gpu * 3 + 4096, Cancellation.NONE);
+        require(allowed.models() == 3 + smalls && allowed.bytes() <= gpu * 3 + 4096 && allowed.bytes() >= gpu * 3,
+                "Models stop at the allowance and its bytes are reported: " + allowed.models() + " " + allowed.bytes());
+        var none = shared.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, 0, Cancellation.NONE);
+        require(none.drawn() == 0 && none.bytes() == 0
+                        && none.count(WorldTileCreatures.Count.CAPPED) == bigs + smalls,
+                "Without an allowance no creature is added");
+    }
+
+    /** Only humanoid NPC appearances are reduced to the NPC side; other creatures keep theirs. */
+    private static void onlyNpcConversionsUseTheNpcSide() {
+        var big = textured(512);
+        WorldTileCreatures.Npcs npcs = (extended, token) -> new com.vibeminer.concepts.races.RaceNpcs.Appearance(
+                new com.vibeminer.concepts.races.RaceAppearanceTypes.Result(
+                        com.vibeminer.concepts.races.RaceTypes.State.READY, big, Set.of(0), List.of(), List.of(),
+                        false, null), 0, 0, null, false);
+        var creatures = new WorldTileCreatures(token -> index(List.of(
+                WorldSpawnOverlayTest.spawn(1, 1, -100, -100, 10.0),
+                WorldSpawnOverlayTest.spawn(2, 1, -110, -110, 12.0))), () -> "r1",
+                (npc, token) -> qualified((int) (6 + npc), null),
+                // Display 7 is a creature, display 8 a humanoid NPC (extended display 80).
+                (display, token) -> preview(display, display == 8 ? 80L : 0L, 0L, big), npcs);
+        var summary = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(summary.drawn() == 2, "Both are drawn: " + summary.drawn());
+        var creature = creatures.cached(7).model();
+        var npc = creatures.cached(8).model();
+        require(creature.npc() == null && creature.images().stream().allMatch(i -> i.width() == WorldTileCreatures.IMAGE_SIDE),
+                "A creature keeps the World image side");
+        require(npc.npc() != null && npc.images().stream().allMatch(i -> i.width() == WorldTileCreatures.NPC_IMAGE_SIDE),
+                "A humanoid NPC is reduced to the NPC side");
+    }
+
+    private static void npcImagesUseTheSmallerSide() {
+        require(WorldTileCreatures.NPC_IMAGE_SIDE < WorldTileCreatures.IMAGE_SIDE, "NPC images are smaller");
+        var texture = new MeshAppearance.Texture(512, 256, new int[512 * 256]);
+        var npc = WorldTileCreatures.reduce(texture, WorldTileCreatures.OPAQUE, WorldTileCreatures.NPC_IMAGE_SIDE,
+                Cancellation.NONE);
+        require(npc.width() == 128 && npc.height() == 128, "Each side is capped at the NPC side");
+        var model = WorldTileCreatures.surfaces(textured(512), Set.of(0), new int[0], false,
+                WorldTileCreatures.NPC_IMAGE_SIDE, Cancellation.NONE).model();
+        require(model.images().stream().allMatch(i -> i.width() == 128 && i.height() == 128),
+                "Conversion reduces every image to the side it is given");
+        for (int side : new int[] {0, 3, WorldTileCreatures.IMAGE_SIDE * 2}) {
+            try {
+                WorldTileCreatures.reduce(texture, WorldTileCreatures.OPAQUE, side, Cancellation.NONE);
+                throw new AssertionError("Side " + side + " is refused");
+            } catch (IllegalArgumentException expected) {
+                // A side that is not a power of two up to IMAGE_SIDE is a programming error.
+            }
+        }
+    }
+
+    /** A source that knows a display's references draws its humanoid NPCs without their previews. */
+    private static void humanoidDisplaysSkipTheirPreview() {
+        var asked = new java.util.concurrent.ConcurrentLinkedQueue<Long>();
+        WorldTileCreatures.Npcs npcs = (extended, token) -> new com.vibeminer.concepts.races.RaceNpcs.Appearance(
+                new com.vibeminer.concepts.races.RaceAppearanceTypes.Result(
+                        com.vibeminer.concepts.races.RaceTypes.State.READY, appearance(true), Set.of(0), List.of(),
+                        List.of(), false, null), 0, 0, null, false);
+        var previews = new WorldTileCreatures.Previews() {
+            @Override
+            public DisplayModelTypes.Preview preview(long display, Cancellation token) {
+                asked.add(display);
+                return WorldTileCreaturesTest.preview(display, display == 8 ? 80L : 0L, 0L, appearance(true));
+            }
+
+            @Override
+            public DisplayModelTypes.Reference reference(long display, Cancellation token) {
+                return WorldTileCreaturesTest.preview(display, display == 8 ? 80L : 0L, 0L, appearance(true))
+                        .reference();
+            }
+        };
+        var creatures = new WorldTileCreatures(token -> index(List.of(
+                WorldSpawnOverlayTest.spawn(1, 1, -100, -100, 10.0),
+                WorldSpawnOverlayTest.spawn(2, 1, -110, -110, 12.0))), () -> "r1",
+                (npc, token) -> qualified((int) (6 + npc), null), previews, npcs);
+        var summary = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(summary.drawn() == 2 && summary.npcs().drawn() == 1, "The creature and the NPC are drawn");
+        require(List.copyOf(asked).equals(List.of(7L)), "Only the creature's preview is read: " + asked);
+    }
+
+    /**
+     * A humanoid NPC display whose own model file is missing (its preview a stated refusal) is
+     * drawn from its race appearance: the display's references are enough.
+     */
+    private static void aHumanoidDisplayWithoutItsModelFileIsDrawnAsAnNpc() {
+        var asked = new java.util.concurrent.atomic.AtomicInteger();
+        WorldTileCreatures.Npcs npcs = (extended, token) -> new com.vibeminer.concepts.races.RaceNpcs.Appearance(
+                new com.vibeminer.concepts.races.RaceAppearanceTypes.Result(
+                        com.vibeminer.concepts.races.RaceTypes.State.READY, appearance(true), Set.of(0), List.of(),
+                        List.of(), false, null), 0, 0, null, false);
+        var reference = WorldTileCreaturesTest.preview(8, 80L, 0L, appearance(true)).reference();
+        var previews = new WorldTileCreatures.Previews() {
+            @Override
+            public DisplayModelTypes.Preview preview(long display, Cancellation token) {
+                asked.incrementAndGet();
+                return new DisplayModelTypes.Preview(DisplayModelTypes.State.UNAVAILABLE, reference, null, Set.of(),
+                        List.of(), false, "Model file is NOT_FOUND");
+            }
+
+            @Override
+            public DisplayModelTypes.Reference reference(long display, Cancellation token) {
+                return reference;
+            }
+        };
+        var creatures = new WorldTileCreatures(token -> index(List.of(
+                WorldSpawnOverlayTest.spawn(2, 1, -110, -110, 12.0))), () -> "r1",
+                (npc, token) -> qualified(8, null), previews, npcs);
+        var summary = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(summary.drawn() == 1 && summary.npcs().drawn() == 1 && asked.get() == 0,
+                "Drawn as an NPC without its preview: " + summary.drawn() + " " + asked.get());
+    }
+
     private static void capsStopLookupsAndForeignCancellationIsAFailure() {
         var rows = new ArrayList<Map<String, Object>>();
-        // Forty different NPCs, so each drawn point costs one uncached lookup.
-        for (int i = 0; i < 40; i++) rows.add(WorldSpawnOverlayTest.spawn(i + 1, 1, -100 - i, -100, 10.0));
+        // More different NPCs than the cap, so each drawn point costs one uncached lookup.
+        for (int i = 0; i < WorldTileCreatures.TILE_PLACEMENTS + 8; i++)
+            rows.add(WorldSpawnOverlayTest.spawn(i + 1, 1, -100 - i, -100, 10.0));
         var chooses = new AtomicInteger();
         var creatures = new WorldTileCreatures(token -> index(rows), () -> "r1", (npc, token) -> {
             chooses.incrementAndGet();
@@ -1074,6 +1281,10 @@ public final class WorldTileCreaturesTest {
      * card on an unlit additive surface. With {@code opaque} false, part 0 is alpha-keyed too.
      */
     static MeshAppearance appearance(boolean opaque) {
+        return appearance(opaque, new MeshAppearance.Texture(2, 2, new int[] {-1, -1, -1, -1}));
+    }
+
+    static MeshAppearance appearance(boolean opaque, MeshAppearance.Texture texture) {
         float[] positions = {0, 0, 0, 1, 0, 0, 0, 1, 0, 5, 5, 5, 6, 5, 5, 5, 6, 5, 7, 7, 7};
         int[] indices = {0, 1, 2, 0, 2, 1, 0, 1, 6, 3, 4, 5};
         var mesh = new PreviewMesh(positions, indices, List.of(new PreviewMesh.Part(0, 0, 3),
@@ -1081,7 +1292,6 @@ public final class WorldTileCreaturesTest {
         float[] uv = new float[7 * 2];
         float[] normals = new float[7 * 3];
         for (int v = 0; v < 7; v++) normals[v * 3 + 2] = 1;
-        var texture = new MeshAppearance.Texture(2, 2, new int[] {-1, -1, -1, -1});
         var cards = List.of(new MeshAppearance.RigidBillboard(3, new MeshAppearance.Vec3(5, 5, 5), new int[] {3, 4, 5}));
         var additive = new MeshAppearance.Material(MeshAppearance.Combiner.DIFFUSE,
                 List.of(new MeshAppearance.TextureStage(0, MeshAppearance.Coordinate.UV0, true, true)),
@@ -1091,6 +1301,13 @@ public final class WorldTileCreaturesTest {
                         new MeshAppearance.Surface(1, 0, true, true, true),
                         new MeshAppearance.Surface(3, additive)),
                 List.of(texture), cards);
+    }
+
+    /** {@link #appearance(boolean)} (opaque) with one flat {@code side} x {@code side} texture. */
+    static MeshAppearance textured(int side) {
+        int[] argb = new int[side * side];
+        java.util.Arrays.fill(argb, 0xff808080);
+        return appearance(true, new MeshAppearance.Texture(side, side, argb));
     }
 
     /** Three one-triangle parts with geoset IDs 0, 100 and 101 (group 1 has x00 and x01), all opaque. */

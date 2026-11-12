@@ -247,6 +247,9 @@ final class WorldStreamSourceController {
     // release revision at the refusal. They are offered again only once a drawn objects set was
     // released (its resident replaced), never just because the camera turned or moved.
     private final IdentityHashMap<Entry, Long> exteriorBudget = new IdentityHashMap<>();
+    // Residents whose objects set with creatures was refused for budget: offered again at once
+    // without creatures, so creatures never cost a tile its buildings.
+    private final java.util.Set<Entry> creaturesShed = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private final java.util.Set<Entry> exteriorTried =
             java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Events events;
@@ -404,7 +407,7 @@ final class WorldStreamSourceController {
             Consumer<Runnable> fxPost,
             LongSupplier clock) {
         this(request, starter, events, fxPost, clock,
-                (source, scope, tile, cancellation, formats) -> WorldStreamSourceBridge.prepareExterior(
+                (source, scope, tile, cancellation, formats, creatureBytes) -> WorldStreamSourceBridge.prepareExterior(
                         source, scope, tile, cancellation, null,
                         com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail.STANDARD, false, formats));
     }
@@ -1545,12 +1548,13 @@ final class WorldStreamSourceController {
                 var owner = scope;
                 // The child's sampled BC formats, reported in SESSION, set how textures are charged.
                 int formats = session == null ? 0 : session.objectFormats();
+                long creatureBytes = creaturesShed.contains(entry) ? 0 : creatureAllowance();
                 work.prepared = CompletableFuture.supplyAsync(
                         () -> {
                             long preparing = WorldStageTimings.start();
                             try {
                                 return exteriorPreparer.prepare(
-                                        lane, owner, tile, work.cancellation, formats);
+                                        lane, owner, tile, work.cancellation, formats, creatureBytes);
                             } finally {
                                 WorldStageTimings.stop(work.cancellation.isCanceled()
                                         ? "parent.objects.prepareCanceled" : "parent.objects.prepare",
@@ -1563,6 +1567,16 @@ final class WorldStreamSourceController {
                 return;
             }
         }
+    }
+
+    /**
+     * What the next tile's creatures may add: {@link WorldTileCreatures#AREA_BYTES} less the bytes
+     * the resident tiles' attached creatures hold. A tile retired gives its share back.
+     */
+    private long creatureAllowance() {
+        long held = 0;
+        for (var entry : entries.values()) held += entry.source().creatures().bytes();
+        return Math.max(0, WorldTileCreatures.AREA_BYTES - held);
     }
 
     /** A budget-refused resident waits until objects budget was released after its refusal. */
@@ -1633,6 +1647,12 @@ final class WorldStreamSourceController {
             // been released since this offer was issued (not since the refusal arrived, so a
             // release landing in between still counts), still nearest first.
             WorldStageTimings.add("parent.objects.budgetRefused", 1);
+            if (work.creatures.bytes() > 0 && creaturesShed.add(work.entry)) {
+                // Its creatures may be what did not fit: its buildings are offered again at once,
+                // without them.
+                changed();
+                return;
+            }
             exteriorBudget.put(work.entry, work.releaseRevision);
             changed();
             return;
@@ -2037,6 +2057,7 @@ final class WorldStreamSourceController {
             entries.remove(entry.resident());
             exteriorTried.remove(entry);
             exteriorBudget.remove(entry);
+            creaturesShed.remove(entry);
         }
     }
 
@@ -2151,6 +2172,7 @@ final class WorldStreamSourceController {
         entries.clear();
         exteriorTried.clear();
         exteriorBudget.clear();
+        creaturesShed.clear();
         exterior = null;
         if (exteriorWorker != null) exteriorWorker.shutdown();
         collisionCancellation.cancel();

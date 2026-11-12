@@ -5,6 +5,7 @@ License: https://creativecommons.org/licenses/by/4.0/ . Blizzard Entertainment
 retains ownership of the game content the observations describe.
 
 Source: https://github.com/JIVESCORP/eg-link-output-wowf
+Window: --since 2026-09-12 --until 2026-11-11T23:59:59Z.
 Product wowf, dataset creature_details.enUS, builds 1.60.1.70532, 1.60.1.70790, 1.60.1.70840, 1.60.1.70862, 1.60.1.70888.
 Commits: 15, from 10a06ad324b76f75da7d5a4e9821503fce987c59 (2026-10-24T23:04:18Z) to 3067c6919046428152f2152fa551f44a8c215d79 (2026-11-11T11:27:56Z).
 
