@@ -38,6 +38,22 @@ recent commits, with that build, commit and collection date. It is regenerated b
 hand before a release with `scripts/release/eg_link_history.py` and needs no
 download.
 
+## Retention
+
+Snapshots are keyed by commit, product and build. A sync downloads the latest
+advertised build of each product and every installed build that is still
+advertised; a build whose declared datasets (records, sources and collection dates)
+match a prepared snapshot already held is reused without a download, so a commit
+that leaves a build alone costs one index request. Each product then keeps
+`EgLinkRepository.RETAINED_SNAPSHOTS` (10) snapshots: first the newest commit of
+each build, newest build first, then older commits of a build, most recently
+downloaded first. The rest are deleted with their prepared databases. Earlier
+builds therefore outlast repeated commits of the latest one, and the NPCs page can
+still find an NPC only an older build recorded.
+
+Before this, every downloaded commit was kept (up to 1,024 snapshots) and each
+upstream commit downloaded every installed build again.
+
 ## Local storage and queries
 
 Original files and a checksummed source manifest live under provider-local

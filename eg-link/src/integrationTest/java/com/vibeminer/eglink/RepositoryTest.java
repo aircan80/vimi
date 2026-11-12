@@ -271,6 +271,88 @@ final class RepositoryTest {
         }
     }
 
+    private static void index(Source source, Map<String, Object> builds) throws Exception {
+        source.files.put(
+                "data/index.json",
+                EgJson.bytes(
+                        Map.of(
+                                "license",
+                                EgLinkTypes.LICENSE,
+                                "attribution",
+                                EgLinkTypes.ATTRIBUTION,
+                                "products",
+                                Map.of("wowf", builds))));
+    }
+
+    @Test
+    void eachProductKeepsItsNewestBuildsBeforeRepeatedCommitsAndPrunesTheRest() throws Exception {
+        var source = new Source();
+        byte[] current = source.files.get("data/wowf/" + VERSION + "/creature_details.enUS.json");
+        var versions = java.util.List.of("1.60.1.70100", "1.60.1.70200", "1.60.1.70300");
+        var builds = new java.util.HashMap<String, Object>();
+        for (String version : versions) {
+            var dataset = EgJson.object(EgJson.parse(current, 1 << 20));
+            EgJson.object(dataset.get("meta")).put("clientBuild", version);
+            source.files.put(
+                    "data/wowf/" + version + "/creature_details.enUS.json", EgJson.bytes(dataset));
+            builds.put(
+                    version,
+                    Map.of(
+                            "creature_details.enUS",
+                            Map.of("records", 2, "sources", 1, "lastCollectedOn", "2026-11-01")));
+        }
+        index(source, builds);
+        try (var repository = new EgLinkRepository(folder, source, 3)) {
+            var catalog = repository.check(Cancellation.NONE).join();
+            for (var build : catalog.builds()) {
+                repository.download(build, progress -> {}, Cancellation.NONE).join();
+            }
+            // The latest build changes on each of three more commits.
+            for (int day = 2; day <= 4; day++) {
+                builds.put(
+                        "1.60.1.70300",
+                        Map.of(
+                                "creature_details.enUS",
+                                Map.of(
+                                        "records",
+                                        2,
+                                        "sources",
+                                        1,
+                                        "lastCollectedOn",
+                                        "2026-11-0" + day)));
+                index(source, builds);
+                source.revision = Integer.toHexString(day).repeat(40);
+                repository.sync(progress -> {}, Cancellation.NONE).join();
+            }
+            var kept = repository.snapshots(Cancellation.NONE).join();
+            assertEquals(3, kept.size(), "each product keeps three snapshots");
+            assertEquals(
+                    java.util.Set.of("1.60.1.70100", "1.60.1.70200", "1.60.1.70300"),
+                    kept.stream()
+                            .map(value -> value.build().version())
+                            .collect(java.util.stream.Collectors.toSet()),
+                    "every build outlasts repeated commits of the latest one");
+            var latest =
+                    kept.stream()
+                            .filter(value -> value.build().version().equals("1.60.1.70300"))
+                            .findFirst()
+                            .orElseThrow();
+            assertEquals("4".repeat(40), latest.build().revision(), "the newest commit is kept");
+            try (var listed = java.nio.file.Files.list(folder.resolve("sources"))) {
+                assertEquals(
+                        3,
+                        listed.filter(path -> path.getFileName().toString().matches("[0-9a-f]{64}"))
+                                .count(),
+                        "pruned snapshots are deleted");
+            }
+            try (var listed = java.nio.file.Files.list(folder.resolve("derived"))) {
+                assertTrue(
+                        listed.filter(path -> path.toString().endsWith(".sqlite")).count() <= 3,
+                        "pruned databases are deleted");
+            }
+        }
+    }
+
     @Test
     void syncUpdatesLatestAndInstalledBuildsAndReusesUnchangedPreparedData() throws Exception {
         var source = new Source();
@@ -322,11 +404,30 @@ final class RepositoryTest {
             assertEquals(
                     requests + 1, source.requests, "Unchanged commit makes one head request only");
             source.revision = "b".repeat(40);
+            var moved = repository.sync(progress -> {}, Cancellation.NONE).join();
+            assertEquals(0, moved.downloaded(), "A commit that leaves both builds alone");
+            assertEquals(2, moved.reused());
+            assertEquals(2, moved.snapshots().size());
+            var collected = Map.of("records", 2, "sources", 1, "lastCollectedOn", "2026-11-02");
+            index(
+                    source,
+                    Map.of(
+                            old, Map.of("creature_details.enUS", collected),
+                            middle, Map.of("creature_details.enUS", spec),
+                            VERSION, Map.of("creature_details.enUS", collected)));
+            source.revision = "c".repeat(40);
             var changed = repository.sync(progress -> {}, Cancellation.NONE).join();
             assertEquals(2, changed.downloaded());
             assertEquals(2, changed.prepared());
             assertEquals(4, changed.snapshots().size(), "Earlier exact revisions remain available");
-            source.revision = "c".repeat(40);
+            source.revision = "d".repeat(40);
+            var again = Map.of("records", 2, "sources", 1, "lastCollectedOn", "2026-11-03");
+            index(
+                    source,
+                    Map.of(
+                            old, Map.of("creature_details.enUS", again),
+                            middle, Map.of("creature_details.enUS", spec),
+                            VERSION, Map.of("creature_details.enUS", again)));
             source.files.put(
                     "data/wowf/" + old + "/creature_details.enUS.json", new byte[] {'{', '}'});
             var partial = repository.sync(progress -> {}, Cancellation.NONE).join();

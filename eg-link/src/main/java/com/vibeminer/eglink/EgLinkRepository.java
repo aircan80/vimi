@@ -41,9 +41,14 @@ import java.util.function.Consumer;
  */
 public final class EgLinkRepository implements AutoCloseable {
     public static final int MAX_FILE_BYTES = 16 << 20, MAX_SNAPSHOT_BYTES = 64 << 20;
+
+    /** Snapshots each product keeps after a sync, by default ({@link #retainedOrder}). */
+    public static final int RETAINED_SNAPSHOTS = 10;
+
     private static final int APPLICATION_ID = 0x45474c31;
     private final Path root;
     private final EgLinkClient client;
+    private final int retained;
     private final ThreadPoolExecutor worker =
             new ThreadPoolExecutor(
                     1,
@@ -57,6 +62,15 @@ public final class EgLinkRepository implements AutoCloseable {
     private CompletableFuture<Void> closed;
 
     public EgLinkRepository(Path directory, EgLinkClient client) throws IOException {
+        this(directory, client, RETAINED_SNAPSHOTS);
+    }
+
+    /** As above, keeping at most {@code retained} snapshots per product after each sync. */
+    public EgLinkRepository(Path directory, EgLinkClient client, int retained) throws IOException {
+        if (retained < 1 || retained > 1024) {
+            throw new IllegalArgumentException("Retained EG Link snapshots must be 1 to 1024");
+        }
+        this.retained = retained;
         this.root = directory.toAbsolutePath().normalize();
         this.client = java.util.Objects.requireNonNull(client);
         Files.createDirectories(root.resolve("sources"));
@@ -133,8 +147,12 @@ public final class EgLinkRepository implements AutoCloseable {
 
     /**
      * Updates latest advertised build per product and every distinct installed product/build.
-     * Unchanged prepared snapshots are verified/reused; historical builds are never bulk fetched.
-     * Partial failures are returned as issues while completed snapshots remain available.
+     * Unchanged prepared snapshots are verified/reused: the same commit, or a prepared snapshot of
+     * the same product and build whose datasets declare the same records, sources and collection
+     * dates (a later commit that left the build alone). Historical builds are never bulk fetched.
+     * Partial failures are returned as issues while completed snapshots remain available. Then each
+     * product keeps its {@code retained} snapshots in {@link #retainedOrder} and the rest are
+     * deleted.
      */
     public CompletableFuture<EgLinkTypes.Sync> sync(
             Consumer<Progress> progress, Cancellation token) {
@@ -181,6 +199,13 @@ public final class EgLinkRepository implements AutoCloseable {
                         boolean retained =
                                 Files.exists(source(sourceId), LinkOption.NOFOLLOW_LINKS);
                         String label = build.product() + " " + build.version();
+                        Snapshot unchanged = unchanged(installed, build, sourceId);
+                        if (unchanged != null) {
+                            reused++;
+                            progress.accept(
+                                    new Progress("EG Link " + label + " is unchanged", 1, 1));
+                            continue;
+                        }
                         try {
                             downloadNow(
                                     build,
@@ -236,8 +261,82 @@ public final class EgLinkRepository implements AutoCloseable {
                                                     : cause.getMessage()));
                         }
                     }
+                    int pruned = prune(local(token), token);
+                    if (pruned > 0) {
+                        progress.accept(
+                                new Progress(
+                                        "Removed " + pruned + " older EG Link snapshots", 1, 1));
+                    }
                     return new EgLinkTypes.Sync(local(token), downloaded, prepared, reused, issues);
                 });
+    }
+
+    /**
+     * A prepared snapshot of another commit with the same product, build and declared datasets as
+     * {@code build}, or null.
+     */
+    private static Snapshot unchanged(List<Snapshot> installed, Build build, String sourceId) {
+        return installed.stream()
+                .filter(
+                        value ->
+                                !value.id().equals(sourceId)
+                                        && value.problem() == null
+                                        && value.indexedRecords() != null
+                                        && value.build().product().equals(build.product())
+                                        && value.build().version().equals(build.version())
+                                        && value.build().datasets().equals(build.datasets()))
+                .findFirst()
+                .orElse(null);
+    }
+
+    /**
+     * The order in which one product's snapshots are kept: first the newest commit of each build,
+     * newest build first, then the older commits of every build, most recently downloaded first. A
+     * later commit of a build supersedes an earlier one, so distinct builds (which record different
+     * NPCs) outlast repeated commits of the latest build.
+     */
+    static List<Snapshot> retainedOrder(List<Snapshot> snapshots) {
+        var newestFirst = new ArrayList<>(snapshots);
+        newestFirst.sort(
+                Comparator.comparing(
+                                (Snapshot value) -> value.build().version(),
+                                EgLinkRepository::compareVersions)
+                        .reversed()
+                        .thenComparing(Snapshot::downloadedAt, Comparator.reverseOrder())
+                        .thenComparing(Snapshot::id));
+        var heads = new ArrayList<Snapshot>();
+        var rest = new ArrayList<Snapshot>();
+        var seen = new java.util.HashSet<String>();
+        for (Snapshot value : newestFirst) {
+            (seen.add(value.build().version()) ? heads : rest).add(value);
+        }
+        rest.sort(
+                Comparator.comparing(Snapshot::downloadedAt, Comparator.reverseOrder())
+                        .thenComparing(Snapshot::id));
+        heads.addAll(rest);
+        return heads;
+    }
+
+    /** Deletes each product's snapshots beyond the retained count; the number deleted. */
+    private int prune(List<Snapshot> snapshots, Cancellation token) throws IOException {
+        var byProduct = new LinkedHashMap<String, List<Snapshot>>();
+        for (Snapshot value : snapshots) {
+            byProduct.computeIfAbsent(value.build().product(), key -> new ArrayList<>()).add(value);
+        }
+        int pruned = 0;
+        for (var product : byProduct.values()) {
+            var order = retainedOrder(product);
+            for (Snapshot value : order.subList(Math.min(retained, order.size()), order.size())) {
+                token.check();
+                Path db = database(value.id());
+                Files.deleteIfExists(db);
+                Files.deleteIfExists(Path.of(db + "-wal"));
+                Files.deleteIfExists(Path.of(db + "-shm"));
+                remove(source(value.id()));
+                pruned++;
+            }
+        }
+        return pruned;
     }
 
     public static Catalog parseIndex(String revision, Instant checkedAt, byte[] bytes)

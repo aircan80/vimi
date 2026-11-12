@@ -31,6 +31,10 @@ public final class NpcPreviewsTest {
         aClientRecordNeverWaitsOnTheObservedDisplays();
         aFailedObservedLookupIsAFactNotABlank();
         theDisplaySnapshotIsTheNewestCompatibleOneWithCreatureDetails();
+        displaySnapshotsAreTriedNewestBuildThenNewestCommitFirst();
+        anNpcOnlyAnOlderSnapshotRecordsIsFoundThere();
+        theBundledHistoryIsTheLastSourceOfTheSameProductAndRelease();
+        aDisplayMissingFromTheBuildFallsThroughToTheNextSource();
         System.out.println("NPC previews: resolution, creature, humanoid and refusal outcomes passed");
     }
 
@@ -78,7 +82,7 @@ public final class NpcPreviewsTest {
     /** No client record: EG Link lists two displays at equal weight. */
     private static final NpcPreviews.Observed EG =
             (npcId, token) ->
-                    Optional.of(
+                    List.of(
                             new NpcDisplays.External(
                                     "EG Link creature_details (CC BY 4.0), wowf build"
                                             + " 1.60.1.70862, collected 2026-11-02",
@@ -146,7 +150,7 @@ public final class NpcPreviewsTest {
                         NpcPreviewsTest::absent,
                         () -> displays(0L),
                         () -> null,
-                        (npcId, token) -> Optional.empty(),
+                        (npcId, token) -> List.of(),
                         "1.60.1.70862");
         var outcome = previews.resolve(7, Cancellation.NONE);
         assertEquals(NpcPreviews.Kind.NONE, outcome.kind());
@@ -207,6 +211,204 @@ public final class NpcPreviewsTest {
                 DataSourcesService.npcDisplaySnapshot(snapshots, "wowf", "1.60.1.70700", "enUS"));
         assertNull(
                 DataSourcesService.npcDisplaySnapshot(snapshots, "wowf", "1.60.1.70862", "deDE"));
+    }
+
+    static void displaySnapshotsAreTriedNewestBuildThenNewestCommitFirst() {
+        var snapshots =
+                List.of(
+                        snapshot("a", "wowf", "1.60.1.70790", true, 1),
+                        snapshot("b", "wowf", "1.60.1.70862", true, 1),
+                        snapshot("c", "wowf", "1.60.1.70862", true, 2),
+                        snapshot("d", "wowf", "1.60.1.70888", true, 3)); // newer than the build
+        assertEquals(
+                List.of("c", "b", "a"),
+                DataSourcesService.npcDisplaySnapshots(snapshots, "wowf", "1.60.1.70862", "enUS")
+                        .stream()
+                        .map(com.vibeminer.eglink.EgLinkTypes.Snapshot::id)
+                        .toList());
+    }
+
+    /** NPC 639 (VanCleef): only the 70862 snapshot records him; 70888 is downloaded too. */
+    static void anNpcOnlyAnOlderSnapshotRecordsIsFoundThere() throws Exception {
+        var newer = snapshot("n", "wowf", "1.60.1.70888", true, 2);
+        var older = snapshot("o", "wowf", "1.60.1.70862", true, 1);
+        var observed =
+                NpcPreviews.egLink(
+                        () -> List.of(newer, older),
+                        (snapshot, npcId, token) ->
+                                snapshot == older
+                                        ? Optional.of(
+                                                new com.vibeminer.eglink.EgLinkTypes
+                                                        .CreatureDisplays(
+                                                        "o",
+                                                        "wowf",
+                                                        "1.60.1.70862",
+                                                        "2026-11-10",
+                                                        639,
+                                                        List.of(
+                                                                new com.vibeminer.eglink
+                                                                        .EgLinkTypes
+                                                                        .CreatureDisplay(
+                                                                        2029, 1, 1))))
+                                        : Optional.empty(),
+                        () -> null,
+                        build("1.60.1.70888"));
+        var outcome =
+                new NpcPreviews(
+                                NpcPreviewsTest::absent,
+                                () -> displays(0L),
+                                () -> null,
+                                observed,
+                                "1.60.1.70888")
+                        .resolve(639, Cancellation.NONE);
+        assertEquals(NpcDisplays.Source.EXTERNAL, outcome.resolution().source());
+        assertEquals(2029, outcome.resolution().shown().displayId());
+        assertTrue(
+                outcome.resolution().provenance().contains("build 1.60.1.70862")
+                        && outcome.resolution().provenance().contains("collected 2026-11-10"),
+                outcome.resolution().provenance());
+    }
+
+    static void theBundledHistoryIsTheLastSourceOfTheSameProductAndRelease() throws Exception {
+        var bundled = com.vibeminer.eglink.BundledNpcHistory.bundled();
+        var observed =
+                NpcPreviews.egLink(
+                        List::of,
+                        (snapshot, npcId, token) -> Optional.empty(),
+                        () -> bundled,
+                        build("1.60.1.70888"));
+        var sources = observed.displays(639, Cancellation.NONE);
+        assertEquals(1, sources.size());
+        assertTrue(sources.getFirst().provenance().endsWith("(bundled)"), sources.toString());
+        assertEquals(2029L, sources.getFirst().candidates().getFirst().displayId());
+        // An older build of the same x.y.z is offered it too; the display check guards it.
+        assertEquals(
+                1,
+                NpcPreviews.egLink(
+                                List::of,
+                                (snapshot, npcId, token) -> Optional.empty(),
+                                () -> bundled,
+                                build("1.60.1.70840"))
+                        .displays(639, Cancellation.NONE)
+                        .size());
+        // Not another x.y.z, nor another product.
+        assertTrue(
+                NpcPreviews.egLink(
+                                List::of,
+                                (snapshot, npcId, token) -> Optional.empty(),
+                                () -> bundled,
+                                build("1.61.0.70888"))
+                        .displays(639, Cancellation.NONE)
+                        .isEmpty());
+        assertTrue(
+                NpcPreviews.egLink(
+                                List::of,
+                                (snapshot, npcId, token) -> Optional.empty(),
+                                () -> bundled,
+                                new BuildInfo(
+                                        "wow_classic_beta",
+                                        null,
+                                        "1.60.1.70888",
+                                        null,
+                                        null,
+                                        null,
+                                        false,
+                                        null,
+                                        0))
+                        .displays(639, Cancellation.NONE)
+                        .isEmpty());
+    }
+
+    static void aDisplayMissingFromTheBuildFallsThroughToTheNextSource() throws Exception {
+        NpcPreviews.Observed observed =
+                (npcId, token) ->
+                        List.of(
+                                new NpcDisplays.External(
+                                        "newer", List.of(new NpcDisplays.Candidate(900, 1, 1.0))),
+                                new NpcDisplays.External(
+                                        "EG (bundled)",
+                                        List.of(new NpcDisplays.Candidate(2029, 1, 1.0))));
+        var creatures = chains(900);
+        var outcome =
+                new NpcPreviews(() -> creatures, () -> displays(0L), () -> null, observed, "b")
+                        .resolve(639, Cancellation.NONE);
+        assertEquals(2029, outcome.resolution().shown().displayId());
+        assertEquals("EG (bundled)", outcome.resolution().provenance());
+        assertTrue(
+                outcome.facts().contains("Source: EG (bundled)"), outcome.facts().toString());
+    }
+
+    /** No client record; display {@code missing} is absent from CreatureDisplayInfo. */
+    private static BuildCreatures chains(long missing) {
+        var base = absent();
+        return new BuildCreatures() {
+            @Override
+            public com.vibeminer.builds.BuildTypes.BuildRef build() {
+                return null;
+            }
+
+            @Override
+            public String locale() {
+                return "enUS";
+            }
+
+            @Override
+            public CompletableFuture<CreatureTypes.CreaturesPage> list(
+                    CreatureTypes.CreatureQuery query,
+                    TableTypes.Priority priority,
+                    Cancellation token) {
+                throw new UnsupportedOperationException();
+            }
+
+            @Override
+            public CompletableFuture<CreatureTypes.CreatureResult> get(
+                    long id, TableTypes.Priority priority, Cancellation token) {
+                return base.getData(id, priority, token);
+            }
+
+            @Override
+            public CompletableFuture<CreatureTypes.CreatureResult> getData(
+                    long id, TableTypes.Priority priority, Cancellation token) {
+                return base.getData(id, priority, token);
+            }
+
+            @Override
+            public CompletableFuture<CreatureTypes.CreatureDisplayChain> displayChain(
+                    long displayId, TableTypes.Priority priority, Cancellation token) {
+                return CompletableFuture.completedFuture(
+                        new CreatureTypes.CreatureDisplayChain(
+                                null,
+                                displayId == missing
+                                        ? CreatureTypes.CreatureDisplayChainState.DISPLAY_ABSENT
+                                        : CreatureTypes.CreatureDisplayChainState.NO_DECLARED_MODEL,
+                                null, null, null, null, null, null, null, null, null, null,
+                                null, null, null));
+            }
+
+            @Override
+            public CompletableFuture<Void> closeAsync() {
+                return CompletableFuture.completedFuture(null);
+            }
+        };
+    }
+
+    private static BuildInfo build(String version) {
+        return new BuildInfo("wowf", null, version, null, null, null, false, null, 0);
+    }
+
+    private static com.vibeminer.eglink.EgLinkTypes.Snapshot snapshot(
+            String id, String product, String version, boolean details, long downloaded) {
+        var plain = snapshot(id, product, version, details);
+        return new com.vibeminer.eglink.EgLinkTypes.Snapshot(
+                plain.id(),
+                new com.vibeminer.eglink.EgLinkTypes.Build(
+                        String.valueOf(downloaded).repeat(40), product, version,
+                        plain.build().datasets()),
+                java.time.Instant.ofEpochSecond(downloaded),
+                1,
+                1L,
+                1L,
+                null);
     }
 
     private static com.vibeminer.eglink.EgLinkTypes.Snapshot snapshot(

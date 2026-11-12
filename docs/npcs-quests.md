@@ -39,6 +39,26 @@ build/version/locale remains visible; eligibility is a fallback policy, not proo
 of identical server data. Source coverage may be sparse, so records do not imply
 that an NPC or quest is available to players in the selected build.
 
+## NPC model display
+
+The NPC preview resolves one display per NPC (`NpcDisplays`, `NpcPreviews`), in
+order:
+
+1. the client `Creature` record's declared displays;
+2. EG Link `creature_details` from every prepared downloaded snapshot of the same
+   product and x.y.z not after the opened build, newest build first and the newest
+   commit of a build first (the first that records the NPC with a usable display
+   wins);
+3. the bundled EG Link NPC history, when its entry is of the same product and x.y.z.
+   It keeps one build per NPC (the newest that recorded it), so the entry may be
+   newer than the opened build.
+
+A display the opened build's `CreatureDisplayInfo` proves absent is never used, and
+its source falls through to the next one. A display that cannot be checked (a
+partial table) is kept. The shown provenance names the source, build, commit and
+collection date, and ends with "(bundled)" for the bundled history. The NPC catalog
+list still reads one snapshot per provider as above.
+
 Catalogues load lazily off the JavaFX thread, retain at most 200,000 observations
 per provider, and show 100 records per page. Search applies to the entire merged
 catalogue, not only the current page. Settings/source revisions and workspace

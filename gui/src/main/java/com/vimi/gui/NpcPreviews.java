@@ -24,10 +24,14 @@ import java.util.function.Supplier;
  * call per selection.
  */
 final class NpcPreviews {
-    /** The outside display lookup: an NPC's observed displays, or empty. */
+    /**
+     * The outside display lookup: an NPC's observed displays from each applicable source, in the
+     * order they are tried (empty when no source applies). A source that applies but records no
+     * display for the NPC is listed with no candidates.
+     */
     @FunctionalInterface
     interface Observed {
-        Optional<NpcDisplays.External> displays(long npcId, Cancellation token) throws Exception;
+        List<NpcDisplays.External> displays(long npcId, Cancellation token) throws Exception;
     }
 
     enum Kind {
@@ -96,13 +100,14 @@ final class NpcPreviews {
         token.check();
         String clientProvenance = "client Creature record, build " + build;
         var facts = new ArrayList<String>();
-        // The client first: the outside source is read only when the client supplies no display,
-        // so its failure never hides an NPC the client describes.
-        var resolution = NpcDisplays.resolve(client, clientProvenance, null);
+        var absent = absentDisplays(handle, token);
+        // The client first: the outside sources are read only when the client supplies no display,
+        // so their failure never hides an NPC the client describes.
+        var resolution = NpcDisplays.resolve(client, clientProvenance, null, absent);
         if (resolution.source() != NpcDisplays.Source.CLIENT) {
-            NpcDisplays.External external = null;
+            List<NpcDisplays.External> externals = null;
             try {
-                external = observed.displays(npcId, token).orElse(null);
+                externals = observed.displays(npcId, token);
             } catch (java.util.concurrent.CancellationException canceled) {
                 throw canceled;
             } catch (Exception failure) {
@@ -110,7 +115,7 @@ final class NpcPreviews {
                 facts.add("Observed displays could not be read: " + rootMessage(failure));
             }
             token.check();
-            resolution = NpcDisplays.resolve(client, clientProvenance, external);
+            resolution = NpcDisplays.resolve(client, clientProvenance, externals, absent);
         }
         facts.add(0, resolution.detail());
         double total =
@@ -260,49 +265,153 @@ final class NpcPreviews {
     }
 
 
+    /**
+     * Whether the opened build's CreatureDisplayInfo proves a display missing (absent, or an ID no
+     * slot can hold). A display that cannot be checked, a partial table or a chain that fails, is
+     * not missing. Remembers each answer for this resolution.
+     */
+    static java.util.function.LongPredicate absentDisplays(
+            BuildCreatures handle, Cancellation token) {
+        var known = new java.util.HashMap<Long, Boolean>();
+        return displayId -> {
+            if (handle == null) return false;
+            if (displayId < 1 || displayId > Integer.MAX_VALUE) return true;
+            return known.computeIfAbsent(
+                    displayId,
+                    id -> {
+                        try {
+                            var state =
+                                    handle.displayChain(id, TableTypes.Priority.INTERACTIVE, token)
+                                            .join()
+                                            .state();
+                            return state
+                                            == com.vibeminer.concepts.creatures.CreatureTypes
+                                                    .CreatureDisplayChainState.DISPLAY_ABSENT
+                                    || state
+                                            == com.vibeminer.concepts.creatures.CreatureTypes
+                                                    .CreatureDisplayChainState
+                                                    .INVALID_DISPLAY_REFERENCE;
+                        } catch (RuntimeException unavailable) {
+                            token.check();
+                            return false;
+                        }
+                    });
+        };
+    }
+
     private static String rootMessage(Throwable failure) {
         Throwable cause = failure;
         while (cause.getCause() != null) cause = cause.getCause();
         return cause.getMessage() == null ? cause.getClass().getSimpleName() : cause.getMessage();
     }
 
-    /** The EG Link lookup of the NPCs page: its display fallback snapshot, read locally. */
+    /**
+     * The EG Link lookups of the NPCs page, read locally, in order: every prepared downloaded
+     * snapshot of the opened product and x.y.z not after the opened build (newest build first,
+     * then newest commit), then the bundled history's entry when it is of the same product and
+     * x.y.z. The bundled history keeps one build per NPC (the newest that recorded it), so its entry
+     * may be newer than the opened build: it is still offered, and {@link NpcDisplays} drops any
+     * display the opened build's CreatureDisplayInfo proves missing.
+     */
     @SuppressWarnings("try")
     static Observed egLink(DataSourcesService sources, BuildInfo build, String locale) {
+        return egLink(
+                sources == null ? List::of : () -> sources.npcDisplaySnapshots(build, locale),
+                (snapshot, npcId, token) -> sources.npcDisplays(snapshot, locale, npcId, token),
+                com.vibeminer.eglink.BundledNpcHistory::bundled,
+                build);
+    }
+
+    /** One downloaded snapshot's lookup. */
+    @FunctionalInterface
+    interface SnapshotLookup {
+        Optional<com.vibeminer.eglink.EgLinkTypes.CreatureDisplays> displays(
+                com.vibeminer.eglink.EgLinkTypes.Snapshot snapshot,
+                long npcId,
+                com.vibeminer.network.Cancellation token)
+                throws Exception;
+    }
+
+    @SuppressWarnings("try")
+    static Observed egLink(
+            Supplier<List<com.vibeminer.eglink.EgLinkTypes.Snapshot>> snapshots,
+            SnapshotLookup lookup,
+            Supplier<com.vibeminer.eglink.BundledNpcHistory> bundled,
+            BuildInfo build) {
         return (npcId, token) -> {
-            if (sources == null) return Optional.empty();
-            // Chosen once: the provenance and the displays come from the same snapshot.
-            var snapshot = sources.npcDisplaySnapshot(build, locale);
-            if (snapshot == null) return Optional.empty();
+            var result = new ArrayList<NpcDisplays.External>();
             var network = new com.vibeminer.network.Cancellation();
             try (var registration = token.onCancel(network::cancel)) {
-                var recorded = sources.npcDisplays(snapshot, locale, npcId, network);
-                if (recorded.isEmpty()) {
-                    // The snapshot applies but records no such creature: said so, not hidden.
-                    return Optional.of(
+                // Chosen once: each source's provenance and displays come from the same snapshot.
+                for (var snapshot : snapshots.get()) {
+                    token.check();
+                    String provenance =
+                            "EG Link creature_details ("
+                                    + com.vibeminer.eglink.EgLinkTypes.LICENSE
+                                    + "), "
+                                    + snapshot.build().product()
+                                    + " build "
+                                    + snapshot.build().version()
+                                    + ", commit "
+                                    + snapshot.build().revision().substring(0, 12);
+                    Optional<com.vibeminer.eglink.EgLinkTypes.CreatureDisplays> recorded;
+                    try {
+                        recorded = lookup.displays(snapshot, npcId, network);
+                    } catch (java.util.concurrent.CancellationException canceled) {
+                        throw canceled;
+                    } catch (Exception failure) {
+                        // One unreadable snapshot (pruned meanwhile, say) leaves the others.
+                        token.check();
+                        result.add(
+                                new NpcDisplays.External(
+                                        provenance
+                                                + " (could not be read: "
+                                                + rootMessage(failure)
+                                                + ")",
+                                        List.of()));
+                        continue;
+                    }
+                    result.add(
                             new NpcDisplays.External(
-                                    "EG Link creature_details ("
-                                            + com.vibeminer.eglink.EgLinkTypes.LICENSE
-                                            + "), "
-                                            + snapshot.build().product()
-                                            + " build "
-                                            + snapshot.build().version(),
-                                    List.of()));
+                                    recorded.map(d -> provenance + ", collected " + d.collectedOn())
+                                            .orElse(provenance),
+                                    recorded.map(NpcPreviews::candidates).orElse(List.of())));
                 }
-                return recorded
-                        .map(
-                                displays ->
-                                        new NpcDisplays.External(
-                                                displays.provenance(),
-                                                displays.displays().stream()
-                                                        .map(
-                                                                d ->
-                                                                        new NpcDisplays.Candidate(
-                                                                                d.displayId(),
-                                                                                d.probability(),
-                                                                                d.scale()))
-                                                        .toList()));
             }
+            var history = bundled.get();
+            if (history != null && build != null && history.product().equals(build.product())) {
+                history.displays(npcId)
+                        .filter(entry -> sameRelease(entry.source().build(), build.version()))
+                        .ifPresent(
+                                entry ->
+                                        result.add(
+                                                new NpcDisplays.External(
+                                                        entry.provenance(),
+                                                        entry.displays().stream()
+                                                                .map(NpcPreviews::candidate)
+                                                                .toList())));
+            }
+            return List.copyOf(result);
         };
+    }
+
+    /** Whether two builds share their x.y.z. */
+    static boolean sameRelease(String a, String b) {
+        String pattern = "\\d+\\.\\d+\\.\\d+\\.\\d+";
+        return a != null
+                && b != null
+                && a.matches(pattern)
+                && b.matches(pattern)
+                && a.substring(0, a.lastIndexOf('.')).equals(b.substring(0, b.lastIndexOf('.')));
+    }
+
+    private static List<NpcDisplays.Candidate> candidates(
+            com.vibeminer.eglink.EgLinkTypes.CreatureDisplays displays) {
+        return displays.displays().stream().map(NpcPreviews::candidate).toList();
+    }
+
+    private static NpcDisplays.Candidate candidate(
+            com.vibeminer.eglink.EgLinkTypes.CreatureDisplay display) {
+        return new NpcDisplays.Candidate(display.displayId(), display.probability(), display.scale());
     }
 }

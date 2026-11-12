@@ -247,27 +247,41 @@ public final class DataSourcesService {
     }
 
     /**
-     * The prepared EG Link snapshot whose {@code creature_details} serve as the NPC display
-     * fallback for this build (same product, the newest build not after it), or null.
-     */
-    public com.vibeminer.eglink.EgLinkTypes.Snapshot npcDisplaySnapshot(BuildInfo build, String locale) {
-        if (egLink == null || build == null || !policy(Id.EG_LINK).enabled()) return null;
-        return npcDisplaySnapshot(egLinkState.snapshots(), build.product(), build.version(), locale);
-    }
-
-    /**
      * The prepared snapshot of {@code product} with {@code creature_details.<locale>} whose build is
      * the newest of the same x.y.z not after {@code version}, or null. Pure.
      */
     static com.vibeminer.eglink.EgLinkTypes.Snapshot npcDisplaySnapshot(
+            List<com.vibeminer.eglink.EgLinkTypes.Snapshot> snapshots, String product, String version, String locale) {
+        var ordered = npcDisplaySnapshots(snapshots, product, version, locale);
+        return ordered.isEmpty() ? null : ordered.getFirst();
+    }
+
+    /** Every prepared snapshot an NPC's displays may come from, in the order they are tried. */
+    public List<com.vibeminer.eglink.EgLinkTypes.Snapshot> npcDisplaySnapshots(BuildInfo build, String locale) {
+        if (egLink == null || build == null || !policy(Id.EG_LINK).enabled()) return List.of();
+        return npcDisplaySnapshots(egLinkState.snapshots(), build.product(), build.version(), locale);
+    }
+
+    /**
+     * The prepared snapshots of {@code product} with {@code creature_details.<locale>} of the same
+     * x.y.z and not after {@code version}: newest build first, then the newest commit of a build
+     * first. Never a snapshot newer than the opened build. Pure.
+     */
+    static List<com.vibeminer.eglink.EgLinkTypes.Snapshot> npcDisplaySnapshots(
             List<com.vibeminer.eglink.EgLinkTypes.Snapshot> snapshots, String product, String version, String locale) {
         return snapshots.stream()
                 .filter(v -> v.indexedRecords() != null && v.problem() == null
                         && v.build().product().equals(product)
                         && compatibleNpcBuild(v.build().version(), version)
                         && v.build().datasets().stream().anyMatch(d -> d.name().equals("creature_details." + locale)))
-                .max(java.util.Comparator.comparing(v -> v.build().version(), DataSourcesService::compareNpcBuild))
-                .orElse(null);
+                .sorted(java.util.Comparator.comparing(
+                                (com.vibeminer.eglink.EgLinkTypes.Snapshot v) -> v.build().version(),
+                                DataSourcesService::compareNpcBuild)
+                        .reversed()
+                        .thenComparing(com.vibeminer.eglink.EgLinkTypes.Snapshot::downloadedAt,
+                                java.util.Comparator.reverseOrder())
+                        .thenComparing(com.vibeminer.eglink.EgLinkTypes.Snapshot::id))
+                .toList();
     }
 
     /** The NPC's observed displays in {@code snapshot}, or empty. Reads local data only. */
