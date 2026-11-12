@@ -314,7 +314,7 @@ final class WorldStreamSourceController {
     private final CompletableFuture<Void> drained = new CompletableFuture<>();
     private volatile boolean closing;
     private volatile WorldStreamTransport.Camera camera;
-    // The recorded sky (#177-2a), behind -Dvimi.world.sky=recorded; null when off.
+    // The recorded sky, fog and light (#177), on unless -Dvimi.world.sky=fixed; null when off.
     private volatile WorldSkyFeed sky;
     private volatile WorldStreamTransport.Session session;
     // Whether this session's WDL horizon was asked for (#372); once per session.

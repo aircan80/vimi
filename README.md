@@ -146,8 +146,11 @@ source, build the launcher and pass them in `JAVA_OPTS`:
 # Hide the creatures in the world (they are shown by default)
 JAVA_OPTS='-Dvimi.world.creatures=false' gui/build/install/vimi-gui-prototype/bin/vimi-gui-prototype
 
-# Use the game's recorded sky and light, pinned to midnight
-JAVA_OPTS='-Dvimi.world.sky=recorded -Dvimi.world.sky.time=00:00' gui/build/install/vimi-gui-prototype/bin/vimi-gui-prototype
+# The game's recorded sky, fog and light are shown by default: pin them to midnight
+JAVA_OPTS='-Dvimi.world.sky.time=00:00' gui/build/install/vimi-gui-prototype/bin/vimi-gui-prototype
+
+# Use the explorer's own fixed sky, fog and light instead
+JAVA_OPTS='-Dvimi.world.sky=fixed' gui/build/install/vimi-gui-prototype/bin/vimi-gui-prototype
 ```
 
 The current list is in the latest

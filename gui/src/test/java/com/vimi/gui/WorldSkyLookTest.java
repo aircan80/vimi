@@ -151,7 +151,11 @@ public final class WorldSkyLookTest {
     }
 
     private static void feedsTheSkyOnCamerasOnceTheTablesAreLoaded() {
-        check(!WorldSkyFeed.enabled(), "the recorded sky is off by default");
+        check(WorldSkyFeed.enabled(null) && WorldSkyFeed.enabled("recorded"), "the recorded sky is on by default");
+        check(!WorldSkyFeed.enabled("fixed") && !WorldSkyFeed.enabled(" FIXED "), "fixed keeps the explorer's own");
+        check(!WorldSkyFeed.enabled("false") && !WorldSkyFeed.enabled("OFF") && !WorldSkyFeed.enabled(" Off "),
+                "false and off turn it off too");
+        check(WorldSkyFeed.enabled("true") && WorldSkyFeed.enabled(""), "other values keep it on");
 
         var pending = new CompletableFuture<WorldSky.Index>();
         var nanos = new AtomicLong();
