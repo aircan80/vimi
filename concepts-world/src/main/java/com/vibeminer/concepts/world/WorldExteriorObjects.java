@@ -12,6 +12,7 @@ import com.vibeminer.formats.models.M2Types;
 import com.vibeminer.formats.models.ModelFormatException;
 import com.vibeminer.formats.world.WmoFormats;
 import com.vibeminer.formats.world.WmoGroupSpans;
+import com.vibeminer.formats.world.WmoLiquid;
 import com.vibeminer.formats.world.WorldFormats;
 import com.vibeminer.formats.world.WorldPlacements;
 import com.vibeminer.formats.world.WorldStageTimings;
@@ -758,7 +759,9 @@ public final class WorldExteriorObjects {
          * PLACEMENT_CAPPED alone). Not an outcome bucket: the groups are the root's, counted once
          * with it.
          */
-        SHARE_INTERIOR_DROPPED
+        SHARE_INTERIOR_DROPPED,
+        /** Group liquids (MLIQ) that could not be read; the group draws without its water. */
+        LIQUID_MALFORMED
     }
 
     /** The group buckets ({@link Count}). */
@@ -942,6 +945,8 @@ public final class WorldExteriorObjects {
         private final int[] colours;
         private final int[] indices;
         private final List<DrawRange> ranges;
+        private final WmoLiquid liquid;
+        private final int liquidType;
 
         private Mesh(
                 int groupOrdinal,
@@ -951,6 +956,21 @@ public final class WorldExteriorObjects {
                 int[] colours,
                 int[] indices,
                 List<DrawRange> ranges) {
+            this(groupOrdinal, groupId, groupFlags, vertices, colours, indices, ranges, null, 0);
+        }
+
+        private Mesh(
+                int groupOrdinal,
+                long groupId,
+                long groupFlags,
+                float[] vertices,
+                int[] colours,
+                int[] indices,
+                List<DrawRange> ranges,
+                WmoLiquid liquid,
+                int liquidType) {
+            this.liquid = liquid;
+            this.liquidType = liquidType;
             this.groupOrdinal = groupOrdinal;
             this.groupId = groupId;
             this.groupFlags = groupFlags;
@@ -996,6 +1016,19 @@ public final class WorldExteriorObjects {
 
         public List<DrawRange> ranges() {
             return ranges;
+        }
+
+        /**
+         * The group's liquid (WMO MLIQ, in local WMO coordinates as the vertices), drawn as
+         * building water; null without one.
+         */
+        public WmoLiquid liquid() {
+            return liquid;
+        }
+
+        /** The liquid's LiquidType ID ({@link WmoLiquid#liquidType}); 0 without a liquid. */
+        public int liquidType() {
+            return liquidType;
         }
     }
 
@@ -1194,6 +1227,18 @@ public final class WorldExteriorObjects {
 
         /** Most image source bytes its builder kept at once (#265); diagnostics and tests. */
         long retainedSourceBytes;
+
+        /**
+         * Per LiquidType ID of a building liquid: its drawn kind (0 river or lake water, 1 ocean, 2
+         * a flat-coloured liquid) and 0xRRGGBB colour; a type missing here is not drawn.
+         */
+        volatile Map<Integer, int[]> liquidAppearances = Map.of();
+
+        /** The drawn kind and colour of LiquidType {@code type}, or null when not known. */
+        public int[] liquidAppearance(int type) {
+            int[] found = liquidAppearances.get(type);
+            return found == null ? null : found.clone();
+        }
 
         /** BLP levels its builder decoded, over every image (#360); diagnostics and tests. */
         int levelDecodes;
@@ -1557,22 +1602,57 @@ public final class WorldExteriorObjects {
         Objects.requireNonNull(token);
         long started = WorldStageTimings.start();
         try {
-            return engine.withRecordedTile(
-                    scope,
-                    tile,
-                    WorldStreamScopes.UseProfile.BASIC_EXTERIOR,
-                    token,
-                    admission ->
-                            new Builder(
-                                            admission,
-                                            modelReader,
-                                            detail,
-                                            retainLimit,
-                                            interiors,
-                                            compressedFormats)
-                                    .build());
+            var objects =
+                    engine.withRecordedTile(
+                            scope,
+                            tile,
+                            WorldStreamScopes.UseProfile.BASIC_EXTERIOR,
+                            token,
+                            admission ->
+                                    new Builder(
+                                                    admission,
+                                                    modelReader,
+                                                    detail,
+                                                    retainLimit,
+                                                    interiors,
+                                                    compressedFormats)
+                                            .build());
+            try {
+                objects.liquidAppearances = liquidAppearances(engine, objects, token);
+            } catch (RuntimeException | Error failed) {
+                objects.close();
+                throw failed;
+            }
+            return objects;
         } finally {
             WorldStageTimings.stop("objects.tile.total", started);
+        }
+    }
+
+    /**
+     * The drawn appearance of the building liquids' LiquidTypes, from the same LiquidType and
+     * LiquidMaterial rows terrain water reads ({@link WorldTerrainLiquids#appearances}). Tables
+     * that cannot be read leave every liquid unresolved (not drawn), never the objects.
+     */
+    private static Map<Integer, int[]> liquidAppearances(
+            WorldStreamScopes engine, TileObjects objects, Cancellation token) {
+        var types = new java.util.TreeSet<Integer>();
+        for (var model : objects.models()) {
+            for (var mesh : model.meshes()) {
+                if (mesh.liquid() != null) {
+                    types.add(mesh.liquidType());
+                }
+            }
+        }
+        if (types.isEmpty()) {
+            return Map.of();
+        }
+        try {
+            return engine.liquids().appearances(types, token);
+        } catch (java.util.concurrent.CancellationException canceled) {
+            throw canceled;
+        } catch (RuntimeException unavailable) {
+            return Map.of();
         }
     }
 
@@ -1871,7 +1951,25 @@ public final class WorldExteriorObjects {
             float[] vertices,
             int[] colours,
             int[] indices,
-            List<Candidate> ranges) {}
+            List<Candidate> ranges,
+            WmoLiquid liquid,
+            int liquidType) {
+        PendingMesh(
+                int ordinal,
+                long id,
+                long flags,
+                float[] vertices,
+                int[] colours,
+                int[] indices,
+                List<Candidate> ranges) {
+            this(ordinal, id, flags, vertices, colours, indices, ranges, null, 0);
+        }
+
+        PendingMesh withLiquid(WmoLiquid liquid, int liquidType) {
+            return new PendingMesh(
+                    ordinal, id, flags, vertices, colours, indices, ranges, liquid, liquidType);
+        }
+    }
 
     /** Image pools with separate read caps, pixel budgets and mip sides. */
     private enum Pool {
@@ -2304,7 +2402,9 @@ public final class WorldExteriorObjects {
                                     mesh.vertices,
                                     mesh.colours,
                                     Arrays.copyOf(mesh.indices, end),
-                                    opaque));
+                                    opaque,
+                                    mesh.liquid,
+                                    mesh.liquidType));
                 }
                 if (kept.isEmpty()) {
                     removed[m] = true;
@@ -2454,7 +2554,9 @@ public final class WorldExteriorObjects {
                                     mesh.vertices,
                                     mesh.colours,
                                     mesh.indices,
-                                    ranges));
+                                    ranges,
+                                    mesh.liquid,
+                                    mesh.liquidType));
                 }
                 models.set(m, new Model(model.rootId(), model.doodad(), meshes, model.portals()));
             }
@@ -5118,7 +5220,9 @@ public final class WorldExteriorObjects {
                     mesh.vertices(),
                     mesh.colours(),
                     Arrays.copyOf(compact, used),
-                    kept);
+                    kept,
+                    mesh.liquid(),
+                    mesh.liquidType());
         }
 
         /** Decodes a pending mesh's images and compacts its kept ranges; null when none kept. */
@@ -5150,7 +5254,9 @@ public final class WorldExteriorObjects {
                     mesh.vertices(),
                     mesh.colours(),
                     Arrays.copyOf(compact, used),
-                    kept);
+                    kept,
+                    mesh.liquid(),
+                    mesh.liquidType());
         }
 
         /**
@@ -5245,6 +5351,8 @@ public final class WorldExteriorObjects {
                             result[0] = copyGroup(ordinal, id, flags, root, borrow, local);
                             if (result[0] == null) {
                                 outcome[0] = Count.GROUP_UNSUPPORTED;
+                            } else {
+                                result[0] = withLiquid(result[0], borrow, root, local);
                             }
                         });
             } catch (IllegalArgumentException malformed) {
@@ -5260,6 +5368,35 @@ public final class WorldExteriorObjects {
                 return null;
             }
             return result[0];
+        }
+
+        /**
+         * The group's liquid (its MLIQ) on {@code mesh}, for building water; a malformed one is
+         * left out and counted (LIQUID_MALFORMED).
+         */
+        private PendingMesh withLiquid(
+                PendingMesh mesh, WmoGroupSpans.Borrow borrow, WmoFormats.Root root, int[] local) {
+            var raw = borrow.liquid();
+            if (raw == null || raw.size() == 0) {
+                return mesh;
+            }
+            var bytes = new byte[raw.size()];
+            for (int i = 0; i < bytes.length; i++) {
+                bytes[i] = (byte) raw.get(i);
+            }
+            try {
+                var liquid =
+                        WmoLiquid.parse(
+                                java.nio.ByteBuffer.wrap(bytes),
+                                (int) borrow.header().liquidType(),
+                                (int) borrow.header().flags());
+                return liquid == null
+                        ? mesh
+                        : mesh.withLiquid(liquid, liquid.liquidType(root.header().flags()));
+            } catch (IllegalArgumentException malformed) {
+                local[Count.LIQUID_MALFORMED.ordinal()]++;
+                return mesh;
+            }
         }
 
         /** Keeps group {@code ordinal}'s MODR for tying set doodads to their group. */

@@ -52,6 +52,49 @@ final class WorldTerrainLiquids {
         MALFORMED
     }
 
+    /** Building liquid types looked up per tile: one table lookup per distinct type. */
+    static final int MAX_APPEARANCE_TYPES = 16;
+
+    /**
+     * How building liquids (WMO MLIQ) of these LiquidType IDs are drawn, by the rule terrain water
+     * follows: the type's LiquidMaterial vertex format 0 or 2 is water (ocean for LiquidType 14,
+     * WMO ocean; river or lake otherwise), 1 or 3 a flat liquid in the type's MinimapStaticCol.
+     * Each type is looked up on its own, so a missing row leaves only that type unknown. Answers
+     * kind (0 river, 1 ocean, 2 flat) and colour per known type.
+     */
+    java.util.Map<Integer, int[]> appearances(java.util.Set<Integer> types, Cancellation token) {
+        var out = new java.util.HashMap<Integer, int[]>();
+        int looked = 0;
+        for (int type : types) {
+            token.check();
+            if (type <= 0 || looked++ >= MAX_APPEARANCE_TYPES) {
+                continue;
+            }
+            try {
+                var row =
+                        tables.observe(
+                                WorldLiquidTables.Profile.TYPE,
+                                java.util.Set.of((long) type),
+                                token);
+                int material = row.value(type);
+                var materials =
+                        tables.observe(
+                                WorldLiquidTables.Profile.MATERIAL,
+                                java.util.Set.of((long) material),
+                                token);
+                int format = materials.value(material);
+                if (format == 0 || format == 2) {
+                    out.put(type, new int[] {type == 14 ? 1 : 0, 0});
+                } else if (format == 1 || format == 3) {
+                    out.put(type, new int[] {2, row.minimapColour(type) & 0xFFFFFF});
+                }
+            } catch (WorldLiquidTables.Unavailable missing) {
+                // Unknown: not drawn.
+            }
+        }
+        return java.util.Map.copyOf(out);
+    }
+
     static final class Pressure extends RuntimeException {
         private static final long serialVersionUID = 1L;
 

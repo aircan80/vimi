@@ -419,6 +419,19 @@ tasks.register('nativeGpuWorldStreamTerrainCapture', JavaExec) {
     args providers.gradleProperty('captureDirectory').getOrElse(layout.buildDirectory.dir('native-world-stream-capture').get().asFile.absolutePath)
 }
 
+// Building water (WMO liquid) drawn per placement, culled with it and with its portal walk.
+tasks.register('nativeGpuWorldStreamObjectWaterProof', JavaExec) {
+    group = 'verification'
+    description = 'Draws authored building water and checks it follows placement and portal culling.'
+    dependsOn testClasses, tasks.named('verifyWorldStreamShaders'), tasks.named('verifyWorldWmoShaders'), tasks.named('verifyShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.WorldStreamObjectWaterProof'
+    timeout = java.time.Duration.ofMinutes(2)
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    systemProperty 'vimi.worldProof.backend', providers.gradleProperty('worldProofBackend').getOrElse('vulkan')
+    args layout.buildDirectory.dir('native-world-stream-object-water').get().asFile.absolutePath
+}
+
 tasks.register('nativeGpuWorldStreamObjectsBudgetProof', JavaExec) {
     group = 'verification'
     description = 'Proves the World objects GPU budget refuses, reserves and releases per slot.'
