@@ -80,7 +80,7 @@ tasks.register('integrationTest', Test) {
     shouldRunAfter tasks.named('test')
 }
 
-// CI's check includes Java integration tests. Interop is explicitly requested separately.
+// CI's check includes Java integration tests.
 tasks.named('check') {
     dependsOn tasks.named('integrationTest')
 }

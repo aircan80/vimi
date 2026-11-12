@@ -35,10 +35,9 @@ Requires the repository Java 25 toolchain and Gradle wrapper. No new runtime thi
 ```sh
 ./gradlew :concepts-items:test
 ./gradlew :concepts-items:check :concepts-items:assemble -PsqliteLibrary=/absolute/path/to/sqlite3-library
-./gradlew :concepts-items:interopTest -PreferenceRoot=/path/to/vibeminer -Pdotnet=/path/to/dotnet
 ```
 
-Normal tests include checked original-C# fact goldens. Optional interop regenerates those bytes by compiling the unchanged pinned `ItemFacts.cs`, with type-only seams, using .NET 10 and its committed restore lock. The reference pin is `4fd92d2` (no source implementation is copied into the harness). `model-274.m2` is the original pinned C# model fixture already validated by formats-assets' interop suite. Golden TSV text is fixed to LF; binary fixtures are never newline-transformed.
+Normal tests include checked-in fact goldens that originated in the original C# `ItemFacts.cs` (pin `4fd92d2`); the Java unit tests verify them. `model-274.m2` is the original pinned C# model fixture, also used by formats-assets. Golden TSV text is fixed to LF; binary fixtures are never newline-transformed.
 
 The native integration wires real disk ObjectStore -> CachingObjectSource -> Files -> DB2/Tables -> DiskGeneratedStore -> Items. It closes/reopens both stores, deletes encoded DB2, then proves the same list/detail works from durable generated rows. Tests use authored fixtures, never live endpoints or credentials. This module adds complete backend item source/provenance APIs; it does not add HTTP/UI endpoints or a renderer.
 
@@ -143,7 +142,7 @@ their behavior, including bundled golden/contract fixtures. Focused authored tes
 cover sparse-only values, disagreements, source domains, signed/max-ID rules,
 unknown/limited channels, local malformed cells, unsupported names/families,
 compact metadata and immutable results. Run `./gradlew :concepts-items:check` for
-unit and Java integration checks; optional C# regeneration is separate.
+unit and Java integration checks.
 
 Prepared projection classifies DB2_TEXT_ENCODING_INVALID as INVALID; missing
 relationships and unknown TextIssue codes remain UNKNOWN with bounded original

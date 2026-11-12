@@ -41,7 +41,7 @@ Run the changed component's fast tests by default:
 ```
 
 This suite checks the binary format and the in-memory reader/writer/history
-contracts without SQLite, disk stores, .NET, or the sibling checkout. Gradle skips
+contracts without SQLite or disk stores. Gradle skips
 unchanged compile and test tasks and reuses cached build configuration. Build and
 configuration caches are enabled by default; use `--no-configuration-cache` to
 diagnose future incompatible plugins or tasks. Use `--rerun-tasks` to deliberately run them again.
@@ -54,7 +54,6 @@ Choose additional checks based on the change:
 | Object-store logic | `:object-store:test` |
 | Persistence, locking, staging, recovery or maintenance | Also `:object-store:integrationTest` |
 | Public interfaces or contracts | Also tests for components that consume those interfaces |
-| Disk format or cross-language behavior | Also `:object-store:interopTest` |
 | Documentation only | No tests unless a documented executable example changes |
 
 The disk suite runs the shared contracts against the actual store, plus temporary
@@ -66,11 +65,11 @@ validation, the 64 MiB generated limit, and encoded staging above 64 MiB. Tests 
 ```sh
 ./gradlew :object-store:integrationTest
 ./gradlew check                 # all existing components' unit + integration tests
-./gradlew check :object-store:crashTest :object-store:interopTest  # all current suites
+./gradlew check :object-store:crashTest  # all current suites
 ```
 
-`test`, `check` and normal builds never start .NET or crash-test child processes.
-Crash and interoperability suites are opt in.
+`test`, `check` and normal builds never start crash-test child processes.
+The crash suite is opt in.
 Gradle does not automatically select downstream tests from changed interfaces;
 that impact selection is part of the development workflow until a CI policy is added.
 
@@ -94,11 +93,6 @@ bounded handshake/termination waits and is cleaned up on failure.
 Instrumentation is package-private and instance-scoped, with no public option or
 environment/property switch. The executable worker and parent harness live only
 in test fixtures. Production writes retain their normal unsplit payload-write path.
-
-The interoperability suite additionally kills Java writers and recovers them in
-C#, and kills C# writers and recovers them in Java. The C# harness uses the
-reference assembly's existing friend-test access under the assembly name
-`VibeMiner.Objects.Testing`; no reference source is changed.
 
 The crash suite also terminates temporary-index rebuilds during creation, replay,
 checkpoint and atomic replacement, and live scans before/after their commit. Disk
@@ -141,28 +135,7 @@ power cut.
 The component's JAR, source JAR and reusable test-fixtures JAR are written under
 `object-store/build/libs/`. The Bash
 scripts in `scripts/` delegate to these Gradle tasks; `scripts/check.sh` runs only
-fast tests, and `scripts/interop.sh` runs only interoperability checks.
-
-## Java/C# compatibility checks
-
-First build the original object-store project in a sibling `../vibeminer` checkout,
-producing `src/backend/VibeMiner.Objects/bin/Release/net10.0/VibeMiner.Objects.dll`.
-The C# harness references that assembly without modifying the sibling checkout.
-It requires the .NET 10 SDK and packages pinned in its `packages.lock.json`.
-
-```sh
-./gradlew :object-store:interopTest
-# Override the .NET executable and optionally use a local NuGet package source:
-./gradlew :object-store:interopTest -Pdotnet=/absolute/path/to/dotnet
-./gradlew :object-store:interopTest -PnugetSource=/absolute/path/to/nuget/packages
-```
-
-The default .NET executable is `../vibeminer/.local/toolchains/dotnet/dotnet`.
-On Windows set `-Pdotnet` to the installed `dotnet.exe` path.
-The harness checks bidirectional data/history and generated-store exchange,
-rebuilds, writer exclusion, chunked staging resume in both directions, and
-whole/incremental verification refusal vectors. C# build output stays in the ignored `bin/` and `obj/` directories
-next to its project. The CLI home stays in ignored `.local/dotnet/`.
+fast tests.
 
 ## Library use
 
@@ -255,7 +228,7 @@ exercised. Linux permission tests cover clean read-only media (including absent/
 rejection of unclean immutable indexes and inaccessible WAL commits, and live secondary
 reader visibility. POSIX permission cases skip when the filesystem lacks POSIX permissions
 or the process can bypass them. Native macOS ARM64 validation passed all 361 unit,
-integration, crash and Java/C# interoperability cases with zero skips, including
+integration, crash and (since removed, #274) Java/C# interoperability cases with zero skips, including
 all read-only permission checks. Native Windows hardware validation is still open;
 hosted Windows checks run. Clean-machine SQLite startup and final release-readiness review remain
 open. Recovery tests simulate durable unindexed tails and torn bytes;

@@ -29,20 +29,10 @@ installs pinned, locked Java dependencies automatically, including zstd-jni.
 
 The test-fixture variant publishes `MemoryGeneratedStore` and
 `GeneratedStoreContract`; the same contract tests run against memory and disk.
-Fast tests use no SQLite or .NET. They exercise compression using the native
+Fast tests use no SQLite. They exercise compression using the native
 zstd library bundled in the dependency JAR. Integration tests use isolated stores.
 
-For opt-in C# interoperability, build the pinned sibling reference's
-`VibeMiner.Generated` project (this also builds `VibeMiner.Objects`):
-
-```sh
-../vibeminer/.local/toolchains/dotnet/dotnet build ../vibeminer/src/backend/VibeMiner.Generated/VibeMiner.Generated.csproj --configuration Release -p:RestoreLockedMode=true -p:NuGetAudit=false
-./gradlew :generated-store:interopTest -Pdotnet=/absolute/path/to/dotnet -PsqliteLibrary=/absolute/path/to/sqlite-library
-```
-
-Both directions test metadata, every record, pages, unsigned-ID lookups and
-cross-process writer exclusion. The reference source is not modified. Windows
-native testing remains deferred; hosted CI still runs on all three platforms.
+Hosted unit and integration CI runs on Linux, Windows and macOS.
 
 ## Use
 
@@ -85,7 +75,7 @@ The format follows C# `RecordFileFormat.cs`: little-endian VMRF header, compress
 manifest directories, zstd blocks with content size/checksum, 1024-entry sorted
 ID chunks, and content-addressed segment objects. The four reserved bytes in each
 28-byte block directory entry are retained. Different compressor versions may
-produce different compressed bytes/segment keys; both runtimes read the format.
+produce different compressed bytes/segment keys; readers accept either.
 
 Records keep insertion order; the sorted index resolves ID lookup separately.
 A page reads only its blocks and returns at most 65,536 records. `findAtOrAfter`
@@ -95,9 +85,9 @@ one decoded block per `next()` and coalesces contiguous compressed reads up to
 in memory. All structures are validated before use; malformed manifests open as
 CORRUPT, and malformed blocks/indexes throw `GENERATED_CORRUPT`.
 
-Defaults match C#: 4,194,304 records, 1 MiB per record, 16 MiB metadata, about
-16 KiB per block, 8 MiB per segment, zstd level 9. Options validate the same
-bounds as C#. Writer memory includes a block, a segment, compressed frame scratch,
+Defaults: 4,194,304 records, 1 MiB per record, 16 MiB metadata, about
+16 KiB per block, 8 MiB per segment, zstd level 9. Options validate these
+bounds. Writer memory includes a block, a segment, compressed frame scratch,
 4 bytes per record for IDs, an additional 8 bytes per record while sorting, and
 an additional duplicate-ID set when input is unsorted. Java copies and collection
 objects add overhead. This is bounded by options, not a constant-memory writer.

@@ -9,7 +9,7 @@ persistence. Those decisions belong to layer 2.
 ## Build and checks
 
 Use a full Java 25 JDK and the checked-in Gradle wrapper. No system native library,
-.NET SDK, credential, Blizzard account or live endpoint is needed for these tests.
+credential, Blizzard account or live endpoint is needed for these tests.
 Gradle downloads the pinned and locked HTTP/JSON/test dependencies.
 
 ```sh
