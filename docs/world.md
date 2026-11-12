@@ -241,8 +241,13 @@ geometry does. The kind comes from the LiquidType's LiquidMaterial vertex format
 as terrain water's: 0 or 2 is water (ocean for LiquidType 14), 1 or 3 a flat
 liquid in its MinimapStaticCol; a type whose rows cannot be read is not drawn.
 MLIQ records no depth, so building water is shaded at the water light's deep
-colour and opacity (flagged). Water depth writes keep a building listed by two
-tiles from drawing its water twice. Buildings, doodads, collision and creature models are not rendered yet; declared NPC spawn points can be shown as static markers (see [NPC spawn placement](world-npc-placement.md)). Global-WMO-only maps have no
+colour and opacity (flagged). A building whose groups two tiles both draw stores
+its water in both tiles' objects files and charges it to both sets' budgets;
+depth writes with strict reversed depth only keep it from being blended twice.
+`nativeGpuWorldStreamObjectWaterProof` draws authored building water: water in
+the camera's room and in a room behind a door draw while the door is in view,
+the room behind is skipped once the walk no longer reaches it, and water behind
+the camera is culled with its placement. Buildings, doodads, collision and creature models are not rendered yet; declared NPC spawn points can be shown as static markers (see [NPC spawn placement](world-npc-placement.md)). Global-WMO-only maps have no
 terrain tiles and remain visible with that limitation. The default application viewport now uses inline bgfx GPU rendering on a
 capable backend, with the bounded CPU renderer as fallback. No JavaFX3D pipeline
 is required. **GPU terrain** selects the renderer; **Retry GPU** explicitly retries

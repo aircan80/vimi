@@ -219,6 +219,94 @@ final class WorldStreamObjectsFileTest {
         }
     }
 
+    /** Two meshes of one model, each with a 3 x 2 liquid. */
+    static WorldStreamTileWriter.Exterior twoWet() {
+        var builder = WorldStreamTileWriter.Exterior.builder();
+        builder.image(2, 2, chain(2, 2, rgba(4, 10)));
+        builder.model();
+        for (int mesh = 0; mesh < 2; mesh++) {
+            builder.mesh(
+                    FloatBuffer.wrap(small().data().vertices),
+                    IntBuffer.wrap(new int[] {0, 1, 2, 2, 1, 3}),
+                    new int[] {0, 6, 0});
+            builder.liquid(
+                    WorldStreamTileWriter.Exterior.Builder.LIQUID_OCEAN,
+                    0,
+                    3,
+                    2,
+                    0,
+                    0,
+                    5,
+                    new float[] {5, 5, 5, 5, 5, 5},
+                    new boolean[] {true, true});
+        }
+        builder.placement(0, 1, 2, 3, 1, 1, 0);
+        return builder.build();
+    }
+
+    /** The bytes of {@code exterior}'s file with {@code change} applied at a liquid offset. */
+    private byte[] liquidBytes(
+            WorldStreamTileWriter.Exterior exterior, java.util.function.Consumer<ByteBuffer> change)
+            throws Exception {
+        Files.deleteIfExists(objectsPath());
+        write(exterior);
+        var bytes = Files.readAllBytes(objectsPath());
+        Files.delete(objectsPath());
+        change.accept(ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN));
+        return bytes;
+    }
+
+    @Test
+    void aCorruptLiquidSectionIsRefused() throws Exception {
+        // wet(): one 60-byte entry at the end: mesh, kind, colour, x and y vertices, corner (3
+        // floats), six heights, two tile bytes and two padding bytes.
+        int entry = 60;
+        java.util.function.IntUnaryOperator at = offset -> -entry + offset;
+        assertEquals(
+                "Liquid padding",
+                refusedFile(liquidBytes(wet(), b -> b.put(b.capacity() - 1, (byte) 1))));
+        assertEquals(
+                "Liquid tile byte",
+                refusedFile(
+                        liquidBytes(
+                                wet(), b -> b.put(b.capacity() + at.applyAsInt(56), (byte) 2))));
+        assertEquals(
+                "Liquid mesh",
+                refusedFile(liquidBytes(wet(), b -> b.putInt(b.capacity() + at.applyAsInt(0), 5))));
+        assertEquals(
+                "Liquid entry",
+                refusedFile(liquidBytes(wet(), b -> b.putInt(b.capacity() + at.applyAsInt(4), 3))),
+                "an unknown kind");
+        // A grid larger than the section holds: the entry overruns it.
+        assertEquals(
+                "Liquid entry bounds",
+                refusedFile(
+                        liquidBytes(wet(), b -> b.putInt(b.capacity() + at.applyAsInt(12), 4))));
+        // Counts and bytes disagree, or the section is longer or shorter than the file.
+        assertEquals(
+                "Objects liquid counts", refusedFile(liquidBytes(wet(), b -> b.putInt(180, 0))));
+        assertEquals(
+                "Objects header counts",
+                refusedFile(liquidBytes(wet(), b -> b.putInt(184, b.getInt(184) + 4))),
+                "a section longer than the file");
+        assertEquals(
+                "Objects header counts",
+                refusedFile(liquidBytes(wet(), b -> b.putInt(184, b.getInt(184) - 4))),
+                "a section shorter than the file");
+        // Two entries whose meshes do not ascend.
+        assertEquals(
+                "Liquid meshes ascend",
+                refusedFile(liquidBytes(twoWet(), b -> b.putInt(b.capacity() - 2 * entry, 1))));
+        // The untouched file reads.
+        Files.deleteIfExists(objectsPath());
+        var reference = write(twoWet());
+        assertEquals(
+                2,
+                WorldStreamObjectsFile.read(objectsPath(), IDENTITY, reference, () -> false)
+                        .liquids
+                        .count());
+    }
+
     /** A one-model set whose model (4 vertices) carries five animation bytes (one pad of 3). */
     private static WorldStreamTileWriter.Exterior animated(int[] sources) {
         var builder = WorldStreamTileWriter.Exterior.builder();

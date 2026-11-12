@@ -2116,6 +2116,14 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         objectCulling = enabled;
     }
 
+    /** Proof seam: false draws no building water, so a proof can compare pixels without it. */
+    void objectWater(boolean enabled) {
+        requireOwner();
+        objectWater = enabled;
+    }
+
+    private boolean objectWater = true;
+
     /** Object animation on or off (#384); a proof compares both. */
     void objectAnimation(boolean enabled) {
         requireOwner();
@@ -2604,7 +2612,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             // Building water (WMO liquid) with the same shader, light and state as terrain water,
             // after it; a placement culled this frame, or an interior its walk did not reach,
             // draws none.
-            if (wmoProgram != INVALID) {
+            if (wmoProgram != INVALID && objectWater) {
                 for (var lease : active) {
                     var slot = slots[lease.slot()];
                     if (slot.objects != null && slot.objects.waterVertices != INVALID) {
