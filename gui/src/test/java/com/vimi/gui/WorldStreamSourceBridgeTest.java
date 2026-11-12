@@ -45,6 +45,71 @@ public final class WorldStreamSourceBridgeTest {
         waterCopyFoldsOnTheNeSwDiagonal();
         waterCopyChecksEveryCellCorner();
         waterCopyKeepsExactDepthAtExactlyTheBound();
+        swimSurfaceKeepsTheHighestLayersAndNeverThrows();
+    }
+
+    /** The authored water with each vertex raised to its layer's index, or NaN in one layer. */
+    private static WorldStreamSourceBridge.WaterCopy.Cells raised(AuthoredWater water, int broken) {
+        return new WorldStreamSourceBridge.WaterCopy.Cells() {
+            @Override public int vertices() { return water.vertices(); }
+            @Override public int indices() { return water.indices(); }
+            @Override public int layers() { return water.layers(); }
+            @Override public int width(int layer) { return water.width(layer); }
+            @Override public int height(int layer) { return water.height(layer); }
+            @Override public long mask(int layer) { return water.mask(layer); }
+            @Override public boolean planar(int layer) { return water.planar(layer); }
+            @Override public int colour(int layer) { return water.colour(layer); }
+            @Override public boolean ocean(int layer) { return water.ocean(layer); }
+            @Override public float north(int vertex) { return water.north(vertex); }
+            @Override public float west(int vertex) { return water.west(vertex); }
+            @Override public float up(int vertex) {
+                int layer = water.locate(vertex)[0];
+                return layer == broken ? Float.NaN : layer;
+            }
+            @Override public int depth(int vertex) { return water.depth(vertex); }
+        };
+    }
+
+    /**
+     * The swimming surface is built apart from the drawn copy: past its cell bound it keeps the
+     * highest layers and says so, a layer with a bad coordinate is skipped, and a drawn copy that
+     * fails keeps the surface instead of taking it down too.
+     */
+    private static void swimSurfaceKeepsTheHighestLayersAndNeverThrows() {
+        int layers = LiquidSurface.MAX_CELLS / 64 + 6;
+        var shape = new int[layers][];
+        var masks = new long[layers];
+        var planar = new boolean[layers];
+        for (int l = 0; l < layers; l++) {
+            shape[l] = new int[] {8, 8};
+            masks[l] = -1L;
+        }
+        var cells = raised(new AuthoredWater(shape, masks, planar), -1);
+        var swim = WorldStreamSourceBridge.WaterCopy.swim(cells, Cancellation.NONE);
+        check(swim.tile().cells() == LiquidSurface.MAX_CELLS
+                        && swim.note().equals("swimming surface keeps the highest 1024 of 1030 layers;"
+                                + " 6 past 65536 cells"),
+                "Too many layers keep the highest: " + swim.tile().cells() + " " + swim.note());
+        check(LiquidSurface.of(java.util.List.of(swim.tile())).at(.5, .5).height() == layers - 1,
+                "The highest layer answers");
+        var copy = WorldStreamSourceBridge.WaterCopy.of(cells, Cancellation.NONE);
+        check(copy.capped() && copy.water() != null && copy.surface().cells() == LiquidSurface.MAX_CELLS
+                        && copy.surfaceNote().equals(swim.note()),
+                "The drawn copy and the surface are both capped, neither throws");
+        var broken = WorldStreamSourceBridge.WaterCopy.swim(
+                raised(new AuthoredWater(new int[][] {{8, 8}, {8, 8}}, new long[] {-1L, -1L},
+                        new boolean[] {true, true}), 0), Cancellation.NONE);
+        check(broken.tile().cells() == 64
+                        && broken.note().equals("swimming surface keeps the highest 1 of 2 layers;"
+                                + " 1 with unusable coordinates"),
+                "A layer with a NaN corner is skipped: " + broken.note());
+        // A depth byte the packet cannot carry fails the drawn copy; swimming stays.
+        var deep = new AuthoredWater(new int[][] {{8, 8}}, new long[] {-1L}, new boolean[] {true},
+                (l, r, c) -> 300);
+        var kept = WorldStreamSourceBridge.WaterCopy.of(deep, Cancellation.NONE);
+        check(kept.water() == null && kept.surface().cells() == 64
+                        && kept.surfaceNote().startsWith("drawn water failed (Water depth byte)"),
+                "A failed drawn copy keeps the swimming surface: " + kept.surfaceNote());
     }
 
     /**

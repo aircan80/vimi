@@ -828,13 +828,18 @@ final class WorldStreamSourceBridge {
                 var copy = new WaterCopy[1];
                 positive.withWrittenResource(r -> copy[0] = r);
                 lastWaterIssues = facts.issues();
+                if (copy[0].water() == null) {
+                    waterNote = "water " + facts.state() + ": " + copy[0].surfaceNote();
+                    return copy[0];
+                }
                 waterNote = "water " + facts.state() + " cells=" + facts.cells()
                         + " quads=" + copy[0].water().cells()
                         + (copy[0].finest() > 1
                                 ? " depth coarsened to " + copy[0].finest() + "-cell blocks" : "")
                         + (copy[0].capped() ? " capped at " + copy[0].layers() + " of "
                                 + facts.admittedLayers() + " layers" : "")
-                        + (facts.issues().isEmpty() ? "" : "; " + String.join("; ", facts.issues()));
+                        + (facts.issues().isEmpty() ? "" : "; " + String.join("; ", facts.issues()))
+                        + (copy[0].surfaceNote() == null ? "" : "; " + copy[0].surfaceNote());
                 return copy[0];
             } catch (CancellationException canceled) {
                 throw canceled;
@@ -842,7 +847,7 @@ final class WorldStreamSourceBridge {
                 if (refused.getCause() != null || refused.getSuppressed().length != 0) {
                     throw refused;
                 }
-                waterNote = "water refused: " + refused.site();
+                waterNote = "water refused: " + refused.site() + "; no swimming here";
                 return null;
             } catch (IllegalArgumentException | IllegalStateException failed) {
                 // Only a clean leaf failure (e.g. this bridge's own copy validation) degrades to
@@ -851,7 +856,7 @@ final class WorldStreamSourceBridge {
                 if (failed.getCause() != null || failed.getSuppressed().length != 0) {
                     throw failed;
                 }
-                waterNote = "water failed: " + failed.getClass().getSimpleName();
+                waterNote = "water failed: " + failed.getClass().getSimpleName() + "; no swimming here";
                 WorldDiagnostics.degraded("water", "World water failed; tile kept as terrain only", failed);
                 return null;
             }
@@ -1002,7 +1007,7 @@ final class WorldStreamSourceBridge {
      */
     record WaterCopy(
             WorldStreamTileWriter.Water water, int sourceCells, int layers, boolean capped,
-            int finest, LiquidSurface.Tile surface) implements AutoCloseable {
+            int finest, LiquidSurface.Tile surface, String surfaceNote) implements AutoCloseable {
         /** The scalar water facts the copy reads: one actual Source borrow, or a test fixture. */
         interface Cells {
             int vertices();
@@ -1148,7 +1153,27 @@ final class WorldStreamSourceBridge {
             void quad(int[] corners);
         }
 
+        /**
+         * The drawn copy and, built separately, the swimming surface ({@link #swim}). When only
+         * the drawn copy fails, the surface is kept and {@code water} is null; when both have
+         * nothing, the drawn copy's failure is thrown as before.
+         */
         static WaterCopy of(Cells borrow, Cancellation token) {
+            var swim = swim(borrow, token);
+            try {
+                return drawn(borrow, token, swim);
+            } catch (IllegalArgumentException failed) {
+                if (swim.tile() == null || failed.getCause() != null) throw failed;
+                return new WaterCopy(null, 0, 0, false, 0, swim.tile(),
+                        "drawn water failed (" + failed.getMessage() + "); swimming surface kept"
+                                + (swim.note() == null ? "" : "; " + swim.note()));
+            }
+        }
+
+        /** The swimming surface of a tile, and what was left out of it (null when nothing). */
+        record Swim(LiquidSurface.Tile tile, String note) {}
+
+        private static WaterCopy drawn(Cells borrow, Cancellation token, Swim swim) {
             int vertices = borrow.vertices(), indexCount = borrow.indices(), layers = borrow.layers();
             if (vertices < 4 || vertices % 4 != 0 || indexCount != vertices / 4 * 6 || layers < 1) {
                 throw new IllegalArgumentException("Water exceeds packet profile");
@@ -1247,26 +1272,83 @@ final class WorldStreamSourceBridge {
             return new WaterCopy(
                     new WorldStreamTileWriter.Water(
                             positions, depths, colours, kinds, indices, copied),
-                    sourceCells, copied, capped, finest, surface(borrow, sources, token));
+                    sourceCells, copied, capped, finest, swim.tile(), swim.note());
         }
 
         /**
-         * Every present cell of every layer, drawn or capped, for a swimming body: the cell's
-         * NW corner and its four corner heights, and what liquid it is.
+         * Every present cell of the tile's layers, drawn or left out of the packet, for a
+         * swimming body: the cell's NW corner, its four corner heights and what liquid it is.
+         * Never throws (only cancellation propagates): a layout it cannot read gives no surface,
+         * a layer with an unusable coordinate is skipped, and past {@link LiquidSurface#MAX_CELLS}
+         * the highest layers are kept and the rest skipped, each said in the note.
          */
-        static LiquidSurface.Tile surface(Cells borrow, int[] sources, Cancellation token) {
-            var builder = new LiquidSurface.Builder();
-            for (int l = 0; l < sources.length; l++) {
+        static Swim swim(Cells borrow, Cancellation token) {
+            int layers, vertices;
+            int[] sources, counts;
+            try {
+                layers = borrow.layers();
+                vertices = borrow.vertices();
+                sources = new int[Math.max(0, layers)];
+                counts = new int[sources.length];
+                for (int l = 0, at = 0; l < layers; l++) {
+                    sources[l] = at;
+                    counts[l] = Long.bitCount(borrow.mask(l));
+                    at += counts[l] * 4;
+                    if (at > vertices) return new Swim(null, "swimming surface: unreadable layout");
+                }
+            } catch (RuntimeException unreadable) {
+                if (unreadable instanceof CancellationException canceled) throw canceled;
+                return new Swim(null, "swimming surface: unreadable layout");
+            }
+            // Highest layer first, by its highest corner: what a body meets first is kept.
+            var order = new Integer[layers];
+            var tops = new float[layers];
+            for (int l = 0; l < layers; l++) {
                 token.check();
+                order[l] = l;
+                float top = Float.NEGATIVE_INFINITY;
+                for (int v = sources[l]; v < sources[l] + counts[l] * 4; v++) {
+                    float up = borrow.up(v);
+                    if (Float.isFinite(up)) top = Math.max(top, up);
+                }
+                tops[l] = top;
+            }
+            java.util.Arrays.sort(order, (a, b) -> Float.compare(tops[b], tops[a]));
+            var builder = new LiquidSurface.Builder();
+            int kept = 0, cells = 0, full = 0, broken = 0;
+            for (int l : order) {
+                token.check();
+                if (cells + counts[l] > LiquidSurface.MAX_CELLS) {
+                    full++;
+                    continue;
+                }
+                // Check the whole layer first so a bad corner skips it without half a layer.
+                boolean usable = true;
+                for (int v = sources[l]; v < sources[l] + counts[l] * 4 && usable; v++) {
+                    usable = usable(borrow.north(v)) && usable(borrow.west(v)) && usable(borrow.up(v));
+                }
+                if (!usable) {
+                    broken++;
+                    continue;
+                }
                 var kind = kind(borrow, l);
-                int cells = Long.bitCount(borrow.mask(l));
-                for (int c = 0; c < cells; c++) {
+                for (int c = 0; c < counts[l]; c++) {
                     int v = sources[l] + c * 4;
                     builder.cell(borrow.north(v), borrow.west(v), borrow.up(v), borrow.up(v + 1),
                             borrow.up(v + 2), borrow.up(v + 3), kind);
                 }
+                cells += counts[l];
+                kept++;
             }
-            return builder.build();
+            String note = full == 0 && broken == 0 ? null
+                    : "swimming surface keeps the highest " + kept + " of " + layers + " layers"
+                            + (full > 0 ? "; " + full + " past " + LiquidSurface.MAX_CELLS + " cells" : "")
+                            + (broken > 0 ? "; " + broken + " with unusable coordinates" : "");
+            return new Swim(builder.build(), note);
+        }
+
+        private static boolean usable(float value) {
+            return Float.isFinite(value) && Math.abs(value) <= 1_000_000;
         }
 
         /**

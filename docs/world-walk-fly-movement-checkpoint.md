@@ -71,6 +71,22 @@ highest surface answers. Each cell keeps its kind: water or ocean as drawn, and
 magma (LiquidType 3) or slime (LiquidType 4) for coloured layers; any other
 coloured liquid is "other". Swimming is the same in every kind.
 
+A tile's liquid arrives with its terrain: the stream copies the water while it
+prepares the tile, before the tile's heights reach the body, so there is no
+moment with ground but no water. Where a tile's water is refused or its copy
+fails, that tile has no liquid surface: a body walks or falls to the bed there
+and walks on it (the tile's water note says "no swimming here"). If the water
+appears later (the tile is read again), a body on a bed deeper than its swim
+depth starts swimming where it stands, on the bed, and Space takes it up to the
+surface; it is not lifted by itself. The surface is built apart from the drawn
+water: a drawn copy that fails keeps it, and a tile with more liquid cells than
+`LiquidSurface.MAX_CELLS` keeps its highest layers and notes the rest.
+
+The exit is decided where the body would stand: the walk-out check snaps the
+feet down to the ground it found (up to 0.1 yd) and walks out only when they
+are still above the exit depth there, so a short body (the murloc, 1.29 yd
+tall, whose margin is 0.065 yd) cannot snap back below its swim depth.
+
 Not covered: water inside buildings (WMO liquid, such as the Stormwind canals)
 and the older MCLQ chunk liquid are not read, so a body walks through them;
 flying ignores water.
@@ -199,7 +215,13 @@ accept a 0.01 yd overlap.
   to the surface and no higher, sinking to the bed; walking into a lake and
   back out with one switch each way; a fall into deep water stopping; falling
   where the liquid ends; a steep bank stopping a swimmer without flicker;
-  following a sloping surface; flight and dry ground never swimming.
+  following a sloping surface; flight and dry ground never swimming; the
+  murloc's capsule over beds around its exit and swim depths, and walking into
+  the lake and out with one switch each way.
+- `worldStreamSourceBridgeTest`: every source cell reaches the surface (also a
+  layer capped out of the packet); past the cell bound the highest layers are
+  kept with a note; a layer with a NaN corner is skipped; a drawn copy that
+  fails keeps the surface.
 - `LiquidSurfaceTest`: cell lookup and edges, the NE--SW split, the highest
   of overlapping layers, coordinates far from the origin.
 - `BodyMotionTest`: placement on the ground below the camera, own and foreign

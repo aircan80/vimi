@@ -498,8 +498,14 @@ public final class WalkController {
             // bank or a rim it keeps swimming, so it does not fall back in and switch every step.
             double probe = .1;
             var below = collision.sweep(shape, x, y, z, 0, 0, -probe);
-            if (below != null && below.faceNz() >= walkable && below.nz() > 0) {
-                z -= below.t() * probe - SKIN;
+            double standing = below == null ? z : z - (below.t() * probe - SKIN);
+            // Decided on the feet where the body would stand: the snap down to the ground must
+            // not put them back below the swim depth (a short body's margin is under the probe).
+            if (below != null
+                    && below.faceNz() >= walkable
+                    && below.nz() > 0
+                    && surface.height() - standing < exit) {
+                z = standing;
                 swimming = false;
                 grounded = true;
                 firm = below.nz() >= walkable;

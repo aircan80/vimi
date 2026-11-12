@@ -263,4 +263,58 @@ class WalkControllerSwimTest {
             assertEquals(river.at(body.x(), body.y()).height() - body.swimDepth(), body.z(), .01);
         }
     }
+
+    @Test
+    void aShortBodyOverABedJustDeeperThanItsExitDepthDoesNotFlicker() {
+        // The murloc's capsule (#711): 1.29 yd tall, so it swims at 0.774 yd and walks out
+        // above 0.71 yd. Every bed depth around those, walked into and stood on.
+        var murloc = new CapsuleCollision.Shape(.45, 1.29);
+        for (double depth = .70; depth <= .83; depth += .005) {
+            var bed = new TriangleWorld().floor(-100, -50, 100, 50, SURFACE - depth);
+            var body = new WalkController();
+            body.shape(murloc);
+            body.place(-30, 0, 5, 100, bed, WATER);
+            int switches = 0;
+            boolean was = body.swimming();
+            for (int i = 0; i < 240; i++) {
+                body.step(input(i < 120 ? 1 : 0, 0, 0, 0, 0), DT, bed, WATER);
+                if (body.swimming() != was) {
+                    switches++;
+                    was = body.swimming();
+                }
+            }
+            assertTrue(switches <= 1, "bed " + depth + " yd deep: " + switches + " switches");
+        }
+    }
+
+    @Test
+    void aShortBodyWalksIntoTheLakeAndOutWithOneSwitchEachWay() {
+        var body = new WalkController();
+        body.shape(new CapsuleCollision.Shape(.45, 1.29));
+        body.place(-30, 0, 1, 10, LAKE, WATER);
+        assertFalse(body.swimming());
+        int switches = 0;
+        boolean was = false;
+        for (int i = 0; i < 600; i++) {
+            body.step(input(1, 0, 0, 0, 0), DT, LAKE, WATER);
+            if (body.swimming() != was) {
+                switches++;
+                was = body.swimming();
+            }
+            // Once in, at most a step's worth below the swim depth.
+            if (was) {
+                assertTrue(SURFACE - body.z() > body.swimDepth() - 1e-6, "swims at depth");
+            }
+        }
+        assertEquals(1, switches);
+        for (int i = 0; i < 900; i++) {
+            body.step(input(1, 0, 0, Math.PI, 0), DT, LAKE, WATER);
+            if (body.swimming() != was) {
+                switches++;
+                was = body.swimming();
+            }
+        }
+        assertEquals(2, switches, "and one switch out");
+        assertTrue(body.grounded());
+    }
 }
