@@ -904,6 +904,10 @@ check.dependsOn preparedBuildReaderTest
 // -Pprobe.mode=collision counts the collision bytes of every obj0 placement around each scenario;
 // -Pprobe.mode=walk walks a body over each scenario's real 3x3 terrain in eight headings and
 // reports where it ended, slides and falls.
+// -Pprobe.mode=races previews every race model variant's textured sample and groups the untextured
+// ones by reason (-Pprobe.raceImages=<race IDs> writes PNG renders, -Pprobe.raceDetail=true adds
+// issues); -Pprobe.mode=raceSkin dumps the customization chain of -Pprobe.models (ChrModel IDs) or
+// the CreatureDisplayInfo rows of -Pprobe.displays (#104).
 // -Pvimi.world.viewDistance=far streams the 5x5 neighbourhood instead of the 3x3 (#173).
 tasks.register('worldMeasurementProbe', JavaExec) {
     group = 'verification'
