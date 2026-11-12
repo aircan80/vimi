@@ -3020,12 +3020,23 @@ public final class WorldStreamTransport {
             int read;
             while ((read = errors.read(scratch)) != -1) {
                 stderrTail.accept(scratch, 0, read);
-                // Diagnostics while starting show the helper is working (shader and device setup).
+                // A finished diagnostic line while starting shows the helper is working (shader
+                // and device setup); a partial line does not count until it ends.
                 var handle = owner;
-                if (handle != null) {
+                if (handle != null && endsALine(scratch, read)) {
                     handle.progress();
                 }
             }
+        }
+
+        /** Whether {@code bytes[0..length)} holds a line end. */
+        static boolean endsALine(byte[] bytes, int length) {
+            for (int i = 0; i < length; i++) {
+                if (bytes[i] == '\n') {
+                    return true;
+                }
+            }
+            return false;
         }
 
         /**

@@ -664,7 +664,8 @@ class WorldStreamLaunchOwnerTest {
 
     @Test
     void aChildThatKeepsShowingProgressOutlastsTheQuietWindowAndAHungOneDoesNot() throws Exception {
-        // Ready after 300 ms with progress every 20 ms: three times the 100 ms quiet window.
+        // Ready after 600 ms with progress every 20 ms: more than twice the 250 ms quiet window,
+        // with room for scheduling jitter both within a window and before the 1 s cap.
         var ready = new CountDownLatch(1);
         var busy =
                 WorldStreamLaunchOwner.launch(
@@ -677,7 +678,7 @@ class WorldStreamLaunchOwnerTest {
                                                     long until =
                                                             System.nanoTime()
                                                                     + TimeUnit.MILLISECONDS.toNanos(
-                                                                            300);
+                                                                            600);
                                                     while (System.nanoTime() < until) {
                                                         handle.progress();
                                                         try {
@@ -691,9 +692,9 @@ class WorldStreamLaunchOwnerTest {
                                                 }),
                         0,
                         1000,
-                        100);
-        assertTrue(ready.await(3, TimeUnit.SECONDS));
-        Thread.sleep(150);
+                        250);
+        assertTrue(ready.await(5, TimeUnit.SECONDS));
+        Thread.sleep(300);
         assertFalse(busy.stopping(), "a slow child that shows progress starts");
         busy.closeAsync().get(3, TimeUnit.SECONDS);
         // Progress forever without becoming ready: stopped at the cap of four windows.
@@ -735,5 +736,16 @@ class WorldStreamLaunchOwnerTest {
         } catch (java.util.concurrent.ExecutionException expected) {
             // The startup failure.
         }
+    }
+
+    @Test
+    void onlyAFinishedStderrLineCountsAsProgress() {
+        byte[] partial = "World v2 rend".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        byte[] line = "erer: Vulkan\n".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        assertFalse(WorldStreamTransport.Session.endsALine(partial, partial.length));
+        assertTrue(WorldStreamTransport.Session.endsALine(line, line.length));
+        assertFalse(
+                WorldStreamTransport.Session.endsALine(line, line.length - 1),
+                "only the read part");
     }
 }
