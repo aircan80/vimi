@@ -79,14 +79,38 @@ final class WorldStreamLaunchOwner {
             long graceMillis,
             long deadlineMillis,
             long startupMillis) {
+        return launch(
+                prepared,
+                starter,
+                attachment,
+                graceMillis,
+                deadlineMillis,
+                startupMillis,
+                System::nanoTime);
+    }
+
+    /**
+     * As above, with the monotonic clock of startup, progress and reply liveness: tests pass their
+     * own so the startup deadline does not depend on scheduling.
+     */
+    static Handle launch(
+            WorldStreamPreparedFiles prepared,
+            Starter starter,
+            Attachment attachment,
+            long graceMillis,
+            long deadlineMillis,
+            long startupMillis,
+            java.util.function.LongSupplier clock) {
         Objects.requireNonNull(starter);
         Objects.requireNonNull(attachment);
+        Objects.requireNonNull(clock);
         if (graceMillis < 0 || deadlineMillis < 1 || startupMillis < 0) {
             throw new IllegalArgumentException("Invalid close timing");
         }
         // Files change owner BEFORE any scheduling or externally supplied Starter invocation.
         var files = prepared.claimForLaunch();
         var owner = new Handle(files, graceMillis, deadlineMillis, startupMillis);
+        owner.clockForTest(clock);
         owner.start(starter, attachment);
         return owner;
     }
@@ -410,10 +434,10 @@ final class WorldStreamLaunchOwner {
          */
         private void watchStartup() {
             try {
-                long started = System.nanoTime();
+                long started = clock.getAsLong();
                 long quiet = TimeUnit.MILLISECONDS.toNanos(startupMillis);
                 while (!initialized.get() && !stopping.get()) {
-                    long now = System.nanoTime();
+                    long now = clock.getAsLong();
                     String reason = startupExpired(started, lastProgress, now, quiet);
                     if (reason != null) {
                         failure =

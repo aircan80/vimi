@@ -471,6 +471,18 @@ final class WorldAudioPlayback implements AutoCloseable {
                             return live ? "Recorded " + label() + " file #" + fileId
                                     + " decoded no audio." : null;
                         }
+                        if (!live) {
+                            // Replaced just as this pass ended: hand off as a tail all the same,
+                            // which loops a single-file ambience while it fades, or plays out what
+                            // the line holds, instead of closing the line on its buffered audio.
+                            if (gain.position > 0) {
+                                handOff(new Tail(pcm, out, gain, playing.volume(fileId), cached,
+                                        loop));
+                                pcm = null;
+                                out = null;
+                            }
+                            return null;
+                        }
                         frames = 0;
                         if (live && kind == WorldAreaAudio.Kind.AMBIENCE) {
                             if (loop != null && loop.size() > 0) cached = loop.toByteArray();
