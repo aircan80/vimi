@@ -669,7 +669,7 @@ class WorldStreamLaunchOwnerTest {
         // of progress every 20 ms: more than twice the 250 ms quiet window, within the 1 s cap.
         var now = new java.util.concurrent.atomic.AtomicLong(1_000_000_000L);
         var busy =
-                WorldStreamLaunchOwner.launch(
+                WorldStreamLaunchOwner.launchForTest(
                         WorldStreamPreparedFiles.create(directory, SESSION, null),
                         arguments -> new Child(),
                         (process, handle) -> {},
@@ -691,7 +691,7 @@ class WorldStreamLaunchOwnerTest {
         busy.closeAsync().get(3, TimeUnit.SECONDS);
         // Progress forever without becoming ready: stopped at the cap of four 100 ms windows.
         var spinning =
-                WorldStreamLaunchOwner.launch(
+                WorldStreamLaunchOwner.launchForTest(
                         WorldStreamPreparedFiles.create(directory, SESSION, null),
                         arguments -> new Child(),
                         (process, handle) -> {},

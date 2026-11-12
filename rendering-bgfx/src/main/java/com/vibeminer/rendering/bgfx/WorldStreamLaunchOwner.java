@@ -79,7 +79,7 @@ final class WorldStreamLaunchOwner {
             long graceMillis,
             long deadlineMillis,
             long startupMillis) {
-        return launch(
+        return launchWith(
                 prepared,
                 starter,
                 attachment,
@@ -90,10 +90,23 @@ final class WorldStreamLaunchOwner {
     }
 
     /**
-     * As above, with the monotonic clock of startup, progress and reply liveness: tests pass their
-     * own so the startup deadline does not depend on scheduling.
+     * Tests only: as {@link #launch(WorldStreamPreparedFiles, Starter, Attachment, long, long,
+     * long)}, with the monotonic clock of startup, progress and reply liveness, so a test's startup
+     * deadline does not depend on scheduling. Production always uses {@code System::nanoTime}.
      */
-    static Handle launch(
+    static Handle launchForTest(
+            WorldStreamPreparedFiles prepared,
+            Starter starter,
+            Attachment attachment,
+            long graceMillis,
+            long deadlineMillis,
+            long startupMillis,
+            java.util.function.LongSupplier clock) {
+        return launchWith(
+                prepared, starter, attachment, graceMillis, deadlineMillis, startupMillis, clock);
+    }
+
+    private static Handle launchWith(
             WorldStreamPreparedFiles prepared,
             Starter starter,
             Attachment attachment,
