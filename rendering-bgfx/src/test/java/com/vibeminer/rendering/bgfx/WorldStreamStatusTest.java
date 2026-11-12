@@ -204,4 +204,13 @@ class WorldStreamStatusTest {
             assertThrows(IOException.class, () -> parse(body), body);
         }
     }
+
+    @Test
+    void theHeartbeatDecodesAndCarriesNoState() throws Exception {
+        var alive = (WorldStreamStatus.Alive) parse("ALIVE 7");
+        assertEquals(7, alive.beat());
+        for (String body : new String[] {"ALIVE 0", "ALIVE", "ALIVE 1 2", "ALIVE 01"}) {
+            assertThrows(IOException.class, () -> parse(body), body);
+        }
+    }
 }

@@ -1408,6 +1408,15 @@ public final class WorldStreamTransport {
             handle.runWorker("producer-files", () -> files(handle));
             handle.runWorker("frames", () -> pollFrames(handle));
             handle.runWorker("objects", () -> objects(handle));
+            // A child that owes a reply and stops showing progress is failed like a crash (#306).
+            handle.runWorker(
+                    "liveness",
+                    () ->
+                            handle.watchReplies(
+                                    this::owedReplies,
+                                    WorldStreamLaunchOwner.Handle.replyQuietMillis(
+                                            System.getProperty("vimi.world.replyQuietMillis")),
+                                    java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(100)));
             handle.runWorker(
                     "cancellation",
                     () -> {
@@ -3007,7 +3016,9 @@ public final class WorldStreamTransport {
                     }
                 }
             } catch (Throwable error) {
-                fail(error);
+                // Statuses end because the owner stopped a failed child (a hang): report that.
+                var cause = handle.stopping() ? handle.failure() : null;
+                fail(cause != null ? cause : error);
                 throw error;
             }
         }
@@ -3118,6 +3129,55 @@ public final class WorldStreamTransport {
         /** Test observation of the first renderer objects failure record of the session. */
         CompletableFuture<String> objectsDiagnostic() {
             return objectsDiagnostic.copy();
+        }
+
+        /**
+         * What awaits the child's reply now, for the liveness watcher, or null when nothing does:
+         * the outstanding reliable commands, naming a commit, tile upload and late objects in
+         * flight.
+         */
+        private String owedReplies() {
+            synchronized (lock) {
+                return owed(
+                        closing,
+                        outstandingReliable,
+                        commitOperation != null && commitOperation.outstanding,
+                        tile != null && tile.offerOutstanding,
+                        tile != null && tile.cancelOutstanding,
+                        objectsOperation != null);
+            }
+        }
+
+        /**
+         * What awaits the child's reply, or null: nothing once the session is closing (a slow
+         * teardown after CLOSE is not a hang) or when no reliable command is outstanding. Pure, for
+         * tests.
+         */
+        static String owed(
+                boolean closing,
+                int outstanding,
+                boolean commit,
+                boolean upload,
+                boolean cancellation,
+                boolean objects) {
+            if (closing || outstanding == 0) {
+                return null;
+            }
+            var kinds = new java.util.ArrayList<String>(3);
+            if (commit) {
+                kinds.add("a commit");
+            }
+            if (upload) {
+                kinds.add("a tile upload");
+            } else if (cancellation) {
+                kinds.add("a tile cancellation");
+            }
+            if (objects) {
+                kinds.add("late objects");
+            }
+            return outstanding
+                    + (outstanding == 1 ? " command" : " commands")
+                    + (kinds.isEmpty() ? "" : " (" + String.join(", ", kinds) + ")");
         }
 
         /**

@@ -17,7 +17,7 @@ final class WorldStreamStatusWriter {
     private final String prefix;
     private final ArrayDeque<byte[]> reliable = new ArrayDeque<>(16);
     private final CompletableFuture<Void> drained = new CompletableFuture<>();
-    private byte[] camera, frame, presented;
+    private byte[] camera, frame, presented, alive;
     private boolean finishing, quiet;
     private volatile Throwable failure;
 
@@ -103,6 +103,25 @@ final class WorldStreamStatusWriter {
     }
 
     /**
+     * Latest-value heartbeat from the owner loop: the parent's sign that the child still works
+     * while a reply is owed. Replaces any unwritten older beat; never reserves reliable credit.
+     */
+    boolean alive(long beat) {
+        if (beat < 1) {
+            throw new IllegalArgumentException("Invalid heartbeat");
+        }
+        byte[] bytes = line("ALIVE " + beat);
+        synchronized (lock) {
+            if (finishing || quiet) {
+                return false;
+            }
+            alive = bytes;
+            lock.notifyAll();
+            return true;
+        }
+    }
+
+    /**
      * Drops pending latest-value statuses and refuses new ones, so none can follow a terminal
      * reliable status enqueued afterwards.
      */
@@ -112,6 +131,7 @@ final class WorldStreamStatusWriter {
             camera = null;
             frame = null;
             presented = null;
+            alive = null;
         }
     }
 
@@ -122,6 +142,7 @@ final class WorldStreamStatusWriter {
             camera = null;
             frame = null;
             presented = null;
+            alive = null;
             lock.notifyAll();
         }
         return drained.copy();
@@ -163,6 +184,7 @@ final class WorldStreamStatusWriter {
                             && camera == null
                             && frame == null
                             && presented == null
+                            && alive == null
                             && !finishing) {
                         lock.wait();
                     }
@@ -179,9 +201,13 @@ final class WorldStreamStatusWriter {
                         bytes = frame;
                         frame = null;
                         counted = false;
-                    } else {
+                    } else if (presented != null) {
                         bytes = presented;
                         presented = null;
+                        counted = false;
+                    } else {
+                        bytes = alive;
+                        alive = null;
                         counted = false;
                     }
                 }
@@ -200,6 +226,7 @@ final class WorldStreamStatusWriter {
                 camera = null;
                 frame = null;
                 presented = null;
+                alive = null;
             }
             drained.completeExceptionally(error);
         }

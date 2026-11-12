@@ -99,6 +99,8 @@ final class WorldStreamHorizonSessionProof {
                 WorldStreamSessionProof.require(
                         changed > before.length / 10,
                         "Horizon not visible: " + changed + " of " + before.length);
+                // The real child's render loop sends its heartbeat (#306).
+                statuses.await("ALIVE ");
                 // A second HORIZON in the same session is ignored: no second reply, no failure.
                 WorldStreamSessionProof.send(
                         child, new WorldStreamControl.Horizon(nonce, wdl.length, sha));

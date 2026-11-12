@@ -29,6 +29,19 @@ public final class AuthoredWorldControllerChild {
             boolean exteriors = descriptor.exteriorObjects();
             state.send(exteriors ? "SESSION TERRAIN_EXTERIOR_V1" : "SESSION TERRAIN_BASIC_V1");
             state.grant();
+            // A healthy child's heartbeat, as the real child's render loop sends it, except while
+            // a command is held on purpose, so a held command reads as a hang.
+            Thread.ofPlatform().daemon().start(() -> {
+                long beat = 0;
+                while (true) {
+                    try {
+                        Thread.sleep(200);
+                    } catch (InterruptedException stop) {
+                        return;
+                    }
+                    if (!state.holding) state.send("ALIVE " + ++beat);
+                }
+            });
             WorldStreamControl.Camera camera = null;
             long content = 0, sequence = 0, policy = 0;
             WorldStreamControl.Command command;
@@ -83,7 +96,9 @@ public final class AuthoredWorldControllerChild {
                                 Files.writeString(
                                         directory.getParent().resolve("authored-held-reject"),
                                         "held");
+                                state.holding = true;
                                 while (Files.exists(holdReject)) Thread.sleep(2);
+                                state.holding = false;
                             }
                             state.send("INPUT_CONSUMED " + offer.transaction() + " TILE");
                             state.send("REJECTED " + offer.transaction() + " INVALID_PACKET");
@@ -131,7 +146,9 @@ public final class AuthoredWorldControllerChild {
                     var heldCommit = directory.getParent().resolve("authored-hold-commit");
                     if (Files.exists(heldCommit) && Long.parseLong(Files.readString(heldCommit)) == commit.next()) {
                         Files.writeString(directory.getParent().resolve("authored-held-commit"), Long.toString(commit.next()));
+                        state.holding = true;
                         while (Files.exists(heldCommit)) Thread.sleep(2);
+                        state.holding = false;
                     }
                     // Record the commit before acknowledging it, so any parent state derived from
                     // COMMITTED (and any test reading this log after observing that state) sees it.
@@ -154,7 +171,9 @@ public final class AuthoredWorldControllerChild {
                     var holdUnused = directory.getParent().resolve("authored-hold-unused-credit");
                     if (Files.exists(holdUnused)) {
                         Files.writeString(directory.getParent().resolve("authored-held-unused-credit"), "held");
+                        state.holding = true;
                         while (Files.exists(holdUnused)) Thread.sleep(2);
+                        state.holding = false;
                     }
                     state.canceled(cancel.transaction(), cancel.lease());
                 } else if (command instanceof WorldStreamControl.Cancel cancel) {
@@ -222,7 +241,9 @@ public final class AuthoredWorldControllerChild {
                                 .start(
                                         () -> {
                                             try {
+                                                state.holding = true;
                                                 while (Files.exists(holdObjects)) Thread.sleep(2);
+                                                state.holding = false;
                                             } catch (InterruptedException error) {
                                                 return;
                                             }
@@ -285,6 +306,9 @@ public final class AuthoredWorldControllerChild {
         State(String prefix) {
             this.prefix = prefix;
         }
+
+        // While the authored child holds a command it is stuck on purpose: no heartbeat.
+        volatile boolean holding;
 
         synchronized void send(String text) {
             System.out.print(prefix + text + "\n");
