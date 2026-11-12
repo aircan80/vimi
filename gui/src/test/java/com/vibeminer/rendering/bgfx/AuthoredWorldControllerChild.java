@@ -196,7 +196,9 @@ public final class AuthoredWorldControllerChild {
                         outcome = "BUDGET";
                     } else if (!state.members.contains(slot)
                             || !late.lease().equals(state.leases.get(slot))
-                            || state.transactions.getOrDefault(slot, 0L) != late.transaction()) {
+                            || state.transactions.getOrDefault(slot, 0L) != late.transaction()
+                            // A replacement needs a held set; a first set, none.
+                            || state.objects.contains(slot) != late.replace()) {
                         outcome = "DROPPED";
                     } else {
                         var data =
@@ -218,7 +220,10 @@ public final class AuthoredWorldControllerChild {
                     }
                     Files.writeString(
                             directory.getParent().resolve("authored-objects.log"),
-                            state.tileY.getOrDefault(slot, -1) + " " + outcome + "\n",
+                            state.tileY.getOrDefault(slot, -1)
+                                    + (late.replace() ? " REPLACE " : " ")
+                                    + outcome
+                                    + "\n",
                             java.nio.file.StandardOpenOption.CREATE,
                             java.nio.file.StandardOpenOption.APPEND);
                     String reply =

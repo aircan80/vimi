@@ -157,11 +157,42 @@ final class WorldObjectAnimation {
      * clock stepped down to {@link #STEP_MILLIS}, offset by the phase's share of the loop.
      */
     static long millis(long clock, long duration, int phase) {
+        return millis(clock, duration, phase, 0);
+    }
+
+    /**
+     * As above, with the pose's steps falling {@code offset} ms (0 to {@link #STEP_MILLIS}) earlier
+     * than the clock's, so poses do not all step, and re-skin, in the same frame.
+     */
+    static long millis(long clock, long duration, int phase, long offset) {
         if (duration <= 0) {
             return 0;
         }
-        long stepped = Math.max(0, clock) / STEP_MILLIS * STEP_MILLIS;
+        long shifted = Math.max(0, clock) + offset;
+        long stepped = shifted / STEP_MILLIS * STEP_MILLIS - offset;
         return Math.floorMod(stepped + duration * phase / PHASES, duration);
+    }
+
+    private static final java.util.concurrent.atomic.AtomicLong STEP_SETS =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    /** A new objects set's identity for {@link #stepOffset}. */
+    static long nextStepSet() {
+        return STEP_SETS.getAndIncrement();
+    }
+
+    /**
+     * The step offset of set {@code set}'s model {@code model}, phase {@code phase}: phases a
+     * quarter step apart, and each set's models spread within the quarter by a hash of the set and
+     * the model, so poses of all resident sets step in different frames rather than together.
+     */
+    static long stepOffset(long set, int model, int phase) {
+        long quarter = STEP_MILLIS / PHASES;
+        long bits = set * 0x9E3779B97F4A7C15L + model;
+        bits = (bits ^ (bits >>> 30)) * 0xBF58476D1CE4E5B9L;
+        bits = (bits ^ (bits >>> 27)) * 0x94D049BB133111EBL;
+        bits ^= bits >>> 31;
+        return phase * quarter + Math.floorMod(bits, quarter);
     }
 
     /**

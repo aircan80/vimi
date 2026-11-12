@@ -3531,13 +3531,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         // Every map draws its WMO interior groups (#280, #383), within what the exteriors leave;
         // portal sets hide them from outside.
         var interiors = interiorMode(inventory.map());
-        WorldStreamSourceBridge.ExteriorPreparer preparer = creatureSource == null
-                ? (source, scope, tile, cancellation, formats, creatureBytes) -> WorldStreamSourceBridge.prepareExterior(
-                        source, scope, tile, cancellation, null, detail, interiors, formats)
-                : (source, scope, tile, cancellation, formats, creatureBytes) -> WorldStreamSourceBridge.prepareExterior(
-                        source, scope, tile, cancellation,
-                        (builder, owned, token) -> creatureSource.append(builder, creatureMap, owned, creatureBytes, token),
-                        detail, interiors, formats);
+        var preparer = WorldStreamSourceBridge.preparer(creatureSource, creatureMap, detail, interiors);
         stallWatchdog.reset();
         // #381: native presentation when asked for, on Windows, unless it already failed here.
         // Not in full screen: the helper's child belongs to the application window.

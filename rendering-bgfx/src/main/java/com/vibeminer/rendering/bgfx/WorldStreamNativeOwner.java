@@ -478,13 +478,18 @@ final class WorldStreamNativeOwner implements AutoCloseable {
 
     BgfxWorldStreamRenderer.LateUpload beginLate(
             WorldStreamState.Lease lease, WorldStreamPackedObjects objects) {
+        return beginLate(lease, objects, false);
+    }
+
+    BgfxWorldStreamRenderer.LateUpload beginLate(
+            WorldStreamState.Lease lease, WorldStreamPackedObjects objects, boolean replace) {
         try {
             requireOpen();
         } catch (RuntimeException closed) {
             objects.close();
             throw closed;
         }
-        return renderer.beginLate(lease, objects);
+        return renderer.beginLate(lease, objects, replace);
     }
 
     /** Same frame rule as terrain: no GPU mutation after this frame's draw submission. */
@@ -637,6 +642,7 @@ final class WorldStreamNativeOwner implements AutoCloseable {
             WorldStageTimings.stop("child.frame.submitCpu", drawing);
             cullCounts(renderer.frameCounts());
             animationCounts(renderer.animationCounts());
+            WorldStageTimings.value("child.objects.reservedMiB", renderer.objectsReserved() >> 20);
         }
         renderedThisFrame = true;
         submittedCamera = cameraRevision;
@@ -858,6 +864,14 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         var stats = bgfx_get_stats();
         WorldStageTimings.value("child.frame.draws", Integer.toUnsignedLong(stats.numDraw()));
         WorldStageTimings.value("child.frame.blits", Integer.toUnsignedLong(stats.numBlit()));
+        // Memory (#175): bgfx's texture and render-target bytes and the helper's Java heap in use.
+        WorldStageTimings.value(
+                "child.memory.textureMiB", Math.max(0, stats.textureMemoryUsed()) >> 20);
+        WorldStageTimings.value(
+                "child.memory.renderTargetMiB", Math.max(0, stats.rtMemoryUsed()) >> 20);
+        var runtime = Runtime.getRuntime();
+        WorldStageTimings.value(
+                "child.memory.heapMiB", (runtime.totalMemory() - runtime.freeMemory()) >> 20);
         // Topology 0 and 1 are triangle lists and strips.
         WorldStageTimings.value(
                 "child.frame.triangles",

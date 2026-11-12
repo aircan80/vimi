@@ -114,6 +114,57 @@ class WorldStreamLateObjectsParentTest {
     }
 
     @Test
+    void heldLateObjectsMayBeReplacedAndKeepTheirSetWhateverTheReplacementDoes() {
+        var state = ready(true);
+        var resident = resident(state, 7, 19, List.of(), new WorldStreamState.Lease(1, 1, 2));
+        // Nothing held yet: a replacement is misuse.
+        assertThrows(IllegalArgumentException.class, () -> state.admitLateObjects(resident, true));
+        assertTrue(state.admitLateObjects(resident));
+        assertFalse(state.lateObjects(resident, 4096, SHA).replace());
+        state.status(done(resident, WorldStreamStatus.LateOutcome.ATTACHED));
+        assertTrue(resident.lateHeld);
+        long releases = state.objectsReleases();
+        // A held resident is replaced, never attached again.
+        assertThrows(IllegalArgumentException.class, () -> state.admitLateObjects(resident));
+
+        assertTrue(state.admitLateObjects(resident, true));
+        assertNull(resident.late);
+        // One request in flight at a time.
+        assertThrows(IllegalArgumentException.class, () -> state.admitLateObjects(resident, true));
+        var replacement = state.lateObjects(resident, 4096, SHA);
+        assertTrue(replacement.replace());
+        state.status(done(resident, WorldStreamStatus.LateOutcome.BUDGET));
+        assertTrue(resident.lateHeld);
+        assertEquals(releases, state.objectsReleases());
+
+        // Again after a refusal; an attached replacement freed the set it replaced.
+        assertTrue(state.admitLateObjects(resident, true));
+        state.lateObjects(resident, 4096, SHA);
+        state.status(done(resident, WorldStreamStatus.LateOutcome.ATTACHED));
+        assertSame(WorldStreamStatus.LateOutcome.ATTACHED, resident.late);
+        assertEquals(releases + 1, state.objectsReleases());
+
+        // A failed write of a replacement still leaves the held set.
+        assertTrue(state.admitLateObjects(resident, true));
+        assertSame(WorldStreamStatus.LateOutcome.FAILED, state.lateObjectsFailed(resident));
+        assertTrue(resident.lateHeld);
+    }
+
+    @Test
+    void replacementOfARetiredResidentIsDropped() {
+        var state = ready(true);
+        var first = resident(state, 7, 19, List.of(), new WorldStreamState.Lease(1, 1, 2));
+        assertTrue(state.admitLateObjects(first));
+        state.lateObjects(first, 4096, SHA);
+        state.status(done(first, WorldStreamStatus.LateOutcome.ATTACHED));
+        var second = resident(state, 7, 20, List.of(first), new WorldStreamState.Lease(2, 1, 3));
+        commit(state, List.of(second));
+        assertFalse(state.admitLateObjects(first, true));
+        assertSame(WorldStreamStatus.LateOutcome.DROPPED, first.late);
+        assertTrue(first.lateHeld);
+    }
+
+    @Test
     void oneDeliveryInFlightAndOnlyInTheExteriorProfile() {
         var state = ready(true);
         var first = resident(state, 7, 19, List.of(), new WorldStreamState.Lease(1, 1, 2));

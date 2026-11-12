@@ -465,11 +465,15 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     static final class LateUpload {
         private final WorldStreamState.Lease lease;
         private final ObjectsBuild build;
+        // Replaces the late set the generation already holds; that set stays drawn until this one
+        // attaches, and stays when it does not.
+        private final boolean replace;
         private boolean dropped;
 
-        private LateUpload(WorldStreamState.Lease lease, ObjectsBuild build) {
+        private LateUpload(WorldStreamState.Lease lease, ObjectsBuild build, boolean replace) {
             this.lease = lease;
             this.build = build;
+            this.replace = replace;
         }
 
         WorldStreamState.Lease lease() {
@@ -564,6 +568,13 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
 
         /** Per model and phase: its pose, created when first needed, or null. */
         final WorldObjectAnimation.Pose[] poses;
+
+        /**
+         * This set's share of the animation step offsets ({@link WorldObjectAnimation#stepOffset}):
+         * one per built set, so sets with few animated models do not all step their model 0 in the
+         * same frame.
+         */
+        final long stepSet = WorldObjectAnimation.nextStepSet();
 
         /** GPU bytes of this set's poses, reserved against the object budget. */
         long poseBytes;
@@ -1727,6 +1738,16 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
      * failed and issues nothing.
      */
     LateUpload beginLate(WorldStreamState.Lease lease, WorldStreamPackedObjects packed) {
+        return beginLate(lease, packed, false);
+    }
+
+    /**
+     * As above; with {@code replace} the generation must already hold objects, which the new set
+     * replaces once built. Both are reserved against the budget meanwhile (textures they share are
+     * charged once), so a replacement that does not fit fails as BUDGET and the held set stays.
+     */
+    LateUpload beginLate(
+            WorldStreamState.Lease lease, WorldStreamPackedObjects packed, boolean replace) {
         java.util.Objects.requireNonNull(packed);
         try {
             requireOwner();
@@ -1739,8 +1760,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             packed.close();
             throw refused;
         }
-        var upload = new LateUpload(lease, new ObjectsBuild(packed));
-        if (!lateTarget(lease)) {
+        var upload = new LateUpload(lease, new ObjectsBuild(packed), replace);
+        if (!lateTarget(lease, replace)) {
             upload.dropped = true;
             upload.build.abandon();
         } else if (wmoProgram == INVALID) {
@@ -1758,7 +1779,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         if (upload.ready()) {
             return 0;
         }
-        if (!upload.dropped && !lateTarget(upload.lease)) {
+        if (!upload.dropped && !lateTarget(upload.lease, upload.replace)) {
             // Retired by a commit since it began: stop building for a generation never drawn.
             upload.dropped = true;
             upload.build.abandon();
@@ -1777,7 +1798,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     /**
      * Retires a ready late upload. It attaches only when {@code live} (the child state still admits
      * that generation) and this renderer's slot still holds that exact active generation without
-     * objects. Otherwise the built resources are destroyed and the result is DROPPED.
+     * objects (a replacement: with the objects it replaces, which it then destroys). Otherwise the
+     * built resources are destroyed and the result is DROPPED.
      */
     WorldStreamStatus.LateOutcome finishLate(LateUpload upload, boolean live) {
         requireOwner();
@@ -1787,7 +1809,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             throw new IllegalStateException("Late objects upload still building");
         }
         late = null;
-        if (upload.dropped || !live || !lateTarget(upload.lease)) {
+        if (upload.dropped || !live || !lateTarget(upload.lease, upload.replace)) {
             upload.build.abandon();
             return WorldStreamStatus.LateOutcome.DROPPED;
         }
@@ -1796,7 +1818,12 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                     ? WorldStreamStatus.LateOutcome.BUDGET
                     : WorldStreamStatus.LateOutcome.FAILED;
         }
-        slots[upload.lease.slot()].objects = upload.build.take();
+        var slot = slots[upload.lease.slot()];
+        if (upload.replace) {
+            // Built in full first, so the tile never shows neither set.
+            slot.objects.destroy();
+        }
+        slot.objects = upload.build.take();
         objectsRevision++;
         return WorldStreamStatus.LateOutcome.ATTACHED;
     }
@@ -2220,9 +2247,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 poseBytes());
     }
 
-    private boolean lateTarget(WorldStreamState.Lease lease) {
+    private boolean lateTarget(WorldStreamState.Lease lease, boolean replace) {
         var slot = slots[lease.slot()];
-        return lateTarget(lease, slot.ready, slot.lease, slot.objects != null, active);
+        return lateTarget(lease, slot.ready, slot.lease, slot.objects != null, active, replace);
     }
 
     /** The exact active generation in its ready slot, still without objects. */
@@ -2232,7 +2259,18 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             WorldStreamState.Lease slotLease,
             boolean hasObjects,
             List<WorldStreamState.Lease> active) {
-        return ready && lease.equals(slotLease) && !hasObjects && active.contains(lease);
+        return lateTarget(lease, ready, slotLease, hasObjects, active, false);
+    }
+
+    /** As above; a replacement needs the generation to hold the objects it replaces. */
+    static boolean lateTarget(
+            WorldStreamState.Lease lease,
+            boolean ready,
+            WorldStreamState.Lease slotLease,
+            boolean hasObjects,
+            List<WorldStreamState.Lease> active,
+            boolean replace) {
+        return ready && lease.equals(slotLease) && hasObjects == replace && active.contains(lease);
     }
 
     private void dropLate(int slot) {
@@ -3232,7 +3270,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 frameAnimated += drawn;
                 long millis =
                         WorldObjectAnimation.millis(
-                                animationClock, animation.animation.durationMillis(), phase);
+                                animationClock,
+                                animation.animation.durationMillis(),
+                                phase,
+                                WorldObjectAnimation.stepOffset(objects.stepSet, m, phase));
                 pose.used(animationFrame, millis);
                 if (pose.skinned() != millis) {
                     queueSkin(pose);
@@ -4065,6 +4106,12 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             }
         }
         return total;
+    }
+
+    /** GPU bytes all object sets, textures, the body and poses reserve now (measurement). */
+    long objectsReserved() {
+        requireOwner();
+        return reservedObjectBytes();
     }
 
     /** GPU bytes all resident sets' animation poses hold (#384). */

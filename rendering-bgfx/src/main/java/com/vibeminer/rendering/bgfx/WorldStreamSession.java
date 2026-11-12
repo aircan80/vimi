@@ -713,7 +713,9 @@ final class WorldStreamSession {
         if (!session.exteriorObjects()) {
             throw new IllegalStateException("Late objects outside the session profile");
         }
-        var admitted = state.objectsOffer(command.nonce(), command.transaction(), command.lease());
+        var admitted =
+                state.objectsOffer(
+                        command.nonce(), command.transaction(), command.lease(), command.replace());
         if (admitted == WorldStreamState.Result.CLOSED) {
             return;
         }
@@ -1015,7 +1017,7 @@ final class WorldStreamSession {
             return;
         }
         // The renderer takes the packed input; a generation it no longer holds is born dropped.
-        lateUpload = owner.beginLate(command.lease(), result.objects());
+        lateUpload = owner.beginLate(command.lease(), result.objects(), command.replace());
         lateStarted = WorldStageTimings.start();
     }
 

@@ -58,6 +58,7 @@ final class WorldStreamState {
     private final long[] transactions = new long[SLOTS];
     private final boolean[] objects = new boolean[SLOTS];
     private Lease objectsLease;
+    private boolean objectsReplace;
     private List<Lease> active = List.of();
     private Lease incoming;
     private Phase phase;
@@ -346,6 +347,14 @@ final class WorldStreamState {
      * the command is answered DROPPED without reading its file. BUSY is a credit violation.
      */
     Result objectsOffer(Nonce session, long tx, Lease lease) {
+        return objectsOffer(session, tx, lease, false);
+    }
+
+    /**
+     * As above; with {@code replace} the generation must already hold late objects, which the new
+     * set replaces once it attaches. A replacement may follow any number of earlier ones.
+     */
+    Result objectsOffer(Nonce session, long tx, Lease lease, boolean replace) {
         var result = session(session);
         if (result != Result.OK) {
             return result;
@@ -353,19 +362,23 @@ final class WorldStreamState {
         if (objectsLease != null) {
             return Result.BUSY;
         }
-        if (lease == null || !objectsTarget(tx, lease)) {
+        if (lease == null || !objectsTarget(tx, lease, replace)) {
             return Result.STALE;
         }
         objectsLease = lease;
+        objectsReplace = replace;
         return Result.OK;
     }
 
-    /** Whether the in-flight objects may still attach: its generation is active and empty. */
+    /**
+     * Whether the in-flight objects may still attach: its generation is active and empty, or for a
+     * replacement still holds the set it replaces.
+     */
     boolean objectsLive(Lease lease) {
         return !stopping
                 && Objects.equals(objectsLease, lease)
                 && active.contains(lease)
-                && !objects[lease.slot()];
+                && objects[lease.slot()] == objectsReplace;
     }
 
     /**
@@ -376,10 +389,11 @@ final class WorldStreamState {
         if (lease == null || !Objects.equals(objectsLease, lease)) {
             return Result.BAD_LEASE;
         }
-        if (attached && (!active.contains(lease) || objects[lease.slot()])) {
+        if (attached && (!active.contains(lease) || objects[lease.slot()] != objectsReplace)) {
             return Result.INVALID_TABLE;
         }
         objectsLease = null;
+        objectsReplace = false;
         if (attached) {
             objects[lease.slot()] = true;
         }
@@ -395,13 +409,13 @@ final class WorldStreamState {
         return lease != null && active.contains(lease) ? coordinates[lease.slot()] : -1;
     }
 
-    private boolean objectsTarget(long tx, Lease lease) {
+    private boolean objectsTarget(long tx, Lease lease, boolean replace) {
         int slot = lease.slot();
         return tx > 0
                 && transactions[slot] == tx
                 && generations[slot] == lease.generation()
                 && active.contains(lease)
-                && !objects[slot];
+                && objects[slot] == replace;
     }
 
     void close() {
