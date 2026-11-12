@@ -122,6 +122,7 @@ public final class M2IdleAnimation {
         private final long[] globalSequenceMillis;
         private final List<BoneTracks> bones;
         private final int keys;
+        private final float moveSpeed;
 
         private Idle(
                 M2Types.Model model,
@@ -130,8 +131,10 @@ public final class M2IdleAnimation {
                 long durationMillis,
                 long[] globalSequenceMillis,
                 List<BoneTracks> bones,
-                int keys) {
+                int keys,
+                float moveSpeed) {
             this.model = model;
+            this.moveSpeed = moveSpeed;
             this.rig = List.copyOf(rig);
             this.sequenceIndex = sequenceIndex;
             this.durationMillis = durationMillis;
@@ -174,6 +177,14 @@ public final class M2IdleAnimation {
             return keys;
         }
 
+        /**
+         * The sequence's recorded travel speed (M2Sequence movespeed, byte 8), yards per second at
+         * its own clock; 0 when it records none or an unusable value.
+         */
+        public float moveSpeed() {
+            return moveSpeed;
+        }
+
         public boolean animated() {
             return bones.stream().anyMatch(BoneTracks::animated);
         }
@@ -201,7 +212,12 @@ public final class M2IdleAnimation {
     }
 
     /** AnimationData IDs a walking or swimming body plays (wowdev M2/AnimationList). */
-    public static final int WALK = 4, RUN = 5, SWIM_IDLE = 41, SWIM = 42, FLY = 135;
+    public static final int WALK = 4,
+            RUN = 5,
+            WALK_BACKWARDS = 13,
+            SWIM_IDLE = 41,
+            SWIM = 42,
+            FLY = 135;
 
     /**
      * As {@link #readBaseRig}, for any sequence stored in the model: the first variation of
@@ -558,7 +574,11 @@ public final class M2IdleAnimation {
                                     budget)));
         }
         input.finish();
-        return new Idle(model, rig, sequence, duration, globalMillis, result, budget[0]);
+        float moveSpeed = Float.intBitsToFloat(i32(sequenceRows.get(stand), 8));
+        if (!(moveSpeed > 0 && moveSpeed <= 1000)) {
+            moveSpeed = 0;
+        }
+        return new Idle(model, rig, sequence, duration, globalMillis, result, budget[0], moveSpeed);
     }
 
     /**

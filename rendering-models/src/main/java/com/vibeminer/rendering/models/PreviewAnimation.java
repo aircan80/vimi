@@ -28,6 +28,12 @@ public final class PreviewAnimation {
     public static final int MAX_KEYS = 262_144;
     public static final long MAX_DURATION_MILLIS = 600_000;
 
+    /** The highest recorded sequence move speed accepted, yards per second. */
+    public static final float MAX_MOVE_SPEED = 1000;
+
+    /** First field of {@link #write}'s stream: "VPA" and the format version. */
+    static final int STREAM_MAGIC = 0x56504101;
+
     /**
      * Global clocks loop independently of the played sequence and are sampled modulo their own
      * length, so they are bounded only by the {@code int} key-time range. Character faces, for
@@ -268,6 +274,7 @@ public final class PreviewAnimation {
     public record Pose(PreviewMesh mesh, float[] normals, List<MeshAppearance.Vec3> pivots) {}
 
     private final String label;
+    private final float moveSpeed;
     private final long durationMillis;
     private final long[] globalMillis;
     private final List<Bone> bones;
@@ -303,7 +310,37 @@ public final class PreviewAnimation {
             float[] restNormals,
             int[] influenceBones,
             int[] influenceWeights) {
+        this(
+                label,
+                durationMillis,
+                globalSequenceMillis,
+                bones,
+                restMesh,
+                restNormals,
+                influenceBones,
+                influenceWeights,
+                0);
+    }
+
+    /**
+     * @param moveSpeed the sequence's recorded travel speed (M2Sequence movespeed, yards per second
+     *     at its own clock), 0 when it records none; 0 to {@link #MAX_MOVE_SPEED}
+     */
+    public PreviewAnimation(
+            String label,
+            long durationMillis,
+            long[] globalSequenceMillis,
+            List<Bone> bones,
+            PreviewMesh restMesh,
+            float[] restNormals,
+            int[] influenceBones,
+            int[] influenceWeights,
+            float moveSpeed) {
         this.label = Objects.requireNonNull(label);
+        if (!(moveSpeed >= 0 && moveSpeed <= MAX_MOVE_SPEED)) {
+            throw new IllegalArgumentException("Invalid sequence move speed");
+        }
+        this.moveSpeed = moveSpeed;
         if (label.isBlank() || label.length() > 64) {
             throw new IllegalArgumentException("Invalid animation label");
         }
@@ -415,8 +452,7 @@ public final class PreviewAnimation {
             frameMax[axis] = restMesh.maximum(axis);
         }
         float[] scratch = new float[rest.length];
-        double[] matrices = new double[this.bones.size() * 12];
-        double[] scales = new double[this.bones.size() * 3];
+        var working = new Scratch(this.bones.size());
         // A view-dependent pose is framed over views around the model as well.
         List<View> views = new ArrayList<>();
         views.add(null);
@@ -432,8 +468,8 @@ public final class PreviewAnimation {
         for (var view : views) {
             for (int sample = 0; sample < samples; sample++) {
                 long time = durationMillis * sample / samples;
-                matrices(time, view, matrices, scales);
-                skin(matrices, scales, scratch, null);
+                matrices(time, view, working);
+                skin(working.matrices, working.scales, scratch, null);
                 for (int i = 0; i < scratch.length; i++) {
                     frameMin[i % 3] = Math.min(frameMin[i % 3], scratch[i]);
                     frameMax[i % 3] = Math.max(frameMax[i % 3], scratch[i]);
@@ -483,6 +519,15 @@ public final class PreviewAnimation {
         return durationMillis;
     }
 
+    /**
+     * The sequence's recorded travel speed in yards per second at its own clock (M2Sequence
+     * movespeed), or 0 when it records none: a body moving at speed v plays it v / moveSpeed times
+     * as fast, so the feet keep pace with the ground.
+     */
+    public float moveSpeed() {
+        return moveSpeed;
+    }
+
     public int boneCount() {
         return bones.size();
     }
@@ -519,7 +564,15 @@ public final class PreviewAnimation {
             weightsOut[at] = 255;
         }
         return new PreviewAnimation(
-                label, durationMillis, globalMillis, bones, mesh, normals, bonesOut, weightsOut);
+                label,
+                durationMillis,
+                globalMillis,
+                bones,
+                mesh,
+                normals,
+                bonesOut,
+                weightsOut,
+                moveSpeed);
     }
 
     /** True only for the exact rest surface these influences were prepared for. */
@@ -543,21 +596,61 @@ public final class PreviewAnimation {
 
     /**
      * Poses the rest vertices at {@code millis} into caller arrays (three floats per vertex;
-     * normals may be null), without building a mesh: for a renderer that re-skins every frame. Not
-     * for a {@link #viewDependent()} animation.
+     * normals may be null), without building a mesh. Not for a {@link #viewDependent()} animation.
+     * Allocates its working arrays on each call; a renderer that re-skins every frame holds a
+     * {@link #skinner()} instead.
      */
     public void skin(long millis, float[] positions, float[] normals) {
+        skinner().skin(millis, positions, normals);
+    }
+
+    /**
+     * Working arrays for re-skinning this animation every frame without allocating. Each skinner
+     * belongs to one thread; the animation itself stays immutable and shareable.
+     */
+    public Skinner skinner() {
         if (viewDependent) {
             throw new IllegalArgumentException("A camera-facing pose needs a camera view");
         }
-        if (positions.length != rest.length
-                || normals != null && normals.length != restNormals.length) {
-            throw new IllegalArgumentException("Skin arrays differ from the rest surface");
+        return new Skinner();
+    }
+
+    /** One thread's reusable working arrays for {@link #skin}; see {@link #skinner()}. */
+    public final class Skinner {
+        private final Scratch scratch = new Scratch(bones.size());
+
+        private Skinner() {}
+
+        /**
+         * Poses the rest vertices at {@code millis} into caller arrays (three floats per vertex;
+         * normals may be null or empty). Allocates nothing.
+         */
+        public void skin(long millis, float[] positions, float[] normals) {
+            if (positions.length != rest.length
+                    || normals != null
+                            && normals.length != 0
+                            && normals.length != restNormals.length) {
+                throw new IllegalArgumentException("Skin arrays differ from the rest surface");
+            }
+            matrices(Math.max(0, millis), null, scratch);
+            PreviewAnimation.this.skin(
+                    scratch.matrices,
+                    scratch.scales,
+                    positions,
+                    normals == null || normals.length == 0 ? null : normals);
         }
-        double[] matrices = new double[bones.size() * 12];
-        double[] scales = new double[bones.size() * 3];
-        matrices(Math.max(0, millis), null, matrices, scales);
-        skin(matrices, scales, positions, normals == null || normals.length == 0 ? null : normals);
+    }
+
+    /** Working arrays of one evaluation: bone matrices and billboard scales plus temporaries. */
+    private static final class Scratch {
+        final double[] matrices, scales;
+        final double[] t = new double[4], r = new double[4], s = new double[4];
+        final double[] local = new double[12], rotation = new double[9], product = new double[12];
+
+        Scratch(int bones) {
+            matrices = new double[bones * 12];
+            scales = new double[bones * 3];
+        }
     }
 
     /**
@@ -566,7 +659,9 @@ public final class PreviewAnimation {
      * {@link #withRigidVertices} are not written.
      */
     public void write(java.io.DataOutputStream out) throws java.io.IOException {
+        out.writeInt(STREAM_MAGIC);
         out.writeUTF(label);
+        out.writeFloat(moveSpeed);
         out.writeLong(durationMillis);
         out.writeInt(globalMillis.length);
         for (long g : globalMillis) {
@@ -610,9 +705,27 @@ public final class PreviewAnimation {
         }
     }
 
-    /** Reads an animation {@link #write} wrote; the constructor's checks apply again. */
+    /**
+     * Reads an animation {@link #write} wrote; the constructor's checks apply again. Another format
+     * version, a record outside its bounds (more than {@link #MAX_KEYS} keys in all, say) or a
+     * truncated stream is refused with an {@link java.io.IOException}.
+     */
     public static PreviewAnimation read(java.io.DataInputStream in) throws java.io.IOException {
+        try {
+            return readChecked(in);
+        } catch (IllegalArgumentException | IndexOutOfBoundsException invalid) {
+            throw new java.io.IOException("Invalid animation stream", invalid);
+        }
+    }
+
+    private static PreviewAnimation readChecked(java.io.DataInputStream in)
+            throws java.io.IOException {
+        if (in.readInt() != STREAM_MAGIC) {
+            throw new java.io.IOException("Not an animation stream of this format version");
+        }
         String label = in.readUTF();
+        float moveSpeed = in.readFloat();
+        long totalKeys = 0;
         long duration = in.readLong();
         int globals = bounded(in.readInt(), 1024);
         long[] globalMillis = new long[globals];
@@ -633,6 +746,10 @@ public final class PreviewAnimation {
                 int global = in.readInt();
                 int components = in.readByte();
                 int keys = bounded(in.readInt(), MAX_KEYS);
+                totalKeys += keys;
+                if (totalKeys > MAX_KEYS) {
+                    throw new IllegalArgumentException("Animation exceeds key bounds");
+                }
                 int[] times = new int[keys];
                 for (int i = 0; i < keys; i++) {
                     times[i] = in.readInt();
@@ -675,7 +792,8 @@ public final class PreviewAnimation {
                 mesh,
                 normals,
                 influenceBones,
-                influenceWeights);
+                influenceWeights,
+                moveSpeed);
     }
 
     private static int bounded(int value, int maximum) {
@@ -701,9 +819,9 @@ public final class PreviewAnimation {
         if (viewDependent && view == null) {
             throw new IllegalArgumentException("A camera-facing pose needs a camera view");
         }
-        double[] matrices = new double[bones.size() * 12];
-        double[] scales = new double[bones.size() * 3];
-        matrices(Math.max(0, millis), view, matrices, scales);
+        var scratch = new Scratch(bones.size());
+        double[] matrices = scratch.matrices, scales = scratch.scales;
+        matrices(Math.max(0, millis), view, scratch);
         float[] positions = new float[rest.length];
         float[] normals = restNormals.length == 0 ? new float[0] : new float[restNormals.length];
         skin(matrices, scales, positions, normals.length == 0 ? null : normals);
@@ -765,10 +883,10 @@ public final class PreviewAnimation {
      * Bone matrices at {@code millis}; for a billboard bone, {@code scales} receives its own scale,
      * which sizes its card instead of entering its matrix.
      */
-    private void matrices(long millis, View view, double[] out, double[] scales) {
+    private void matrices(long millis, View view, Scratch scratch) {
         long sequence = millis % durationMillis;
-        double[] t = new double[4], r = new double[4], s = new double[4], local = new double[12];
-        double[] none = {0, 0, 0, 1}, unit = {1, 1, 1, 1};
+        double[] out = scratch.matrices, scales = scratch.scales;
+        double[] t = scratch.t, r = scratch.r, s = scratch.s, local = scratch.local;
         for (int b : idle) {
             Arrays.fill(out, b * 12, b * 12 + 12, 0);
             out[b * 12] = out[b * 12 + 5] = out[b * 12 + 10] = 1;
@@ -787,17 +905,17 @@ public final class PreviewAnimation {
                 scales[b * 3] = s[0];
                 scales[b * 3 + 1] = s[1];
                 scales[b * 3 + 2] = s[2];
-                compose(bone, t, none, unit, local);
+                compose(bone, t, NO_ROTATION, UNIT_SCALE, local, scratch.rotation);
             } else {
                 sample(bone.translation(), sequence, millis, t, 0);
                 sample(bone.rotation(), sequence, millis, r, 1);
                 sample(bone.scale(), sequence, millis, s, 2);
-                compose(bone, t, r, s, local);
+                compose(bone, t, r, s, local, scratch.rotation);
             }
             if (bone.parent() < 0) {
                 System.arraycopy(local, 0, out, b * 12, 12);
             } else {
-                multiply(out, bone.parent() * 12, local, out, b * 12);
+                multiply(out, bone.parent() * 12, local, out, b * 12, scratch.product);
             }
         }
     }
@@ -899,33 +1017,39 @@ public final class PreviewAnimation {
         track.sample(time, out);
     }
 
-    private static void compose(Bone bone, double[] t, double[] q, double[] s, double[] m) {
+    private static final double[] NO_ROTATION = {0, 0, 0, 1}, UNIT_SCALE = {1, 1, 1, 1};
+
+    /** {@code r}: nine doubles of scratch for the rotation. */
+    private static void compose(
+            Bone bone, double[] t, double[] q, double[] s, double[] m, double[] r) {
         double x = q[0], y = q[1], z = q[2], w = q[3];
-        double[] r = {
-            1 - 2 * (y * y + z * z),
-            2 * (x * y - z * w),
-            2 * (x * z + y * w),
-            2 * (x * y + z * w),
-            1 - 2 * (x * x + z * z),
-            2 * (y * z - x * w),
-            2 * (x * z - y * w),
-            2 * (y * z + x * w),
-            1 - 2 * (x * x + y * y)
-        };
-        double[] p = {bone.pivotX(), bone.pivotY(), bone.pivotZ()};
+        r[0] = 1 - 2 * (y * y + z * z);
+        r[1] = 2 * (x * y - z * w);
+        r[2] = 2 * (x * z + y * w);
+        r[3] = 2 * (x * y + z * w);
+        r[4] = 1 - 2 * (x * x + z * z);
+        r[5] = 2 * (y * z - x * w);
+        r[6] = 2 * (x * z - y * w);
+        r[7] = 2 * (y * z + x * w);
+        r[8] = 1 - 2 * (x * x + y * y);
         for (int row = 0; row < 3; row++) {
-            double offset = p[row] + t[row];
+            double offset = pivot(bone, row) + t[row];
             for (int col = 0; col < 3; col++) {
                 double value = r[row * 3 + col] * s[col];
                 m[row * 4 + col] = value;
-                offset -= value * p[col];
+                offset -= value * pivot(bone, col);
             }
             m[row * 4 + 3] = offset;
         }
     }
 
-    private static void multiply(double[] a, int ao, double[] b, double[] out, int oo) {
-        double[] result = new double[12];
+    private static double pivot(Bone bone, int axis) {
+        return axis == 0 ? bone.pivotX() : axis == 1 ? bone.pivotY() : bone.pivotZ();
+    }
+
+    /** {@code result}: twelve doubles of scratch. */
+    private static void multiply(
+            double[] a, int ao, double[] b, double[] out, int oo, double[] result) {
         for (int row = 0; row < 3; row++) {
             for (int col = 0; col < 4; col++) {
                 double value =
@@ -956,13 +1080,17 @@ public final class PreviewAnimation {
             int billboard = rigidBillboard[v];
             if (billboard >= 0) {
                 var bone = bones.get(billboard);
-                double[] pivot =
-                        transform(m, billboard, bone.pivotX(), bone.pivotY(), bone.pivotZ());
-                positions[v * 3] = (float) (pivot[0] + scales[billboard * 3] * (x - bone.pivotX()));
-                positions[v * 3 + 1] =
-                        (float) (pivot[1] + scales[billboard * 3 + 1] * (y - bone.pivotY()));
-                positions[v * 3 + 2] =
-                        (float) (pivot[2] + scales[billboard * 3 + 2] * (z - bone.pivotZ()));
+                double bx = bone.pivotX(), by = bone.pivotY(), bz = bone.pivotZ();
+                int o = billboard * 12;
+                for (int row = 0; row < 3; row++) {
+                    double pivot =
+                            m[o + row * 4] * bx
+                                    + m[o + row * 4 + 1] * by
+                                    + m[o + row * 4 + 2] * bz
+                                    + m[o + row * 4 + 3];
+                    double offset = row == 0 ? x - bx : row == 1 ? y - by : z - bz;
+                    positions[v * 3 + row] = (float) (pivot + scales[billboard * 3 + row] * offset);
+                }
                 if (normals != null) {
                     System.arraycopy(restNormals, v * 3, normals, v * 3, 3);
                 }

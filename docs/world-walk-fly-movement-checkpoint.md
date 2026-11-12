@@ -169,18 +169,27 @@ claimed for the flagged values.
 The drawn body is not in the World yet; its data is:
 
 - `M2IdleAnimation.readSequence` reads any sequence stored in the model (Stand
-  0, Walk 4, Run 5, SwimIdle 41, Swim 42, Fly 135) under the same checks as
-  Stand; `BuildDisplayModels.worldSequences` admits several under the World
-  profile from one parse. Display 441 (murloc, model 31) has Stand, Walk, Run,
+  0, Walk 4, Run 5, WalkBackwards 13, SwimIdle 41, Swim 42, Fly 135) under the
+  same checks as Stand, with its recorded move speed (M2Sequence movespeed);
+  `BuildDisplayModels.worldSequences` admits several under the World profile
+  from one parse. Display 441 (murloc, model 31) has Stand, Walk, Run,
   SwimIdle and Swim, all in the model; it has no jump or fall sequence.
-- `PreviewAnimation.write`/`read` carry an animation to another process, and
-  `skin` poses it into caller arrays every frame.
+- `PreviewAnimation.write`/`read` carry an animation to another process (a
+  versioned stream; another version, a truncated stream or more keys than the
+  bounds is refused), and a `Skinner` poses it into caller arrays every frame
+  without allocating.
 - `BodyAnimation.choose` picks the sequence from the body's mode, status and
-  speed (walk at or below 3.5 yd/s, run above, swim in deep water), falling back
-  to what the model has. `BodyAnimation.capsule` sizes the body from the
-  model's GeoBox times the display scale (murloc: radius 0.51, height 1.29 yd),
-  because CreatureModelData's collision size is the same default for every
-  model probed.
+  direction: backpedalling plays WalkBackwards (else Walk, else Run), moving
+  forward runs (walks at walk speed), deep water swims; it falls back to what
+  the model has. `BodyAnimation.rate` runs a sequence's clock at the body's
+  speed over the sequence's move speed, so the feet keep pace with the ground.
+- `BodyAnimation.capsule` sizes the body from the model's GeoBox times
+  CreatureDisplayInfo.CreatureModelScale times CreatureModelData.ModelScale
+  (`BuildDisplayModels.bodySize`; murloc: radius 0.51, height 1.29 yd), because
+  CreatureModelData's collision size is the same default for every model probed.
+- Walking collision forgets the sources it refused for a missing or wrong key
+  (or protected sections) when the build's key set changes
+  (`BuildFiles.keyRevision`), and reads them again.
 - The measurement probe's `body` mode renders each sequence of a display at four
   times on the CPU.
 

@@ -158,17 +158,27 @@ class WorldTileCollisionTest {
         final Map<Long, Integer> reads = new HashMap<>();
         final Set<Long> unreadable = new java.util.HashSet<>();
         final Set<Long> absent = new java.util.HashSet<>();
+        final Set<Long> keyed = new java.util.HashSet<>();
+        long keyRevision;
 
         @Override
         public byte[] read(long id, Cancellation token) {
             reads.merge(id, 1, Integer::sum);
             if (absent.contains(id)) {
-                throw new WorldTileCollision.Absent("not in the build");
+                throw new WorldTileCollision.Absent("not in the build", false);
+            }
+            if (keyed.contains(id)) {
+                throw new WorldTileCollision.Absent("wrong key", true);
             }
             if (unreadable.contains(id) || !bytes.containsKey(id)) {
                 throw new WorldTileCollision.Unreadable("not local", null);
             }
             return bytes.get(id);
+        }
+
+        @Override
+        public long keyRevision() {
+            return keyRevision;
         }
     }
 
@@ -330,5 +340,23 @@ class WorldTileCollisionTest {
         assertEquals(1, first.skipped().get("building group absent"));
         reader.prepare(TILE, Cancellation.NONE);
         assertEquals(1, f.reads.get(GROUP), "never read again");
+    }
+
+    @Test
+    void sourcesRefusedForTheirKeysAreReadAgainWhenTheKeysChange() {
+        var f = files(obj0(List.of(modf(ROOT, 7, 0x8, 0, 0, 0, 0, 0, 1024)), List.of()));
+        f.keyed.add(GROUP);
+        var reader = new WorldTileCollision(f, 1 << 20);
+        reader.prepare(TILE, Cancellation.NONE);
+        reader.prepare(TILE, Cancellation.NONE);
+        assertEquals(1, f.reads.get(GROUP), "remembered while the keys stay");
+        f.keyed.clear();
+        f.keyRevision++;
+        var after = reader.prepare(TILE, Cancellation.NONE);
+        assertEquals(2, f.reads.get(GROUP), "read again under the new keys");
+        assertTrue(
+                after.skipped().get("building group absent") == null, after.skipped().toString());
+        reader.prepare(TILE, Cancellation.NONE);
+        assertEquals(2, f.reads.get(GROUP), "and then kept");
     }
 }

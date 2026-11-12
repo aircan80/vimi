@@ -198,6 +198,46 @@ public final class DisplayModelService implements BuildDisplayModels {
     }
 
     @Override
+    public CompletableFuture<DisplayModelTypes.BodySize> bodySize(
+            long displayId, Cancellation token) {
+        checkDisplay(displayId);
+        return submit(token, request -> readBodySize(displayId, request));
+    }
+
+    private DisplayModelTypes.BodySize readBodySize(long id, Cancellation token) {
+        var issues = new ArrayList<String>();
+        try {
+            var displays = tables.schema("CreatureDisplayInfo", token, issues);
+            displays.reference("ModelID", "CreatureModelData");
+            var display = tables.get(displays, id, token, issues);
+            if (display == null) {
+                return null;
+            }
+            long modelId = displays.number(display, "ModelID");
+            if (modelId <= 0 || modelId > 0xffffffffL) {
+                return null;
+            }
+            var models = tables.schema("CreatureModelData", token, issues);
+            var model = tables.get(models, modelId, token, issues);
+            if (model == null) {
+                return null;
+            }
+            double[] box = new double[6];
+            for (int i = 0; i < 6; i++) {
+                box[i] = models.decimal(model, "GeoBox", i, 6);
+            }
+            return new DisplayModelTypes.BodySize(
+                    box,
+                    models.decimal(model, "ModelScale", 0, 1),
+                    displays.decimal(display, "CreatureModelScale", 0, 1));
+        } catch (java.util.concurrent.CompletionException | IllegalStateException failed) {
+            throw tableFailure(failed);
+        } catch (java.util.NoSuchElementException unreviewed) {
+            throw new IllegalArgumentException("Unreviewed display table shape", unreviewed);
+        }
+    }
+
+    @Override
     public CompletableFuture<java.util.Map<Integer, DisplayModelTypes.Idle>> worldSequences(
             long displayId, int[] animationIds, Cancellation token) {
         checkDisplay(displayId);

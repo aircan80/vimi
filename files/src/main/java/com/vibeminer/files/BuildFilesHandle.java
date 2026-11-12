@@ -156,6 +156,11 @@ final class BuildFilesHandle implements BuildFiles {
     }
 
     @Override
+    public long keyRevision() {
+        return options.keys().revision();
+    }
+
+    @Override
     public CompletableFuture<Boolean> exists(FileRef file, Cancellation token) {
         Build built = opened();
         return Io.async(

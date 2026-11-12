@@ -113,6 +113,37 @@ public final class TableProjection {
             return numberValue(row, field + "[" + ordinal + "]");
         }
 
+        /**
+         * Element {@code ordinal} of a float column of {@code length} elements (1 for a plain
+         * column), as a finite double.
+         */
+        public double decimal(Db2Types.Row row, String field, int ordinal, int length) {
+            var fields = schema.columns().stream().filter(c -> c.name().equals(field)).toList();
+            if (fields.size() != 1
+                    || !fields.getFirst().verifiedName()
+                    || fields.getFirst().kind() != TableSchema.ColumnKind.FLOAT
+                    || fields.getFirst().arrayLength() != length
+                    || ordinal < 0
+                    || ordinal >= length) {
+                throw new IllegalArgumentException("Unsupported " + name + "." + field);
+            }
+            String physical = length == 1 ? field : field + "[" + ordinal + "]";
+            if (!columns.get(index(physical)).kind().equals("float")) {
+                throw new IllegalArgumentException(
+                        "Unverified physical column " + name + "." + field);
+            }
+            double value;
+            try {
+                value = Double.parseDouble(value(row, physical));
+            } catch (NumberFormatException invalid) {
+                throw new IllegalArgumentException("Invalid float " + name + "." + field);
+            }
+            if (!Double.isFinite(value)) {
+                throw new IllegalArgumentException("Invalid float " + name + "." + field);
+            }
+            return value;
+        }
+
         private long numberValue(Db2Types.Row row, String field) {
             String raw = value(row, field);
             long n = Long.parseLong(raw);

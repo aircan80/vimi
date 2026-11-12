@@ -509,15 +509,20 @@ public final class WorldMeasurementProbe {
      */
     private static void body(WorldMeasurementOpen opened) throws Exception {
         long display = Long.getLong("probe.display", 441);
-        int[] ids = {0, 4, 5, 41, 42, 135};
+        int[] ids = {0, 4, 5, 13, 41, 42, 135};
         try (var displays = opened.displays()) {
             var preview = displays.worldPreview(display, Cancellation.NONE).get(2, TimeUnit.MINUTES);
             say("PROBE body display " + display + ": preview " + preview.state() + " " + preview.message());
+            var size = displays.bodySize(display, Cancellation.NONE).get(2, TimeUnit.MINUTES);
+            say("PROBE body size " + (size == null ? "unknown" : java.util.Arrays.toString(size.geoBox())
+                    + " model scale " + size.modelScale() + " display scale " + size.creatureModelScale()
+                    + " capsule " + com.vibeminer.rendering.world.BodyAnimation.capsule(size.geoBox(), size.scale())));
             var sequences = displays.worldSequences(display, ids, Cancellation.NONE).get(2, TimeUnit.MINUTES);
             var out = Path.of(System.getProperty("probe.out"));
             for (var entry : sequences.entrySet()) {
                 var idle = entry.getValue();
-                say("PROBE body sequence " + entry.getKey() + ": " + idle.state() + " · " + idle.message());
+                say("PROBE body sequence " + entry.getKey() + ": " + idle.state() + " · " + idle.message()
+                        + (idle.animation() == null ? "" : " · move speed " + idle.animation().moveSpeed()));
                 if (idle.animation() == null || preview.appearance() == null) continue;
                 var animation = idle.animation();
                 for (int k = 0; k < 4; k++) {

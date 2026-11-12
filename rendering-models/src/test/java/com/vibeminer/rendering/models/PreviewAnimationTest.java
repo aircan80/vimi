@@ -815,5 +815,138 @@ class PreviewAnimationTest {
             assertArrayEquals(expected.normals(), normals, 1e-6f, "normals at " + t);
         }
         assertThrows(IllegalArgumentException.class, () -> copy.skin(0, new float[3], null));
+        assertEquals(1.5f, withSpeed().moveSpeed());
+    }
+
+    private static PreviewAnimation withSpeed() throws java.io.IOException {
+        var copy =
+                new PreviewAnimation(
+                        "Run",
+                        1000,
+                        new long[0],
+                        List.of(walkBone()),
+                        mesh(1, 0, 0),
+                        new float[0],
+                        new int[] {0, 0, 0, 0},
+                        new int[] {255, 0, 0, 0},
+                        1.5f);
+        return PreviewAnimation.read(stream(bytes(copy)));
+    }
+
+    private static Bone walkBone() {
+        return new Bone(
+                -1,
+                0,
+                0,
+                0,
+                new Track(
+                        Interpolation.LINEAR,
+                        -1,
+                        3,
+                        new int[] {0, 500},
+                        new float[] {0, 0, 0, 1, 0, 0}),
+                null,
+                null,
+                false);
+    }
+
+    private static byte[] bytes(PreviewAnimation animation) throws java.io.IOException {
+        var out = new java.io.ByteArrayOutputStream();
+        animation.write(new java.io.DataOutputStream(out));
+        return out.toByteArray();
+    }
+
+    private static java.io.DataInputStream stream(byte[] bytes) {
+        return new java.io.DataInputStream(new java.io.ByteArrayInputStream(bytes));
+    }
+
+    @Test
+    void readRefusesAnotherVersionATruncatedStreamAndTooManyKeys() throws Exception {
+        var animation =
+                new PreviewAnimation(
+                        "Walk",
+                        1000,
+                        new long[0],
+                        List.of(walkBone()),
+                        mesh(1, 0, 0),
+                        new float[0],
+                        new int[] {0, 0, 0, 0},
+                        new int[] {255, 0, 0, 0});
+        byte[] good = bytes(animation);
+        assertEquals("Walk", PreviewAnimation.read(stream(good)).label());
+        byte[] version = good.clone();
+        version[3] ^= 0x7f;
+        assertThrows(java.io.IOException.class, () -> PreviewAnimation.read(stream(version)));
+        for (int cut : new int[] {2, 10, good.length / 2, good.length - 1}) {
+            byte[] truncated = java.util.Arrays.copyOf(good, cut);
+            assertThrows(java.io.IOException.class, () -> PreviewAnimation.read(stream(truncated)));
+        }
+        // Two tracks of MAX_KEYS keys each: refused from the running total before reading them.
+        var out = new java.io.ByteArrayOutputStream();
+        var data = new java.io.DataOutputStream(out);
+        data.writeInt(PreviewAnimation.STREAM_MAGIC);
+        data.writeUTF("Huge");
+        data.writeFloat(0);
+        data.writeLong(1000);
+        data.writeInt(0);
+        data.writeInt(1);
+        data.writeInt(-1);
+        data.writeFloat(0);
+        data.writeFloat(0);
+        data.writeFloat(0);
+        for (int k = 0; k < 2; k++) {
+            data.writeBoolean(true);
+            data.writeByte(1);
+            data.writeInt(-1);
+            data.writeByte(3);
+            data.writeInt(PreviewAnimation.MAX_KEYS);
+            if (k == 0) {
+                for (int i = 0; i < PreviewAnimation.MAX_KEYS; i++) {
+                    data.writeInt(i);
+                }
+                for (int i = 0; i < PreviewAnimation.MAX_KEYS * 3; i++) {
+                    data.writeFloat(0);
+                }
+            }
+        }
+        var refused =
+                assertThrows(
+                        java.io.IOException.class,
+                        () -> PreviewAnimation.read(stream(out.toByteArray())));
+        assertTrue(String.valueOf(refused.getCause()).contains("key bounds"), refused.toString());
+    }
+
+    @Test
+    void aSkinnerReskinsWithoutAllocating() {
+        var animation =
+                new PreviewAnimation(
+                        "Walk",
+                        1000,
+                        new long[0],
+                        List.of(walkBone()),
+                        mesh(1, 0, 0, 0, 1, 0, 0, 0, 1),
+                        new float[] {0, 0, 1, 0, 0, 1, 0, 0, 1},
+                        new int[] {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+                        new int[] {255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0});
+        var skinner = animation.skinner();
+        float[] positions = new float[9], normals = new float[9];
+        var threads =
+                (com.sun.management.ThreadMXBean)
+                        java.lang.management.ManagementFactory.getThreadMXBean();
+        long id = Thread.currentThread().threadId();
+        // Warm up so the JIT has compiled the loop before counting.
+        for (int i = 0; i < 20_000; i++) {
+            skinner.skin(i, positions, normals);
+        }
+        long before = threads.getThreadAllocatedBytes(id);
+        for (int i = 0; i < 1_000; i++) {
+            skinner.skin(i, positions, normals);
+        }
+        long allocated = threads.getThreadAllocatedBytes(id) - before;
+        assertTrue(
+                allocated < 1_000, "skinning allocated " + allocated + " bytes over 1000 frames");
+        var expected = animation.pose(mesh(1, 0, 0, 0, 1, 0, 0, 0, 1), 250);
+        skinner.skin(250, positions, normals);
+        assertArrayEquals(expected.mesh().positions(), positions, 1e-6f);
     }
 }

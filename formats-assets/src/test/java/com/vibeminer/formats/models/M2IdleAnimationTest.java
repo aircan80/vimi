@@ -1048,7 +1048,7 @@ class M2IdleAnimationTest {
     @ParameterizedTest
     @ValueSource(ints = {272, 274})
     void anySequenceStoredInTheModelCanBeRead(int version) {
-        byte[] bytes = authored(version, a -> {});
+        byte[] bytes = authored(version, a -> a.buffer.putFloat(a.sequence(0) + 8, 2.5f));
         var model = M2ModelReader.read(AssetSource.bytes(bytes)).join();
         var walk =
                 M2IdleAnimation.readSequence(
@@ -1059,6 +1059,7 @@ class M2IdleAnimationTest {
                         .join();
         assertEquals(0, walk.sequenceIndex(), "the authored Walk is sequence 0");
         assertEquals(800, walk.durationMillis());
+        assertEquals(2.5f, walk.moveSpeed(), "Walk's recorded movespeed");
         var stand =
                 M2IdleAnimation.readSequence(
                                 AssetSource.bytes(bytes),
@@ -1067,6 +1068,7 @@ class M2IdleAnimationTest {
                                 Cancellation.NONE)
                         .join();
         assertEquals(read(bytes).sequenceIndex(), stand.sequenceIndex(), "Stand reads as before");
+        assertEquals(0, stand.moveSpeed(), "Stand records no travel speed");
         M2ReadersTest.failure(
                 "MODEL_UNSUPPORTED",
                 () ->

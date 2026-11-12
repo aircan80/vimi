@@ -67,6 +67,15 @@ public interface BuildDisplayModels extends AutoCloseable {
         return CompletableFuture.completedFuture(out);
     }
 
+    /**
+     * The display's recorded body size (model box and both scales), for a body's capsule; null when
+     * the display or its model is not in the tables. Implementations without tables answer null.
+     */
+    default CompletableFuture<DisplayModelTypes.BodySize> bodySize(
+            long displayId, Cancellation token) {
+        return CompletableFuture.completedFuture(null);
+    }
+
     CompletableFuture<Void> closeAsync();
 
     @Override
