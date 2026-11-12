@@ -7,3 +7,6 @@ rendering-bgfx/src/test/resources/com/vibeminer/rendering/bgfx/shaders/global-ca
 
 # Preserve the separately pinned upstream definition bytes on every checkout.
 formats-tables/src/main/resources/com/vibeminer/formats/definitions/supplemental/SpellDuration.dbd -text
+
+# The bundled EG Link NPC history is checked against the SHA-256 its NOTICE.md records.
+eg-link/src/main/resources/com/vibeminer/eglink/history/* -text

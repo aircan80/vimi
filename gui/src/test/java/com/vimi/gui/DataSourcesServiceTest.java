@@ -34,6 +34,14 @@ public final class DataSourcesServiceTest {
                             && bundled.contains("CC BY-SA 4.0")
                             && bundled.contains("https://github.com/wowdev/WoWDBDefs/tree/b9a63096"),
                     "Settings attributes the bundled definitions with revision, license and source");
+            var history = String.join("\n", SettingsView.bundledNpcHistoryLines());
+            require(
+                    history.contains("EG Link")
+                            && history.contains("Efficient Games")
+                            && history.contains("CC BY 4.0")
+                            && history.contains("1.60.1.70862")
+                            && history.contains("https://github.com/JIVESCORP/eg-link-output-wowf"),
+                    "Settings attributes the bundled EG Link NPC history with builds, license and source");
             mappingRules();
             require(DataSourcesService.compatibleNpcBuild("1.60.1.70532","1.60.1.70707"),"Older same-patch source is eligible");
             require(!DataSourcesService.compatibleNpcBuild("1.60.1.70707","1.60.1.70532"),"Newer sources do not leak backwards");

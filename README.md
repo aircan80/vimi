@@ -268,6 +268,7 @@ Warcraft and its game data belong to Blizzard Entertainment; vimi is an
 unofficial tool and is not affiliated with or endorsed by Blizzard.
 
 The app bundles the WoWDBDefs table definitions (revision `b9a63096`, by WoWDBDefs
-contributors, CC BY-SA 4.0) and third-party runtime libraries; their notices are
+contributors, CC BY-SA 4.0), an EG Link NPC display history (by Efficient Games,
+CC BY 4.0) and third-party runtime libraries; their notices are
 listed in [Bundled runtime notices](docs/third-party-runtime.md) and shown in the
 app under **Settings → Bundled data**.
