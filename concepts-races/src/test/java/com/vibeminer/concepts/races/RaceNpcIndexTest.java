@@ -795,8 +795,9 @@ final class RaceNpcIndexTest {
                     java.nio.ByteBuffer.allocate(4).putInt(session).array(),
                     generated.read(tries).join().bytes());
         }
-        // One handle claims one attempt per composite, however often it is asked: the count moves
-        // by one.
+        // A sequential regression guard: one handle asked three times counts one attempt. It does
+        // not prove the atomic claim, which only matters for concurrent requests (the races worker
+        // is single-threaded).
         generated.delete(List.of(tries)).join();
         var service = new RacesService(raw, later, generated);
         try {

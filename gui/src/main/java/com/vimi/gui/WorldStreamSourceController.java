@@ -598,7 +598,10 @@ final class WorldStreamSourceController {
         kick();
     }
 
-    /** When a refused body may be sent again (controller clock), or 0 when no retry waits (tests). */
+    /**
+     * For tests: when a refused body may be sent again, on the controller's clock; 0 while a body
+     * send is in flight or when no retry waits.
+     */
     long bodyRetryAt() {
         return bodyInFlight.get() ? 0 : bodyRetryAt;
     }
