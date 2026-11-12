@@ -2476,6 +2476,10 @@ final class WorldStreamScopes {
             if (opened.state() == FileTypes.FileReadState.COMPLETE) {
                 throw new IllegalStateException("Complete source has no stream");
             }
+            if (classifyUnavailable && opened.state() == FileTypes.FileReadState.NEEDS_NETWORK) {
+                // Only the network has it now: left out, and asked for again on a later pass.
+                throw WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_PENDING);
+            }
             throw WorldSourceRefusals.at(
                     UNAVAILABLE_READS.contains(opened.state())
                             ? unavailable

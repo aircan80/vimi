@@ -86,6 +86,7 @@ public final class WorldStreamSourceControllerTest {
         lateObjectsAttachAfterTerrainAndReportBuildings();
         budgetRefusedObjectsRetryAfterAReleaseOnly();
         creaturesShareTheirBytesAndYieldToBuildings();
+        setsLeavingOutNetworkSourcesArePreparedAgainLater();
         buildingsComeFirstAndCreaturesReplaceThemLater();
         aSpawnSourceWithoutSpawnsSchedulesNoCreaturePasses();
         aSessionThatDrawsCreaturesWarmsItsPreparerOffItsThread();
@@ -951,6 +952,44 @@ public final class WorldStreamSourceControllerTest {
                     line -> refusedTile.test(line) && line.endsWith(" ATTACHED")));
             check(fixture.objectLines().stream().filter(refusedTile).count() == 2,
                     "Offered exactly once more after the release: " + fixture.objectLines());
+        } finally {
+            fixture.close();
+        }
+    }
+
+    /**
+     * A drawn objects set that left out sources only the network had (SOURCE_PENDING) is prepared
+     * again after the pending back-off and replaces the drawn set; once nothing is pending, it is
+     * not prepared again.
+     */
+    private static void setsLeavingOutNetworkSourcesArePreparedAgainLater() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 6);
+        fixture.exteriors = true;
+        fixture.residents = 4;
+        var asked = new java.util.concurrent.ConcurrentHashMap<Integer, java.util.concurrent.atomic.AtomicInteger>();
+        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation, formats, creatureBytes) -> {
+            int pass = asked.computeIfAbsent(tile.y(), key -> new java.util.concurrent.atomic.AtomicInteger()).incrementAndGet();
+            var summary = new WorldStreamSourceBridge.ExteriorSummary(1, 0, 0, 0, 0, 0, 0, pass == 1 ? 2 : 0);
+            return new WorldStreamSourceBridge.ExteriorCopy(
+                    building(), 1, false, "authored", WorldTileCreatures.Summary.NONE, summary, null);
+        };
+        int y = fixture.tiles.get(0).y();
+        try {
+            fixture.start(fixture.gpu::start, () -> {}, preparer);
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 1));
+            fixture.untilPresented(() -> fixture.objectLines().stream()
+                    .anyMatch(line -> line.startsWith(y + " ") && line.endsWith(" ATTACHED")));
+            for (int i = 0; i < 50; i++) { fixture.pump(); Thread.sleep(2); }
+            check(asked.get(y).get() == 1, "Not prepared again before the back-off: " + asked.get(y));
+            fixture.clock.addAndGet(WorldStreamSourceController.PENDING_RETRY_NANOS);
+            fixture.untilPresented(() -> fixture.objectLines().stream()
+                    .anyMatch(line -> line.equals(y + " REPLACE ATTACHED")));
+            check(asked.get(y).get() == 2, "Prepared again once: " + asked.get(y));
+            fixture.clock.addAndGet(WorldStreamSourceController.PENDING_RETRY_MAX_NANOS);
+            for (int i = 0; i < 100; i++) { fixture.pump(); Thread.sleep(2); }
+            check(asked.get(y).get() == 2, "Nothing pending: not prepared again: " + asked.get(y));
         } finally {
             fixture.close();
         }

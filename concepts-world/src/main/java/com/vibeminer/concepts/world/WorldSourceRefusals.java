@@ -40,6 +40,12 @@ final class WorldSourceRefusals {
         SOURCE_INPUT(WorldTerrainStreaming.Refusal.Reason.CAPABILITY_UNAVAILABLE),
         /** Missing, protected or over-limit source; only BASIC_EXTERIOR derived reads use it. */
         SOURCE_UNAVAILABLE(WorldTerrainStreaming.Refusal.Reason.CAPABILITY_UNAVAILABLE),
+        /**
+         * A BASIC_EXTERIOR derived source the local files lack and can only fetch from the network
+         * (offline, or no route): left out like an unavailable one, and the tile is prepared again
+         * later, when it may be fetched.
+         */
+        SOURCE_PENDING(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER),
         OWNER_RETIRED(WorldTerrainStreaming.Refusal.Reason.SOURCE_INVALIDATED),
         SCOPE_RETIRED(WorldTerrainStreaming.Refusal.Reason.SOURCE_INVALIDATED),
         MAP_BINDING(WorldTerrainStreaming.Refusal.Reason.SOURCE_INVALIDATED),

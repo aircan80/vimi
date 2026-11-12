@@ -3003,6 +3003,59 @@ class WorldExteriorObjectsTest {
         }
     }
 
+    private static com.vibeminer.files.FileTypes.FileOpen opened(
+            com.vibeminer.files.FileTypes.FileReadState state) {
+        return new com.vibeminer.files.FileTypes.FileOpen(state, null, null, null, null);
+    }
+
+    @Test
+    void sourcesOnlyTheNetworkHasAreLeftOutAndCountedAndTheRestDraws() {
+        // A building group the local files lack (NEEDS_NETWORK) is left out like an unavailable
+        // one and counted SOURCE_PENDING; the set prepares instead of failing.
+        var group = new WorldTerrainTextureSourceTest.Files();
+        group.failedOpens.put(
+                GROUP, opened(com.vibeminer.files.FileTypes.FileReadState.NEEDS_NETWORK));
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), group);
+                var set = f.run()) {
+            assertEquals(1, set.count(WorldExteriorObjects.Count.SOURCE_PENDING));
+            assertTrue(set.count(WorldExteriorObjects.Count.GROUP_UNAVAILABLE) >= 1);
+        }
+        // The building's root likewise: its placement is left out, the set still prepares.
+        var root = new WorldTerrainTextureSourceTest.Files();
+        root.failedOpens.put(
+                ROOT, opened(com.vibeminer.files.FileTypes.FileReadState.NEEDS_NETWORK));
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), root);
+                var set = f.run()) {
+            assertEquals(1, set.count(WorldExteriorObjects.Count.SOURCE_PENDING));
+            assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_UNAVAILABLE));
+            assertEquals(0, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
+        }
+        // With every source local, nothing is pending.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)));
+                var set = f.run()) {
+            assertEquals(0, set.count(WorldExteriorObjects.Count.SOURCE_PENDING));
+            assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
+        }
+        // Another read state that is neither complete nor unavailable still fails the set, as
+        // before; so does the tile's own placement file when only the network has it.
+        var other = new WorldTerrainTextureSourceTest.Files();
+        other.failedOpens.put(
+                GROUP, opened(com.vibeminer.files.FileTypes.FileReadState.STORE_FAILED));
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), other)) {
+            assertEquals(
+                    "SOURCE_INPUT",
+                    assertThrows(WorldTerrainStreaming.Refusal.class, f::run).site());
+        }
+        var placements = new WorldTerrainTextureSourceTest.Files();
+        placements.failedOpens.put(
+                TILE.obj0Id(), opened(com.vibeminer.files.FileTypes.FileReadState.NEEDS_NETWORK));
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), placements)) {
+            assertEquals(
+                    "SOURCE_INPUT",
+                    assertThrows(WorldTerrainStreaming.Refusal.class, f::run).site());
+        }
+    }
+
     @Test
     void sourceChangeAfterReadAndCancellationRetireTheWholeSet() {
         for (long id : new long[] {4, ROOT, GROUP, IMAGE}) {

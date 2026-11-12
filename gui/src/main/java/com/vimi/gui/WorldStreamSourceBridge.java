@@ -167,8 +167,23 @@ final class WorldStreamSourceBridge {
             int doodadsOmitted,
             int doodadsCapped,
             int surfacesOmitted,
-            int unreadable) {
+            int unreadable,
+            // Sources left out because only the network has them now (SOURCE_PENDING): the set is
+            // worth preparing again once they may be fetched.
+            int pending) {
         static final ExteriorSummary NONE = new ExteriorSummary(0, 0, 0, 0, 0, 0, 0);
+
+        ExteriorSummary(
+                int buildings,
+                int buildingsOmitted,
+                int doodads,
+                int doodadsOmitted,
+                int doodadsCapped,
+                int surfacesOmitted,
+                int unreadable) {
+            this(buildings, buildingsOmitted, doodads, doodadsOmitted, doodadsCapped, surfacesOmitted,
+                    unreadable, 0);
+        }
 
         ExteriorSummary plus(ExteriorSummary o) {
             return new ExteriorSummary(
@@ -178,7 +193,8 @@ final class WorldStreamSourceBridge {
                     doodadsOmitted + o.doodadsOmitted,
                     doodadsCapped + o.doodadsCapped,
                     surfacesOmitted + o.surfacesOmitted,
-                    unreadable + o.unreadable);
+                    unreadable + o.unreadable,
+                    pending + o.pending);
         }
 
         int omitted() {
@@ -194,7 +210,8 @@ final class WorldStreamSourceBridge {
                     doodadsOmitted + doodadsCapped,
                     this.doodadsCapped + doodadsCapped,
                     surfacesOmitted,
-                    unreadable);
+                    unreadable,
+                    pending);
         }
 
         static ExteriorSummary of(WorldExteriorObjects.TileObjects set) {
@@ -246,7 +263,8 @@ final class WorldStreamSourceBridge {
                     doodadsOmitted,
                     doodadsCapped,
                     surfaces,
-                    set.count(WorldExteriorObjects.Count.BATCH_UNREADABLE));
+                    set.count(WorldExteriorObjects.Count.BATCH_UNREADABLE),
+                    set.count(WorldExteriorObjects.Count.SOURCE_PENDING));
         }
 
         private static int sum(
