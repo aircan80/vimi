@@ -12,7 +12,8 @@ modes:
 - **Fly with collision** (checkbox or G; G again walks) moves the same body
   without gravity.
 
-No body is drawn yet; the camera follows an invisible capsule.
+No body is drawn yet; the camera follows an invisible capsule. The body
+collides with the terrain, buildings and doodads.
 
 ## Walking
 
@@ -89,7 +90,32 @@ cell's four fan triangles, holes emit nothing, and a box is still loading while
 part of it lies outside every retained chunk. `TerrainGround.coverage` tells a
 hole (a loaded chunk without a rendered cell) from unloaded ground. The terrain
 is retained for every resident tile in full, so collision does not depend on
-what the renderer caps. Buildings (WMO) and doodads (M2) follow.
+what the renderer caps.
+
+Buildings and doodads collide too (`CollisionWorld.combined`). For each
+recorded tile within one tile of the camera (whatever the view distance),
+`WorldTileCollision` reads every obj0 placement, never the capped draw set:
+
+- each MODF building places all of its root's LOD0 groups. A group keeps its
+  solid triangles (MOPY or MPY2: COLLISION, or RENDER without DETAIL) and its
+  BSP, which narrows each query to the leaves a box touches;
+- each building's doodad sets (set 0 and its own set, or its MWDR range) and
+  each MDDF doodad place the model's M2 collision mesh;
+- transforms are the drawn objects' own (ADT origin and heading, pitch and
+  roll; set doodads composed with their building).
+
+Parsed roots, groups and models are shared in a 96 MiB cache. The whole 3×3
+around Stormwind measured 35 MiB on 70862 (Ironforge and Orgrimmar 19 MiB).
+Tiles are read one at a time on their own worker. Each tile's placements get
+their world transforms and boxes once, when read; merging the nine parts into
+one `ObjectCollision` (a 32-yard grid, de-duplicated when two tiles list the
+same building) only builds the grid. Parts farther than one tile are dropped.
+A tile whose read failed, or that found a source it could not read yet, is read
+again after 15 seconds; unreadable sources are never remembered as missing.
+Tiles the map does not record (open sea, the map edge) have nothing to wait
+for. Until a tile's buildings are
+read, the body still walks on its terrain and the status line says the
+buildings there are still loading: loading warns, it does not stop the body.
 
 ## Source of heights
 

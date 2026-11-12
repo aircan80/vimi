@@ -221,8 +221,8 @@ public final class WorldMeasurementProbe {
                             case "refusals" -> refusals(handle, catalog);
                             case "water" -> water(handle, catalog);
                             case "prep" -> prep(handle, catalog);
+                            case "walk" -> walk(opened, handle, catalog);
                             case "collision" -> collision(opened, handle, catalog);
-                            case "walk" -> walk(handle, catalog);
                             case "creatures" -> creatures(opened, handle, catalog);
                             case "displays" -> displays(opened);
                             default -> stream(handle, catalog);
@@ -339,6 +339,167 @@ public final class WorldMeasurementProbe {
     }
 
     // ---- Tile prep only: the real source path, no helper, GPU or FX (#422) ----------------
+
+    /**
+     * Walks a body over the real terrain of each scenario's 3x3 tiles (the walk collision has
+     * terrain only): from the middle tile's centre, 20 s in each of eight headings, then one
+     * fall from 300 yd. Reports where each walk ended, how far the feet ever were below the
+     * rendered surface, airborne and sliding steps, and whether the body waited for collision.
+     */
+    private static void walk(WorldMeasurementOpen opened, BuildWorld handle, WorldService.Catalog catalog)
+            throws Exception {
+        var scenarios = Scenario.parse(System.getProperty("probe.scenarios", "elwynn:0:49:31"));
+        var source =
+                handle.terrainStreaming()
+                        .orElseThrow(() -> new IllegalStateException("No terrain streaming"));
+        for (var scenario : scenarios) {
+            var map = catalog.maps().stream().filter(m -> m.id() == scenario.map()).findFirst().orElseThrow();
+            var inventory = handle.inventory(map, Cancellation.NONE).get(5, TimeUnit.MINUTES);
+            var scope = source.createScope(map, Cancellation.NONE);
+            source.activate(scope);
+            var heights = new ArrayList<com.vibeminer.rendering.world.TerrainGround.Tile>();
+            double[] middle = null;
+            for (var tile : inventory.world().tiles()) {
+                if (Math.abs(tile.x() - scenario.x()) > 1 || Math.abs(tile.y() - scenario.y()) > 1) continue;
+                com.vibeminer.rendering.world.TerrainGround.Tile[] built = {null};
+                double[][] centre = {null};
+                boolean isMiddle = tile.x() == scenario.x() && tile.y() == scenario.y();
+                var written = source.prepareAndWrite(scope, tile, Cancellation.NONE, (borrow, token) -> {
+                    built[0] = com.vibeminer.rendering.world.TerrainGround.Tile.of(borrow.geometry());
+                    if (isMiddle) {
+                        var v = borrow.geometry().vertices();
+                        double x0 = Double.MAX_VALUE, x1 = -Double.MAX_VALUE, y0 = Double.MAX_VALUE, y1 = -Double.MAX_VALUE;
+                        for (int i = v.position(); i + 2 < v.limit(); i += 3) {
+                            x0 = Math.min(x0, v.get(i));
+                            x1 = Math.max(x1, v.get(i));
+                            y0 = Math.min(y0, v.get(i + 1));
+                            y1 = Math.max(y1, v.get(i + 1));
+                        }
+                        centre[0] = new double[] {(x0 + x1) / 2, (y0 + y1) / 2};
+                    }
+                    return () -> {};
+                });
+                written.close();
+                if (built[0] != null) heights.add(built[0]);
+                if (centre[0] != null) middle = centre[0];
+            }
+            if (middle == null) {
+                say("PROBE walk " + scenario.name() + ": the middle tile has no terrain");
+                continue;
+            }
+            var ground = com.vibeminer.rendering.world.TerrainGround.of(heights);
+            var world = com.vibeminer.rendering.world.CollisionWorld.terrain(ground);
+            if ("true".equals(System.getProperty("probe.objects"))) {
+                world = com.vibeminer.rendering.world.CollisionWorld.combined(
+                        ground, walkObjects(opened, source, inventory, scenario));
+            }
+            say(String.format(Locale.ROOT, "PROBE walk %s: %d qualified tiles, start %.1f, %.1f", scenario.name(),
+                    ground.tiles(), middle[0], middle[1]));
+            double dt = com.vibeminer.rendering.world.MovementParity.STEP_SECONDS;
+            for (int heading = 0; heading < 8; heading++) {
+                double yaw = heading * Math.PI / 4;
+                var body = new com.vibeminer.rendering.world.WalkController();
+                body.place(middle[0], middle[1], 2_000, 4_000, world);
+                double startZ = body.z(), deepest = 0, highest = -1e9, lowest = 1e9;
+                int air = 0, sliding = 0, waiting = 0, returned = 0, steps = (int) Math.round(20 / dt);
+                var input = new com.vibeminer.rendering.world.WalkController.Input(1, 0, 0, yaw, 0, false, 0);
+                long began = System.nanoTime();
+                for (int i = 0; i < steps; i++) {
+                    body.step(input, dt, world);
+                    double surface = ground.heightAt(body.x(), body.y());
+                    if (!Double.isNaN(surface)) deepest = Math.min(deepest, body.z() - surface);
+                    highest = Math.max(highest, body.z());
+                    lowest = Math.min(lowest, body.z());
+                    switch (body.status()) {
+                        case FALLING -> air++;
+                        case SLIDING -> sliding++;
+                        case LOADING -> waiting++;
+                        case RETURNED -> returned++;
+                        default -> {}
+                    }
+                }
+                double travelled = Math.hypot(body.x() - middle[0], body.y() - middle[1]);
+                say(String.format(Locale.ROOT,
+                        "PROBE walk %s heading %3d deg: start z %.2f, travelled %.1f of %.1f yd, z %.1f..%.1f,"
+                                + " feet at most %.2f yd under the surface, steps airborne %d sliding %d"
+                                + " waiting %d returned %d of %d, %.2f ms per step",
+                        scenario.name(), heading * 45, startZ, travelled,
+                        com.vibeminer.rendering.world.MovementParity.RUN_SPEED * 20, lowest, highest, -deepest, air,
+                        sliding, waiting, returned, steps, (System.nanoTime() - began) / 1e6 / steps));
+            }
+            var faller = new com.vibeminer.rendering.world.WalkController();
+            faller.place(middle[0], middle[1], 2_000, 4_000, world);
+            double floor = faller.z();
+            faller.place(middle[0], middle[1], floor + 300, 0, world);
+            int fall = 0;
+            while (!faller.grounded() && fall < 100_000) {
+                faller.step(new com.vibeminer.rendering.world.WalkController.Input(0, 0, 0, 0, 0, false, 0), dt, world);
+                fall++;
+            }
+            say(String.format(Locale.ROOT, "PROBE walk %s: a 300 yd fall landed after %.2f s at %.2f (ground %.2f)",
+                    scenario.name(), fall * dt, faller.z(), floor));
+        }
+    }
+
+    /**
+     * The buildings and doodads of the scenario's 3x3 through the production reader, with a
+     * transform check: each building's collision box against the box its MODF record states.
+     */
+    private static com.vibeminer.rendering.world.ObjectCollision walkObjects(WorldMeasurementOpen opened,
+            com.vibeminer.concepts.world.WorldTerrainStreaming source, WorldService.Inventory inventory,
+            Scenario scenario) throws Exception {
+        var placements = new ArrayList<com.vibeminer.rendering.world.ObjectCollision.Placement>();
+        var skipped = new TreeMap<String, Integer>();
+        var recordedBoxes = new java.util.HashMap<Long, double[]>();
+        long began = System.nanoTime();
+        for (var tile : inventory.world().tiles()) {
+            if (Math.abs(tile.x() - scenario.x()) > 1 || Math.abs(tile.y() - scenario.y()) > 1) continue;
+            var part = source.prepareCollision(tile, Cancellation.NONE);
+            placements.addAll(part.placements());
+            part.skipped().forEach((k, v) -> skipped.merge(k, v, Integer::sum));
+            byte[] raw = bytes(opened, tile.obj0Id(), skipped, "probe obj0");
+            if (raw == null) continue;
+            for (var p : com.vibeminer.formats.world.WorldPlacements.readObj0(raw, () -> false).worldObjects()) {
+                double c = 51200.0 / 3.0;
+                var lo = p.lowerBounds();
+                var hi = p.upperBounds();
+                recordedBoxes.put(p.uniqueId(), new double[] {c - Math.max(lo.z(), hi.z()), c - Math.max(lo.x(), hi.x()),
+                    Math.min(lo.y(), hi.y()), c - Math.min(lo.z(), hi.z()), c - Math.min(lo.x(), hi.x()), Math.max(lo.y(), hi.y())});
+            }
+        }
+        var merged = com.vibeminer.rendering.world.ObjectCollision.of(placements);
+        var byBuilding = new java.util.HashMap<Long, List<com.vibeminer.rendering.world.ObjectCollision.Placement>>();
+        int doodads = 0;
+        for (var p : placements) {
+            var key = (com.vibeminer.concepts.world.WorldTileCollision.Key) p.key();
+            if (key.kind() == 'W') byBuilding.computeIfAbsent(key.uniqueId(), k -> new ArrayList<>()).add(p);
+            else doodads++;
+        }
+        double worst = 0;
+        long worstId = 0;
+        int checked = 0, within = 0;
+        for (var entry : byBuilding.entrySet()) {
+            var recorded = recordedBoxes.get(entry.getKey());
+            var box = com.vibeminer.rendering.world.ObjectCollision.of(entry.getValue()).bounds();
+            if (recorded == null || box == null) continue;
+            // How far the collision reaches outside the recorded box (it may be smaller: groups
+            // without solid triangles are left out).
+            double off = 0;
+            for (int a = 0; a < 3; a++) off = Math.max(off, Math.max(recorded[a] - box[a], box[a + 3] - recorded[a + 3]));
+            checked++;
+            if (off < 2) within++;
+            if (off > worst) {
+                worst = off;
+                worstId = entry.getKey();
+            }
+        }
+        say(String.format(Locale.ROOT, "PROBE walk %s objects: %d placements (%d after de-duplication), %d buildings,"
+                        + " %d doodad placements, %.1f MiB, read in %.1f s; building boxes reaching at most 2 yd outside their MODF"
+                        + " bounds: %d of %d (worst %.1f yd, unique ID %d); left out %s",
+                scenario.name(), placements.size(), merged.placements(), byBuilding.size(), doodads,
+                merged.bytes() / 1048576.0, seconds(System.nanoTime() - began), within, checked, worst, worstId, skipped));
+        return merged;
+    }
 
     /**
      * Collision bytes around each scenario: every obj0 placement of its 3x3 tiles, never the
@@ -482,102 +643,6 @@ public final class WorldMeasurementProbe {
         } catch (RuntimeException failed) {
             unreadable.merge(kind + " failed", 1, Integer::sum);
             return null;
-        }
-    }
-
-    /**
-     * Walks a body over the real terrain of each scenario's 3x3 tiles (the walk collision has
-     * terrain only): from the middle tile's centre, 20 s in each of eight headings, then one
-     * fall from 300 yd. Reports where each walk ended, how far the feet ever were below the
-     * rendered surface, airborne and sliding steps, and whether the body waited for collision.
-     */
-    private static void walk(BuildWorld handle, WorldService.Catalog catalog) throws Exception {
-        var scenarios = Scenario.parse(System.getProperty("probe.scenarios", "elwynn:0:49:31"));
-        var source =
-                handle.terrainStreaming()
-                        .orElseThrow(() -> new IllegalStateException("No terrain streaming"));
-        for (var scenario : scenarios) {
-            var map = catalog.maps().stream().filter(m -> m.id() == scenario.map()).findFirst().orElseThrow();
-            var inventory = handle.inventory(map, Cancellation.NONE).get(5, TimeUnit.MINUTES);
-            var scope = source.createScope(map, Cancellation.NONE);
-            source.activate(scope);
-            var heights = new ArrayList<com.vibeminer.rendering.world.TerrainGround.Tile>();
-            double[] middle = null;
-            for (var tile : inventory.world().tiles()) {
-                if (Math.abs(tile.x() - scenario.x()) > 1 || Math.abs(tile.y() - scenario.y()) > 1) continue;
-                com.vibeminer.rendering.world.TerrainGround.Tile[] built = {null};
-                double[][] centre = {null};
-                boolean isMiddle = tile.x() == scenario.x() && tile.y() == scenario.y();
-                var written = source.prepareAndWrite(scope, tile, Cancellation.NONE, (borrow, token) -> {
-                    built[0] = com.vibeminer.rendering.world.TerrainGround.Tile.of(borrow.geometry());
-                    if (isMiddle) {
-                        var v = borrow.geometry().vertices();
-                        double x0 = Double.MAX_VALUE, x1 = -Double.MAX_VALUE, y0 = Double.MAX_VALUE, y1 = -Double.MAX_VALUE;
-                        for (int i = v.position(); i + 2 < v.limit(); i += 3) {
-                            x0 = Math.min(x0, v.get(i));
-                            x1 = Math.max(x1, v.get(i));
-                            y0 = Math.min(y0, v.get(i + 1));
-                            y1 = Math.max(y1, v.get(i + 1));
-                        }
-                        centre[0] = new double[] {(x0 + x1) / 2, (y0 + y1) / 2};
-                    }
-                    return () -> {};
-                });
-                written.close();
-                if (built[0] != null) heights.add(built[0]);
-                if (centre[0] != null) middle = centre[0];
-            }
-            if (middle == null) {
-                say("PROBE walk " + scenario.name() + ": the middle tile has no terrain");
-                continue;
-            }
-            var ground = com.vibeminer.rendering.world.TerrainGround.of(heights);
-            var world = com.vibeminer.rendering.world.CollisionWorld.terrain(ground);
-            say(String.format(Locale.ROOT, "PROBE walk %s: %d qualified tiles, start %.1f, %.1f", scenario.name(),
-                    ground.tiles(), middle[0], middle[1]));
-            double dt = com.vibeminer.rendering.world.MovementParity.STEP_SECONDS;
-            for (int heading = 0; heading < 8; heading++) {
-                double yaw = heading * Math.PI / 4;
-                var body = new com.vibeminer.rendering.world.WalkController();
-                body.place(middle[0], middle[1], 2_000, 4_000, world);
-                double startZ = body.z(), deepest = 0, highest = -1e9, lowest = 1e9;
-                int air = 0, sliding = 0, waiting = 0, returned = 0, steps = (int) Math.round(20 / dt);
-                var input = new com.vibeminer.rendering.world.WalkController.Input(1, 0, 0, yaw, 0, false, 0);
-                long began = System.nanoTime();
-                for (int i = 0; i < steps; i++) {
-                    body.step(input, dt, world);
-                    double surface = ground.heightAt(body.x(), body.y());
-                    if (!Double.isNaN(surface)) deepest = Math.min(deepest, body.z() - surface);
-                    highest = Math.max(highest, body.z());
-                    lowest = Math.min(lowest, body.z());
-                    switch (body.status()) {
-                        case FALLING -> air++;
-                        case SLIDING -> sliding++;
-                        case LOADING -> waiting++;
-                        case RETURNED -> returned++;
-                        default -> {}
-                    }
-                }
-                double travelled = Math.hypot(body.x() - middle[0], body.y() - middle[1]);
-                say(String.format(Locale.ROOT,
-                        "PROBE walk %s heading %3d deg: start z %.2f, travelled %.1f of %.1f yd, z %.1f..%.1f,"
-                                + " feet at most %.2f yd under the surface, steps airborne %d sliding %d"
-                                + " waiting %d returned %d of %d, %.2f ms per step",
-                        scenario.name(), heading * 45, startZ, travelled,
-                        com.vibeminer.rendering.world.MovementParity.RUN_SPEED * 20, lowest, highest, -deepest, air,
-                        sliding, waiting, returned, steps, (System.nanoTime() - began) / 1e6 / steps));
-            }
-            var faller = new com.vibeminer.rendering.world.WalkController();
-            faller.place(middle[0], middle[1], 2_000, 4_000, world);
-            double floor = faller.z();
-            faller.place(middle[0], middle[1], floor + 300, 0, world);
-            int fall = 0;
-            while (!faller.grounded() && fall < 100_000) {
-                faller.step(new com.vibeminer.rendering.world.WalkController.Input(0, 0, 0, 0, 0, false, 0), dt, world);
-                fall++;
-            }
-            say(String.format(Locale.ROOT, "PROBE walk %s: a 300 yd fall landed after %.2f s at %.2f (ground %.2f)",
-                    scenario.name(), fall * dt, faller.z(), floor));
         }
     }
 
