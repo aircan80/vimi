@@ -1037,7 +1037,12 @@ public final class WorldStreamSourceControllerTest {
             fixture.until(() -> fixture.controller.snapshot().seed() != null);
             fixture.camera(1);
             fixture.controller.neighborhood(fixture.tiles.subList(0, 3));
-            fixture.untilPresented(() -> fixture.objectLines().size() == 4);
+            // The tile whose creatures draw nothing sends no second set: its creature pass is
+            // waited for as a preparation, not as a delivery line.
+            fixture.untilPresented(() -> fixture.objectLines().size() == 4
+                    && fixture.tiles.subList(0, 3).stream().allMatch(
+                            t -> asked.getOrDefault(t.y(), List.of()).size() == 2)
+                    && !fixture.controller.loadingObjects());
             var lines = fixture.objectLines();
             check(lines.subList(0, 2).stream().allMatch(line -> !line.contains("REPLACE") && line.endsWith(" ATTACHED"))
                     && !lines.subList(0, 2).contains(empty + " ATTACHED"),
@@ -2949,14 +2954,20 @@ public final class WorldStreamSourceControllerTest {
                     return -1;
                 }
             };
-            fixture.until(() -> sent.getAsLong() == 1);
+            // The clock moves only once the refusal has set its retry time, so the backoff is
+            // measured from the refusal however late its reply arrives.
+            fixture.until(() -> sent.getAsLong() == 1 && fixture.controller.bodyRetryAt() != 0);
             for (int i = 0; i < 40; i++) fixture.pump();
             check(sent.getAsLong() == 1 && fixture.controller.bodyDrawn() == -1,
                     "A refused body is not drawn and not sent again at once: " + sent.getAsLong());
+            check(fixture.controller.bodyRetryAt() - fixture.clock.get() == 2_000_000_000L,
+                    "The first retry waits 2 s");
             fixture.clock.addAndGet(2_000_000_000L);
-            fixture.until(() -> sent.getAsLong() == 2);
+            fixture.until(() -> sent.getAsLong() == 2 && fixture.controller.bodyRetryAt() > fixture.clock.get());
             for (int i = 0; i < 40; i++) fixture.pump();
             check(sent.getAsLong() == 2, "Then once more after 2 s: " + sent.getAsLong());
+            check(fixture.controller.bodyRetryAt() - fixture.clock.get() == 4_000_000_000L,
+                    "The second retry waits 4 s");
             // The child takes it this time.
             size.set(96);
             fixture.clock.addAndGet(4_000_000_000L);
