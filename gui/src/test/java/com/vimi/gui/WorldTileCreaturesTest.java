@@ -106,6 +106,8 @@ public final class WorldTileCreaturesTest {
         // Display-model asks ahead are refused busy past this many in flight (a full queue).
         volatile int aheadLimit = Integer.MAX_VALUE;
         final AtomicInteger aheadModels = new AtomicInteger(), refusedAhead = new AtomicInteger();
+        // Busy retry pauses the tile took: a display deferred as busy pauses before it is asked again.
+        final AtomicInteger busyPauses = new AtomicInteger();
 
         <T> java.util.concurrent.CompletableFuture<T> model(Cancellation token, java.util.concurrent.Callable<T> answer) {
             if (aheadModels.incrementAndGet() > aheadLimit) {
@@ -276,7 +278,10 @@ public final class WorldTileCreaturesTest {
             var creatures = new WorldTileCreatures(token -> index(rows), () -> "r1",
                     (npc, token) -> qualified((int) displays[(int) npc - 1], null), sources, sources);
             creatures.prefetch(ahead);
-            creatures.pause((millis, token) -> true);
+            creatures.pause((millis, token) -> {
+                sources.busyPauses.incrementAndGet();
+                return true;
+            });
             double[] at = {-100, -100};
             creatures.camera(() -> at);
             var first = WorldStreamTileWriter.Exterior.builder();
@@ -302,9 +307,14 @@ public final class WorldTileCreaturesTest {
             rows.add(WorldSpawnOverlayTest.spawn(i + 1, 1, -100 - 7 * i, -100 - 3 * i, 10.0));
         var inTurn = drawTwoTiles(rows, displays, false, sources -> {}, sources -> {});
         var refused = new AtomicInteger();
-        var ahead = drawTwoTiles(rows, displays, true, sources -> sources.aheadLimit = 1,
-                sources -> refused.set(sources.refusedAhead.get()));
+        var pauses = new AtomicInteger();
+        var ahead = drawTwoTiles(rows, displays, true, sources -> sources.aheadLimit = 1, sources -> {
+            refused.set(sources.refusedAhead.get());
+            pauses.set(sources.busyPauses.get());
+        });
         require(refused.get() > 0, "Some asks ahead were refused busy");
+        // A refused ask-ahead never deferred its display: no busy retry paused the tiles.
+        require(pauses.get() == 0, "No display was deferred as busy: " + pauses.get() + " pauses");
         require(inTurn.equals(ahead), "A busy ask-ahead draws the same: " + inTurn + " vs " + ahead);
     }
 
