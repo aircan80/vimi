@@ -99,6 +99,20 @@ revision arrives with an application release. **Settings → Bundled data** show
 the revision, upstream link, license and notice; the package's `legal/THIRD-PARTY.md`
 lists them too.
 
+## Bundled EG Link NPC display history
+
+A small EG Link history also ships inside the application
+(`eg-link/src/main/resources/com/vibeminer/eglink/history/`, CC BY 4.0, by Efficient
+Games). For each NPC it holds the displays of the newest `wowf` client build that
+recorded it across the upstream repository's last 60 days of commits, with that
+build, commit and collection date. It is not a data source either: it is regenerated
+by hand before a release with `python3 scripts/release/eg_link_history.py`, which
+clones the upstream repository without file contents into a temporary directory and
+reads only `creature_details.enUS` at each commit (display IDs do not depend on the
+locale). Its NOTICE.md records the commit range and the file's SHA-256, checked when
+it loads. **Settings → Bundled data** shows its builds, commit range, license and
+notice.
+
 The former per-source switch for definitions is gone. It only existed because
 definitions were listed as a source: turning it off left a workspace with no table
 interpretation at all, under its own preparation identity, which no feature needed.

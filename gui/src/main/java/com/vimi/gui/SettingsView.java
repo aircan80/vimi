@@ -137,23 +137,32 @@ final class SettingsView extends BorderPane {
         }
     }
 
+    /** The attribution lines the Bundled data page shows for the bundled EG Link NPC history. */
+    static java.util.List<String> bundledNpcHistoryLines() {
+        var attribution = com.vibeminer.eglink.BundledNpcHistory.attribution();
+        return java.util.List.of(
+                "EG Link · NPC display history",
+                "By Efficient Games (https://efficient.games)",
+                String.format(
+                        java.util.Locale.ROOT,
+                        "%,d NPCs · %s creature_details.%s · builds %s",
+                        attribution.npcs(),
+                        attribution.product(),
+                        attribution.locale(),
+                        String.join(", ", attribution.builds())),
+                "Commits " + attribution.firstCommit() + " to " + attribution.lastCommit(),
+                "License: "
+                        + com.vibeminer.eglink.EgLinkTypes.LICENSE
+                        + " · https://creativecommons.org/licenses/by/4.0/",
+                "Source: " + attribution.upstream(),
+                "Ships with the application and is verified against its notice's hash when it"
+                        + " loads. The NPCs page uses it after the client Creature record and any"
+                        + " downloaded EG Link data; a newer history comes with an application"
+                        + " update.");
+    }
+
     /** Attribution for third-party data that ships with the application (not a data source). */
     static VBox bundledData() {
-        var attribution = com.vibeminer.formats.definitions.BundledDefinitions.attribution();
-        var lines = bundledDefinitionsLines();
-        Label name = label(lines.getFirst(), "h2");
-        name.setId("bundled-definitions-name");
-        VBox facts = new VBox(6, name);
-        for (int i = 1; i < lines.size(); i++) {
-            facts.getChildren()
-                    .add(label(lines.get(i), i == 1 || i == lines.size() - 1 ? "muted" : "value"));
-        }
-        facts.getStyleClass().add("source-panel");
-        facts.setPadding(new Insets(14));
-        Label notice = label(attribution.notice(), "muted");
-        notice.setId("bundled-definitions-notice");
-        TitledPane noticePane = new TitledPane("Notice", notice);
-        noticePane.setExpanded(false);
         VBox content =
                 new VBox(
                         16,
@@ -161,9 +170,22 @@ final class SettingsView extends BorderPane {
                         label(
                                 "Third-party data that ships with the application, with its"
                                         + " license and notice.",
-                                "subtitle"),
-                        facts,
-                        noticePane,
+                                "subtitle"));
+        content.getChildren()
+                .addAll(
+                        bundledEntry(
+                                bundledDefinitionsLines(),
+                                com.vibeminer.formats.definitions.BundledDefinitions.attribution()
+                                        .notice(),
+                                "bundled-definitions"));
+        content.getChildren()
+                .addAll(
+                        bundledEntry(
+                                bundledNpcHistoryLines(),
+                                com.vibeminer.eglink.BundledNpcHistory.attribution().notice(),
+                                "bundled-npc-history"));
+        content.getChildren()
+                .add(
                         label(
                                 "Notices for the bundled runtime libraries are in the"
                                         + " application's legal folder (THIRD-PARTY.md).",
@@ -172,6 +194,25 @@ final class SettingsView extends BorderPane {
         content.setPadding(new Insets(28));
         content.setMaxWidth(1000);
         return content;
+    }
+
+    /** One bundled data set: its facts panel and its collapsed notice. */
+    private static java.util.List<javafx.scene.Node> bundledEntry(
+            java.util.List<String> lines, String noticeText, String id) {
+        Label name = label(lines.getFirst(), "h2");
+        name.setId(id + "-name");
+        VBox facts = new VBox(6, name);
+        for (int i = 1; i < lines.size(); i++) {
+            facts.getChildren()
+                    .add(label(lines.get(i), i == 1 || i == lines.size() - 1 ? "muted" : "value"));
+        }
+        facts.getStyleClass().add("source-panel");
+        facts.setPadding(new Insets(14));
+        Label notice = label(noticeText, "muted");
+        notice.setId(id + "-notice");
+        TitledPane noticePane = new TitledPane("Notice", notice);
+        noticePane.setExpanded(false);
+        return java.util.List.of(facts, noticePane);
     }
 
     private static ScrollPane scroll(VBox content) {
