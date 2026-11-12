@@ -349,11 +349,7 @@ final class RaceAppearancePlan {
                 canvases.add(new Canvas(type, width, height));
             }
         }
-        if (canvases.size() > 16
-                || canvases.stream()
-                                .mapToLong(canvas -> (long) canvas.width() * canvas.height())
-                                .sum()
-                        > 8_388_608L) {
+        if (canvases.size() > 16) {
             throw materials.unsupported("Texture canvas memory exceeds preview bounds");
         }
         RaceCustomization.Selection selectedSample;
@@ -553,6 +549,11 @@ final class RaceAppearancePlan {
                     RaceTypes.State.UNSUPPORTED, "Texture recipe exceeds preview bounds.");
         }
         requireInsideCanvases(canvases, recipe);
+        // Only a canvas some layer draws on is composed (a layout may declare canvases the sample
+        // leaves empty), so the memory bound counts those.
+        if (composedPixels(canvases, recipe) > MAX_CANVAS_PIXELS) {
+            throw materials.unsupported("Texture canvas memory exceeds preview bounds");
+        }
         return new Plan(canvases, recipe, items, profile, npc != null);
     }
 
@@ -653,6 +654,20 @@ final class RaceAppearancePlan {
             items.add(
                     new Item(0, inventory, item.itemDisplayInfoId(), simple ? groups : List.of()));
         }
+    }
+
+    /** The canvas pixels a preview may compose in all: 32 MiB of ARGB. */
+    static final long MAX_CANVAS_PIXELS = 8_388_608L;
+
+    /** Pixels of the canvases at least one layer of {@code recipe} draws on. */
+    static long composedPixels(List<Canvas> canvases, List<Layer> recipe) {
+        long total = 0;
+        for (var canvas : canvases) {
+            if (recipe.stream().anyMatch(layer -> layer.type() == canvas.type())) {
+                total += (long) canvas.width() * canvas.height();
+            }
+        }
+        return total;
     }
 
     static boolean wholeBodyBase(Layer layer, List<Canvas> canvases) {
