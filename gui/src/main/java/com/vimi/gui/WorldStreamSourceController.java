@@ -331,8 +331,15 @@ final class WorldStreamSourceController {
     private final IdentityHashMap<Entry, Optional<TerrainGround.Tile>> heights =
             new IdentityHashMap<>();
     private volatile TerrainGround ground = TerrainGround.empty();
+    // The swimming surface: the residents' terrain liquid with the liquid of the buildings read for
+    // walking collision on top; republished whenever either changes.
     private volatile com.vibeminer.rendering.world.LiquidSurface liquids =
             com.vibeminer.rendering.world.LiquidSurface.empty();
+    private com.vibeminer.rendering.world.LiquidSurface terrainLiquids =
+            com.vibeminer.rendering.world.LiquidSurface.empty();
+    private List<com.vibeminer.rendering.world.LiquidSurface.Placed> buildingLiquids = List.of();
+    private final java.util.Map<Integer, List<com.vibeminer.rendering.world.LiquidSurface.Placed>> collisionLiquids =
+            new java.util.concurrent.ConcurrentHashMap<>();
     // Walking collision of buildings and doodads: the parts of the 3x3 tiles around the camera,
     // read and prepared on their own worker (never the source lane), merged there and published
     // as one set. Parts farther than one tile are dropped, so at most nine are held.
@@ -761,6 +768,7 @@ final class WorldStreamSourceController {
         collisionRetryAt.keySet().removeIf(far::test);
         collisionAttempts.keySet().removeIf(far::test);
         boolean dropped = collisionParts.keySet().removeIf(far::test);
+        collisionLiquids.keySet().removeIf(far::test);
         if (!collisionPending.isEmpty()) return;
         long now = System.nanoTime();
         WorldFormats.Tile next = null;
@@ -791,6 +799,7 @@ final class WorldStreamSourceController {
             try {
                 var part = lane.prepareCollision(tile, collisionCancellation);
                 collisionParts.put(key, com.vibeminer.rendering.world.ObjectCollision.prepare(part.placements()));
+                collisionLiquids.put(key, part.liquids());
                 if (part.complete()) {
                     collisionRetryAt.remove(key);
                     collisionAttempts.remove(key);
@@ -819,6 +828,23 @@ final class WorldStreamSourceController {
         }
         objectCollision = com.vibeminer.rendering.world.ObjectCollision.merge(parts);
         collisionMerged = java.util.Set.copyOf(keys);
+        var placed = new ArrayList<com.vibeminer.rendering.world.LiquidSurface.Placed>();
+        for (var key : keys) {
+            var part = collisionLiquids.get(key);
+            if (part == null) continue;
+            for (var liquid : part) {
+                if (placed.size() < com.vibeminer.rendering.world.LiquidSurface.MAX_PLACED) placed.add(liquid);
+            }
+        }
+        publishLiquids(null, List.copyOf(placed));
+    }
+
+    /** Republishes the swimming surface with new terrain liquid or building liquid (null: kept). */
+    private synchronized void publishLiquids(com.vibeminer.rendering.world.LiquidSurface terrain,
+            List<com.vibeminer.rendering.world.LiquidSurface.Placed> buildings) {
+        if (terrain != null) terrainLiquids = terrain;
+        if (buildings != null) buildingLiquids = buildings;
+        liquids = buildingLiquids.isEmpty() ? terrainLiquids : terrainLiquids.with(buildingLiquids);
     }
 
     /**
@@ -2105,7 +2131,7 @@ final class WorldStreamSourceController {
             recorded.ifPresent(metadata::add);
         }
         ground = TerrainGround.of(tiles);
-        liquids = com.vibeminer.rendering.world.LiquidSurface.of(liquidTiles);
+        publishLiquids(com.vibeminer.rendering.world.LiquidSurface.of(liquidTiles), null);
         areas = List.copyOf(metadata);
         updateObjects();
     }
@@ -2307,6 +2333,7 @@ final class WorldStreamSourceController {
         collisionCancellation.cancel();
         if (collisionWorker != null) collisionWorker.shutdown();
         collisionParts.clear();
+        collisionLiquids.clear();
         objectCollision = com.vibeminer.rendering.world.ObjectCollision.empty();
         collisionMerged = java.util.Set.of();
         if (geometryWake != null) {

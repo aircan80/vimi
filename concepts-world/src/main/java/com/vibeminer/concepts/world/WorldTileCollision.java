@@ -6,8 +6,10 @@ import com.vibeminer.files.FileTypes;
 import com.vibeminer.formats.models.M2Collision;
 import com.vibeminer.formats.world.WmoCollision;
 import com.vibeminer.formats.world.WmoFormats;
+import com.vibeminer.formats.world.WmoLiquid;
 import com.vibeminer.formats.world.WorldFormats;
 import com.vibeminer.formats.world.WorldPlacements;
+import com.vibeminer.rendering.world.LiquidSurface;
 import com.vibeminer.rendering.world.ObjectCollision;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -26,6 +28,10 @@ import java.util.function.IntConsumer;
  * WorldExteriorObjects.Rotation#mddf}) and set doodads composed with their building. Placements the
  * client does not place by FileDataID, and sources that cannot be read, are counted by reason and
  * left out; nothing is guessed.
+ *
+ * <p>Each building group's liquid (MLIQ, {@link WmoLiquid}) is placed with the same transform, for
+ * swimming ({@link LiquidSurface#with}); a group liquid under a building tilted by pitch or roll is
+ * left out and counted.
  *
  * <p>Parsed roots, groups and models are shared across tiles in a cache bounded by bytes ({@link
  * #CACHE_BYTES}). Thread-safe; reads run on the caller's thread.
@@ -61,11 +67,23 @@ public final class WorldTileCollision {
             int tileX,
             int tileY,
             List<ObjectCollision.Placement> placements,
+            List<LiquidSurface.Placed> liquids,
             Map<String, Integer> skipped,
             boolean complete) {
         public Part {
             placements = List.copyOf(placements);
+            liquids = List.copyOf(liquids);
             skipped = Map.copyOf(skipped);
+        }
+
+        /** A part without liquids. */
+        public Part(
+                int tileX,
+                int tileY,
+                List<ObjectCollision.Placement> placements,
+                Map<String, Integer> skipped,
+                boolean complete) {
+            this(tileX, tileY, placements, List.of(), skipped, complete);
         }
     }
 
@@ -105,7 +123,10 @@ public final class WorldTileCollision {
         }
     }
 
-    private record Root(long[] groups, WmoFormats.Doodads doodads) {}
+    private record Root(long[] groups, WmoFormats.Doodads doodads, int flags) {}
+
+    /** A group's collision mesh and liquid; either may be null, not both. */
+    private record Group(WmoMesh mesh, WmoLiquid liquid) {}
 
     private static final Object MISSING = new Object();
 
@@ -224,41 +245,44 @@ public final class WorldTileCollision {
         forgetKeyedAbsences(source.keyRevision());
         var skipped = new TreeMap<String, Integer>();
         var placements = new ArrayList<ObjectCollision.Placement>();
+        var liquids = new ArrayList<LiquidSurface.Placed>();
         byte[] obj0 = read(tile.obj0Id(), token, skipped, "obj0");
         if (obj0 == null || obj0 == ABSENT || obj0 == KEYED_ABSENT) {
-            return part(tile, placements, skipped);
+            return part(tile, placements, liquids, skipped);
         }
         WorldPlacements.Metadata recorded;
         try {
             recorded = WorldPlacements.readObj0(obj0, token::isCanceled);
         } catch (IllegalArgumentException malformed) {
             skipped.merge("obj0 malformed", 1, Integer::sum);
-            return part(tile, placements, skipped);
+            return part(tile, placements, liquids, skipped);
         }
         for (var building : recorded.worldObjects()) {
             token.check();
-            building(building, recorded, placements, skipped, token);
+            building(building, recorded, placements, liquids, skipped, token);
         }
         for (var doodad : recorded.doodads()) {
             token.check();
             doodad(doodad, placements, skipped, token);
         }
-        return part(tile, placements, skipped);
+        return part(tile, placements, liquids, skipped);
     }
 
     private static Part part(
             WorldFormats.Tile tile,
             List<ObjectCollision.Placement> placements,
+            List<LiquidSurface.Placed> liquids,
             Map<String, Integer> skipped) {
         boolean complete =
                 skipped.keySet().stream().noneMatch(reason -> reason.endsWith(" unreadable"));
-        return new Part(tile.x(), tile.y(), placements, skipped, complete);
+        return new Part(tile.x(), tile.y(), placements, liquids, skipped, complete);
     }
 
     private void building(
             WorldPlacements.WorldObject p,
             WorldPlacements.Metadata recorded,
             List<ObjectCollision.Placement> out,
+            List<LiquidSurface.Placed> liquids,
             Map<String, Integer> skipped,
             Cancellation token) {
         if ((p.flags() & DIRECT_ID) == 0
@@ -285,7 +309,24 @@ public final class WorldTileCollision {
         }
         double[] r = rotation.rowMajor();
         for (int g = 0; g < root.groups().length; g++) {
-            var mesh = group(root.groups()[g], token, skipped);
+            var group = group(root.groups()[g], token, skipped);
+            var mesh = group == null ? null : group.mesh();
+            if (group != null && group.liquid() != null) {
+                if (LiquidSurface.upright(r)) {
+                    liquids.add(
+                            new LiquidSurface.Placed(
+                                    new Key('L', p.uniqueId(), g),
+                                    new Local(group.liquid()),
+                                    kind(group.liquid().liquidType(root.flags())),
+                                    r,
+                                    scale,
+                                    transform.originX(),
+                                    transform.originY(),
+                                    transform.originZ()));
+                } else {
+                    skipped.merge("building liquid tilted", 1, Integer::sum);
+                }
+            }
             if (mesh != null) {
                 out.add(
                         new ObjectCollision.Placement(
@@ -413,9 +454,9 @@ public final class WorldTileCollision {
     }
 
     /**
-     * A placement's identity: kind ('W' a building group, 'S' a set doodad, 'D' an MDDF doodad),
-     * the unique ID (the building's for its groups and set doodads) and the group or doodad
-     * ordinal.
+     * A placement's identity: kind ('W' a building group, 'S' a set doodad, 'D' an MDDF doodad, 'L'
+     * a building group's liquid), the unique ID (the building's for its groups and set doodads) and
+     * the group or doodad ordinal.
      */
     public record Key(char kind, long uniqueId, int ordinal) {}
 
@@ -445,7 +486,7 @@ public final class WorldTileCollision {
             for (int g = 0; g < count; g++) {
                 groups[g] = parsed.gfid(g);
             }
-            root = new Root(groups, parsed.doodads());
+            root = new Root(groups, parsed.doodads(), parsed.header().flags());
         } catch (IllegalArgumentException malformed) {
             skipped.merge("building root malformed", 1, Integer::sum);
         }
@@ -461,7 +502,7 @@ public final class WorldTileCollision {
         return root;
     }
 
-    private ObjectCollision.Mesh group(long id, Cancellation token, Map<String, Integer> skipped) {
+    private Group group(long id, Cancellation token, Map<String, Integer> skipped) {
         if (id <= 0) {
             return null;
         }
@@ -469,8 +510,8 @@ public final class WorldTileCollision {
         if (known == MISSING || known == KEYED_MISSING) {
             return null;
         }
-        if (known instanceof WmoMesh mesh) {
-            return mesh;
+        if (known instanceof Group group) {
+            return group;
         }
         byte[] bytes = read(id, token, skipped, "building group");
         if (bytes == null) {
@@ -482,6 +523,7 @@ public final class WorldTileCollision {
             return null;
         }
         WmoMesh mesh = null;
+        WmoLiquid liquid = null;
         try {
             var parsed = WmoCollision.read(bytes, token::isCanceled);
             if (parsed.solidTriangles() > 0) {
@@ -490,9 +532,62 @@ public final class WorldTileCollision {
         } catch (IllegalArgumentException malformed) {
             skipped.merge("building group malformed", 1, Integer::sum);
         }
+        try {
+            liquid = WmoLiquid.read(bytes, token::isCanceled);
+        } catch (IllegalArgumentException malformed) {
+            skipped.merge("building liquid malformed", 1, Integer::sum);
+        }
+        var group = mesh == null && liquid == null ? null : new Group(mesh, liquid);
+        remember(
+                id,
+                group == null ? MISSING : group,
+                group == null
+                        ? 64
+                        : (mesh == null ? 0 : mesh.bytes())
+                                + (liquid == null ? 0 : liquid.retainedBytes()));
+        return group;
+    }
 
-        remember(id, mesh == null ? MISSING : mesh, mesh == null ? 64 : mesh.bytes());
-        return mesh;
+    /**
+     * A WMO LiquidType ID's kind: 13 WMO water, 14 WMO ocean, 19 WMO magma, 20 WMO slime (what
+     * {@link WmoLiquid#liquidType} gives for basic IDs); anything else is other.
+     */
+    static LiquidSurface.Kind kind(int liquidType) {
+        return switch (liquidType) {
+            case 13 -> LiquidSurface.Kind.WATER;
+            case 14 -> LiquidSurface.Kind.OCEAN;
+            case 19 -> LiquidSurface.Kind.MAGMA;
+            case 20 -> LiquidSurface.Kind.SLIME;
+            default -> LiquidSurface.Kind.OTHER;
+        };
+    }
+
+    /** A group's liquid in its own coordinates, for {@link LiquidSurface}. */
+    record Local(WmoLiquid liquid) implements LiquidSurface.Local {
+        @Override
+        public double heightAt(double x, double y) {
+            return liquid.heightAt(x, y);
+        }
+
+        @Override
+        public double[] bounds() {
+            return new double[] {
+                liquid.baseX(),
+                liquid.baseY(),
+                liquid.baseX() + liquid.xTiles() * WmoLiquid.UNIT,
+                liquid.baseY() + liquid.yTiles() * WmoLiquid.UNIT
+            };
+        }
+
+        @Override
+        public double minHeight() {
+            return liquid.minHeight();
+        }
+
+        @Override
+        public double maxHeight() {
+            return liquid.maxHeight();
+        }
     }
 
     private ObjectCollision.Mesh model(long id, Cancellation token, Map<String, Integer> skipped) {

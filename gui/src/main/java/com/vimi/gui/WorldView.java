@@ -1682,8 +1682,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             case SLIDING -> "Walking · too steep to stand: sliding" + collides;
             case LOADING -> "Walking · waiting for terrain collision here";
             case RETURNED -> "Walking · fell out of the world; put back where you last stood";
-            case SWIMMING -> "Swimming" + collides
-                    + " · terrain water only (water in buildings not yet)";
+            case SWIMMING -> "Swimming" + collides;
         };
     }
 

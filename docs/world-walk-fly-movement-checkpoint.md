@@ -87,9 +87,29 @@ feet down to the ground it found (up to 0.1 yd) and walks out only when they
 are still above the exit depth there, so a short body (the murloc, 1.29 yd
 tall, whose margin is 0.065 yd) cannot snap back below its swim depth.
 
-Not covered: water inside buildings (WMO liquid, such as the Stormwind canals)
-and the older MCLQ chunk liquid are not read, so a body walks through them;
-flying ignores water.
+Building water (WMO liquid, such as the Stormwind canals) is swum in too. The
+walking-collision reader (`WorldTileCollision`, every obj0 placement around the
+body, never the capped draw set) also reads each building group's MLIQ
+(`WmoLiquid`: the vertex and tile counts, the grid corner, one height per
+vertex and one flag byte per tile; a tile whose low four flag bits are all set
+holds none, and a tile is split on its diagonal, as open server emulators read
+it). Each liquid is placed with its building's collision transform and joins
+the terrain liquid (`LiquidSurface.with`); the highest surface answers. A
+building recorded on several tiles counts once (by building and group). Only a
+building turned about the vertical is admitted: a liquid under a building with
+pitch or roll is left out and counted ("building liquid tilted"). The liquid's
+kind follows the group's liquid field and the root's flag 0x4 (the IDs open
+server emulators derive: WMO water 13, ocean 14, magma 19, slime 20). Building
+water is not drawn yet (it needs its own draw in the objects pass); only
+swimming uses it. The older MCLQ chunk liquid is not read; flying ignores
+water.
+
+Real data (build 70862, `-Pprobe.mode=swim -Pprobe.objects=true`, Stormwind
+48,30): the 3 x 3 has 3 building liquids (20 records across tiles), all water.
+The canals are one liquid over 404 x 592 yd at 95.47, with no terrain liquid
+under the points probed: a body over the canal swims in all four headings and
+stays in; in a 21 x 21 yd pool it swims and walks out after about 8 yd. Reading
+the 3 x 3's buildings with their liquids took 2.3 s.
 
 Real data (build 70862, `-Pprobe.mode=swim`, Elwynn 49,31, `-Pprobe.swimArea=18`,
 Crystal Lake): 2,258 water cells, surface 57.6 to 59.1. Walking in from eight
@@ -233,7 +253,14 @@ accept a 0.01 yd overlap.
   layer capped out of the packet); past the cell bound the highest layers are
   kept with a note; a layer with a NaN corner is skipped; a drawn copy that
   fails keeps the surface.
-- `LiquidSurfaceTest`: cell lookup and edges, the NE--SW split, the highest
+- `WmoLiquidTest`: diagonal interpolation, empty (0x0F) tiles, the liquid type
+  rules, no MLIQ, every tile empty and malformed grids.
+- `WorldTileCollisionTest`: a group's liquid placed with its building's
+  transform (heading 90) and counted once across tiles; a tilted building's
+  liquid left out and counted.
+- `LiquidSurfaceTest`: placed liquids through a quarter turn and scale, the
+  highest of terrain and building liquid, a key once, upright only;
+  cell lookup and edges, the NE--SW split, the highest
   of overlapping layers, coordinates far from the origin.
 - `BodyMotionTest`: placement on the ground below the camera, own and foreign
   cameras, turning, the camera pulled in by a wall and the ground and easing

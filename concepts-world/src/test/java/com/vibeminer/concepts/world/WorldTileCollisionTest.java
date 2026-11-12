@@ -21,6 +21,7 @@ import org.junit.jupiter.api.Test;
 
 class WorldTileCollisionTest {
     static final long OBJ0 = 10, ROOT = 20, GROUP = 21, MODEL = 30, SET_MODEL = 31, BROKEN = 32;
+    static final double UNIT = 51200.0 / 3.0 / 32 / 128;
     static final double C = 51200.0 / 3.0;
 
     // ---- authored sources ------------------------------------------------------------------
@@ -139,6 +140,37 @@ class WorldTileCollisionTest {
                                 chunk("MOPY", mopy.array()))));
     }
 
+    /** A group of one solid triangle and a 1 x 1 tile of liquid at (0, 0), height 5. */
+    static byte[] groupWithLiquid() {
+        var movi = buffer(6).putShort((short) 0).putShort((short) 1).putShort((short) 2);
+        var mopy = buffer(2).put((byte) 0x20).put((byte) 0);
+        var mliq = buffer(30 + 4 * 8 + 1);
+        mliq.putInt(2).putInt(2).putInt(1).putInt(1).put(floats(0, 0, 5)).putShort((short) 0);
+        for (int v = 0; v < 4; v++) {
+            mliq.putInt(0).putFloat(5);
+        }
+        mliq.put((byte) 0);
+        return join(
+                version(17),
+                chunk(
+                        "MOGP",
+                        join(
+                                new byte[68],
+                                chunk("MOVT", floats(0, 0, 0, 1, 0, 0, 0, 1, 0)),
+                                chunk("MOVI", movi.array()),
+                                chunk("MOPY", mopy.array()),
+                                chunk("MLIQ", mliq.array()))));
+    }
+
+    /** One MODF record with a pitch (raw rotation x), else as {@link #modf}. */
+    static byte[] pitchedModf(long id, long uid) {
+        var b = buffer(64);
+        b.putInt((int) id).putInt((int) uid).put(floats(100, 20, 300));
+        b.put(floats(20, 90, 0)).put(floats(-50, -50, -50, 50, 50, 50));
+        b.putShort((short) 0x8).putShort((short) 0).putShort((short) 0).putShort((short) 1024);
+        return b.array();
+    }
+
     /** An MD20 model whose collision mesh is one triangle. */
     static byte[] model() {
         var b = buffer(0x160);
@@ -206,6 +238,38 @@ class WorldTileCollisionTest {
     }
 
     // ---- tests -----------------------------------------------------------------------------
+
+    @Test
+    void aBuildingGroupsLiquidIsPlacedWithTheBuildingsTransformOnce() {
+        var f = files(obj0(List.of(modf(ROOT, 7, 0x8, 100, 20, 300, 90, 0, 1024)), List.of()));
+        f.bytes.put(GROUP, groupWithLiquid());
+        var reader = new WorldTileCollision(f, 1 << 20);
+        var part = reader.prepare(TILE, Cancellation.NONE);
+        assertEquals(1, part.liquids().size());
+        var liquid = part.liquids().get(0);
+        assertEquals(new WorldTileCollision.Key('L', 7, 0), liquid.key());
+        assertEquals(com.vibeminer.rendering.world.LiquidSurface.Kind.WATER, liquid.kind());
+        // Heading 90 maps local (a, b) to (b, -a): local (U/2, U/4) lands at (x + U/4, y - U/2).
+        var surface = com.vibeminer.rendering.world.LiquidSurface.empty().with(part.liquids());
+        var at = surface.at(C - 300 + UNIT / 4, C - 100 - UNIT / 2);
+        assertEquals(20 + 5, at.height(), 1e-6);
+        assertTrue(keys(part).contains("W:7:0"), "its collision stays");
+        // The building recorded on a second tile is the same liquid.
+        var twice = reader.prepare(TILE, Cancellation.NONE);
+        var both = new java.util.ArrayList<>(part.liquids());
+        both.addAll(twice.liquids());
+        assertEquals(1, com.vibeminer.rendering.world.LiquidSurface.empty().with(both).placed());
+    }
+
+    @Test
+    void aTiltedBuildingsLiquidIsLeftOutAndCounted() {
+        var f = files(obj0(List.of(pitchedModf(ROOT, 7)), List.of()));
+        f.bytes.put(GROUP, groupWithLiquid());
+        var part = new WorldTileCollision(f, 1 << 20).prepare(TILE, Cancellation.NONE);
+        assertTrue(part.liquids().isEmpty());
+        assertEquals(1, part.skipped().get("building liquid tilted"));
+        assertTrue(keys(part).contains("W:7:0"), "its collision is still placed");
+    }
 
     @Test
     void aBuildingPlacesItsGroupsSetZeroAndItsOwnSet() {
