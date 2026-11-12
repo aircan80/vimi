@@ -18,11 +18,15 @@ import java.util.Objects;
  * The walking body as the World draws it: one creature display's World binding converted as the
  * World converts creatures ({@link WorldTileCreatures#convert}), its body sequences ({@link
  * BuildDisplayModels#worldSequences}) and its recorded size ({@link BuildDisplayModels#bodySize}),
- * packed into the renderer's body file. The body is a murloc (display 441) for now.
+ * packed into the renderer's body file. Walking draws a murloc (display 441), flying a gryphon
+ * (display 1149).
  */
 final class WorldBodyModel {
     /** The walking body's creature display: a murloc (model 31). */
     static final long MURLOC = 441;
+
+    /** The flying body's creature display: a gryphon (model 792), the taxi gryphon. */
+    static final long GRYPHON = 1149;
 
     /**
      * The packed file, the capsule from the recorded box and scale (null when the tables do not

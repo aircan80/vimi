@@ -58,14 +58,29 @@ class BodyAnimationTest {
                         false,
                         MURLOC));
         assertEquals(
-                0,
-                BodyAnimation.choose(
-                        WalkController.Mode.FLY,
-                        WalkController.Status.FLYING,
-                        0,
-                        false,
-                        false,
-                        GRYPHON));
+                135,
+                fly(WalkController.Status.FLYING, 0, GRYPHON),
+                "still in the air with no idle-in-air sequence: Fly");
+    }
+
+    static int fly(WalkController.Status status, double speed, Set<Integer> available) {
+        return BodyAnimation.choose(
+                WalkController.Mode.FLY, status, speed, false, false, available);
+    }
+
+    @Test
+    void theTaxiGryphonFliesAndRestsWithWhatItStores() {
+        // Display 1149 (model 792) on 70862 stores these AnimationData IDs, and no FlyStand (229)
+        // or Hover (193).
+        var taxi = Set.of(0, 1, 4, 5, 8, 9, 10, 16, 126, 127, 135);
+        assertEquals(135, fly(WalkController.Status.FLYING, 32, taxi), "moving: Fly");
+        assertEquals(135, fly(WalkController.Status.FLYING, 0, taxi), "hovering: Fly");
+        assertEquals(135, fly(WalkController.Status.LOADING, 0, taxi), "waiting in the air: Fly");
+        assertEquals(0, fly(WalkController.Status.LANDED, 0, taxi), "resting on the ground: Stand");
+        // A model that stores an idle-in-air sequence hovers with it: FlyStand, else Hover.
+        assertEquals(229, fly(WalkController.Status.FLYING, 0, Set.of(0, 135, 193, 229)));
+        assertEquals(193, fly(WalkController.Status.FLYING, 0, Set.of(0, 135, 193)));
+        assertEquals(135, fly(WalkController.Status.FLYING, 32, Set.of(0, 135, 193, 229)));
     }
 
     static int back(WalkController.Status status, double speed, Set<Integer> available) {

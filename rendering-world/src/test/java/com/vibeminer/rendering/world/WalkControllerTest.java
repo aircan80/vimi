@@ -291,6 +291,27 @@ class WalkControllerTest {
     }
 
     @Test
+    void aFlyingBodyStillOnTheGroundRestsThereWithoutLanding() {
+        var world = new TriangleWorld().floor(-500, -500, 500, 500, 0);
+        var body = new WalkController();
+        body.mode(WalkController.Mode.FLY);
+        body.place(0, 0, 3, 0, world);
+        // Descending onto the ground stops there; it is still flying while it moves.
+        var down = new WalkController.Input(0, 0, -1, 0, 0, false, MovementParity.TAXI_SPEED);
+        run(body, down, 1, world);
+        assertTrue(body.z() >= -1e-6 && body.z() < .05, "stops at the ground: " + body.z());
+        assertEquals(WalkController.Status.FLYING, body.status(), "pressing down is still flying");
+        run(body, IDLE, .1, world);
+        assertEquals(WalkController.Status.LANDED, body.status(), "still on the ground: resting");
+        assertEquals(WalkController.Mode.FLY, body.mode(), "it does not switch to walking");
+        // Off the ground it flies again.
+        run(body, new WalkController.Input(0, 0, 1, 0, 0, false, 10), .5, world);
+        run(body, IDLE, .1, world);
+        assertEquals(WalkController.Status.FLYING, body.status());
+        assertEquals(5, body.z(), .1);
+    }
+
+    @Test
     void invalidInputIsRefused() {
         assertThrows(
                 IllegalArgumentException.class,

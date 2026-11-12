@@ -179,9 +179,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
     // Metadata-only listfile names for picked objects; read on the pick worker, null when unknown.
     private java.util.function.LongFunction<String> fileNames = id -> null;
     private WorldTileCreatures creatures;
-    // The walking body: its display models, its built model once asked for, and the component.
+    // The bodies: their display models, each body built once asked for (by creature display:
+    // the walking murloc, the flying gryphon), and the one component they are read through.
     private java.util.function.Supplier<com.vibeminer.concepts.models.BuildDisplayModels> bodyDisplays;
-    private CompletableFuture<WorldBodyModel.Built> bodyModel;
+    private final java.util.Map<Long, CompletableFuture<WorldBodyModel.Built>> bodyModels = new java.util.HashMap<>();
     // Set on the first switch into a body mode: the body is built and sent only from then on.
     private boolean bodyWanted;
     private volatile com.vibeminer.concepts.models.BuildDisplayModels bodyComponent;
@@ -1622,11 +1623,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (mode == WorldExplorerInput.Mode.FREE) groundStatus(ExplorerMotion.Ground.FREE);
         else {
             bodyStatus(mode, input.body().body().status());
-            // Built and sent lazily: only once someone walks or flies.
-            if (!bodyWanted) {
-                bodyWanted = true;
-                sendBody();
-            }
+            // Built and sent lazily: only once someone walks or flies; each mode its own body.
+            bodyWanted = true;
+            useBody();
         }
         if (explorer) focusViewport();
     }
@@ -1673,10 +1672,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
                             : " (taxi speed; Classic has no player flight, controls approximated)");
             return status == WalkController.Status.LOADING
                     ? "Flying · terrain collision not loaded here yet; flying on without it" + speed
-                    : "Flying" + collides + speed;
+                    : status == WalkController.Status.LANDED
+                            ? "Flying · resting on the ground (the walk/fly key lands)" + collides + speed
+                            : "Flying" + collides + speed;
         }
         return switch (status) {
-            case STANDING, MOVING, FLYING -> "Walking" + collides;
+            case STANDING, MOVING, FLYING, LANDED -> "Walking" + collides;
             case FALLING -> "Walking · in the air" + collides;
             case SLIDING -> "Walking · too steep to stand: sliding" + collides;
             case LOADING -> "Walking · waiting for terrain collision here";
@@ -4218,52 +4219,85 @@ final class WorldView extends BorderPane implements AutoCloseable {
         bodyDisplays = java.util.Objects.requireNonNull(displays);
     }
 
-    /**
-     * The walking body, built once on a worker; when it is ready its animation clock and capsule
-     * are handed to the input on the FX thread. A failure only means no drawn body.
-     */
-    private synchronized CompletableFuture<WorldBodyModel.Built> bodyModel() {
-        if (bodyModel != null) return bodyModel;
-        var displays = bodyDisplays;
-        bodyModel = CompletableFuture.supplyAsync(() -> {
-            var component = displays.get();
+    /** The body of the current motion mode: the gryphon flies, the murloc walks. */
+    private long bodyDisplay() {
+        return input.mode() == WorldExplorerInput.Mode.FLY ? WorldBodyModel.GRYPHON : WorldBodyModel.MURLOC;
+    }
+
+    /** The one display-model component the bodies are read through, opened on first use. */
+    private synchronized com.vibeminer.concepts.models.BuildDisplayModels bodyComponent() {
+        if (bodyComponent == null) {
+            var component = bodyDisplays.get();
             if (component == null) throw new IllegalStateException("Model files are not open");
             bodyComponent = component;
+        }
+        return bodyComponent;
+    }
+
+    /**
+     * The body of creature display {@code display}, built once on a worker; when it is ready and
+     * still the current mode's body, its animation clock and capsule go to the input on the FX
+     * thread. A failure only means no drawn body.
+     */
+    private synchronized CompletableFuture<WorldBodyModel.Built> bodyModel(long display) {
+        var known = bodyModels.get(display);
+        if (known != null) return known;
+        var built = CompletableFuture.supplyAsync(() -> {
             try {
-                return WorldBodyModel.build(component, WorldBodyModel.MURLOC,
-                        com.vibeminer.access.Cancellation.NONE);
+                return WorldBodyModel.build(bodyComponent(), display, com.vibeminer.access.Cancellation.NONE);
             } catch (RuntimeException failure) {
                 throw failure;
             } catch (Exception failure) {
                 throw new java.util.concurrent.CompletionException(failure);
             }
         }, runnable -> Thread.ofVirtual().name("world-body-model").start(runnable));
-        bodyModel.whenComplete((built, failure) -> Platform.runLater(() -> {
+        bodyModels.put(display, built);
+        built.whenComplete((body, failure) -> Platform.runLater(() -> {
             if (closed) return;
             if (failure != null) {
-                WorldDiagnostics.degraded("body", "The walking body could not be built", failure);
+                WorldDiagnostics.degraded("body", "The " + (display == WorldBodyModel.GRYPHON ? "flying" : "walking")
+                        + " body could not be built", failure);
                 return;
             }
-            input.animator(new com.vibeminer.rendering.world.BodyAnimator(built.durations(), built.moveSpeeds()));
-            if (built.capsule() != null) input.body().body().shape(built.capsule());
+            if (bodyWanted && display == bodyDisplay()) applyBody(body);
         }));
-        return bodyModel;
+        return built;
+    }
+
+    /** The current mode's body: its clock and capsule once built, and its file for the stream. */
+    private void useBody() {
+        if (bodyDisplays == null) return;
+        long display = bodyDisplay();
+        var built = bodyModel(display);
+        // Until the body is built it is not drawn, and the last one's clock does not run.
+        if (built.isDone() && !built.isCompletedExceptionally()) applyBody(built.join());
+        else input.animator(null);
+        sendBody();
+    }
+
+    private void applyBody(WorldBodyModel.Built built) {
+        input.animator(new com.vibeminer.rendering.world.BodyAnimator(built.durations(), built.moveSpeeds()));
+        if (built.capsule() != null) input.body().body().shape(built.capsule());
     }
 
     /**
-     * Hands the walking body to the current streaming session (once per session; the controller
-     * ignores a repeat). The body is built on the first call.
+     * Hands the current mode's body to the streaming session; the controller sends it once and
+     * replaces the drawn body when the mode's body differs. The body is built on the first call.
      */
     private void sendBody() {
         var controller = streaming;
         if (bodyDisplays == null || controller == null) return;
-        controller.body(() -> bodyModel().thenApply(WorldBodyModel.Built::file));
+        long display = bodyDisplay();
+        controller.body(display, () -> bodyModel(display).thenApply(WorldBodyModel.Built::file));
     }
 
     /** The drawn body's pose for this frame, or null without a body or in the free camera. */
     private com.vibeminer.rendering.bgfx.WorldStreamTransport.Body bodyPose() {
         var animator = input.animator();
         if (animator == null || input.mode() == WorldExplorerInput.Mode.FREE || !input.body().placed()) return null;
+        // Only the body the child draws now, and only when it is this mode's (not during a swap).
+        var controller = streaming;
+        if (controller == null || controller.bodyDrawn() != bodyDisplay()) return null;
         var walker = input.body().body();
         return new com.vibeminer.rendering.bgfx.WorldStreamTransport.Body(walker.x(), walker.y(), walker.z(),
                 input.body().yaw(), animator.sequence(), animator.millis(), input.body().camera().firstPerson());

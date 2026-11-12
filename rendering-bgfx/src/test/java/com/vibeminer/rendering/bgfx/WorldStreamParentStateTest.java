@@ -393,7 +393,7 @@ class WorldStreamParentStateTest {
     }
 
     @Test
-    void oneBodyPerSessionAndUnsolicitedOrRepeatedAnswersAreIgnored() {
+    void bodiesGoOneAtATimeAndUnsolicitedOrRepeatedAnswersAreIgnored() {
         var state = ready();
         assertEquals(
                 WorldStreamParentState.Change.IGNORED,
@@ -403,7 +403,7 @@ class WorldStreamParentStateTest {
         var command = state.body(4096, "a".repeat(64));
         assertNotNull(command);
         assertEquals(4096, command.length());
-        assertNull(state.body(4096, "a".repeat(64)), "one body per session");
+        assertNull(state.body(4096, "a".repeat(64)), "one body at a time");
         assertEquals(
                 WorldStreamParentState.Change.BODY,
                 state.status(
@@ -414,6 +414,16 @@ class WorldStreamParentStateTest {
                 state.status(
                         new WorldStreamStatus.BodyDone(NONCE, WorldStreamStatus.BodyOutcome.DRAWN)),
                 "a repeated answer");
+        // Once answered, another body (a swap) may follow, and is answered in turn.
+        var swap = state.body(8192, "b".repeat(64));
+        assertNotNull(swap, "a swap after the answer");
+        assertEquals(8192, swap.length());
+        assertNull(state.body(4096, "a".repeat(64)), "again one at a time");
+        assertEquals(
+                WorldStreamParentState.Change.BODY,
+                state.status(
+                        new WorldStreamStatus.BodyDone(
+                                NONCE, WorldStreamStatus.BodyOutcome.DRAWN)));
         assertNull(new WorldStreamParentState(SESSION).body(4096, "a".repeat(64)));
     }
 

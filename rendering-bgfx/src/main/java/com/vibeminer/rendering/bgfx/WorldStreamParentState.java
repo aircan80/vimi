@@ -106,7 +106,8 @@ final class WorldStreamParentState {
     private boolean hello, closed, childGone;
     // The session's one HORIZON (#372): sent, then answered once.
     private boolean horizonSent, horizonAnswered;
-    // The session's one BODY_MODEL: sent, then answered once.
+    // The session's BODY_MODEL commands, one at a time: sent, then answered once; the next may
+    // follow only after the answer (a body swap replaces the drawn body).
     private boolean bodySent, bodyAnswered;
     private int objectFormats;
     private Ticket ticket;
@@ -293,12 +294,16 @@ final class WorldStreamParentState {
         return new WorldStreamControl.Horizon(session.nonce(), length, sha);
     }
 
-    /** The session's one body model command, or null once one was sent or the session ended. */
+    /**
+     * A body model command, or null while the previous one is unanswered or the session ended. Each
+     * answered body may be followed by another, which replaces it.
+     */
     synchronized WorldStreamControl.BodyModel body(int length, String sha) {
-        if (closed || !hello || bodySent) {
+        if (closed || !hello || bodySent && !bodyAnswered) {
             return null;
         }
         bodySent = true;
+        bodyAnswered = false;
         return new WorldStreamControl.BodyModel(session.nonce(), length, sha);
     }
 

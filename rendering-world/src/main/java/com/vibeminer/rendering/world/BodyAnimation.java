@@ -6,8 +6,9 @@ import java.util.Set;
 /**
  * Which sequence a body plays, from what it is doing, how fast its clock runs, and its capsule from
  * the model's recorded box. Sequences are AnimationData IDs (wowdev M2/AnimationList): Stand 0,
- * Walk 4, Run 5, WalkBackwards 13, SwimIdle 41, Swim 42, Fly 135. A wanted sequence the body's
- * model does not have falls back to the nearest one it has, and finally to Stand.
+ * Walk 4, Run 5, WalkBackwards 13, SwimIdle 41, Swim 42, Fly 135, Hover 193, FlyStand 229. A wanted
+ * sequence the body's model does not have falls back to the nearest one it has, and finally to
+ * Stand.
  */
 public final class BodyAnimation {
     public static final int STAND = 0,
@@ -16,10 +17,14 @@ public final class BodyAnimation {
             WALK_BACKWARDS = 13,
             SWIM_IDLE = 41,
             SWIM = 42,
-            FLY = 135;
+            FLY = 135,
+            HOVER = 193,
+            FLY_STAND = 229;
 
     /** The sequences a walking, swimming or flying body may play, in no particular order. */
-    public static final int[] SEQUENCES = {STAND, WALK, RUN, WALK_BACKWARDS, SWIM_IDLE, SWIM, FLY};
+    public static final int[] SEQUENCES = {
+        STAND, WALK, RUN, WALK_BACKWARDS, SWIM_IDLE, SWIM, FLY, HOVER, FLY_STAND
+    };
 
     /**
      * A body moving forward at or below this speed walks (the client's walk toggle); faster, it
@@ -52,7 +57,15 @@ public final class BodyAnimation {
         boolean moving = speed > .05;
         int[] wanted;
         if (mode == WalkController.Mode.FLY) {
-            wanted = new int[] {moving ? FLY : STAND, RUN, STAND};
+            // Moving flies; still in the air, an idle-in-air sequence if the model has one (the
+            // taxi gryphon has neither), else Fly; resting on the ground, Stand. Never a pose the
+            // model does not store.
+            wanted =
+                    moving
+                            ? new int[] {FLY, RUN, STAND}
+                            : status == WalkController.Status.LANDED
+                                    ? new int[] {STAND}
+                                    : new int[] {FLY_STAND, HOVER, FLY, STAND};
         } else if (swimming) {
             wanted = moving ? new int[] {SWIM, RUN, WALK, STAND} : new int[] {SWIM_IDLE, STAND};
         } else if (status == WalkController.Status.STANDING || !moving) {
