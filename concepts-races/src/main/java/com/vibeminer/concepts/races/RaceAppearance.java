@@ -307,13 +307,6 @@ final class RaceAppearance {
         if (restored == null) {
             return null;
         }
-        var parts =
-                restored.appearance().mesh().parts().stream()
-                        .map(com.vibeminer.rendering.models.PreviewMesh.Part::id)
-                        .collect(java.util.stream.Collectors.toSet());
-        if (!parts.containsAll(entry.visible())) {
-            return null;
-        }
         token.check();
         return new RaceNpcs.Appearance(
                 new RaceAppearanceTypes.Result(

@@ -75,7 +75,11 @@ final class RaceNpcIndex {
     /** Set when the handle used a table call that names no single table: nothing is written. */
     private volatile boolean untracked;
 
-    /** Each touched table's fingerprint, taken once per handle (see {@link #write}). */
+    /**
+     * Each touched table's fingerprint, taken once per handle: a handle's tables are fixed for its
+     * lifetime, as the races component's remembered results already assume. A changed table is seen
+     * by the next handle.
+     */
     private final Map<TableTypes.Ref, String> fingerprints = new ConcurrentHashMap<>();
 
     RaceNpcIndex(BuildTables tables, BuildFiles files, GeneratedStore generated) {
@@ -363,9 +367,8 @@ final class RaceNpcIndex {
     /**
      * Writes an NPC's entry for a complete appearance whose composite is saved under {@code
      * composite}. {@code known} are sources with the content keys the appearance was composed from;
-     * {@code others} are stated now. Every table touched so far is described again now; one that
-     * changed since this handle first described it, or one that cannot be described, writes nothing
-     * (the rows the appearance came from may be either version). Returns whether it was written.
+     * {@code others} are stated now. The entry names every table touched so far with its
+     * fingerprint; a table that cannot be described writes nothing. Returns whether it was written.
      */
     @SuppressWarnings("try")
     boolean write(
@@ -393,17 +396,11 @@ final class RaceNpcIndex {
             }
             var taken = new java.util.HashMap<TableTypes.Ref, String>();
             for (var ref : refs) {
-                String now = fingerprint(ref, token);
-                if (now == null) {
+                String fingerprint = known(ref, token);
+                if (fingerprint == null) {
                     return false;
                 }
-                String before = fingerprints.putIfAbsent(ref, now);
-                if (before != null && !before.equals(now)) {
-                    // Changed within this handle: start over from what the tables say now.
-                    fingerprints.clear();
-                    return false;
-                }
-                taken.put(ref, now);
+                taken.put(ref, fingerprint);
             }
             var digest = digest(refs, taken, token);
             var sources = new TreeMap<Long, String>(known);

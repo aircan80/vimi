@@ -413,7 +413,7 @@ final class RaceNpcIndexTest {
     }
 
     @Test
-    void aTableThatChangedWithinTheHandleWritesNothing() throws Exception {
+    void aTableIsDescribedOncePerHandleAndAChangeIsSeenByTheNextOne() throws Exception {
         var raw = raw();
         var files = files('3');
         var generated = new MemoryGeneratedStore();
@@ -454,9 +454,12 @@ final class RaceNpcIndexTest {
                         false,
                         null);
         assertTrue(write(index, composite, result));
+        assertNotNull(index.find(50, Cancellation.NONE));
+        // The tables of a handle are fixed: a change is seen by the next handle, whose
+        // description no longer matches the entry.
         key[0] = "d".repeat(32);
-        assertFalse(write(index, composite, result), "described differently than before");
-        assertTrue(write(index, composite, result), "described afresh after the change");
+        assertNotNull(index.find(50, Cancellation.NONE), "described once per handle");
+        assertNull(new RaceNpcIndex(tables, files, generated).find(50, Cancellation.NONE));
         // A composite not in the store is never indexed.
         assertFalse(write(index, GeneratedKey.hash(new byte[] {8}), result));
         // A table call that may read tables it does not name: nothing more is written.
