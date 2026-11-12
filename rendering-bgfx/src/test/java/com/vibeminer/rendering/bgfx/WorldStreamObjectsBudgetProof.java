@@ -13,8 +13,10 @@ import java.util.concurrent.TimeUnit;
  * Native proof of the renderer's shared objects GPU budget (#276): with the budget lowered to fit
  * one authored objects set, a second set on another resident is refused as BUDGET while its terrain
  * keeps drawing, reserves nothing, and attaches once the first set's slot is reused and its
- * reservation released. Removing the budget check, the reservation accounting or the release on
- * slot reuse fails this proof.
+ * reservation released. A replacement of an attached set (#175) is built while the set it replaces
+ * stays reserved, so it is refused when both do not fit and the held set stays; once it fits, it
+ * attaches and the replaced set's reservation is released. Removing the budget check, the
+ * reservation accounting, the release on slot reuse or on replacement fails this proof.
  */
 public final class WorldStreamObjectsBudgetProof {
     private WorldStreamObjectsBudgetProof() {}
@@ -113,12 +115,31 @@ public final class WorldStreamObjectsBudgetProof {
                     late(owner, second, other) == WorldStreamStatus.LateOutcome.ATTACHED,
                     "The refused resident attaches once budget is free");
             require(owner.stats().upload().objectBytes() == need, "Retried set reserved");
+            // A replacement is charged beside the set it replaces: refused, and the held set stays.
+            require(
+                    late(owner, second, data, true) == WorldStreamStatus.LateOutcome.BUDGET,
+                    "A replacement that does not fit beside the held set is refused");
+            require(
+                    owner.stats().upload().objectBytes() == need,
+                    "A refused replacement keeps the held set's reservation only");
+            fresh(owner, reader, content);
+            owner.objectBudgetForProof(3 * need);
+            require(
+                    late(owner, second, data, true) == WorldStreamStatus.LateOutcome.ATTACHED,
+                    "A replacement that fits attaches");
+            require(
+                    owner.stats().upload().objectBytes() == need,
+                    "The replaced set's reservation was released");
+            // A first set is never accepted for a generation that holds one.
+            require(
+                    late(owner, second, other) == WorldStreamStatus.LateOutcome.DROPPED,
+                    "A non-replacing set for a held generation is dropped");
             System.out.println(
                     "WORLD_OBJECTS_BUDGET_PASS need="
                             + need
                             + " budget="
                             + (need + need / 2)
-                            + " refused=BUDGET retried=ATTACHED");
+                            + " refused=BUDGET retried=ATTACHED replacement=BUDGET,ATTACHED");
         }
     }
 
@@ -143,7 +164,17 @@ public final class WorldStreamObjectsBudgetProof {
             WorldStreamState.Lease lease,
             WorldStreamObjectsFile.Data data)
             throws Exception {
-        var upload = owner.beginLate(lease, WorldStreamPackedObjects.pack(data, () -> false));
+        return late(owner, lease, data, false);
+    }
+
+    private static WorldStreamStatus.LateOutcome late(
+            WorldStreamNativeOwner owner,
+            WorldStreamState.Lease lease,
+            WorldStreamObjectsFile.Data data,
+            boolean replace)
+            throws Exception {
+        var upload =
+                owner.beginLate(lease, WorldStreamPackedObjects.pack(data, () -> false), replace);
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
         while (!upload.ready()) {
             owner.stepLate(upload);

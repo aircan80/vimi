@@ -478,13 +478,18 @@ final class WorldStreamNativeOwner implements AutoCloseable {
 
     BgfxWorldStreamRenderer.LateUpload beginLate(
             WorldStreamState.Lease lease, WorldStreamPackedObjects objects) {
+        return beginLate(lease, objects, false);
+    }
+
+    BgfxWorldStreamRenderer.LateUpload beginLate(
+            WorldStreamState.Lease lease, WorldStreamPackedObjects objects, boolean replace) {
         try {
             requireOpen();
         } catch (RuntimeException closed) {
             objects.close();
             throw closed;
         }
-        return renderer.beginLate(lease, objects);
+        return renderer.beginLate(lease, objects, replace);
     }
 
     /** Same frame rule as terrain: no GPU mutation after this frame's draw submission. */

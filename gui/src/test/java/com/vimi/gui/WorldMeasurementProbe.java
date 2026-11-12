@@ -2322,25 +2322,9 @@ public final class WorldMeasurementProbe {
             var interiors = probeInteriors(map);
             var creatureSource = streamCreatures;
             long creatureMap = map.id();
-            WorldStreamSourceBridge.ExteriorPreparer preparer =
-                    (source, scope, tile, cancellation, formats, creatureBytes) ->
-                            WorldStreamSourceBridge.prepareExterior(
-                                    source,
-                                    scope,
-                                    tile,
-                                    cancellation,
-                                    creatureSource == null
-                                            ? null
-                                            : (builder, owned, token) ->
-                                                    creatureSource.append(
-                                                            builder,
-                                                            creatureMap,
-                                                            owned,
-                                                            creatureBytes,
-                                                            token),
-                                    detail,
-                                    interiors,
-                                    formats);
+            // As the World view: buildings first, creatures in a later pass (#175).
+            var preparer =
+                    WorldStreamSourceBridge.preparer(creatureSource, creatureMap, detail, interiors);
             var holder = new WorldStreamSourceController[1];
             controller =
                     new WorldStreamSourceController(
@@ -2414,19 +2398,28 @@ public final class WorldMeasurementProbe {
         private void measure(long allocated) throws Exception {
             long fillBudget = TimeUnit.SECONDS.toNanos(Long.getLong("probe.fillSeconds", 150));
             // 1. Fill: stationary camera at the seed until every tile and its objects are done.
-            long lastObjects = -1, settledSince = 0;
+            long lastObjects = -1, settledSince = 0, lastBuildings = -1, buildingsSince = 0;
             while (System.nanoTime() - started < fillBudget && beforeDeadline()) {
                 Thread.sleep(250);
                 long objects = objectsDone();
+                long buildings = buildingsDone();
+                if (buildings != lastBuildings) {
+                    lastBuildings = buildings;
+                    buildingsSince = System.nanoTime();
+                }
                 boolean terrainDone = desired > 0 && prepared == desired && firstFrame != 0;
                 if (terrainDone && filled == 0) filled = System.nanoTime();
                 if (objects != lastObjects) {
                     lastObjects = objects;
                     settledSince = System.nanoTime();
                 }
+                // A creatures pass can take longer than the quiet period: settled only once the
+                // controller is no longer loading buildings or creatures either.
+                boolean loading = controller.loadingObjects();
                 if (terrainDone
                         && phase.equals("READY")
                         && prepares() >= desired
+                        && !loading
                         && System.nanoTime() - settledSince > TimeUnit.SECONDS.toNanos(3)) {
                     break;
                 }
@@ -2438,12 +2431,13 @@ public final class WorldMeasurementProbe {
             say(
                     String.format(
                             Locale.ROOT,
-                            "PROBE fill: phase %s, %d/%d tiles; first frame %.2f s; all terrain %.2f s; objects settled %.2f s (%d object deliveries); area %s",
+                            "PROBE fill: phase %s, %d/%d tiles; first frame %.2f s; all terrain %.2f s; buildings settled %.2f s; objects settled %.2f s (%d object deliveries); area %s",
                             phase,
                             prepared,
                             desired,
                             stamp(firstFrame),
                             stamp(filled),
+                            seconds(buildingsSince - started),
                             seconds(settledSince - started),
                             lastObjects,
                             fx(
@@ -2563,17 +2557,21 @@ public final class WorldMeasurementProbe {
         }
 
         long objectsDone() {
-            var s = WorldStageTimings.snapshot();
-            long n = 0;
-            for (String name :
-                    List.of(
-                            "parent.objects.attachRoundTrip",
-                            "parent.objects.prepare",
-                            "parent.objects.prepareCanceled")) {
-                var series = s.get(name);
-                if (series != null) n += series.count();
-            }
-            return n;
+            return buildingsDone()
+                    + count("parent.objects.prepareCreatures")
+                    + count("parent.objects.creaturesRoundTrip");
+        }
+
+        /** Buildings passes only; with creatures on, theirs follow in a later pass (#175). */
+        long buildingsDone() {
+            return count("parent.objects.attachRoundTrip")
+                    + count("parent.objects.prepare")
+                    + count("parent.objects.prepareCanceled");
+        }
+
+        private static long count(String name) {
+            var series = WorldStageTimings.snapshot().get(name);
+            return series == null ? 0 : series.count();
         }
 
         /** FX: what WorldView's timer does for a streaming explorer. */

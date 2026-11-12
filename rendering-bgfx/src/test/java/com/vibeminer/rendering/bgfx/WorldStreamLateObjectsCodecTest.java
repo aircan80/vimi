@@ -40,6 +40,32 @@ class WorldStreamLateObjectsCodecTest {
                         WorldStreamObjectsFile.MAX_BYTES,
                         "f".repeat(64));
         assertTrue(WorldStreamControl.encode(widest).length <= WorldStreamControl.MAX_LINE_BYTES);
+        var widestReplacement =
+                new WorldStreamControl.LateObjects(
+                        NONCE,
+                        Long.MAX_VALUE - 1,
+                        new WorldStreamState.Lease(9, Long.MAX_VALUE, Long.MAX_VALUE),
+                        WorldStreamObjectsFile.MAX_BYTES,
+                        "f".repeat(64),
+                        true);
+        assertTrue(
+                WorldStreamControl.encode(widestReplacement).length
+                        <= WorldStreamControl.MAX_LINE_BYTES);
+    }
+
+    @Test
+    void replacementCommandRoundTripsUnderItsOwnName() throws IOException {
+        var command =
+                new WorldStreamControl.LateObjects(NONCE, 4, LEASE, 4096, "a".repeat(64), true);
+        byte[] encoded = WorldStreamControl.encode(command);
+        assertEquals(
+                PREFIX + "OBJECTS_REPLACE 4 37 9 23 tile-4.wso 4096 " + "a".repeat(64) + "\n",
+                new String(encoded, StandardCharsets.US_ASCII));
+        assertEquals(command, WorldStreamControl.decode(encoded, encoded.length));
+        byte[] foreign =
+                (PREFIX + "OBJECTS_REPLACE 4 37 9 23 tile-5.wso 4096 " + "a".repeat(64) + "\n")
+                        .getBytes(StandardCharsets.US_ASCII);
+        assertThrows(IOException.class, () -> WorldStreamControl.decode(foreign, foreign.length));
     }
 
     @Test

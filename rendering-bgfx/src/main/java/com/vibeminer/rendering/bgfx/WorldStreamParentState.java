@@ -48,6 +48,10 @@ final class WorldStreamParentState {
         boolean lateRequested, lateSent;
         volatile WorldStreamStatus.LateOutcome late;
 
+        // A late set attached to this generation and is drawn; set once, kept through any number
+        // of replacements, whose own outcomes never take it away.
+        volatile boolean lateHeld;
+
         private Resident(Ticket ticket, int objects) {
             this.objects = objects;
             owner = ticket.owner;
@@ -342,7 +346,12 @@ final class WorldStreamParentState {
         }
         var command =
                 new WorldStreamControl.LateObjects(
-                        session.nonce(), member.transaction, member.lease, length, sha);
+                        session.nonce(),
+                        member.transaction,
+                        member.lease,
+                        length,
+                        sha,
+                        member.lateHeld);
         objectsTarget = member;
         return command;
     }
@@ -358,7 +367,8 @@ final class WorldStreamParentState {
      * moves it; inline sets come only with tiles, so this never repeats on its own. A late objects
      * outcome never moves it, a late refusal included: late sets build one at a time, so one that
      * started after a refusal frees at most what it took since, and a late refusal moving it would
-     * re-offer itself at once.
+     * re-offer itself at once. The one exception is an attached replacement, which destroyed the
+     * set it replaced.
      */
     synchronized long objectsReleases() {
         return objectsReleases;
@@ -372,8 +382,37 @@ final class WorldStreamParentState {
      * delivery then does, except a BUDGET refusal, after which it may be offered again.
      */
     synchronized boolean admitLateObjects(Resident member) {
+        return admitLateObjects(member, false);
+    }
+
+    /**
+     * As above; with {@code replace} the resident must hold an attached late set and have no
+     * request in flight. Its new set replaces the held one only once fully built child-side; any
+     * other outcome leaves the held set drawn. Replacements may repeat.
+     */
+    synchronized boolean admitLateObjects(Resident member, boolean replace) {
         if (member == null || member.owner != owner) {
             throw new IllegalArgumentException("Foreign late objects resident");
+        }
+        if (replace) {
+            if (!member.lateHeld || member.late == null || member.objects != 0) {
+                throw new IllegalArgumentException("Replacement without held late objects");
+            }
+            if (closed || !hello) {
+                return false;
+            }
+            member.lateRequested = true;
+            member.lateSent = false;
+            if (generations[member.lease.slot()] != member.lease.generation()
+                    || !active.contains(member)) {
+                member.late = WorldStreamStatus.LateOutcome.DROPPED;
+                return false;
+            }
+            member.late = null;
+            return true;
+        }
+        if (member.lateHeld) {
+            throw new IllegalArgumentException("Resident already holds late objects");
         }
         if (member.late == WorldStreamStatus.LateOutcome.BUDGET) {
             // A budget refusal attached nothing; the same generation may be offered again.
@@ -633,6 +672,11 @@ final class WorldStreamParentState {
                     "Unmatched late objects outcome");
             objectsTarget.late = value.outcome();
             if (value.outcome() == WorldStreamStatus.LateOutcome.ATTACHED) {
+                if (objectsTarget.lateHeld) {
+                    // The replaced set was destroyed: room it held may let a refused set fit.
+                    objectsReleases++;
+                }
+                objectsTarget.lateHeld = true;
                 slotObjects[value.lease().slot()] = true;
             }
             objectsTarget = null;

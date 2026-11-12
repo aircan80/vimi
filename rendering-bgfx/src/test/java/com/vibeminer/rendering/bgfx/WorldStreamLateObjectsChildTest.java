@@ -72,6 +72,26 @@ final class WorldStreamLateObjectsChildTest {
     }
 
     @Test
+    void heldObjectsAdmitOnlyReplacementsAndAnEmptyGenerationNone() {
+        var state = new WorldStreamState(NONCE);
+        var lease = resident(state, 1, 7, 19, List.of());
+        // Nothing held yet: nothing to replace.
+        assertEquals(STALE, state.objectsOffer(NONCE, 1, lease, true));
+        assertEquals(OK, state.objectsOffer(NONCE, 1, lease));
+        assertEquals(OK, state.objectsDone(lease, true));
+
+        assertEquals(OK, state.objectsOffer(NONCE, 1, lease, true));
+        assertTrue(state.objectsLive(lease));
+        // A replacement that does not attach leaves the held set; another may follow.
+        assertEquals(OK, state.objectsDone(lease, false));
+        assertEquals(OK, state.objectsOffer(NONCE, 1, lease, true));
+        assertEquals(OK, state.objectsDone(lease, true));
+        assertEquals(STALE, state.objectsOffer(NONCE, 1, lease));
+        assertEquals(OK, state.objectsOffer(NONCE, 1, lease, true));
+        assertEquals(OK, state.objectsDone(lease, true));
+    }
+
+    @Test
     void stagedButUncommittedTilesDoNotAdmitObjects() {
         var state = new WorldStreamState(NONCE);
         var lease = state.credit();
@@ -148,6 +168,11 @@ final class WorldStreamLateObjectsChildTest {
         assertFalse(BgfxWorldStreamRenderer.lateTarget(lease, true, lease, false, List.of()));
         assertFalse(BgfxWorldStreamRenderer.lateTarget(lease, true, lease, true, active));
         assertFalse(BgfxWorldStreamRenderer.lateTarget(lease, true, null, false, active));
+        // A replacement needs the objects it replaces, in that same ready active generation.
+        assertTrue(BgfxWorldStreamRenderer.lateTarget(lease, true, lease, true, active, true));
+        assertFalse(BgfxWorldStreamRenderer.lateTarget(lease, true, lease, false, active, true));
+        assertFalse(BgfxWorldStreamRenderer.lateTarget(lease, true, newer, true, active, true));
+        assertFalse(BgfxWorldStreamRenderer.lateTarget(lease, true, lease, true, List.of(), true));
     }
 
     @Test
