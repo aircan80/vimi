@@ -414,6 +414,17 @@ final class RaceNpcAppearanceTest {
             boolean npc,
             com.vibeminer.generated.GeneratedStore generated,
             com.vibeminer.generated.GeneratedKey key) {
+        return render(files, variant, npc, generated, key, List.of());
+    }
+
+    /** As above, with {@code extraLayers} drawn over the base layer. */
+    private static RaceAppearanceTypes.Result render(
+            com.vibeminer.files.BuildFiles files,
+            RaceMediaTypes.Variant variant,
+            boolean npc,
+            com.vibeminer.generated.GeneratedStore generated,
+            com.vibeminer.generated.GeneratedKey key,
+            List<RaceAppearancePlan.Layer> extraLayers) {
         var build = BUILD;
         var tables =
                 new MemoryTables()
@@ -440,9 +451,20 @@ final class RaceNpcAppearanceTest {
             var plan =
                     new RaceAppearancePlan.Plan(
                             List.of(new RaceAppearancePlan.Canvas(1, 4, 4)),
-                            List.of(
-                                    new RaceAppearancePlan.Layer(
-                                            1, 100, 0, 0, 4, 4, 1, 0, "NPC bake #100")),
+                            java.util.stream.Stream.concat(
+                                            java.util.stream.Stream.of(
+                                                    new RaceAppearancePlan.Layer(
+                                                            1,
+                                                            100,
+                                                            0,
+                                                            0,
+                                                            4,
+                                                            4,
+                                                            1,
+                                                            0,
+                                                            "NPC bake #100")),
+                                            extraLayers.stream())
+                                    .toList(),
                             List.of(),
                             RaceAppearanceProfiles.Profile.LEGACY,
                             npc);
@@ -923,6 +945,32 @@ final class RaceNpcAppearanceTest {
                 unchecked.issues().stream()
                         .anyMatch(issue -> issue.startsWith(RaceAppearance.INCOMPLETE)),
                 unchecked.issues().toString());
+    }
+
+    /** #499: a layer texture that cannot be read leaves the preview incomplete, and unsaved. */
+    @Test
+    void aPlayerPreviewWithAnUnreadableLayerSaysItIsIncomplete() throws Exception {
+        var variant = new RaceMediaTypes.Variant(3, 0, 1, 1, 1234);
+        var key = RaceAppearance.appearanceKey("unreadable-layer", false);
+        var generated = new com.vibeminer.generated.MemoryGeneratedStore();
+        // Layer file 101 is not in the build; the base layer 100 is.
+        var preview =
+                render(
+                        skeletal(false, skeletonFile(0x20), '5'),
+                        variant,
+                        false,
+                        generated,
+                        key,
+                        List.of(new RaceAppearancePlan.Layer(1, 101, 0, 0, 4, 4, 1, 1, "#101")));
+        assertTrue(preview.appearance() != null, preview.message());
+        assertTrue(
+                preview.issues().stream()
+                        .anyMatch(
+                                issue ->
+                                        issue.startsWith(RaceAppearance.INCOMPLETE + "texture #101")
+                                                && issue.endsWith("this preview is not saved.")),
+                preview.issues().toString());
+        assertFalse(saved(generated, key));
     }
 
     @Test

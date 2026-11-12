@@ -606,11 +606,13 @@ final class RaceAppearance {
                     complete = false;
                     note(
                             issues,
-                            "Texture #"
+                            INCOMPLETE
+                                    + "texture #"
                                     + fid
                                     + " is "
                                     + read.state()
-                                    + "; available layers are retained.");
+                                    + ", so the layers that could be read are shown; this preview"
+                                    + " is not saved.");
                     continue;
                 }
                 var image = read.image();
@@ -622,7 +624,10 @@ final class RaceAppearance {
                     complete = false;
                     note(
                             issues,
-                            "Additional diffuse images exceed the bounded texture preview budget.");
+                            INCOMPLETE
+                                    + "more diffuse images than the bounded texture budget allows,"
+                                    + " so the extra layers are left out; this preview is not"
+                                    + " saved.");
                     continue;
                 }
                 decodedPixels += imagePixels;
