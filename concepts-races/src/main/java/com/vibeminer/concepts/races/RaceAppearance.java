@@ -519,12 +519,57 @@ final class RaceAppearance {
         if (prepared.finished() != null) {
             return prepared.finished();
         }
+        if (unrecorded(prepared, token)) {
+            // A saved composite of an NPC whose items may attach models, composed before its
+            // attachment files were recorded: it could be restored but never indexed, so the NPC
+            // was resolved and planned again every session. Composed again once, which saves the
+            // composite (replacing the old one), records its attachment files and indexes it.
+            var composed = render(prepared, token, false);
+            if (index.attachments(prepared.key(), token) != null) {
+                return composed;
+            }
+            // Not complete now (an item not readable yet, say): the saved composite is shown as
+            // before, and composing is tried again next time.
+        }
+        return render(prepared, token, true);
+    }
+
+    /**
+     * Whether {@code prepared} is an NPC that may attach models whose saved composite has no record
+     * of its attachment files.
+     */
+    @SuppressWarnings("try")
+    private boolean unrecorded(Prepared prepared, Cancellation token) {
+        if (index == null
+                || generated == null
+                || prepared.npc() == null
+                || prepared.key() == null
+                || !attaches(prepared.npc())
+                || index.attachments(prepared.key(), token) != null) {
+            return false;
+        }
+        var lower = new com.vibeminer.generated.Cancellation();
+        try (var registration = token.onCancel(lower::cancel)) {
+            return generated.has(prepared.key(), lower).join();
+        } catch (java.util.concurrent.CancellationException canceled) {
+            throw canceled;
+        } catch (RuntimeException unreadable) {
+            token.check();
+            return false;
+        }
+    }
+
+    /**
+     * As above; without {@code restoring}, a saved composite is not restored but composed again.
+     */
+    private RaceAppearanceTypes.Result render(
+            Prepared prepared, Cancellation token, boolean restoring) {
         var issues = new ArrayList<>(prepared.issues());
         var base = prepared.base();
         var plan = prepared.plan();
         var key = prepared.key();
         try {
-            var restored = restore(key, base.variant().modelFileDataId(), token);
+            var restored = restoring ? restore(key, base.variant().modelFileDataId(), token) : null;
             if (restored != null) {
                 if (restored.assumedWeights()) {
                     note(issues, RaceAppearancePlan.ASSUMED_WEIGHTS);

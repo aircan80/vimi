@@ -713,15 +713,23 @@ final class RaceNpcIndexTest {
         generated.delete(List.of(key)).join();
         assertTrue(ask(raw, files, generated).result().restored());
         assertTrue(present(generated, key), "written after a restore with recorded files");
-        // Without that record, a restore writes no entry for an NPC with a helmet.
+        // Without that record (a composite saved before records were kept), the NPC is composed
+        // again once instead of restored: the composite is saved again, its attachment files are
+        // recorded and it is indexed, so the next handle restores it from the index.
         var record =
                 GeneratedKey.hash(
                         ("npc-composite-attachment-files-v1\n" + entry.composite().hex())
                                 .getBytes(java.nio.charset.StandardCharsets.UTF_8));
         assertTrue(present(generated, record));
         generated.delete(List.of(key, record)).join();
-        assertTrue(ask(raw, files, generated).result().restored());
-        assertFalse(present(generated, key), "not written: its attachment files are unknown");
+        var recomposed = ask(raw, files, generated);
+        assertFalse(recomposed.result().restored(), "composed again, not restored");
+        assertTrue(present(generated, record), "its attachment files are recorded");
+        assertTrue(present(generated, key), "and it is indexed");
+        assertTrue(present(generated, entry.composite()), "with its composite saved");
+        var next = ask(raw, files, generated);
+        assertTrue(next.result().restored());
+        assertEquals(drawn(first), drawn(next));
         // The plain fixture (boots only) is written after a restore without any record.
         var plain = raw();
         var store = new MemoryGeneratedStore();
