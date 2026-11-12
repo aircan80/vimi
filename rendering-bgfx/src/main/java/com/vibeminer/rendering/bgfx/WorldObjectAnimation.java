@@ -58,6 +58,88 @@ final class WorldObjectAnimation {
     static final long GPU_BYTES = 24L << 20;
 
     /**
+     * A pose no frame drew for more than this many frames may be released when a pose or an object
+     * set needs its bytes.
+     */
+    static final long IDLE_FRAMES = 30;
+
+    /** What the skin queue orders by: when a pose was last skinned and what it costs. */
+    interface Skinned {
+        /** The animation clock at the last skin, {@link Long#MIN_VALUE} before the first. */
+        long skinnedAt();
+
+        int vertexCount();
+    }
+
+    /**
+     * Orders the first {@code count} queued poses stalest first (the earliest last skin; a pose
+     * never skinned before any other) and returns how many of them, from the front, fit {@code
+     * budget} vertices; at least one, so a pose over the whole budget still advances. A pose left
+     * out is among the stalest on a later frame, so none starves however many queue.
+     */
+    static <T extends Skinned> int skinOrder(T[] queued, int count, int budget) {
+        java.util.Arrays.sort(
+                queued, 0, count, java.util.Comparator.comparingLong(Skinned::skinnedAt));
+        int vertices = 0, chosen = 0;
+        while (chosen < count
+                && (chosen == 0 || vertices + queued[chosen].vertexCount() <= budget)) {
+            vertices += queued[chosen].vertexCount();
+            chosen++;
+        }
+        return chosen;
+    }
+
+    /**
+     * Per model and phase ({@code model * PHASES + phase}, {@code groups} in all): the placements
+     * of {@code animated} playing it, or null for none. Computed once per set.
+     */
+    static int[][] members(int[] animated, int[] placementModels, int[] phases, int groups) {
+        var counts = new int[groups];
+        for (int p : animated) {
+            counts[placementModels[p] * PHASES + phases[p]]++;
+        }
+        var members = new int[groups][];
+        var fill = new int[groups];
+        for (int p : animated) {
+            int group = placementModels[p] * PHASES + phases[p];
+            if (members[group] == null) {
+                members[group] = new int[counts[group]];
+            }
+            members[group][fill[group]++] = p;
+        }
+        return members;
+    }
+
+    /** The box of the {@code animated} placements' translations: min x, y, z, max x, y, z. */
+    static double[] bounds(int[] animated, double[] placements, int stride) {
+        if (animated.length == 0) {
+            return new double[0];
+        }
+        double[] box = new double[6];
+        java.util.Arrays.fill(box, 0, 3, Double.MAX_VALUE);
+        java.util.Arrays.fill(box, 3, 6, -Double.MAX_VALUE);
+        for (int p : animated) {
+            for (int k = 0; k < 3; k++) {
+                double v = placements[p * stride + k];
+                box[k] = Math.min(box[k], v);
+                box[k + 3] = Math.max(box[k + 3], v);
+            }
+        }
+        return box;
+    }
+
+    /** Distance from a point to a {@link #bounds} box; infinite for an empty box. */
+    static double boundsDistance(double[] box, double x, double y, double z) {
+        if (box.length == 0) {
+            return Double.POSITIVE_INFINITY;
+        }
+        double dx = Math.max(0, Math.max(box[0] - x, x - box[3]));
+        double dy = Math.max(0, Math.max(box[1] - y, y - box[4]));
+        double dz = Math.max(0, Math.max(box[2] - z, z - box[5]));
+        return Math.sqrt(dx * dx + dy * dy + dz * dz);
+    }
+
+    /**
      * The phase a placement at {@code (x, y)} plays: a hash of its position, so it is the same
      * every frame and on every residency of its tile, and neighbours differ.
      */
@@ -139,16 +221,16 @@ final class WorldObjectAnimation {
 
     /**
      * One phase's pose of one animated model (owner thread only): a dynamic vertex buffer in the
-     * objects' layout, re-skinned from reused arrays and native memory, so a re-skin allocates
-     * nothing on the Java heap.
+     * objects' layout, created with the model's baked vertices and re-skinned from reused arrays
+     * and native memory, so a re-skin allocates nothing on the Java heap.
      */
-    static final class Pose implements AutoCloseable {
+    static final class Pose implements AutoCloseable, Skinned {
         final short vertices;
         private final WorldStreamPackedObjects.ObjectAnimation source;
         private final PreviewAnimation.Skinner skinner;
         private final float[] positions, normals;
         private final ByteBuffer staging, rest;
-        private long skinned = -1;
+        private long skinned = -1, skinnedAt = Long.MIN_VALUE, target = -1, usedFrame;
         private boolean closed;
 
         private Pose(WorldStreamPackedObjects.ObjectAnimation source, short vertices) {
@@ -167,7 +249,10 @@ final class WorldObjectAnimation {
             rest = ByteBuffer.wrap(source.vertices).order(ByteOrder.nativeOrder());
         }
 
-        /** A new pose's buffer, or null when bgfx has no dynamic vertex buffer left. */
+        /**
+         * A new pose's buffer holding the model's baked vertices, so it draws the static pose until
+         * its first skin; null when bgfx has no dynamic vertex buffer left.
+         */
         static Pose create(
                 WorldStreamPackedObjects.ObjectAnimation source,
                 org.lwjgl.bgfx.BGFXVertexLayout layout) {
@@ -177,7 +262,9 @@ final class WorldObjectAnimation {
             if (handle == (short) 0xffff) {
                 return null;
             }
-            return new Pose(source, handle);
+            var pose = new Pose(source, handle);
+            pose.upload();
+            return pose;
         }
 
         /** The loop time last skinned, or -1 before the first skin. */
@@ -185,15 +272,46 @@ final class WorldObjectAnimation {
             return skinned;
         }
 
-        /** Skins this pose at {@code millis} and uploads it. */
-        void skin(long millis) {
+        @Override
+        public long skinnedAt() {
+            return skinnedAt;
+        }
+
+        @Override
+        public int vertexCount() {
+            return source.vertexCount();
+        }
+
+        /** The loop time the last frame that drew this pose wants. */
+        long target() {
+            return target;
+        }
+
+        /** The last frame that drew this pose. */
+        long usedFrame() {
+            return usedFrame;
+        }
+
+        /** Frame {@code frame} draws this pose and wants it at loop time {@code millis}. */
+        void used(long frame, long millis) {
+            usedFrame = frame;
+            target = millis;
+        }
+
+        /** Skins this pose at loop time {@code millis}, at animation clock {@code clock}. */
+        void skin(long millis, long clock) {
             skinner.skin(millis, positions, normals);
             gather(rest, source.sources, positions, normals, staging);
+            upload();
+            skinned = millis;
+            skinnedAt = clock;
+        }
+
+        private void upload() {
             long memory =
                     org.lwjgl.bgfx.BGFX.nbgfx_copy(
                             MemoryUtil.memAddress(staging), staging.capacity());
             org.lwjgl.bgfx.BGFX.nbgfx_update_dynamic_vertex_buffer(vertices, 0, memory);
-            skinned = millis;
         }
 
         @Override

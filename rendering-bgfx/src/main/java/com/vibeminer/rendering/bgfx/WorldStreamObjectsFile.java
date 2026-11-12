@@ -1401,6 +1401,7 @@ final class WorldStreamObjectsFile {
             long animationLeft = animationBytes;
             for (int i = 0; i < animated; i++) {
                 check(canceled);
+                require(animationLeft >= 12, "Animation entry bounds");
                 animatedModels[i] = Integer.reverseBytes(input.readInt());
                 int count = Integer.reverseBytes(input.readInt());
                 int length = Integer.reverseBytes(input.readInt());

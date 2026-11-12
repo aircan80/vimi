@@ -145,6 +145,75 @@ final class WorldStreamObjectsFileTest {
                         .count());
     }
 
+    /** A one-model set whose model (4 vertices) carries five animation bytes (one pad of 3). */
+    private static WorldStreamTileWriter.Exterior animated(int[] sources) {
+        var builder = WorldStreamTileWriter.Exterior.builder();
+        builder.image(2, 2, chain(2, 2, rgba(4, 10)));
+        builder.model();
+        builder.mesh(
+                FloatBuffer.wrap(small().data().vertices),
+                IntBuffer.wrap(new int[] {0, 1, 2, 2, 1, 3}),
+                new int[] {0, 6, 0});
+        builder.placement(0, 1, 2, 3, 1, 1, 0);
+        builder.animate(0, sources, new byte[] {1, 2, 3, 4, 5});
+        return builder.build();
+    }
+
+    /** Writes {@code bytes} as the objects file and returns why a read refuses them. */
+    private String refusedFile(byte[] bytes) throws Exception {
+        Files.write(objectsPath(), bytes);
+        var digest = java.security.MessageDigest.getInstance("SHA-256").digest(bytes);
+        var reference =
+                new WorldStreamObjectsFile.Reference(
+                        bytes.length, java.util.HexFormat.of().formatHex(digest));
+        var failure =
+                assertThrows(
+                        IOException.class,
+                        () ->
+                                WorldStreamObjectsFile.read(
+                                        objectsPath(), IDENTITY, reference, () -> false));
+        return failure.getCause() == null ? failure.getMessage() : failure.getCause().getMessage();
+    }
+
+    @Test
+    void aCorruptAnimationSectionIsRefused() throws Exception {
+        write(animated(new int[] {0, 1, 2, 3}));
+        var clean = Files.readAllBytes(objectsPath());
+        int section = 12 + 16 + 8; // one entry: its three ints, four sources, five bytes padded
+        int at = clean.length - section;
+        var little = java.nio.ByteOrder.LITTLE_ENDIAN;
+        assertEquals(1, ByteBuffer.wrap(clean).order(little).getInt(172));
+        assertEquals(section, ByteBuffer.wrap(clean).order(little).getInt(176));
+        assertEquals(4, ByteBuffer.wrap(clean).order(little).getInt(at + 4));
+        // A padding byte that is not zero.
+        var padding = clean.clone();
+        padding[padding.length - 1] = 9;
+        assertEquals("Animation padding", refusedFile(padding));
+        // The header names a shorter section than the file holds.
+        var shorter = clean.clone();
+        ByteBuffer.wrap(shorter).order(little).putInt(176, section - 4);
+        assertEquals("Objects header counts", refusedFile(shorter));
+        // The header counts two entries; the section holds one.
+        var counts = clean.clone();
+        ByteBuffer.wrap(counts).order(little).putInt(172, 2);
+        assertEquals("Animation entry bounds", refusedFile(counts));
+        // An entry that names more bytes than its section holds.
+        var longer = clean.clone();
+        ByteBuffer.wrap(longer).order(little).putInt(at + 8, 64);
+        assertEquals("Animation entry bounds", refusedFile(longer));
+        // A consistent section whose sources do not name every vertex of the model.
+        var three = new byte[clean.length - 4];
+        System.arraycopy(clean, 0, three, 0, at + 12 + 12);
+        System.arraycopy(clean, at + 12 + 16, three, at + 12 + 12, clean.length - (at + 12 + 16));
+        var fix = ByteBuffer.wrap(three).order(little);
+        fix.putLong(16, three.length);
+        fix.putInt(176, section - 4);
+        fix.putInt(at + 4, 3);
+        assertEquals("Animation sources differ from the model's vertices", refusedFile(three));
+        // The builder refuses the same mismatch before anything is written.
+        assertThrows(IllegalArgumentException.class, () -> animated(new int[] {0, 1, 2}));
+    }
+
     /** The bytes of one placement row: the second placement {@link #small} has beyond one. */
     private static int placementBytes() {
         return 8 + WorldStreamObjectsFile.PLACEMENT_DOUBLES * 8;

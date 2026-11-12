@@ -102,6 +102,91 @@ final class WorldObjectAnimationTest {
         assertEquals(0, WorldObjectAnimation.millis(1234, 0, 2));
     }
 
+    /** A queued pose for {@link WorldObjectAnimation#skinOrder}: its last skin and its cost. */
+    private static final class Queued implements WorldObjectAnimation.Skinned {
+        long at = Long.MIN_VALUE;
+        final int vertices;
+        int skins;
+
+        Queued(int vertices) {
+            this.vertices = vertices;
+        }
+
+        @Override
+        public long skinnedAt() {
+            return at;
+        }
+
+        @Override
+        public int vertexCount() {
+            return vertices;
+        }
+    }
+
+    @Test
+    void overTheSkinBudgetEveryPoseStillAdvancesInTurn() {
+        // Twenty humanoid-sized poses (four phases of five models) want a skin every frame; the
+        // budget holds about five. Visiting order is fixed, as the renderer visits models.
+        int poses = 20, vertices = 19_000 / 4;
+        var all = new Queued[poses];
+        for (int i = 0; i < poses; i++) {
+            all[i] = new Queued(vertices * (1 + i % 3));
+        }
+        var queue = new Queued[poses];
+        for (int frame = 1; frame <= 40; frame++) {
+            System.arraycopy(all, 0, queue, 0, poses);
+            int chosen =
+                    WorldObjectAnimation.skinOrder(
+                            queue, poses, WorldObjectAnimation.FRAME_SKIN_VERTICES);
+            int spent = 0;
+            for (int i = 0; i < chosen; i++) {
+                queue[i].at = frame;
+                queue[i].skins++;
+                spent += queue[i].vertices;
+            }
+            assertTrue(
+                    chosen >= 1
+                            && (chosen == 1 || spent <= WorldObjectAnimation.FRAME_SKIN_VERTICES));
+            assertTrue(chosen < poses, "the budget holds only some of them");
+        }
+        int fewest = Integer.MAX_VALUE, most = 0;
+        for (var pose : all) {
+            fewest = Math.min(fewest, pose.skins);
+            most = Math.max(most, pose.skins);
+        }
+        // None starves: every pose was skinned, and none far more often than another.
+        assertTrue(fewest >= 5 && most <= fewest * 3, "skins per pose " + fewest + ".." + most);
+        // A pose larger than the whole budget still advances alone.
+        var huge = new Queued[] {new Queued(WorldObjectAnimation.FRAME_SKIN_VERTICES * 2)};
+        assertEquals(
+                1,
+                WorldObjectAnimation.skinOrder(huge, 1, WorldObjectAnimation.FRAME_SKIN_VERTICES));
+    }
+
+    @Test
+    void membersAndBoundsArePrecomputedPerSet() {
+        int[] animated = {0, 2, 3};
+        int[] models = {1, 0, 1, 0};
+        int[] phases = {2, 0, 2, 3};
+        var members =
+                WorldObjectAnimation.members(
+                        animated, models, phases, 2 * WorldObjectAnimation.PHASES);
+        assertArrayEquals(new int[] {0, 2}, members[1 * WorldObjectAnimation.PHASES + 2]);
+        assertArrayEquals(new int[] {3}, members[3]);
+        assertNull(members[0]);
+        double[] placements = new double[4 * 13];
+        placements[0] = 10;
+        placements[2 * 13 + 1] = -5;
+        placements[3 * 13 + 2] = 7;
+        var box = WorldObjectAnimation.bounds(animated, placements, 13);
+        assertArrayEquals(new double[] {0, -5, 0, 10, 0, 7}, box);
+        assertEquals(0, WorldObjectAnimation.boundsDistance(box, 5, 0, 3));
+        assertEquals(20, WorldObjectAnimation.boundsDistance(box, 30, 0, 0), 1e-9);
+        assertEquals(
+                Double.POSITIVE_INFINITY,
+                WorldObjectAnimation.boundsDistance(new double[0], 0, 0, 0));
+    }
+
     @Test
     void gatheringWritesSkinnedPositionsAndKeepsTextureCoordinatesAndColours() {
         var animation = swing();

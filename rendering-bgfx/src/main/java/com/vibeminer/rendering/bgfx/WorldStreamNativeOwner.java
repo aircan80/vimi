@@ -1038,6 +1038,12 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         return renderer.animationCounts();
     }
 
+    /** Proofs only: releases every animation pose no frame drew lately; the bytes released. */
+    long releaseIdlePosesForProof() {
+        requireOpen();
+        return renderer.releaseIdlePosesForProof();
+    }
+
     /** The renderer's animation revision (#384): -1 when the last frame animated nothing. */
     long animationRevision() {
         requireOpen();

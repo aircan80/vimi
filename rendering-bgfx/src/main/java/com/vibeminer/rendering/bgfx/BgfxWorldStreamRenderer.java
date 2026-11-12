@@ -563,6 +563,12 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         /** Per-frame scratch: the placements one pose draws. */
         final int[] poseMembers;
 
+        /** Per model and phase: the animatable placements playing it, or null for none. */
+        final int[][] members;
+
+        /** The animated placements' box: min x, y, z then max x, y, z (empty when none). */
+        final double[] animatedBounds;
+
         /**
          * GPU bytes of this set's own buffers, reserved against OBJECT_BUDGET_BYTES until
          * destroyed; its textures are reserved once each in the session's shared textures.
@@ -677,6 +683,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                                     ? 0
                                     : models.length / 2 * WorldObjectAnimation.PHASES];
             poseMembers = new int[animatedCount];
+            members = WorldObjectAnimation.members(animated, placementModels, phases, poses.length);
+            animatedBounds =
+                    WorldObjectAnimation.bounds(
+                            animated, placements, WorldStreamObjectsFile.PLACEMENT_DOUBLES);
             portalVisible = new java.util.BitSet[placementModels.length];
             for (int p = 0; p < portalVisible.length; p++) {
                 var traversal = portals[placementModels[p]];
@@ -870,6 +880,17 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
 
     /** A proof's fixed animation clock, or -1. */
     private long proofClock = -1;
+
+    /** Frames drawn so far: poses record the last one that drew them, for releasing. */
+    private long animationFrame;
+
+    /** This frame's poses whose clock stepped, skinned after the objects are submitted. */
+    private WorldObjectAnimation.Pose[] pendingSkins = new WorldObjectAnimation.Pose[64];
+
+    private int pendingCount;
+
+    /** Poses released for budget so far (diagnostics). */
+    private long posesReleased;
 
     BgfxWorldStreamRenderer(WorldStreamEnvelope.Session session) throws IOException {
         this.session = java.util.Objects.requireNonNull(session);
@@ -1479,6 +1500,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 // textures it creates are charged, in bytes and in handles.
                 var plan = planTextures(source);
                 long need = source.bufferBytes() + plan.newBytes();
+                if (!objectsFit(objectBudget, reservedObjectBytes(), need)) {
+                    // Animation poses no frame drew lately give their bytes back first (#384).
+                    releasePosesUntil(() -> objectsFit(objectBudget, reservedObjectBytes(), need));
+                }
                 if (!objectsFit(objectBudget, reservedObjectBytes(), need)) {
                     build.budget = true;
                     build.fail();
@@ -2464,6 +2489,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             frameStalePoses = frameAnimatedFar = frameAnimatedRefused = 0;
             animationClock =
                     proofClock >= 0 ? proofClock : (System.nanoTime() - animationEpoch) / 1_000_000;
+            animationFrame++;
             boolean bodyDrawn =
                     wmoProgram != INVALID
                             && body != null
@@ -2480,6 +2506,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 if (bodyDrawn) {
                     drawBody(frame, origin, false);
                 }
+                skinPoses();
             }
             // Sky after every opaque surface: reversed depth clears to 0 and every drawn surface
             // is nearer, so GEQUAL at depth 0 shades only the pixels nothing covered. It must
@@ -3018,123 +3045,215 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
 
     /**
      * Draws this set's animatable placements that animate this frame (#384) from their phase's pose
-     * and takes them out of the static model groups. A placement beyond {@link
-     * WorldObjectAnimation#RADIUS}, over {@link WorldObjectAnimation#FRAME_INSTANCES}, or whose
-     * pose cannot be created within {@link WorldObjectAnimation#GPU_BYTES} and the object budget,
-     * or has never been skinned and does not fit this frame's skin budget, stays in its static
-     * group.
+     * and takes them out of the static model groups. A set whose animated placements all lie beyond
+     * {@link WorldObjectAnimation#RADIUS} is skipped without visiting them. Within a set, a
+     * placement culled this frame, beyond the radius, over {@link
+     * WorldObjectAnimation#FRAME_INSTANCES}, or whose pose cannot be created within {@link
+     * WorldObjectAnimation#GPU_BYTES} and the object budget stays in its static group. A pose whose
+     * clock stepped is queued for {@link #skinPoses}, which serves the stalest poses first.
      */
     private void drawAnimated(ObjectFrame frame, SlotObjects objects, TerrainScene.Origin origin) {
         if (!objectAnimation) {
             frameAnimatedStatic += objects.animated.length;
             return;
         }
-        double radius = WorldObjectAnimation.RADIUS * WorldObjectAnimation.RADIUS;
+        double radius = WorldObjectAnimation.RADIUS;
+        if (WorldObjectAnimation.boundsDistance(
+                        objects.animatedBounds, origin.x(), origin.y(), origin.z())
+                > radius) {
+            return;
+        }
         int stride = WorldStreamObjectsFile.PLACEMENT_DOUBLES;
-        int models = objects.models.length / 2;
-        for (int m = 0; m < models; m++) {
-            var animation = objects.animations[m];
-            if (animation == null || objects.blendedModels[m]) {
+        for (int group = 0; group < objects.members.length; group++) {
+            int[] candidates = objects.members[group];
+            if (candidates == null) {
                 continue;
             }
-            long duration = animation.animation.durationMillis();
-            for (int phase = 0; phase < WorldObjectAnimation.PHASES; phase++) {
-                int members = 0;
-                WorldObjectAnimation.Pose pose = null;
-                boolean refused = false;
-                for (int p : objects.animated) {
-                    if (objects.placementModels[p] != m
-                            || objects.phases[p] != phase
-                            || !objects.grouped[p]) {
-                        continue;
-                    }
-                    double dx = objects.placements[p * stride] - origin.x();
-                    double dy = objects.placements[p * stride + 1] - origin.y();
-                    double dz = objects.placements[p * stride + 2] - origin.z();
-                    if (dx * dx + dy * dy + dz * dz > radius) {
-                        frameAnimatedStatic++;
-                        frameAnimatedFar++;
-                        continue;
-                    }
-                    if (refused
-                            || frameAnimated + members >= WorldObjectAnimation.FRAME_INSTANCES) {
+            int m = group / WorldObjectAnimation.PHASES,
+                    phase = group % WorldObjectAnimation.PHASES;
+            var animation = objects.animations[m];
+            int members = 0;
+            WorldObjectAnimation.Pose pose = null;
+            boolean refused = false;
+            for (int p : candidates) {
+                if (!objects.grouped[p]) {
+                    continue; // culled this frame: neither drawn nor a reason to redraw
+                }
+                double dx = objects.placements[p * stride] - origin.x();
+                double dy = objects.placements[p * stride + 1] - origin.y();
+                double dz = objects.placements[p * stride + 2] - origin.z();
+                if (dx * dx + dy * dy + dz * dz > radius * radius) {
+                    frameAnimatedStatic++;
+                    frameAnimatedFar++;
+                    continue;
+                }
+                if (refused || frameAnimated + members >= WorldObjectAnimation.FRAME_INSTANCES) {
+                    frameAnimatedStatic++;
+                    frameAnimatedRefused++;
+                    continue;
+                }
+                if (pose == null) {
+                    pose = pose(objects, group, animation);
+                    if (pose == null) {
+                        refused = true;
                         frameAnimatedStatic++;
                         frameAnimatedRefused++;
                         continue;
                     }
-                    if (pose == null) {
-                        pose = pose(objects, m, phase, animation, duration);
-                        if (pose == null) {
-                            refused = true;
-                            frameAnimatedStatic++;
-                            frameAnimatedRefused++;
-                            continue;
-                        }
-                    }
-                    objects.poseMembers[members++] = p;
                 }
-                if (members == 0) {
-                    continue;
+                objects.poseMembers[members++] = p;
+            }
+            if (members == 0) {
+                continue;
+            }
+            for (int i = 0; i < members; i++) {
+                objects.grouped[objects.poseMembers[i]] = false;
+            }
+            int drawn = instances(frame, objects, objects.poseMembers, 0, members, origin);
+            if (drawn > 0) {
+                drawRangesStep(frame, objects, m, drawn, STEP_UNSORTED, null, pose);
+                // Only what was drawn animated asks for idle redraws (animationRevision).
+                frameAnimated += drawn;
+                long millis =
+                        WorldObjectAnimation.millis(
+                                animationClock, animation.animation.durationMillis(), phase);
+                pose.used(animationFrame, millis);
+                if (pose.skinned() != millis) {
+                    queueSkin(pose);
                 }
-                for (int i = 0; i < members; i++) {
-                    objects.grouped[objects.poseMembers[i]] = false;
-                }
-                int drawn = instances(frame, objects, objects.poseMembers, 0, members, origin);
-                if (drawn > 0) {
-                    drawRangesStep(frame, objects, m, drawn, STEP_UNSORTED, null, pose);
-                }
-                frameAnimated += members;
             }
         }
     }
 
     /**
-     * Model {@code m}'s pose for {@code phase}, skinned for this frame's clock: created when first
-     * needed (null when the pose budgets or bgfx refuse it), re-skinned when the clock stepped and
-     * the frame's skin budget allows, else drawn as last skinned. Null for a pose never skinned
-     * that does not fit the skin budget: its placements draw static this frame.
+     * Pose {@code group} (model times phases plus phase) of a set, created when first needed with
+     * the model's baked vertices, so it draws its static pose until its first skin; null when the
+     * pose budgets or bgfx refuse it even after releasing poses no frame drew lately.
      */
     private WorldObjectAnimation.Pose pose(
-            SlotObjects objects,
-            int m,
-            int phase,
-            WorldStreamPackedObjects.ObjectAnimation animation,
-            long duration) {
-        int at = m * WorldObjectAnimation.PHASES + phase;
-        var pose = objects.poses[at];
+            SlotObjects objects, int group, WorldStreamPackedObjects.ObjectAnimation animation) {
+        var pose = objects.poses[group];
+        if (pose != null) {
+            return pose;
+        }
+        long bytes = WorldObjectAnimation.bytes(animation);
+        if (!poseFits(bytes)) {
+            releasePoses(bytes);
+            if (!poseFits(bytes)) {
+                return null;
+            }
+        }
+        try (var layout = objectLayout()) {
+            pose = WorldObjectAnimation.Pose.create(animation, layout);
+        } catch (IOException unavailable) {
+            return null;
+        }
         if (pose == null) {
-            long bytes = WorldObjectAnimation.bytes(animation);
-            if (poseBytes() + bytes > WorldObjectAnimation.GPU_BYTES
-                    || !objectsFit(objectBudget, reservedObjectBytes(), bytes)) {
-                return null;
-            }
-            try (var layout = objectLayout()) {
-                pose = WorldObjectAnimation.Pose.create(animation, layout);
-            } catch (IOException unavailable) {
-                return null;
-            }
-            if (pose == null) {
-                return null;
-            }
-            objects.poses[at] = pose;
-            objects.poseBytes += bytes;
+            return null;
         }
-        long millis = WorldObjectAnimation.millis(animationClock, duration, phase);
-        if (pose.skinned() != millis) {
-            if (frameSkinVertices + animation.vertexCount()
-                    <= WorldObjectAnimation.FRAME_SKIN_VERTICES) {
-                long skinning = com.vibeminer.formats.world.WorldStageTimings.start();
-                pose.skin(millis);
-                com.vibeminer.formats.world.WorldStageTimings.stop("child.frame.skin", skinning);
-                frameSkins++;
-                frameSkinVertices += animation.vertexCount();
-            } else if (pose.skinned() < 0) {
-                return null;
-            } else {
-                frameStalePoses++;
-            }
-        }
+        objects.poses[group] = pose;
+        objects.poseBytes += bytes;
         return pose;
+    }
+
+    private boolean poseFits(long bytes) {
+        return poseBytes() + bytes <= WorldObjectAnimation.GPU_BYTES
+                && objectsFit(objectBudget, reservedObjectBytes(), bytes);
+    }
+
+    /**
+     * Releases poses no frame drew in the last {@link WorldObjectAnimation#IDLE_FRAMES} frames,
+     * least recently drawn first, until {@code needed} more pose bytes fit or none is left; returns
+     * the bytes released. A pose refused for its budgets, and an object set refused for the object
+     * budget, ask for this before giving up.
+     */
+    private long releasePoses(long needed) {
+        return releasePosesUntil(() -> poseFits(needed));
+    }
+
+    /** As {@link #releasePoses(long)}, until {@code fits} holds. */
+    private long releasePosesUntil(java.util.function.BooleanSupplier fits) {
+        long released = 0;
+        while (!fits.getAsBoolean()) {
+            SlotObjects owner = null;
+            int at = -1;
+            long oldest = Long.MAX_VALUE;
+            for (var slot : slots) {
+                var objects = slot == null ? null : slot.objects;
+                if (objects == null) {
+                    continue;
+                }
+                for (int i = 0; i < objects.poses.length; i++) {
+                    var pose = objects.poses[i];
+                    if (pose != null
+                            && animationFrame - pose.usedFrame() > WorldObjectAnimation.IDLE_FRAMES
+                            && pose.usedFrame() < oldest) {
+                        oldest = pose.usedFrame();
+                        owner = objects;
+                        at = i;
+                    }
+                }
+            }
+            if (owner == null) {
+                break;
+            }
+            long bytes =
+                    WorldObjectAnimation.bytes(owner.animations[at / WorldObjectAnimation.PHASES]);
+            owner.poses[at].close();
+            owner.poses[at] = null;
+            owner.poseBytes -= bytes;
+            released += bytes;
+            posesReleased++;
+        }
+        return released;
+    }
+
+    /** Poses released for the budget so far (#384). */
+    long posesReleased() {
+        requireOwner();
+        return posesReleased;
+    }
+
+    /** Proofs only: releases every pose no frame drew lately; returns the bytes released. */
+    long releaseIdlePosesForProof() {
+        requireOwner();
+        return releasePosesUntil(() -> false);
+    }
+
+    private void queueSkin(WorldObjectAnimation.Pose pose) {
+        if (pendingSkins.length == pendingCount) {
+            pendingSkins = java.util.Arrays.copyOf(pendingSkins, pendingCount * 2);
+        }
+        pendingSkins[pendingCount++] = pose;
+    }
+
+    /**
+     * Re-skins this frame's queued poses within {@link WorldObjectAnimation#FRAME_SKIN_VERTICES},
+     * stalest first ({@link WorldObjectAnimation#skinOrder}), so over the budget every pose still
+     * advances in turn and none freezes. A pose left over is drawn a step late. bgfx applies vertex
+     * updates before the frame's draws, so skinning after submission still shows this frame.
+     */
+    private void skinPoses() {
+        if (pendingCount == 0) {
+            return;
+        }
+        int chosen =
+                WorldObjectAnimation.skinOrder(
+                        pendingSkins, pendingCount, WorldObjectAnimation.FRAME_SKIN_VERTICES);
+        for (int i = 0; i < pendingCount; i++) {
+            var pose = pendingSkins[i];
+            pendingSkins[i] = null;
+            if (i >= chosen) {
+                frameStalePoses++;
+                continue;
+            }
+            long skinning = com.vibeminer.formats.world.WorldStageTimings.start();
+            pose.skin(pose.target(), animationClock);
+            com.vibeminer.formats.world.WorldStageTimings.stop("child.frame.skin", skinning);
+            frameSkins++;
+            frameSkinVertices += pose.vertexCount();
+        }
+        pendingCount = 0;
     }
 
     /**

@@ -26,6 +26,7 @@ final class WorldStreamObjectAnimationProof {
     private static final WorldStreamState.Nonce NONCE = new WorldStreamState.Nonce(384, -384);
     private static final int WIDTH = 800, HEIGHT = 500;
     private static final TerrainCamera VIEW = new TerrainCamera(-30, -2, 22, 0, -.45);
+    private static final TerrainCamera AWAY = new TerrainCamera(-30, -2, 22, Math.PI, -.45);
     private static final int NEAR = 12;
     private static long camera, sequence;
 
@@ -159,6 +160,28 @@ final class WorldStreamObjectAnimationProof {
             // loop, so the crowd does not move in lockstep.
             int phased = differing(baked, start);
             require(phased > 0, "phase-offset placements differ from the baked pose: " + phased);
+            // Facing away: the creatures are culled, so nothing animates and a still camera asks
+            // for no redraws.
+            int[] away = frame(owner, reader, AWAY);
+            var behind = owner.animationCounts();
+            require(
+                    behind.animated() == 0 && owner.animationRevision() == -1,
+                    "culled creatures neither animate nor ask for redraws: " + behind);
+            require(
+                    owner.releaseIdlePosesForProof() == 0,
+                    "poses drawn within the last frames are kept");
+            for (int i = 0; i < WorldObjectAnimation.IDLE_FRAMES + 1; i++) {
+                frame(owner, reader, AWAY);
+            }
+            long released = owner.releaseIdlePosesForProof();
+            require(
+                    released == first.poseBytes() && owner.animationCounts().poseBytes() == 0,
+                    "poses no frame drew lately give their bytes back: " + released);
+            int[] back = frame(owner, reader);
+            require(
+                    owner.animationCounts().animated() == NEAR,
+                    "facing them again re-creates their poses: " + owner.animationCounts());
+            require(away.length == back.length, "frames kept their size");
             System.out.println(
                     "ANIMATION pixels changed: 0 -> 400 ms "
                             + changed
@@ -185,12 +208,18 @@ final class WorldStreamObjectAnimationProof {
         ImageIO.write(image, "png", output.resolve(name + ".png").toFile());
     }
 
-    /** Submits one new camera revision and returns its published pixels (ARGB). */
     private static int[] frame(WorldStreamNativeOwner owner, WorldFrameFileV2 reader)
+            throws Exception {
+        return frame(owner, reader, VIEW);
+    }
+
+    /** Submits one new camera revision and returns its published pixels (ARGB). */
+    private static int[] frame(
+            WorldStreamNativeOwner owner, WorldFrameFileV2 reader, TerrainCamera view)
             throws Exception {
         long revision = ++camera;
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-        var command = new WorldStreamControl.Camera(NONCE, revision, 1, WIDTH, HEIGHT, VIEW, null);
+        var command = new WorldStreamControl.Camera(NONCE, revision, 1, WIDTH, HEIGHT, view, null);
         while (!owner.submit(command)) {
             owner.advance();
             if (System.nanoTime() > deadline) {
