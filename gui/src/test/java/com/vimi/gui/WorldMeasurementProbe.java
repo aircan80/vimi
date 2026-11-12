@@ -192,7 +192,7 @@ public final class WorldMeasurementProbe {
                                         null,
                                         issue -> say("PROBE " + issue),
                                         DEADLINE - System.nanoTime(),
-                                        List.of("creatures", "displays", "body", "races", "raceSkin", "fetch")
+                                        List.of("creatures", "displays", "body", "races", "raceSkin", "fetch", "m2")
                                                 .contains(
                                                         System.getProperty(
                                                                 "probe.mode", "stream"))));
@@ -227,6 +227,7 @@ public final class WorldMeasurementProbe {
                             case "races" -> races(opened);
                             case "raceSkin" -> raceSkin(opened);
                             case "fetch" -> fetch(opened);
+                            case "m2" -> m2(opened);
                             case "creatures" -> creatures(opened, handle, catalog);
                             case "displays" -> displays(opened);
                             default -> stream(handle, catalog);
@@ -537,6 +538,27 @@ public final class WorldMeasurementProbe {
         }
     }
 
+    /** For -Pprobe.files (M2 FileDataIDs): texture transform tracks and their lookup table. */
+    private static void m2(WorldMeasurementOpen opened) throws Exception {
+        var models = new com.vibeminer.formats.models.BuildModels(opened.files());
+        for (var text : System.getProperty("probe.files", "").split(",")) {
+            if (text.isBlank()) continue;
+            long id = Long.parseLong(text.strip());
+            var read = models.readModel(com.vibeminer.files.FileTypes.FileRef.id(id), Cancellation.NONE)
+                    .get(5, TimeUnit.MINUTES);
+            if (read.model() == null) {
+                say("PROBE m2 " + id + ": " + read.state());
+                continue;
+            }
+            var m = read.model();
+            var declared = new StringBuilder();
+            for (var d : m.declarations()) declared.append(d.name()).append('=').append(d.count()).append(' ');
+            say("PROBE m2 " + id + ": version " + m.version() + ", skeleton " + m.skeletonFileDataId()
+                    + ", transform lookup " + m.textureTransforms() + ", coordinates " + m.textureCoordinates()
+                    + ", declarations " + declared);
+        }
+    }
+
     /** Rows of {@code table} whose {@code column} equals one of {@code values}, as name=value maps. */
     private static List<Map<String, String>> rows(com.vibeminer.formats.tables.BuildTables tables, String table,
             String column, java.util.Collection<Long> values) throws Exception {
@@ -687,7 +709,7 @@ public final class WorldMeasurementProbe {
                             for (double yaw : new double[] {-1.2, 1.9}) {
                                 var frame = com.vibeminer.rendering.models.StaticMeshRenderer.render(result.appearance(),
                                         480, 480,
-                                        new com.vibeminer.rendering.models.StaticMeshRenderer.View(yaw, .1, 1, false,
+                                        new com.vibeminer.rendering.models.StaticMeshRenderer.View(yaw, Double.parseDouble(System.getProperty("probe.racePitch", ".1")), Double.parseDouble(System.getProperty("probe.raceZoom", "1")), false,
                                                 result.visibleParts()),
                                         () -> false);
                                 var image = new java.awt.image.BufferedImage(frame.width(), frame.height(),
