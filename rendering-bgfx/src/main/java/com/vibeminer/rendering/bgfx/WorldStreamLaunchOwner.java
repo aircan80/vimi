@@ -50,7 +50,10 @@ final class WorldStreamLaunchOwner {
         }
     }
 
-    /** Transport workers: commands, statuses, stderr, files, frames, cancellation, objects. */
+    /**
+     * Transport workers: commands, statuses, stderr, files, frames, cancellation, objects and
+     * liveness.
+     */
     static final int MAX_WORKERS = 8;
 
     private WorldStreamLaunchOwner() {}

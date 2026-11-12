@@ -852,4 +852,38 @@ class WorldStreamLaunchOwnerTest {
             Thread.sleep(1);
         }
     }
+
+    @Test
+    void nothingIsOwedOnceTheSessionIsClosingAndWhatIsOwedIsNamed() {
+        assertEquals(null, WorldStreamTransport.Session.owed(false, 0, false, false, false, false));
+        assertEquals(
+                null,
+                WorldStreamTransport.Session.owed(true, 3, true, true, false, true),
+                "a slow teardown after CLOSE is not a hang");
+        assertEquals(
+                "1 command (a commit)",
+                WorldStreamTransport.Session.owed(false, 1, true, false, false, false));
+        assertEquals(
+                "3 commands (a commit, a tile upload, late objects)",
+                WorldStreamTransport.Session.owed(false, 3, true, true, true, true));
+        assertEquals(
+                "1 command (a tile cancellation)",
+                WorldStreamTransport.Session.owed(false, 1, false, false, true, false));
+        assertEquals(
+                "2 commands",
+                WorldStreamTransport.Session.owed(false, 2, false, false, false, false));
+    }
+
+    @Test
+    void theChildBeatsWhileItStepsOrPresentsAndNotWhenAStepIsStuck() {
+        long beat = WorldStreamSession.HEARTBEAT_NANOS;
+        long now = 100 * beat;
+        assertTrue(WorldStreamSession.beating(false, now - beat, now), "a step finished recently");
+        assertFalse(
+                WorldStreamSession.beating(false, now - 2 * beat, now),
+                "a step stuck for two beats");
+        assertTrue(
+                WorldStreamSession.beating(true, now - 60 * beat, now),
+                "a present that blocks (a minimised window) is not a hang");
+    }
 }

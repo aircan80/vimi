@@ -59,7 +59,31 @@ final class WorldStreamSession {
     /** How often the owner loop tells the parent it still runs. */
     static final long HEARTBEAT_NANOS = 1_000_000_000L;
 
-    private long lastBeat = System.nanoTime(), beats;
+    // Set by the owner loop: when it last finished its commands, commits and upload steps, and
+    // whether it is drawing or presenting now. The heartbeat thread reads them.
+    private volatile long lastStep = System.nanoTime();
+    private volatile boolean presenting;
+
+    /**
+     * Sends a heartbeat every {@link #HEARTBEAT_NANOS} while the owner loop works: it finished its
+     * command and upload steps within the last two beats, or it is drawing or presenting (a present
+     * that blocks while the window is minimised or covered is not a hang). A loop stuck in a
+     * commit, an upload step or a decode handoff stops the beat, and the parent notices.
+     */
+    private void beat() {
+        long beats = 0;
+        while (!closing.get()) {
+            LockSupport.parkNanos(HEARTBEAT_NANOS);
+            if (beating(presenting, lastStep, System.nanoTime())) {
+                status.alive(++beats);
+            }
+        }
+    }
+
+    /** Whether the owner loop counts as working now. Pure, for tests. */
+    static boolean beating(boolean presenting, long lastStep, long now) {
+        return presenting || now - lastStep < 2 * HEARTBEAT_NANOS;
+    }
 
     private record HorizonDecoded(
             com.vibeminer.formats.world.WorldLowRes.LowRes lowRes, Throwable error) {}
@@ -179,6 +203,7 @@ final class WorldStreamSession {
                                         : "SESSION TERRAIN_BASIC_V1 ")
                                 + objectFormats);
                 advertiseCredit();
+                Thread.ofVirtual().name("world-v2-heartbeat").start(this::beat);
                 while (!closing.get()) {
                     if (mailbox.closing() || status.failure() != null) {
                         if (mailbox.failed()) {
@@ -232,6 +257,11 @@ final class WorldStreamSession {
                     }
                     // GPU mutations must precede draw submission in the same bgfx frame.
                     long now = System.nanoTime();
+                    // Commands, commits and upload steps are done for this iteration: the
+                    // heartbeat counts that as progress, and the draw and present below as
+                    // presenting, which never reads as a hang (#306).
+                    lastStep = now;
+                    presenting = true;
                     // Native presentation draws every presented frame; readback keeps its cap.
                     if (camera != null
                             && (window != null || now - lastDraw >= DRAW_INTERVAL)
@@ -243,12 +273,6 @@ final class WorldStreamSession {
                         // Wake the parent's frame reader; the mapping write already completed.
                         status.framePublished(owner.publishedSequence());
                     }
-                    // The heartbeat comes from this loop itself, so it stops when the loop is
-                    // stuck (in an upload step, a commit or a driver call) and the parent notices.
-                    if (now - lastBeat >= HEARTBEAT_NANOS) {
-                        lastBeat = now;
-                        status.alive(++beats);
-                    }
                     if (window != null
                             && owner.presentedCamera() > 0
                             && (owner.presentedCamera() != announcedCamera
@@ -258,6 +282,7 @@ final class WorldStreamSession {
                         announcedContent = owner.presentedContent();
                         status.presented(announcedCamera, announcedContent);
                     }
+                    presenting = false;
                     reconcile();
                     finishUpload();
                     finishLate(owner);

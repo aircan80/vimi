@@ -3138,23 +3138,46 @@ public final class WorldStreamTransport {
          */
         private String owedReplies() {
             synchronized (lock) {
-                if (outstandingReliable == 0) {
-                    return null;
-                }
-                var kinds = new java.util.ArrayList<String>(3);
-                if (commitOperation != null && commitOperation.outstanding) {
-                    kinds.add("a commit");
-                }
-                if (tile != null && (tile.offerOutstanding || tile.cancelOutstanding)) {
-                    kinds.add(tile.offerOutstanding ? "a tile upload" : "a tile cancellation");
-                }
-                if (objectsOperation != null) {
-                    kinds.add("late objects");
-                }
-                return outstandingReliable
-                        + (outstandingReliable == 1 ? " command" : " commands")
-                        + (kinds.isEmpty() ? "" : " (" + String.join(", ", kinds) + ")");
+                return owed(
+                        closing,
+                        outstandingReliable,
+                        commitOperation != null && commitOperation.outstanding,
+                        tile != null && tile.offerOutstanding,
+                        tile != null && tile.cancelOutstanding,
+                        objectsOperation != null);
             }
+        }
+
+        /**
+         * What awaits the child's reply, or null: nothing once the session is closing (a slow
+         * teardown after CLOSE is not a hang) or when no reliable command is outstanding. Pure, for
+         * tests.
+         */
+        static String owed(
+                boolean closing,
+                int outstanding,
+                boolean commit,
+                boolean upload,
+                boolean cancellation,
+                boolean objects) {
+            if (closing || outstanding == 0) {
+                return null;
+            }
+            var kinds = new java.util.ArrayList<String>(3);
+            if (commit) {
+                kinds.add("a commit");
+            }
+            if (upload) {
+                kinds.add("a tile upload");
+            } else if (cancellation) {
+                kinds.add("a tile cancellation");
+            }
+            if (objects) {
+                kinds.add("late objects");
+            }
+            return outstanding
+                    + (outstanding == 1 ? " command" : " commands")
+                    + (kinds.isEmpty() ? "" : " (" + String.join(", ", kinds) + ")");
         }
 
         /**
