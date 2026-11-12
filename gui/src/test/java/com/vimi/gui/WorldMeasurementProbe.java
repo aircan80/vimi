@@ -221,6 +221,7 @@ public final class WorldMeasurementProbe {
                             case "refusals" -> refusals(handle, catalog);
                             case "water" -> water(handle, catalog);
                             case "prep" -> prep(handle, catalog);
+                            case "collision" -> collision(opened, handle, catalog);
                             case "walk" -> walk(handle, catalog);
                             case "creatures" -> creatures(opened, handle, catalog);
                             case "displays" -> displays(opened);
@@ -338,6 +339,151 @@ public final class WorldMeasurementProbe {
     }
 
     // ---- Tile prep only: the real source path, no helper, GPU or FX (#422) ----------------
+
+    /**
+     * Collision bytes around each scenario: every obj0 placement of its 3x3 tiles, never the
+     * capped draw set. WMO groups through {@link com.vibeminer.formats.world.WmoCollision} (solid
+     * MOPY triangles and the group BSP), doodads (MDDF and the placed WMO doodad sets, set 0
+     * always) through {@link com.vibeminer.formats.models.M2Collision}. Models are counted once
+     * (they would be shared), placements per tile. Unreadable sources are counted, not guessed.
+     */
+    private static void collision(WorldMeasurementOpen opened, BuildWorld handle, WorldService.Catalog catalog)
+            throws Exception {
+        var scenarios = Scenario.parse(System.getProperty("probe.scenarios",
+                "stormwind:0:48:30,ironforge:0:41:33,orgrimmar:1:29:40"));
+        var limits = new com.vibeminer.formats.world.WmoFormats.Limits(
+                1 << 20, 1 << 20, com.vibeminer.formats.world.WmoFormats.MAX_GROUPS, 256, 4096, 65536, 131072, 256,
+                4, 4L << 20);
+        for (var scenario : scenarios) {
+            var map = catalog.maps().stream().filter(m -> m.id() == scenario.map()).findFirst().orElseThrow();
+            var inventory = handle.inventory(map, Cancellation.NONE).get(5, TimeUnit.MINUTES);
+            var groups = new java.util.HashMap<Long, Long>();
+            var models = new java.util.HashMap<Long, Long>();
+            var unreadable = new TreeMap<String, Integer>();
+            long started = System.nanoTime(), wmoPlacements = 0, doodadPlacements = 0, setDoodads = 0;
+            long solid = 0, all = 0, bspGroups = 0, groupCount = 0, modelTriangles = 0, emptyModels = 0;
+            for (var tile : inventory.world().tiles()) {
+                if (Math.abs(tile.x() - scenario.x()) > 1 || Math.abs(tile.y() - scenario.y()) > 1) continue;
+                byte[] obj0 = bytes(opened, tile.obj0Id(), unreadable, "obj0");
+                if (obj0 == null) continue;
+                var placements = com.vibeminer.formats.world.WorldPlacements.readObj0(obj0, () -> false);
+                for (var p : placements.worldObjects()) {
+                    wmoPlacements++;
+                    if (p.reference().kind() != com.vibeminer.formats.world.WorldPlacements.ReferenceKind.FILE_DATA_ID) {
+                        unreadable.merge("wmo by name", 1, Integer::sum);
+                        continue;
+                    }
+                    byte[] rootBytes = bytes(opened, p.reference().value(), unreadable, "wmo root");
+                    if (rootBytes == null) continue;
+                    com.vibeminer.formats.world.WmoFormats.Root root;
+                    try {
+                        root = com.vibeminer.formats.world.WmoFormats.root(rootBytes, limits, () -> false);
+                    } catch (IllegalArgumentException malformed) {
+                        unreadable.merge("wmo root malformed", 1, Integer::sum);
+                        continue;
+                    }
+                    int count = (int) Math.min(root.header().groupCount(), root.gfidCount());
+                    for (int g = 0; g < count; g++) {
+                        long id = root.gfid(g);
+                        if (id <= 0 || groups.containsKey(id)) continue;
+                        byte[] groupBytes = bytes(opened, id, unreadable, "wmo group");
+                        if (groupBytes == null) {
+                            groups.put(id, 0L);
+                            continue;
+                        }
+                        try {
+                            var c = com.vibeminer.formats.world.WmoCollision.read(groupBytes, () -> false);
+                            groups.put(id, c.retainedBytes());
+                            groupCount++;
+                            solid += c.solidTriangles();
+                            all += c.triangles();
+                            if (c.hasBsp()) bspGroups++;
+                            else unreadable.merge("BSP: " + c.bspIssue(), 1, Integer::sum);
+                        } catch (IllegalArgumentException malformed) {
+                            unreadable.merge("wmo group malformed", 1, Integer::sum);
+                            groups.put(id, 0L);
+                        }
+                    }
+                    var doodads = root.doodads();
+                    if (!doodads.retained()) continue;
+                    for (int set = 0; set < doodads.sets().size(); set++) {
+                        if (set != 0 && set != p.doodadSet()) continue;
+                        var range = doodads.sets().get(set);
+                        for (long d = range.firstDefinition(); d < range.firstDefinition() + range.count()
+                                && d < doodads.definitions().size(); d++) {
+                            var def = doodads.definitions().get((int) d);
+                            long id = def.reference() < doodads.fileIdCount() ? doodads.fileId(def.reference()) : 0;
+                            setDoodads++;
+                            if (id <= 0) {
+                                unreadable.merge("set doodad without a file ID", 1, Integer::sum);
+                                continue;
+                            }
+                            if (!models.containsKey(id)) models.put(id, model(opened, id, unreadable));
+                        }
+                    }
+                }
+                for (var d : placements.doodads()) {
+                    doodadPlacements++;
+                    if (d.reference().kind() != com.vibeminer.formats.world.WorldPlacements.ReferenceKind.FILE_DATA_ID) {
+                        unreadable.merge("doodad by name", 1, Integer::sum);
+                        continue;
+                    }
+                    long id = d.reference().value();
+                    if (!models.containsKey(id)) models.put(id, model(opened, id, unreadable));
+                }
+            }
+            for (var bytes : models.values()) {
+                if (bytes < 0) continue;
+                if (bytes <= 48) emptyModels++;
+            }
+            long groupBytes = groups.values().stream().mapToLong(Long::longValue).sum();
+            long modelBytes = models.values().stream().filter(v -> v > 0).mapToLong(Long::longValue).sum();
+            // A placement: transform, bounds and model reference (about 96 bytes each).
+            long instanceBytes = 96L * (wmoPlacements + doodadPlacements + setDoodads);
+            say(String.format(Locale.ROOT,
+                    "PROBE collision %s 3x3: %d WMO placements, %d groups read (%d with a valid BSP), %d of %d"
+                            + " triangles solid, %.1f MiB; %d MDDF + %d set doodads, %d distinct models (%d without"
+                            + " a collision mesh), %.1f MiB; placements %.2f MiB; total %.1f MiB in %.1f s;"
+                            + " unreadable %s",
+                    scenario.name(), wmoPlacements, groupCount, bspGroups, solid, all, groupBytes / 1048576.0,
+                    doodadPlacements, setDoodads, models.size(), emptyModels, modelBytes / 1048576.0,
+                    instanceBytes / 1048576.0, (groupBytes + modelBytes + instanceBytes) / 1048576.0,
+                    seconds(System.nanoTime() - started), unreadable));
+        }
+    }
+
+    /** One M2's collision bytes, or -1 when it could not be read. */
+    private static long model(WorldMeasurementOpen opened, long id, Map<String, Integer> unreadable) {
+        byte[] raw = bytes(opened, id, unreadable, "doodad model");
+        if (raw == null) return -1;
+        try {
+            return com.vibeminer.formats.models.M2Collision.read(raw).retainedBytes();
+        } catch (IllegalArgumentException malformed) {
+            unreadable.merge("doodad model malformed", 1, Integer::sum);
+            return -1;
+        }
+    }
+
+    /** A local file's bytes, or null (counted under {@code kind} and its read state). */
+    private static byte[] bytes(WorldMeasurementOpen opened, long id, Map<String, Integer> unreadable, String kind) {
+        if (id <= 0) {
+            unreadable.merge(kind + " without a file ID", 1, Integer::sum);
+            return null;
+        }
+        try {
+            var read = opened.files().get(com.vibeminer.files.FileTypes.FileRef.id(id), Cancellation.NONE).join();
+            if (read.state() != com.vibeminer.files.FileTypes.FileReadState.COMPLETE) {
+                unreadable.merge(kind + " " + read.state(), 1, Integer::sum);
+                return null;
+            }
+            var out = new java.io.ByteArrayOutputStream();
+            for (var segment : read.segments()) out.writeBytes(segment.bytes());
+            return out.toByteArray();
+        } catch (RuntimeException failed) {
+            unreadable.merge(kind + " failed", 1, Integer::sum);
+            return null;
+        }
+    }
 
     /**
      * Walks a body over the real terrain of each scenario's 3x3 tiles (the walk collision has
