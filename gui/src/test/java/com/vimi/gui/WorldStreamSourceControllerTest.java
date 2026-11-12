@@ -88,6 +88,8 @@ public final class WorldStreamSourceControllerTest {
         creaturesShareTheirBytesAndYieldToBuildings();
         buildingsComeFirstAndCreaturesReplaceThemLater();
         creaturePassesReuseTheBuildingsTheirBuildingsPassKept();
+        keptBuildingsSurviveAPreemptionAndCloseOnceOnRetirement();
+        closingWhileABuildingsPassHoldsItsKeptSetClosesIt();
         refusedCreatureReplacementKeepsTheBuildings();
         newBuildingsPreemptACreaturePassThatThenResumes();
         loadedTileBuildingsPreemptACreaturePass();
@@ -1345,6 +1347,134 @@ public final class WorldStreamSourceControllerTest {
             fixture.close();
         }
         check(closed.get() == kept.get(), "Every kept set was closed by the end: " + closed + " of " + kept);
+    }
+
+    /** A preparer keeping one test set per buildings pass, counting each set's closes. */
+    private static final class KeepingPreparer implements WorldStreamSourceBridge.ExteriorPreparer {
+        final java.util.concurrent.ConcurrentHashMap<Integer, java.util.concurrent.atomic.AtomicInteger> closes =
+                new java.util.concurrent.ConcurrentHashMap<>();
+        final java.util.concurrent.ConcurrentHashMap<Integer, List<Boolean>> reused =
+                new java.util.concurrent.ConcurrentHashMap<>();
+        final java.util.concurrent.atomic.AtomicInteger sets = new java.util.concurrent.atomic.AtomicInteger();
+        volatile int holdCreaturesOf = -1, holdBuildingsOf = -1;
+        final java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.atomic.AtomicBoolean holding = new java.util.concurrent.atomic.AtomicBoolean();
+
+        @Override
+        public WorldStreamSourceBridge.ExteriorCopy prepare(
+                com.vibeminer.concepts.world.WorldTerrainStreaming source,
+                com.vibeminer.concepts.world.WorldTerrainStreaming.Scope scope,
+                com.vibeminer.formats.world.WorldFormats.Tile tile,
+                com.vibeminer.access.Cancellation cancellation, int formats, long creatureBytes) {
+            throw new AssertionError("The keeping form is used");
+        }
+
+        @Override
+        public WorldStreamSourceBridge.ExteriorCopy prepare(
+                com.vibeminer.concepts.world.WorldTerrainStreaming source,
+                com.vibeminer.concepts.world.WorldTerrainStreaming.Scope scope,
+                com.vibeminer.formats.world.WorldFormats.Tile tile,
+                com.vibeminer.access.Cancellation cancellation, int formats, long creatureBytes,
+                WorldStreamSourceBridge.KeptBuildings reuse,
+                java.util.function.Consumer<WorldStreamSourceBridge.KeptBuildings> keep) {
+            if (creatureBytes == BUILDINGS_ONLY) {
+                int id = sets.incrementAndGet();
+                var counter = closes.computeIfAbsent(id, key -> new java.util.concurrent.atomic.AtomicInteger());
+                keep.accept(WorldStreamSourceBridge.KeptBuildings.forTest(1 << 20, counter::incrementAndGet));
+                if (tile.y() == holdBuildingsOf) hold(cancellation, true);
+                return new WorldStreamSourceBridge.ExteriorCopy(building(), 1, false, "authored");
+            }
+            reused.computeIfAbsent(tile.y(), key -> new java.util.concurrent.CopyOnWriteArrayList<>())
+                    .add(reuse != null);
+            if (tile.y() == holdCreaturesOf) {
+                holdCreaturesOf = -1;
+                hold(cancellation, true);
+            }
+            return new WorldStreamSourceBridge.ExteriorCopy(building(), 1, false, "authored",
+                    WorldTileCreatures.Summary.drawn(1, 1, 1 << 20));
+        }
+
+        /** Waits until released, or (when {@code untilCanceled}) until the pass is canceled. */
+        private void hold(com.vibeminer.access.Cancellation cancellation, boolean untilCanceled) {
+            holding.set(true);
+            try {
+                long deadline = System.nanoTime() + 30_000_000_000L;
+                while (release.getCount() > 0 && !(untilCanceled && cancellation.isCanceled())) {
+                    if (System.nanoTime() > deadline) throw new AssertionError("Never released");
+                    Thread.sleep(1);
+                }
+            } catch (InterruptedException error) {
+                throw new AssertionError(error);
+            } finally {
+                holding.set(false);
+            }
+            cancellation.check();
+        }
+
+        @Override
+        public boolean appendsCreatures() {
+            return true;
+        }
+    }
+
+    /**
+     * A creature pass canceled by new terrain puts its tile's kept buildings back, and the resumed
+     * pass reuses them; a tile that retires closes what it kept, and every kept set is closed
+     * exactly once.
+     */
+    private static void keptBuildingsSurviveAPreemptionAndCloseOnceOnRetirement() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 9);
+        fixture.exteriors = true;
+        fixture.residents = 3;
+        var preparer = new KeepingPreparer();
+        int first = fixture.tiles.get(0).y();
+        preparer.holdCreaturesOf = first;
+        try {
+            fixture.start(fixture.gpu::start, () -> {}, preparer);
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 2));
+            fixture.untilPresented(preparer.holding::get);
+            // New terrain cancels the held creature pass; once that terrain is in, it resumes.
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 3));
+            fixture.untilPresented(() -> preparer.reused.getOrDefault(first, List.of()).size() == 2
+                    && !fixture.controller.loadingObjects());
+            check(preparer.reused.get(first).equals(List.of(true, true)),
+                    "The canceled pass had the kept buildings and the resumed one reused them: " + preparer.reused);
+            // Moving on retires the first tiles (three residents): what they kept is closed.
+            for (int from = 3; from <= 6; from += 3) {
+                var wanted = fixture.tiles.subList(from, from + 3);
+                fixture.controller.neighborhood(wanted);
+                fixture.untilPresented(() -> fixture.controller.snapshot().prepared() == 3
+                        && preparer.sets.get() > 3 && !fixture.controller.loadingObjects());
+            }
+        } finally {
+            fixture.close();
+        }
+        check(preparer.closes.values().stream().allMatch(c -> c.get() == 1),
+                "Every kept set was closed exactly once: " + preparer.closes);
+    }
+
+    /** A session closing while its buildings pass holds a kept set closes that set. */
+    private static void closingWhileABuildingsPassHoldsItsKeptSetClosesIt() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 1);
+        fixture.exteriors = true;
+        var preparer = new KeepingPreparer();
+        preparer.holdBuildingsOf = fixture.tiles.get(0).y();
+        try {
+            fixture.start(fixture.gpu::start, () -> {}, preparer);
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.untilPresented(preparer.holding::get);
+        } finally {
+            fixture.close();
+            preparer.release.countDown();
+        }
+        long deadline = System.nanoTime() + 10_000_000_000L;
+        while (preparer.closes.values().stream().anyMatch(c -> c.get() == 0) && System.nanoTime() < deadline)
+            Thread.sleep(2);
+        check(preparer.sets.get() == 1 && preparer.closes.get(1).get() == 1,
+                "The held pass's kept set was closed once: " + preparer.closes);
     }
 
     /** A replacement refused for budget leaves the drawn buildings and is not offered again at once. */
