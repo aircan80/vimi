@@ -27,6 +27,38 @@ final class RaceNpcAttachmentsTest {
                 RaceNpcAttachments.visible(Set.of(0, 5), Set.of(), mesh));
     }
 
+    private static PreviewMesh withParts(int... ids) {
+        var parts = new java.util.ArrayList<PreviewMesh.Part>();
+        for (int id : ids) parts.add(new PreviewMesh.Part(id, 0, 3));
+        return new PreviewMesh(new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0}, new int[] {0, 1, 2}, parts);
+    }
+
+    @Test
+    void attachedHelmetsAndShouldersAreNotCountedAsUndrawn() {
+        int head = RaceNpcAttachments.FIRST_PART + RaceNpcAttachments.HEAD * 100;
+        int right = RaceNpcAttachments.FIRST_PART + RaceNpcAttachments.SHOULDER_RIGHT * 100;
+        int left = RaceNpcAttachments.FIRST_PART + RaceNpcAttachments.SHOULDER_LEFT * 100;
+        // Nothing attached: every counted item model stays undrawn.
+        assertEquals(0, RaceNpcAttachments.drawnSlots(withParts(0, 1301)));
+        // A helmet with two batches is one slot; both shoulders (or either side) are one slot.
+        assertEquals(1, RaceNpcAttachments.drawnSlots(withParts(0, head, head + 1)));
+        assertEquals(1, RaceNpcAttachments.drawnSlots(withParts(0, right, left, left + 1)));
+        assertEquals(1, RaceNpcAttachments.drawnSlots(withParts(0, left)));
+        assertEquals(2, RaceNpcAttachments.drawnSlots(withParts(0, head, right)));
+        // A helmet and shoulders counted, only the helmet attached: the shoulders stay undrawn.
+        var helmetOnly =
+                new com.vibeminer.rendering.models.MeshAppearance(
+                        withParts(0, head),
+                        new float[6],
+                        new float[0],
+                        List.of(),
+                        List.of(),
+                        List.of());
+        assertEquals(1, RaceNpcAttachments.undrawnAttachments(2, helmetOnly));
+        assertEquals(0, RaceNpcAttachments.undrawnAttachments(1, helmetOnly));
+        assertEquals(3, RaceNpcAttachments.undrawnAttachments(3, null));
+    }
+
     @Test
     void shouldersTakeBothSidesFromOneResourceWhenOnlyOneIsNamed() {
         long[] none = {0, 0};
