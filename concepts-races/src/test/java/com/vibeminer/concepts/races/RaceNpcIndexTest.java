@@ -751,6 +751,59 @@ final class RaceNpcIndexTest {
         assertTrue(present(store, plainKey));
     }
 
+    @Test
+    void anUnrecordedCompositeThatCannotBeComposedNowIsShownAsSavedAndRetriedAFewTimes()
+            throws Exception {
+        var raw = helmeted();
+        var files = files('3');
+        var generated = new MemoryGeneratedStore();
+        var first = ask(raw, files, generated);
+        var index = index(raw, files);
+        var key = index.key(50);
+        var entry = RaceNpcIndex.decode(generated.read(key).join().bytes(), index.scope(50));
+        var record =
+                GeneratedKey.hash(
+                        ("npc-composite-attachment-files-v1\n" + entry.composite().hex())
+                                .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        var tries =
+                GeneratedKey.hash(
+                        ("npc-composite-recompose-tries-v1\n" + entry.composite().hex())
+                                .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        // A composite saved before attachment files were recorded.
+        generated.delete(List.of(key, record)).join();
+        // The model needs the network: composing again cannot finish (Unreadable), so the saved
+        // composite is shown, restored, instead of a retry; the attempt is counted.
+        var later = files('3');
+        later.failOpen(
+                1234,
+                new com.vibeminer.files.FileTypes.FileOpen(
+                        com.vibeminer.files.FileTypes.FileReadState.NEEDS_NETWORK,
+                        null,
+                        "FILES_NEEDS_NETWORK",
+                        "not stored locally",
+                        null));
+        for (int session = 1; session <= RaceAppearance.RECOMPOSE_TRIES; session++) {
+            var shown = ask(raw, later, generated);
+            assertNotNull(shown.result(), String.valueOf(shown));
+            assertTrue(shown.result().restored(), "shown as saved in session " + session);
+            assertArrayEquals(
+                    first.result().appearance().mesh().positions(),
+                    shown.result().appearance().mesh().positions());
+            assertFalse(present(generated, record));
+            assertFalse(present(generated, key));
+            assertArrayEquals(
+                    java.nio.ByteBuffer.allocate(4).putInt(session).array(),
+                    generated.read(tries).join().bytes());
+        }
+        // After that many attempts it is left as it was, even once composing would work.
+        assertTrue(ask(raw, files, generated).result().restored());
+        assertFalse(present(generated, record));
+        // Without the count, composing is tried again, and now completes.
+        generated.delete(List.of(tries)).join();
+        assertFalse(ask(raw, files, generated).result().restored());
+        assertTrue(present(generated, record) && present(generated, key));
+    }
+
     private static RaceAppearanceTypes.Result result() {
         return new RaceAppearanceTypes.Result(
                 RaceTypes.State.PARTIAL,

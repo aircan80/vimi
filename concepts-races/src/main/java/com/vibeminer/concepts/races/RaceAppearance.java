@@ -519,19 +519,89 @@ final class RaceAppearance {
         if (prepared.finished() != null) {
             return prepared.finished();
         }
-        if (unrecorded(prepared, token)) {
+        if (unrecorded(prepared, token)
+                && recomposeTries(prepared.key(), token) < RECOMPOSE_TRIES) {
             // A saved composite of an NPC whose items may attach models, composed before its
             // attachment files were recorded: it could be restored but never indexed, so the NPC
             // was resolved and planned again every session. Composed again once, which saves the
             // composite (replacing the old one), records its attachment files and indexes it.
-            var composed = render(prepared, token, false);
-            if (index.attachments(prepared.key(), token) != null) {
-                return composed;
+            try {
+                var composed = render(prepared, token, false);
+                if (index.attachments(prepared.key(), token) != null) {
+                    return composed;
+                }
+            } catch (RacesService.Unreadable later) {
+                // Something it is composed from cannot be read yet: shown as saved, below.
+                token.check();
             }
             // Not complete now (an item not readable yet, say): the saved composite is shown as
-            // before, and composing is tried again next time.
+            // before. The attempt is counted, so a state that lasts stops being retried.
+            recomposeTried(prepared.key(), token);
         }
         return render(prepared, token, true);
+    }
+
+    /**
+     * Sessions in which an unrecorded composite may be composed again without completing before it
+     * is left as it was: restored, and not indexed.
+     */
+    static final int RECOMPOSE_TRIES = 3;
+
+    private static GeneratedKey recomposeKey(GeneratedKey composite) {
+        return GeneratedKey.hash(
+                ("npc-composite-recompose-tries-v1\n" + composite.hex())
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    // Composites this handle tried to compose again: one attempt per handle.
+    private final java.util.Set<GeneratedKey> recomposedHere =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /** How many earlier attempts to compose {@code composite} again did not complete. */
+    @SuppressWarnings("try")
+    private int recomposeTries(GeneratedKey composite, Cancellation token) {
+        if (recomposedHere.contains(composite)) {
+            return RECOMPOSE_TRIES;
+        }
+        var lower = new com.vibeminer.generated.Cancellation();
+        try (var registration = token.onCancel(lower::cancel)) {
+            var read = generated.read(recomposeKey(composite), lower).join();
+            if (read.state() != GeneratedTypes.ReadState.PRESENT
+                    || read.bytes() == null
+                    || read.bytes().length != 4) {
+                return 0;
+            }
+            return Math.max(0, ByteBuffer.wrap(read.bytes()).getInt());
+        } catch (java.util.concurrent.CancellationException canceled) {
+            throw canceled;
+        } catch (RuntimeException unreadable) {
+            token.check();
+            return 0;
+        }
+    }
+
+    /** Counts an attempt to compose {@code composite} again that did not complete. */
+    @SuppressWarnings("try")
+    private void recomposeTried(GeneratedKey composite, Cancellation token) {
+        int tries = recomposeTries(composite, token) + 1;
+        recomposedHere.add(composite);
+        var lower = new com.vibeminer.generated.Cancellation();
+        try (var registration = token.onCancel(lower::cancel)) {
+            var key = recomposeKey(composite);
+            generated.delete(List.of(key), lower).join();
+            generated
+                    .put(
+                            List.of(
+                                    new GeneratedTypes.Put(
+                                            key, ByteBuffer.allocate(4).putInt(tries).array())),
+                            lower)
+                    .join();
+        } catch (java.util.concurrent.CancellationException canceled) {
+            throw canceled;
+        } catch (RuntimeException unwritable) {
+            // Not counted; tried again next time.
+            token.check();
+        }
     }
 
     /**
