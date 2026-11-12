@@ -544,6 +544,12 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         return renderer.textureWaitStepsForProof();
     }
 
+    /** Proof observation and seam: the session's shared object geometry (#380). */
+    WorldStreamObjectGeometry objectGeometryForProof() {
+        requireOpen();
+        return renderer.objectGeometry();
+    }
+
     /** Test seam for native proofs; see {@link BgfxWorldStreamRenderer#objectBudgetForProof}. */
     void objectBudgetForProof(long bytes) {
         requireOpen();

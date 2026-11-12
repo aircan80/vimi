@@ -26,6 +26,27 @@ public final class WorldStreamObjectsSharedTexturesProof {
     /** Sets of the same images: their image references exceed bgfx's texture handle limit. */
     static final int SHARING = 7;
 
+    /** Object bytes the sets drawing now hold (geometry zombies excluded). */
+    private static long live(WorldStreamNativeOwner owner) {
+        return WorldStreamObjectsBudgetProof.live(owner);
+    }
+
+    private static void addGeometry(
+            java.util.Map<WorldStreamObjectAssets.Digest, Long> geometry,
+            WorldStreamPackedObjects packed) {
+        for (int m = 0; m < packed.modelKeys.length; m++) {
+            geometry.put(packed.modelKeys[m], packed.modelBytes(m));
+        }
+    }
+
+    private static long sum(java.util.Map<WorldStreamObjectAssets.Digest, Long> geometry) {
+        long total = 0;
+        for (long bytes : geometry.values()) {
+            total += bytes;
+        }
+        return total;
+    }
+
     private static void require(boolean value, String message) {
         if (!value) {
             throw new AssertionError(message);
@@ -85,12 +106,18 @@ public final class WorldStreamObjectsSharedTexturesProof {
             var shared = WorldStreamObjectsTextureBudgetProof.images(IMAGES, 0);
             // The same chains and NEW more: image i of both sets is the same 4 x 4 chain.
             var mixed = WorldStreamObjectsTextureBudgetProof.images(IMAGES + NEW, 0);
-            long buffers, textures;
+            // Geometry is shared by model asset as textures are by chain (#380): a set charges
+            // its water and the geometry and textures no other set uploaded.
+            long water, textures;
+            var geometry = new java.util.HashMap<WorldStreamObjectAssets.Digest, Long>();
             try (var probe = WorldStreamPackedObjects.pack(shared, () -> false)) {
-                buffers = probe.bufferBytes();
-                textures = probe.payloadBytes() - buffers;
+                water = probe.water.bytes();
+                textures = probe.payloadBytes() - probe.bufferBytes();
+                addGeometry(geometry, probe);
             }
+            long sharedGeometry = sum(geometry);
             int before = owner.stats().textures();
+            long sharedBefore = owner.objectGeometryForProof().sharedReferences();
 
             for (int i = 0; i < SHARING; i++) {
                 require(
@@ -107,8 +134,12 @@ public final class WorldStreamObjectsSharedTexturesProof {
                                 + upload.objectTextureReferences()
                                 + " references");
                 require(
-                        upload.objectBytes() == (i + 1) * buffers + textures,
-                        "Shared textures are charged once: " + upload.objectBytes());
+                        live(owner) == sharedGeometry + (i + 1) * water + textures,
+                        "Shared textures and geometry are charged once: " + live(owner));
+                require(
+                        owner.objectGeometryForProof().sharedReferences()
+                                == sharedBefore + (long) i * shared.modelCount(),
+                        "Every later set shared every model");
             }
             int peak = owner.stats().textures();
             require(
@@ -151,7 +182,7 @@ public final class WorldStreamObjectsSharedTexturesProof {
             require(
                     owner.stats().upload().objectTextures() == IMAGES
                             && owner.stats().upload().objectTextureReferences() == SHARING * IMAGES
-                            && owner.stats().upload().objectBytes() == SHARING * buffers + textures,
+                            && live(owner) == sharedGeometry + SHARING * water + textures,
                     "A dropped build released its new textures and kept the shared ones");
 
             // The mixed set attaches with only its new images created.
@@ -159,15 +190,16 @@ public final class WorldStreamObjectsSharedTexturesProof {
             require(
                     late(owner, mixedLease, mixed) == WorldStreamStatus.LateOutcome.ATTACHED,
                     "The mixed set attaches");
-            long mixedBuffers, mixedTextures;
+            long mixedWater, mixedTextures;
             try (var probe = WorldStreamPackedObjects.pack(mixed, () -> false)) {
-                mixedBuffers = probe.bufferBytes();
-                mixedTextures = probe.payloadBytes() - mixedBuffers;
+                mixedWater = probe.water.bytes();
+                mixedTextures = probe.payloadBytes() - probe.bufferBytes();
+                addGeometry(geometry, probe);
             }
             require(
                     owner.stats().upload().objectTextures() == IMAGES + NEW
-                            && owner.stats().upload().objectBytes()
-                                    == SHARING * buffers + mixedBuffers + mixedTextures,
+                            && live(owner)
+                                    == sum(geometry) + SHARING * water + mixedWater + mixedTextures,
                     "The mixed set created only its new images");
             fresh(owner, reader, content);
             int mixedPeak = owner.stats().textures();
@@ -205,8 +237,10 @@ public final class WorldStreamObjectsSharedTexturesProof {
             require(
                     upload.objectTextures() == 0
                             && upload.objectTextureReferences() == 0
-                            && upload.objectBytes() == 0,
-                    "The last release frees every shared texture: " + upload);
+                            && live(owner) == 0
+                            && upload.objectBytes() == owner.objectGeometryForProof().zombieBytes(),
+                    "The last release frees every shared texture; only geometry zombies stay: "
+                            + upload);
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
             while (owner.stats().textures() != before) {
                 fresh(owner, reader, content);
@@ -284,7 +318,10 @@ public final class WorldStreamObjectsSharedTexturesProof {
      * Two sets draw the same one-image quad in front of the camera; the one that uploaded its
      * texture is released, and the frame's centre pixel is still the texel colour, sampled from the
      * texture the other set shares; once that set is released too, the terrain pixel is back.
-     * Returns the pixel drawn after the uploading set's release.
+     * Geometry likewise (#380): the quad's model is one entry both sets hold, drawn from the
+     * uploader's buffers after its release; the last release keeps it as a zombie that a set coming
+     * back revives without an upload, and eviction destroys. Returns the pixel drawn after the
+     * uploading set's release.
      */
     private static int sampledAfterRelease(
             WorldStreamNativeOwner owner,
@@ -298,6 +335,9 @@ public final class WorldStreamObjectsSharedTexturesProof {
         int centre = 128 * 256 + 128;
         int terrain = fresh(owner, reader, content).pixels().get(centre);
         var view = facing();
+        var geometry = owner.objectGeometryForProof();
+        int zombies = geometry.entries();
+        long shared = geometry.sharedReferences(), revived = geometry.revived();
         var uploader = active.get(0);
         var sharer = active.get(1);
         require(
@@ -308,6 +348,11 @@ public final class WorldStreamObjectsSharedTexturesProof {
                 owner.stats().upload().objectTextures() == 1
                         && owner.stats().upload().objectTextureReferences() == 2,
                 "The readback sets share one texture");
+        require(
+                geometry.entries() == zombies + 1
+                        && geometry.references() == 2
+                        && geometry.sharedReferences() == shared + 1,
+                "The readback sets share one model's geometry");
         content =
                 replace(
                         owner,
@@ -323,6 +368,9 @@ public final class WorldStreamObjectsSharedTexturesProof {
                 owner.stats().upload().objectTextures() == 1
                         && owner.stats().upload().objectTextureReferences() == 1,
                 "The uploading set's release kept the shared texture");
+        require(
+                geometry.entries() == zombies + 1 && geometry.references() == 1,
+                "The uploading set's release kept the shared geometry");
         int drawn = fresh(owner, reader, content).pixels().get(centre);
         // Either channel order, as the material proof reads it.
         int r = Math.abs(channel(drawn, 16) - RED) <= 1 ? 16 : 0;
@@ -344,16 +392,58 @@ public final class WorldStreamObjectsSharedTexturesProof {
                                 sharer.slot(), sharer.generation() + 1, serial + 1),
                         content);
         require(owner.stats().upload().objectTextures() == 0, "The last release freed it");
-        int after = fresh(owner, reader, content).pixels().get(centre);
+        require(
+                geometry.references() == 0 && geometry.entries() == zombies + 1,
+                "The last release kept the geometry as a zombie");
+        requireTerrain(fresh(owner, reader, content).pixels().get(centre), terrain);
+
+        // A set coming back revives the zombie: no new entry, and it draws the quad again.
+        var back = active.get(active.size() - 1);
+        require(
+                late(owner, back, view) == WorldStreamStatus.LateOutcome.ATTACHED,
+                "The readback set attaches again");
+        require(
+                geometry.revived() == revived + 1
+                        && geometry.entries() == zombies + 1
+                        && geometry.references() == 1,
+                "The returning set revived the zombie geometry");
+        require(
+                fresh(owner, reader, content).pixels().get(centre) == drawn,
+                "The revived geometry draws the quad");
+        content =
+                replace(
+                        owner,
+                        reader,
+                        worker,
+                        directory,
+                        active,
+                        back,
+                        new WorldStreamState.Lease(back.slot(), back.generation() + 1, serial + 2),
+                        content);
+
+        // Eviction destroys every zombie and returns its bytes.
+        long zombieBytes = geometry.zombieBytes();
+        require(
+                zombieBytes > 0 && geometry.evict(Long.MAX_VALUE) == zombieBytes,
+                "Eviction frees every zombie byte");
+        require(
+                geometry.entries() == 0
+                        && geometry.zombieBytes() == 0
+                        && owner.stats().upload().objectBytes() == 0,
+                "Nothing is charged once the zombies are evicted: " + owner.stats().upload());
+        requireTerrain(fresh(owner, reader, content).pixels().get(centre), terrain);
+        return drawn;
+    }
+
+    private static void requireTerrain(int pixel, int terrain) {
         for (int shift : new int[] {0, 8, 16}) {
             require(
-                    Math.abs(channel(after, shift) - channel(terrain, shift)) <= 1,
+                    Math.abs(channel(pixel, shift) - channel(terrain, shift)) <= 1,
                     "The terrain pixel is back: "
-                            + Integer.toHexString(after)
+                            + Integer.toHexString(pixel)
                             + " for "
                             + Integer.toHexString(terrain));
         }
-        return drawn;
     }
 
     private static int channel(int pixel, int shift) {

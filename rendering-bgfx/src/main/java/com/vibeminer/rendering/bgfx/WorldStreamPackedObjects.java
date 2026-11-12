@@ -106,6 +106,18 @@ final class WorldStreamPackedObjects implements AutoCloseable {
 
     ByteBuffer vertices, indices, pixels;
 
+    /**
+     * Per model: its asset digest ({@link WorldStreamObjectAssets#model}), the key the session's
+     * geometry library shares its buffers by ({@link WorldStreamObjectGeometry}).
+     */
+    final WorldStreamObjectAssets.Digest[] modelKeys;
+
+    /**
+     * Per model: its first vertex and vertex count in {@link #vertices}, and its first index and
+     * index count in {@link #indices}. A model's meshes are contiguous in both.
+     */
+    final int[] modelVertexFirst, modelVertexCount, modelIndexFirst, modelIndexCount;
+
     /** The set's building water, built here on the decoder worker ({@link WorldObjectWater}). */
     WorldObjectWater water = WorldObjectWater.NONE;
 
@@ -139,6 +151,28 @@ final class WorldStreamPackedObjects implements AutoCloseable {
                         meshes, ranges, data.vertices, data.indices, canceled);
         draws = data.draws;
         meshGroups = data.meshGroups.clone();
+        int modelCount = data.modelCount();
+        modelKeys = new WorldStreamObjectAssets.Digest[modelCount];
+        modelVertexFirst = new int[modelCount];
+        modelVertexCount = new int[modelCount];
+        modelIndexFirst = new int[modelCount];
+        modelIndexCount = new int[modelCount];
+        var hasher = new WorldStreamObjectAssets.Hasher();
+        for (int m = 0; m < modelCount; m++) {
+            check(canceled);
+            hasher.start();
+            modelKeys[m] = WorldStreamObjectAssets.model(hasher, data, m).digest();
+            int first = data.models[m * 2], count = data.models[m * 2 + 1];
+            if (count > 0) {
+                int last = (first + count - 1) * 6;
+                modelVertexFirst[m] = data.meshes[first * 6];
+                modelVertexCount[m] =
+                        data.meshes[last] + data.meshes[last + 1] - modelVertexFirst[m];
+                modelIndexFirst[m] = data.meshes[first * 6 + 2];
+                modelIndexCount[m] =
+                        data.meshes[last + 2] + data.meshes[last + 3] - modelIndexFirst[m];
+            }
+        }
         placementParents = data.placementParents.clone();
         placementGroups = data.placementGroups.clone();
         animations = new ObjectAnimation[data.modelCount()];
@@ -420,6 +454,11 @@ final class WorldStreamPackedObjects implements AutoCloseable {
     /** Full GPU bytes of image {@code image}'s chain as uploaded. */
     long imageBytes(int image) {
         return ObjectTextureFormats.chainBytes(format(image), width(image), height(image));
+    }
+
+    /** GPU bytes of model {@code m}'s vertex and index buffers in the geometry library. */
+    long modelBytes(int m) {
+        return modelVertexCount[m] * (long) GPU_VERTEX_BYTES + modelIndexCount[m] * 2L;
     }
 
     /** Native vertex and index bytes: the set's own GPU buffers. */
