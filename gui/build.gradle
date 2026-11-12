@@ -905,7 +905,8 @@ check.dependsOn preparedBuildReaderTest
 // -Pprobe.mode=walk walks a body over each scenario's real 3x3 terrain in eight headings and
 // reports where it ended, slides and falls.
 // -Pprobe.mode=swim reads the scenario's terrain liquid, lists the water per area, and walks a body
-// from eight shores into the deepest water (or -Pprobe.swimArea's) and back out (#716).
+// from eight shores into the deepest water (or -Pprobe.swimArea's) and back out (#716);
+// -Pprobe.objects=true instead swims in the 3x3's building (WMO) liquids.
 // -Pprobe.mode=races previews every race model variant's textured sample and groups the untextured
 // ones by reason (-Pprobe.raceImages=<race IDs> writes PNG renders, -Pprobe.raceDetail=true adds
 // issues); -Pprobe.mode=raceSkin dumps the customization chain of -Pprobe.models (ChrModel IDs) or

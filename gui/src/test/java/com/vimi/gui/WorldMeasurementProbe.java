@@ -524,6 +524,10 @@ public final class WorldMeasurementProbe {
             var world = com.vibeminer.rendering.world.CollisionWorld.terrain(ground);
             say("PROBE swim " + scenario.name() + ": " + ground.tiles() + " terrain tiles, " + liquids.tiles()
                     + " liquid tiles; cells by kind and LiquidType " + kinds);
+            if ("true".equals(System.getProperty("probe.objects"))) {
+                swimInBuildings(source, inventory, scenario, ground, liquids);
+                continue;
+            }
             // Water per area: cells, surface range, and the deepest point (surface over ground).
             double cell = WorldFormats.TILE_SIZE / 128, chunkSize = WorldFormats.TILE_SIZE / 16;
             var perArea = new TreeMap<Long, double[]>();
@@ -636,6 +640,113 @@ public final class WorldMeasurementProbe {
                         swimSteps == 0 ? 0 : swum / (swimSteps * dt), left, inSwitches, switches, waiting,
                         body.status(), (System.nanoTime() - began) / 1e6 / Math.max(1, steps)));
             }
+        }
+    }
+
+    /**
+     * Swimming in building liquid (WMO MLIQ, #716): the 3x3's buildings through the production
+     * collision reader, their liquids placed with the collision transforms. Lists the placed
+     * liquids by kind, then for the largest ones places a body above the middle of the liquid and
+     * swims it in four headings, reporting where it swims, what surface it floats at (terrain or
+     * building), and where it leaves the water.
+     */
+    private static void swimInBuildings(com.vibeminer.concepts.world.WorldTerrainStreaming source,
+            WorldService.Inventory inventory, Scenario scenario,
+            com.vibeminer.rendering.world.TerrainGround ground,
+            com.vibeminer.rendering.world.LiquidSurface terrain) throws Exception {
+        var placements = new ArrayList<com.vibeminer.rendering.world.ObjectCollision.Placement>();
+        var placed = new ArrayList<com.vibeminer.rendering.world.LiquidSurface.Placed>();
+        var skipped = new TreeMap<String, Integer>();
+        long began = System.nanoTime();
+        for (var tile : inventory.world().tiles()) {
+            if (Math.abs(tile.x() - scenario.x()) > 1 || Math.abs(tile.y() - scenario.y()) > 1) continue;
+            var part = source.prepareCollision(tile, Cancellation.NONE);
+            placements.addAll(part.placements());
+            placed.addAll(part.liquids());
+            part.skipped().forEach((k, v) -> skipped.merge(k, v, Integer::sum));
+        }
+        var objects = com.vibeminer.rendering.world.ObjectCollision.of(placements);
+        var world = com.vibeminer.rendering.world.CollisionWorld.combined(ground, objects);
+        var liquids = terrain.with(placed);
+        int recorded = placed.size();
+        var keys = new java.util.HashSet<Object>();
+        placed.removeIf(p -> !keys.add(p.key()));
+        var byKind = new TreeMap<String, Integer>();
+        for (var p : placed) byKind.merge(p.kind().toString(), 1, Integer::sum);
+        say(String.format(Locale.ROOT, "PROBE swim %s buildings: %d placements, %d placed liquids (%d recorded) %s in %.1f s;"
+                + " skipped %s", scenario.name(), placements.size(), placed.size(), recorded, byKind,
+                (System.nanoTime() - began) / 1e9, skipped));
+        // Largest liquids first, by their box area.
+        placed.sort(java.util.Comparator.comparingDouble(p -> {
+            double[] b = p.liquid().bounds();
+            return -(b[2] - b[0]) * (b[3] - b[1]);
+        }));
+        double dt = com.vibeminer.rendering.world.MovementParity.STEP_SECONDS;
+        int shown = 0;
+        for (var p : placed) {
+            if (shown >= Integer.getInteger("probe.limit", 6)) break;
+            double[] b = p.liquid().bounds(), r = p.rotation();
+            // A live point of the liquid: scan its local box for the first point with a height.
+            double la = Double.NaN, lb = Double.NaN;
+            for (double fa = .5; fa < 1 && Double.isNaN(la); fa += .1) {
+                for (double fb = .5; fb < 1 && Double.isNaN(la); fb += .1) {
+                    for (int sign = 0; sign < 4 && Double.isNaN(la); sign++) {
+                        double a = b[0] + (b[2] - b[0]) * ((sign & 1) == 0 ? fa : 1 - fa);
+                        double c = b[1] + (b[3] - b[1]) * ((sign & 2) == 0 ? fb : 1 - fb);
+                        if (!Double.isNaN(p.liquid().heightAt(a, c))) {
+                            la = a;
+                            lb = c;
+                        }
+                    }
+                }
+            }
+            if (Double.isNaN(la)) continue;
+            shown++;
+            double x = p.x() + p.scale() * (r[0] * la + r[1] * lb);
+            double y = p.y() + p.scale() * (r[3] * la + r[4] * lb);
+            double surface = p.z() + p.scale() * p.liquid().heightAt(la, lb);
+            var terrainHere = terrain.at(x, y);
+            var body = new com.vibeminer.rendering.world.WalkController();
+            body.place(x, y, surface + 30, 200, world, liquids);
+            var here = liquids.at(x, y);
+            var report = new StringBuilder(String.format(Locale.ROOT,
+                    "PROBE swim %s building liquid %s (LiquidType " + p.liquid().liquidType() + "), box %.0f x %.0f yd, surface %.2f..%.2f, at %.1f, %.1f:"
+                            + " surface %.2f (terrain liquid there %s), placed %s %s feet %.2f under, swim depth %.2f",
+                    scenario.name(), p.kind(), b[2] - b[0], b[3] - b[1], p.z() + p.liquid().minHeight() * p.scale(),
+                    p.z() + p.liquid().maxHeight() * p.scale(), x, y, surface,
+                    terrainHere == null ? "none" : String.format(Locale.ROOT, "%.2f", terrainHere.height()),
+                    body.status(), body.liquid(), here.height() - body.z(), body.swimDepth()));
+            for (int run = 0; run < 8; run++) {
+                // Runs 4 to 7 repeat the headings holding Space (up) too: rising, never jumping out.
+                int heading = run % 4;
+                boolean space = run >= 4;
+                body.place(x, y, surface + 30, 200, world, liquids);
+                double yaw = heading * Math.PI / 2;
+                var in = new com.vibeminer.rendering.world.WalkController.Input(1, 0, space ? 1 : 0, yaw, 0, space, 0);
+                int switches = 0, swimSteps = 0;
+                boolean was = body.swimming();
+                double floatGap = Double.NaN, ox = body.x(), oy = body.y();
+                String left = "stays in";
+                for (int i = 0; i < (int) Math.round(8 / dt); i++) {
+                    body.step(in, dt, world, liquids);
+                    if (body.swimming() != was) {
+                        switches++;
+                        was = body.swimming();
+                        if (!was && left.equals("stays in"))
+                            left = String.format(Locale.ROOT, "walks out after %.1f yd", Math.hypot(body.x() - ox, body.y() - oy));
+                    }
+                    if (body.status() == com.vibeminer.rendering.world.WalkController.Status.SWIMMING) {
+                        swimSteps++;
+                        var at = liquids.at(body.x(), body.y());
+                        floatGap = at.height() - body.z();
+                    }
+                }
+                report.append(String.format(Locale.ROOT, "; heading %d%s: swam %d steps, floats %.2f under, %s, %d switches, %.1f of %.1f yd free, %s",
+                        heading * 90, space ? " with Space" : "", swimSteps, floatGap, left, switches,
+                        Math.hypot(body.x() - ox, body.y() - oy),
+                        com.vibeminer.rendering.world.MovementParity.SWIM_SPEED * 8, body.status()));
+            }
+            say(report.toString());
         }
     }
 

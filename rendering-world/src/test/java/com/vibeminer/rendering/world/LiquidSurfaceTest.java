@@ -1,9 +1,11 @@
 package com.vibeminer.rendering.world;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Arrays;
 import java.util.List;
@@ -98,5 +100,80 @@ class LiquidSurfaceTest {
         var many = new LiquidSurface.Tile[LiquidSurface.MAX_TILES + 1];
         Arrays.fill(many, tile);
         assertThrows(IllegalArgumentException.class, () -> LiquidSurface.of(List.of(many)));
+    }
+
+    /** A flat local liquid at {@code height} over local [0, 10] x [0, 10]. */
+    static LiquidSurface.Local square(double height) {
+        return new LiquidSurface.Local() {
+            @Override
+            public double heightAt(double x, double y) {
+                return x >= 0 && x <= 10 && y >= 0 && y <= 10 ? height : Double.NaN;
+            }
+
+            @Override
+            public double[] bounds() {
+                return new double[] {0, 0, 10, 10};
+            }
+
+            @Override
+            public double minHeight() {
+                return height;
+            }
+
+            @Override
+            public double maxHeight() {
+                return height;
+            }
+        };
+    }
+
+    // A quarter turn about +Z: local (a, b) -> (-b, a).
+    static final double[] QUARTER = {0, -1, 0, 1, 0, 0, 0, 0, 1};
+
+    @Test
+    void aPlacedLiquidIsFoundThroughItsBuildingsTransform() {
+        var placed =
+                new LiquidSurface.Placed(
+                        "pool", square(3), LiquidSurface.Kind.WATER, QUARTER, 2, 100, 200, 50);
+        var surface = LiquidSurface.empty().with(List.of(placed));
+        assertEquals(1, surface.placed());
+        // Local (2, 5) -> native (100 - 2 * 5, 200 + 2 * 2); height 50 + 2 * 3.
+        var sample = surface.at(90, 204);
+        assertEquals(56, sample.height(), 1e-9);
+        assertEquals(LiquidSurface.Kind.WATER, sample.kind());
+        assertNull(surface.at(101, 204), "local a < 0: outside");
+        assertNull(surface.at(90, 221), "local a > 10: outside");
+    }
+
+    @Test
+    void theHighestOfTerrainAndBuildingLiquidAnswersAndAKeyCountsOnce() {
+        var placed =
+                new LiquidSurface.Placed(
+                        "pool", square(3), LiquidSurface.Kind.OCEAN, QUARTER, 2, 100, 200, 50);
+        var low = LiquidSurface.of(List.of(flat(80, 195, 100, 225, 40, LiquidSurface.Kind.WATER)));
+        var high = LiquidSurface.of(List.of(flat(80, 195, 100, 225, 60, LiquidSurface.Kind.MAGMA)));
+        assertEquals(LiquidSurface.Kind.OCEAN, low.with(List.of(placed)).at(90, 204).kind());
+        assertEquals(56, low.with(List.of(placed)).at(90, 204).height(), 1e-9);
+        assertEquals(
+                LiquidSurface.Kind.MAGMA, high.with(List.of(placed, placed)).at(90, 204).kind());
+        assertEquals(1, high.with(List.of(placed, placed)).placed(), "the same key once");
+        assertEquals(
+                1,
+                high.with(List.of(placed)).with(List.of(placed)).placed(),
+                "replaced, not added");
+        assertEquals(40, low.at(90, 204).height(), 1e-4, "the terrain surface alone is unchanged");
+    }
+
+    @Test
+    void onlyAnUprightPlacementIsAdmitted() {
+        double s = Math.sin(.3), c = Math.cos(.3);
+        double[] pitched = {1, 0, 0, 0, c, -s, 0, s, c};
+        assertFalse(LiquidSurface.upright(pitched));
+        assertTrue(LiquidSurface.upright(QUARTER));
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        new LiquidSurface.Placed(
+                                "x", square(0), LiquidSurface.Kind.WATER, pitched, 1, 0, 0, 0));
     }
 }
