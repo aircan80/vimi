@@ -143,8 +143,8 @@ source, build the launcher and pass them in `JAVA_OPTS`:
 ```sh
 ./gradlew :gui:installDist
 
-# Show creatures in the world
-JAVA_OPTS='-Dvimi.world.creatures=true' gui/build/install/vimi-gui-prototype/bin/vimi-gui-prototype
+# Hide the creatures in the world (they are shown by default)
+JAVA_OPTS='-Dvimi.world.creatures=false' gui/build/install/vimi-gui-prototype/bin/vimi-gui-prototype
 
 # Use the game's recorded sky and light, pinned to midnight
 JAVA_OPTS='-Dvimi.world.sky=recorded -Dvimi.world.sky.time=00:00' gui/build/install/vimi-gui-prototype/bin/vimi-gui-prototype

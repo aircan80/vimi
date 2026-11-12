@@ -74,7 +74,7 @@ final class WorldTileCreatures implements AutoCloseable {
      * {@value #TILE_PREVIEWS} new displays are converted per tile so one tile cannot stall the
      * rest. Models converted on an earlier tile are added without a preview load, so what is
      * capped depends on the cache: a warm pass can draw models a cold pass capped. Creatures are
-     * opt-in, so this memory is spent only when the user enables them.
+     * on by default; {@code -Dvimi.world.creatures=false} spares this memory.
      */
     static final int TILE_MODELS = 64, TILE_PLACEMENTS = 256, TILE_PREVIEWS = 48;
 

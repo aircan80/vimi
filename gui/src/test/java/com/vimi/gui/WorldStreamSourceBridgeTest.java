@@ -549,11 +549,11 @@ public final class WorldStreamSourceBridgeTest {
                 "On is forwarded to the helper");
         check(!WorldStreamGpuOwner.exteriorsEnabled("FALSE"), "The opt-out ignores letter case");
         check(WorldStreamGpuOwner.exteriorsEnabled("no"), "Only false opts out");
-        check(!WorldStreamGpuOwner.creaturesEnabled(null), "Creature models are off without the property");
-        check(!WorldStreamGpuOwner.creaturesEnabled("yes"), "Only true opts in to creature models");
-        check(WorldStreamGpuOwner.creaturesEnabled("TRUE"), "true (any case) opts in to creature models");
-        if (System.getProperty("vimi.world.creatures") == null) {
-            check(!WorldStreamGpuOwner.CREATURES, "The default GUI session draws no creature models");
+        check(WorldStreamGpuOwner.creaturesEnabled(null), "Creature models are on without the property");
+        check(WorldStreamGpuOwner.creaturesEnabled("no"), "Only false turns creature models off");
+        check(!WorldStreamGpuOwner.creaturesEnabled("FALSE"), "false (any case) turns creature models off");
+        if (System.getProperty("vimi.world.creatures") == null && WorldStreamGpuOwner.EXTERIORS) {
+            check(WorldStreamGpuOwner.CREATURES, "The default GUI session draws creature models");
         }
         var highSpec = WorldStreamGpuOwner.spec("0".repeat(64),
                 com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail.HIGH);

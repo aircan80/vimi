@@ -108,7 +108,8 @@ The report goes to stdout and to
 `gui/build/world-measurement/report.txt`. The task also writes
 `gui/build/world-measurement/gc.log` (`-Xlog:gc*`) and the helper's table.
 
-In stream mode, `-Pvimi.world.creatures=true` adds creatures as the World view does, and
+In stream mode, creatures are drawn as the World view draws them (`-Pvimi.world.creatures=false`
+leaves them out), and
 `-Pvimi.world.creatureAnimation=false` keeps them in their baked pose (#384). The fill line
 then also prints the creature status. `-Pprobe.camera=x,y,z,yaw,pitch` (native) replaces the
 tile-centre seed. `-Pprobe.stillSeconds=N` holds the camera still for N seconds after the
