@@ -255,6 +255,17 @@ public final class WorldExteriorObjects {
     }
 
     /**
+     * The vertices of a group's transition batches (MOGP's first batch count, in recorded order):
+     * up to the last vertex of the last of them, as FixColorVertexAlpha splits them; 0 without.
+     */
+    static int transVertices(List<WmoFormats.Batch> batches, int transBatches) {
+        if (transBatches <= 0 || transBatches > batches.size()) {
+            return 0;
+        }
+        return batches.get(transBatches - 1).lastVertex() + 1;
+    }
+
+    /**
      * Building image sides, largest first. Images are read when their surfaces are admitted, but
      * the pixel budget is shared only once every building has been read: {@link
      * WorldImageBudget#allocate} gives every image the smallest side first and then raises them
@@ -393,6 +404,12 @@ public final class WorldExteriorObjects {
 
     /** MOGP exterior and interior flags; interior wins when both are present. */
     private static final long EXTERIOR = 0x8, INTERIOR = 0x2000;
+
+    /**
+     * MOGP flag 0x40: an interior group lit as outdoors (wowdev: exterior lighting is used for an
+     * indoor group with it).
+     */
+    private static final long EXTERIOR_LIT = 0x40;
 
     /** MOGP flag 0x4: the group has vertex colours (its first MOCV). */
     private static final long VERTEX_COLOURS = 0x4;
@@ -615,11 +632,19 @@ public final class WorldExteriorObjects {
          */
         GROUP_VERTEX_COLOURS,
         /**
-         * Copied interior groups lit from their vertex colours (#383): MOGP 0x2000 and 0x4 with a
-         * first MOCV of one colour per vertex, carried as is and drawn with {@link #INTERIOR_LIGHT}
-         * instead of the World sun. Not an outcome bucket.
+         * Copied interior groups lit by their own light (#383): MOGP 0x2000 without 0x8 or 0x40,
+         * drawn with {@link #INTERIOR_LIGHT} instead of the World sun, from their first MOCV as the
+         * client adjusts it plus the MOHD ambient ({@link WmoInteriorLight}). Not an outcome
+         * bucket.
          */
         GROUP_INTERIOR_LIGHT,
+        /** Of {@link #GROUP_INTERIOR_LIGHT}: groups without a MOCV, lit by the ambient alone. */
+        GROUP_INTERIOR_AMBIENT_ONLY,
+        /**
+         * Copied interior groups also flagged exterior (0x8) or exterior lit (0x40), lit by the
+         * World light as the client lights them. Not an outcome bucket.
+         */
+        GROUP_INTERIOR_EXTERIOR_LIT,
         /**
          * Copied exterior triangles whose winding, read counter-clockwise in raw local axes, faces
          * the same way as their vertex normals (issue #375): the evidence that decides which side
@@ -5576,25 +5601,33 @@ public final class WorldExteriorObjects {
             }
             // MOGP 0x4 declares the first MOCV: B, G, R, A per vertex, its count already checked.
             // An exterior group carries it as an addition to the World light (#375). An interior
-            // group's MOCV is its whole light (#383): its ranges are drawn with INTERIOR_LIGHT
-            // instead of the sun. The MOHD ambient is not added: the client's FixColorVertexAlpha
-            // is understood to subtract it from interior MOCV at load and its shader to add it
-            // back, so the raw MOCV already holds the full light. That adjustment's alpha term
-            // and the MOHD flags 0x2 and 0x8 are not applied (#474). A group flagged both
-            // exterior (0x8) and interior (0x2000) is lit as interior, as interior wins
-            // elsewhere; the client may light it as outdoor. Interiors are not counted in the
-            // exterior colour or winding evidence.
+            // group is lit by its own light instead of the sun (#383): its MOCV as the client
+            // adjusts it at load plus the MOHD ambient its shader adds (WmoInteriorLight), drawn
+            // with INTERIOR_LIGHT; without a MOCV, the ambient alone. The client gives an
+            // interior group outdoor light when it is also flagged exterior (0x8) or exterior lit
+            // (0x40): FixColorVertexAlpha marks its vertices outdoor, and the WMO shader then uses
+            // the exterior light. Such a group is lit here as an exterior one. Interiors are not
+            // counted in the exterior colour or winding evidence.
             boolean exterior = (flags & INTERIOR) == 0;
+            boolean interiorLit = !exterior && (flags & (EXTERIOR | EXTERIOR_LIT)) == 0;
             int[] colours = new int[0];
-            var mocv = borrow.colors();
-            if ((flags & VERTEX_COLOURS) != 0 && mocv != null) {
+            var mocv = (flags & VERTEX_COLOURS) != 0 ? borrow.colors() : null;
+            if (interiorLit) {
+                colours =
+                        WmoInteriorLight.colours(
+                                mocv == null ? null : mocv::get,
+                                count,
+                                transVertices(borrow.batches(), borrow.header().batchesA()),
+                                root.header().ambientColor(),
+                                root.header().flags());
+            } else if (mocv != null) {
                 colours = new int[count];
                 for (int v = 0; v < count; v++) {
                     colours[v] =
                             packColour(mocv.get(v * 4), mocv.get(v * 4 + 1), mocv.get(v * 4 + 2));
                 }
             }
-            int lightFlag = !exterior && colours.length > 0 ? INTERIOR_LIGHT : 0;
+            int lightFlag = interiorLit ? INTERIOR_LIGHT : 0;
             // Only candidate batch indices are copied, compacted in recorded batch order.
             var source = borrow.indices();
             int[] indices = new int[candidateIndices];
@@ -5619,10 +5652,15 @@ public final class WorldExteriorObjects {
             }
             local[Count.BATCH_UNSUPPORTED.ordinal()] += unsupported;
             local[Count.BATCH_FLAGS_IGNORED.ordinal()] += ignoredFlags;
-            if (colours.length > 0) {
-                local[
-                        (exterior ? Count.GROUP_VERTEX_COLOURS : Count.GROUP_INTERIOR_LIGHT)
-                                .ordinal()]++;
+            if (interiorLit) {
+                local[Count.GROUP_INTERIOR_LIGHT.ordinal()]++;
+                if (mocv == null) {
+                    local[Count.GROUP_INTERIOR_AMBIENT_ONLY.ordinal()]++;
+                }
+            } else if (!exterior) {
+                local[Count.GROUP_INTERIOR_EXTERIOR_LIT.ordinal()]++;
+            } else if (colours.length > 0) {
+                local[Count.GROUP_VERTEX_COLOURS.ordinal()]++;
             }
             return new PendingMesh(ordinal, id, flags, vertices, colours, indices, rebased);
         }

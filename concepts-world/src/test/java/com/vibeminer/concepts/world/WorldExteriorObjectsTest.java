@@ -192,6 +192,18 @@ class WorldExteriorObjectsTest {
                 join(extras));
     }
 
+    /** The fixture root's MOHD ambient and flags (root(...)): 0x0b on each channel, no flags. */
+    private static final long FIXTURE_AMBIENT = 0xff0b0b0bL;
+
+    /** A pure interior group's MOGP flags: INT without the exterior flag 0x8. */
+    private static final int INTERIOR_ONLY = INT & ~0x8;
+
+    /** The interior light of a group's MOCV in a fixture root, with no transition batches. */
+    private static int[] interiorLight(byte[] mocv) {
+        return WmoInteriorLight.colours(
+                i -> mocv[i] & 0xff, mocv.length / 4, 0, FIXTURE_AMBIENT, 0);
+    }
+
     private static byte[] root(long... gfid) {
         return root(gfid.length, gfid, List.of(new Material(0, IMAGE, 0)));
     }
@@ -2260,25 +2272,32 @@ class WorldExteriorObjectsTest {
     /**
      * Issue #383: an interior group (MOGP 0x2000) with MOGP 0x4 and a MOCV is lit by its vertex
      * colours instead of the World sun. On a dungeon or raid map (#280) its colours are carried as
-     * the raw MOCV, without the root's MOHD ambient (0x0b on each channel in the fixture): the
-     * client is understood to subtract it at load and add it back in the shader. Its ranges carry
-     * {@link WorldExteriorObjects#INTERIOR_LIGHT}, and it is counted as an interior light group,
-     * not in the exterior colour or winding evidence. The same group as an exterior one carries the
-     * same colours and no flag.
+     * the client lights them: the MOCV adjusted at load plus the root's MOHD ambient (0x0b on each
+     * channel in the fixture), never darker than the ambient ({@link WmoInteriorLight}). Its ranges
+     * carry {@link WorldExteriorObjects#INTERIOR_LIGHT}, and it is counted as an interior light
+     * group, not in the exterior colour or winding evidence. The same group as an exterior one
+     * carries the same colours and no flag.
      */
     @Test
-    void instanceInteriorGroupsAreLitByTheirRawVertexColours() {
+    void instanceInteriorGroupsAreLitByTheirAdjustedVertexColoursAndAmbient() {
         byte[] mocv = {
             0x10, 0x20, 0x30, (byte) 0xff, 0x01, 0x02, 0x03, 0x00, (byte) 0xfa, 0x05, 0x06, 0
         };
         try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
             f.files.sources.put(ROOT, root(INTERIOR));
-            f.files.sources.put(INTERIOR, colouredWithArea(INT | 0x4, mocv));
+            f.files.sources.put(INTERIOR, colouredWithArea(INTERIOR_ONLY | 0x4, mocv));
             try (var set = f.runInstance()) {
                 assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
-                // The raw MOCV: no ambient added.
+                // R 48 with alpha 255: ((48 * 255 >> 6) + 48 - 11) / 2 = 114, light 239; B 250
+                // with alpha 0: (250 - 11) / 2 = 119, light 249; dark channels keep the ambient.
                 assertArrayEquals(
-                        new int[] {0x102030, 0x010203, 0xfa0506}, colours(interiorMesh(set)));
+                        new int[] {
+                            WorldExteriorObjects.packColour(79, 159, 239),
+                            0x0b0b0b,
+                            WorldExteriorObjects.packColour(249, 11, 11)
+                        },
+                        colours(interiorMesh(set)));
+                assertArrayEquals(interiorLight(mocv), colours(interiorMesh(set)));
                 assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_LIGHT));
                 assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_VERTEX_COLOURS));
                 assertEquals(0, set.count(WorldExteriorObjects.Count.TRIANGLE_WINDING_AGREES));
@@ -2314,20 +2333,23 @@ class WorldExteriorObjectsTest {
 
     /**
      * Issue #383 on open-world maps: a MOGI-interior group read in the interior pass is lit by its
-     * vertex colours like an instance interior. Without MOGP 0x4 (or without a MOCV) it carries no
-     * colours and no {@link WorldExteriorObjects#INTERIOR_LIGHT}, so it keeps the World light
-     * instead of drawing black.
+     * own light like an instance interior: its MOCV as the client adjusts it plus the MOHD ambient
+     * ({@link WmoInteriorLight}), or the ambient alone without a MOCV. A group also flagged
+     * exterior (MOGP 0x8) is lit as outdoors: no colours without MOGP 0x4 and a MOCV, and no {@link
+     * WorldExteriorObjects#INTERIOR_LIGHT}.
      */
     @Test
-    void openWorldInteriorsAreLitByVertexColoursOnlyWhenTheyHaveThem() {
+    void openWorldInteriorsAreLitByTheirOwnLight() {
         byte[] mocv = {0x10, 0x20, 0x30, (byte) 0xff, 0x01, 0x02, 0x03, 0x00, 0x04, 0x05, 0x06, 0};
         try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
             f.files.sources.put(ROOT, mogiRoot(new long[] {GROUP, INTERIOR}, new int[] {EXT, INT}));
-            f.files.sources.put(INTERIOR, colouredWithArea(INT | 0x4, mocv));
+            f.files.sources.put(INTERIOR, colouredWithArea(INTERIOR_ONLY | 0x4, mocv));
             try (var set = f.runOpenWorld()) {
                 assertEquals(2, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
                 var interior = interiorMesh(set);
-                assertArrayEquals(new int[] {0x102030, 0x010203, 0x040506}, colours(interior));
+                assertArrayEquals(interiorLight(mocv), colours(interior));
+                // Colours under the ambient leave the ambient.
+                assertEquals(0x0b0b0b, colours(interior)[1]);
                 assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_LIGHT));
                 assertTrue(
                         interior.ranges().stream()
@@ -2362,6 +2384,8 @@ class WorldExteriorObjectsTest {
                     var interior = interiorMesh(set);
                     assertArrayEquals(new int[0], colours(interior));
                     assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_LIGHT));
+                    assertEquals(
+                            1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_EXTERIOR_LIT));
                     assertTrue(
                             interior.ranges().stream()
                                     .noneMatch(
@@ -2373,33 +2397,59 @@ class WorldExteriorObjectsTest {
                 }
             }
         }
-    }
-
-    /**
-     * Issue #383 pins the rule for a group whose MOGP flags say both exterior (0x8) and interior
-     * (0x2000): interior wins, so it is lit by its vertex colours with {@link
-     * WorldExteriorObjects#INTERIOR_LIGHT}, as an interior. The client may light such a group as
-     * outdoor; this test records vimi's current choice.
-     */
-    @Test
-    void aGroupFlaggedExteriorAndInteriorIsLitAsInterior() {
-        byte[] mocv = {0x10, 0x20, 0x30, (byte) 0xff, 0x01, 0x02, 0x03, 0x00, 0x04, 0x05, 0x06, 0};
-        int both = 0x8 | 0x2000 | 0x4;
+        // A pure interior group without a MOCV is lit by the ambient alone.
         try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
-            f.files.sources.put(ROOT, root(INTERIOR));
-            f.files.sources.put(INTERIOR, colouredWithArea(both, mocv));
-            try (var set = f.runInstance()) {
-                var mesh = interiorMesh(set);
-                assertEquals(both, mesh.groupFlags() & both);
-                assertArrayEquals(new int[] {0x102030, 0x010203, 0x040506}, colours(mesh));
+            f.files.sources.put(ROOT, mogiRoot(new long[] {GROUP, INTERIOR}, new int[] {EXT, INT}));
+            f.files.sources.put(INTERIOR, group(INTERIOR_ONLY));
+            try (var set = f.runOpenWorld()) {
+                var interior = interiorMesh(set);
+                assertTrue(colours(interior).length > 0);
+                for (int colour : colours(interior)) {
+                    assertEquals(0x0b0b0b, colour);
+                }
                 assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_LIGHT));
-                assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_VERTEX_COLOURS));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_AMBIENT_ONLY));
                 assertTrue(
-                        mesh.ranges().stream()
+                        interior.ranges().stream()
                                 .allMatch(
                                         r ->
                                                 (r.blend() & WorldExteriorObjects.INTERIOR_LIGHT)
                                                         != 0));
+            }
+        }
+    }
+
+    /**
+     * A group whose MOGP flags say both exterior (0x8) and interior (0x2000) is lit as outdoors, as
+     * the client lights it: FixColorVertexAlpha marks its vertices outdoor (alpha 255) and the WMO
+     * shader blends them fully to the exterior light. Its MOCV is the addition to the World light
+     * an exterior group carries (#375), with no {@link WorldExteriorObjects#INTERIOR_LIGHT}.
+     * Exterior lit (0x40) does the same.
+     */
+    @Test
+    void aGroupFlaggedExteriorAndInteriorIsLitAsOutdoors() {
+        byte[] mocv = {0x10, 0x20, 0x30, (byte) 0xff, 0x01, 0x02, 0x03, 0x00, 0x04, 0x05, 0x06, 0};
+        for (int outdoor : new int[] {0x8, 0x40}) {
+            int flags = 0x2000 | 0x4 | outdoor;
+            try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+                f.files.sources.put(ROOT, root(INTERIOR));
+                f.files.sources.put(INTERIOR, colouredWithArea(flags, mocv));
+                try (var set = f.runInstance()) {
+                    var mesh = interiorMesh(set);
+                    assertEquals(flags, mesh.groupFlags() & flags);
+                    assertArrayEquals(new int[] {0x102030, 0x010203, 0x040506}, colours(mesh));
+                    assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_LIGHT));
+                    assertEquals(
+                            1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_EXTERIOR_LIT));
+                    assertTrue(
+                            mesh.ranges().stream()
+                                    .noneMatch(
+                                            r ->
+                                                    (r.blend()
+                                                                    & WorldExteriorObjects
+                                                                            .INTERIOR_LIGHT)
+                                                            != 0));
+                }
             }
         }
     }
