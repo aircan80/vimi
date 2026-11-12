@@ -466,6 +466,11 @@ final class WorldTileCreatures implements AutoCloseable {
     private Object cachedRevision;
     /** The chooser's last {@link Chooser#revision}; guarded by this. */
     private Object choiceRevision;
+    /**
+     * Counts the times {@code choices} was emptied; guarded by this. A choice made across a change
+     * (another tile saw new outside sources while it was being made) is used once, not cached.
+     */
+    private long choiceGeneration;
     private CompletableFuture<WorldSpawns.Index> index;
     private long indexFailedAt;
     private final java.util.function.LongSupplier clock;
@@ -872,14 +877,16 @@ final class WorldTileCreatures implements AutoCloseable {
     }
 
     private Chosen chosen(Chooser tileChooser, long npcId, Cancellation token) throws Exception {
+        long generation;
         synchronized (this) {
             var cached = choices.get(npcId);
             if (cached != null) return cached;
+            generation = choiceGeneration;
         }
         var chosen = tileChooser.choose(npcId, token);
         token.check();
         synchronized (this) {
-            if (!closed) choices.put(npcId, chosen);
+            if (!closed && generation == choiceGeneration) choices.put(npcId, chosen);
         }
         return chosen;
     }
@@ -1348,6 +1355,7 @@ final class WorldTileCreatures implements AutoCloseable {
             if (!Objects.equals(choicesNow, choiceRevision)) {
                 // Outside display sources changed: choose again, but keep converted models.
                 choices.clear();
+                choiceGeneration++;
                 choiceRevision = choicesNow;
             }
             var now = revision.get();
@@ -1358,6 +1366,7 @@ final class WorldTileCreatures implements AutoCloseable {
                 if (indexLoad != null) indexLoad.cancel();
                 if (!Objects.equals(now, cachedRevision)) {
                     choices.clear();
+                    choiceGeneration++;
                     models.clear();
                 }
                 cachedRevision = now;
