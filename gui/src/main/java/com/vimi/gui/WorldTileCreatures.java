@@ -665,8 +665,6 @@ final class WorldTileCreatures implements AutoCloseable {
     /** Whether tiles ask ahead for upcoming displays' remote parts (#175); tests compare both ways. */
     private volatile boolean prefetch = true;
 
-    /** The answers the current tile's conversions use: prefetched, or straight from the sources. */
-    private Answers answers;
     private final Map<Long, Chosen> choices = lru(CHOICE_CACHE);
     private final ModelCache models = new ModelCache(MODEL_CACHE_BYTES);
 
@@ -762,7 +760,6 @@ final class WorldTileCreatures implements AutoCloseable {
         this.revision = Objects.requireNonNull(revision);
         this.chooser = Objects.requireNonNull(chooser);
         this.previews = Objects.requireNonNull(previews);
-        answers = direct;
     }
 
     /** Whether tiles ask ahead for upcoming displays (on by default; tests compare both ways). */
@@ -824,8 +821,11 @@ final class WorldTileCreatures implements AutoCloseable {
      * is taken once; anything not taken is canceled with the tile.
      */
     private final class Prefetch implements Answers {
-        /** Displays asked ahead and not yet converted, at most. */
-        static final int AHEAD = 4;
+        /**
+         * Displays asked ahead and not yet converted, at most: each has one display-model request in
+         * flight at a time, so this stays well under the display-model service's queue of 8.
+         */
+        static final int AHEAD = 2;
         /** Spawns looked at ahead of the current one, at most. */
         static final int LOOK = 32;
 
@@ -841,13 +841,27 @@ final class WorldTileCreatures implements AutoCloseable {
         final Map<Long, java.util.concurrent.CompletableFuture<Ahead<com.vibeminer.rendering.models.PreviewAnimation>>>
                 idles = new HashMap<>();
         final HashSet<Long> started = new HashSet<>(), pending = new HashSet<>();
+        // The spawn whose turn each pending display was asked ahead for.
+        final HashMap<Long, Integer> pendingAt = new HashMap<>();
+
+        /**
+         * Drops what was asked ahead for displays whose spawn's turn has passed without a
+         * conversion (capped, say), so asking ahead goes on for the spawns after it.
+         */
+        void passed(int at) {
+            for (var display : List.copyOf(pending)) {
+                Integer spawn = pendingAt.get(display);
+                if (spawn != null && spawn < at) converted(display);
+            }
+        }
 
         /** Asks for {@code display}'s remote parts; {@code carry}: its Stand will be carried. */
-        void start(long display, boolean carry) {
+        void start(long display, boolean carry, int at) {
             var reference = previews.referenceAsync(display, token);
             if (reference == null) return;
             started.add(display);
             pending.add(display);
+            pendingAt.put(display, at);
             var asked = reference.thenApply(value -> new Ahead<>(true, 0, null, value));
             references.put(display, asked);
             var preview = asked.thenCompose(r -> extended(r.value()) > 0 ? done(Ahead.<DisplayModelTypes.Preview>skip())
@@ -899,7 +913,16 @@ final class WorldTileCreatures implements AutoCloseable {
                 Cancellation tile) {
             var future = asked.remove(display);
             if (future == null) return null;
-            var answer = await(future, tile);
+            Ahead<T> answer;
+            try {
+                answer = await(future, tile);
+            } catch (RuntimeException failed) {
+                // A busy component refused the ask-ahead itself: as if not asked ahead, so the
+                // conversion asks in turn and only a busy answer to that counts.
+                tile.check();
+                if (busy(failed)) return null;
+                throw failed;
+            }
             return answer.applies() ? answer : null;
         }
 
@@ -933,6 +956,7 @@ final class WorldTileCreatures implements AutoCloseable {
 
         /** {@code display} was converted: what was asked ahead for it and not taken is dropped. */
         void converted(long display) {
+            pendingAt.remove(display);
             if (!pending.remove(display)) return;
             references.remove(display);
             previewsAhead.remove(display);
@@ -1196,11 +1220,10 @@ final class WorldTileCreatures implements AutoCloseable {
         var deferred = new ArrayList<Deferred>();
         var ahead = prefetch && previews.asksAhead() ? new Prefetch() : null;
         var registration = ahead == null ? null : token.onCancel(ahead.token::cancel);
-        answers = ahead != null ? ahead : direct;
+        placing.answers = ahead != null ? ahead : direct;
         try {
             return appendPlaced(placing, nearby, tile, ahead, deferred);
         } finally {
-            answers = direct;
             if (ahead != null) {
                 ahead.close();
                 registration.close();
@@ -1419,7 +1442,7 @@ final class WorldTileCreatures implements AutoCloseable {
                     // An idle already remembered is not evaluated again with a model reconverted.
                     boolean idle = animation && nearCamera(spawn.x(), spawn.y())
                             && WorldTileCreatures.this.animation(display) == null;
-                    converted = load(display, token, idle);
+                    converted = load(display, token, idle, answers);
                     if (idle) idleLoaded.add(display);
                     if (converted.refusal() != Count.PREVIEWS_BUSY) answered = true;
                     // A busy or closed reader learned nothing: refund the preview it cost. An NPC
@@ -1504,6 +1527,9 @@ final class WorldTileCreatures implements AutoCloseable {
             return NO_CHOICE;
         }
 
+        // Where this tile's conversions take their remote answers (#175): asked ahead, or direct.
+        Answers answers = direct;
+
         // Choices looked up ahead for displays to ask ahead (#175), taken by choose in order.
         private final java.util.IdentityHashMap<WorldSpawns.Spawn, Object> chosenAhead =
                 new java.util.IdentityHashMap<>();
@@ -1515,6 +1541,7 @@ final class WorldTileCreatures implements AutoCloseable {
          * tile's preview budget, choosing those spawns ahead to know their displays.
          */
         void lookAhead(Prefetch ahead, List<WorldSpawns.Spawn> placed, int at, WorldFormats.Tile tile) {
+            ahead.passed(at);
             if (placements == TILE_PLACEMENTS || builder.placementRoom() == 0 || builder.drawRoom() == 0) return;
             for (int j = Math.max(at, lookedTo); j < placed.size() && j < at + Prefetch.LOOK; j++) {
                 if (ahead.pending.size() >= Prefetch.AHEAD
@@ -1538,7 +1565,7 @@ final class WorldTileCreatures implements AutoCloseable {
                     if (models.get(display) != null) continue;
                 }
                 ahead.start(display, animation && nearCamera(spawn.x(), spawn.y())
-                        && WorldTileCreatures.this.animation(display) == null);
+                        && WorldTileCreatures.this.animation(display) == null, j);
             }
         }
 
@@ -1553,7 +1580,7 @@ final class WorldTileCreatures implements AutoCloseable {
             if (carried == null && !idleLoaded.contains(display) && previewsTried < TILE_PREVIEWS) {
                 previewsTried++;
                 idleLoaded.add(display);
-                load(display, token, true);
+                load(display, token, true, answers);
                 carried = WorldTileCreatures.this.animation(display);
             }
             int vertices = builder.modelVertices(model);
@@ -1630,7 +1657,7 @@ final class WorldTileCreatures implements AutoCloseable {
     }
 
     private Converted load(long display, Cancellation token) {
-        return load(display, token, true);
+        return load(display, token, true, direct);
     }
 
     /**
@@ -1638,15 +1665,15 @@ final class WorldTileCreatures implements AutoCloseable {
      * animation cache (or that it has none); without, a humanoid's race idle is not evaluated and a
      * creature's Stand is not carried. The model cache holds the model without its animation.
      */
-    private Converted load(long display, Cancellation token, boolean idle) {
+    private Converted load(long display, Cancellation token, boolean idle, Answers answers) {
         try {
-            return loadAnswered(display, token, idle);
+            return loadAnswered(display, token, idle, answers);
         } finally {
             if (answers instanceof Prefetch ahead) ahead.converted(display);
         }
     }
 
-    private Converted loadAnswered(long display, Cancellation token, boolean idle) {
+    private Converted loadAnswered(long display, Cancellation token, boolean idle, Answers answers) {
         Converted converted;
         try {
             // A humanoid NPC's display draws its race appearance: its preview (the character model,
@@ -1655,14 +1682,14 @@ final class WorldTileCreatures implements AutoCloseable {
             token.check();
             Long extended = reference == null ? null : reference.extendedDisplayInfoId();
             if (extended != null && extended > 0) {
-                converted = npc(display, extended, token, idle);
+                converted = npc(display, extended, token, idle, answers);
             } else {
                 var preview = answers.preview(display, token);
                 token.check();
                 extended = preview == null || preview.reference() == null ? null
                         : preview.reference().extendedDisplayInfoId();
-                converted = extended != null && extended > 0 ? npc(display, extended, token, idle)
-                        : stand(display, preview, token, idle);
+                converted = extended != null && extended > 0 ? npc(display, extended, token, idle, answers)
+                        : stand(display, preview, token, idle, answers);
             }
         } catch (Exception failed) {
             // Only this tile's cancellation propagates; a closed or retired component is a failure.
@@ -1703,6 +1730,11 @@ final class WorldTileCreatures implements AutoCloseable {
     /** As above; with {@code carry} false, the Stand is baked but not carried for the child. */
     Converted stand(long display, DisplayModelTypes.Preview preview, Cancellation token, boolean carry)
             throws Exception {
+        return stand(display, preview, token, carry, direct);
+    }
+
+    private Converted stand(long display, DisplayModelTypes.Preview preview, Cancellation token, boolean carry,
+            Answers answers) throws Exception {
         if (preview == null || preview.appearance() == null) return convert(preview, token);
         String restPose;
         boolean retry = false;
@@ -1805,12 +1837,12 @@ final class WorldTileCreatures implements AutoCloseable {
 
     /** As above; with {@code carry} false, the race idle is not evaluated (the NPC stands still). */
     Converted npc(long extendedDisplayInfoId, Cancellation token, boolean carry) throws Exception {
-        return npc(-1, extendedDisplayInfoId, token, carry);
+        return npc(-1, extendedDisplayInfoId, token, carry, direct);
     }
 
     /** As above, for display {@code display}, whose answers may have been asked ahead. */
-    private Converted npc(long display, long extendedDisplayInfoId, Cancellation token, boolean carry)
-            throws Exception {
+    private Converted npc(long display, long extendedDisplayInfoId, Cancellation token, boolean carry,
+            Answers answers) throws Exception {
         var answer = answers.appearance(display, extendedDisplayInfoId, token);
         token.check();
         if (answer == null) return Converted.refused(Count.CHARACTER_APPEARANCE, "no NPC appearance");
