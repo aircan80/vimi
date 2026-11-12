@@ -747,10 +747,16 @@ public final class WorldTerrainTextureSource {
     private final TerrainAtlasPool pool;
 
     /**
-     * Shader-side terrain splatting (issue #174 step 2), off until its renderer path ships: only
-     * {@code -Dvimi.world.splat=true} composes the splatting inputs beside each atlas.
+     * Shader-side terrain splatting (issue #174 step 2): on by default, composing the splatting
+     * inputs beside each atlas so the terrain shader blends the layers on near ground. {@code
+     * -Dvimi.world.splat=false} turns it off, leaving the baked atlas alone.
      */
-    static volatile boolean splat = Boolean.getBoolean("vimi.world.splat");
+    static volatile boolean splat = splatEnabled(System.getProperty("vimi.world.splat"));
+
+    /** Only {@code false} (any letter case, surrounding whitespace ignored) turns splatting off. */
+    static boolean splatEnabled(String property) {
+        return property == null || !property.strip().equalsIgnoreCase("false");
+    }
 
     /**
      * Side of each tile's splat mask map, from the texture quality tier (issue #174 step 2b-2):

@@ -1,6 +1,6 @@
 # World terrain splat layers (#174 steps 2b-1 and 2b-2)
 
-Shader-side splatting inputs are carried and uploaded next to the baked atlas, and the terrain shader blends them on near ground. They are off by default; `-Dvimi.world.splat=true` turns them on in the app. Without them, or for a chunk that has none, the atlas is what you see on screen.
+Shader-side splatting inputs are carried and uploaded next to the baked atlas, and the terrain shader blends them on near ground. They are on by default (#174); `-Dvimi.world.splat=false` turns them off in the app. Without them, or for a chunk that has none, the atlas is what you see on screen.
 
 ## Shader blend (step 2b-2)
 

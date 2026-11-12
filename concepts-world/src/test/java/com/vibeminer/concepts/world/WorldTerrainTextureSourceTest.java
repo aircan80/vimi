@@ -1367,6 +1367,9 @@ class WorldTerrainTextureSourceTest {
         }
         var pool = new TerrainAtlasPool();
         var source = new WorldTerrainTextureSource(files.files(), pool);
+        // The atlas alone: splatting (on by default) would add its inputs to the charge.
+        boolean splat = WorldTerrainTextureSource.splat;
+        WorldTerrainTextureSource.splat = false;
         try (var result =
                 source.read(
                                 MAP,
@@ -1386,6 +1389,7 @@ class WorldTerrainTextureSourceTest {
                     com.vibeminer.rendering.world.TerrainTileAtlas.maxRetainedBytes(0),
                     pool.stats().chargedBytes());
         } finally {
+            WorldTerrainTextureSource.splat = splat;
             source.closeAsync().get(5, TimeUnit.SECONDS);
             pool.closeAsync().get(5, TimeUnit.SECONDS);
         }
@@ -1394,6 +1398,8 @@ class WorldTerrainTextureSourceTest {
 
     @Test
     void splattingInputsRideTheAtlasOnlyWhenEnabledAndWideChunksKeepTheAtlas() throws Exception {
+        // Restored after each pass: the default is on, and later tests rely on it.
+        boolean saved = WorldTerrainTextureSource.splat;
         for (boolean enabled : new boolean[] {false, true}) {
             var files = new Files();
             files.sources.put(3L, eightLayers());
@@ -1424,7 +1430,7 @@ class WorldTerrainTextureSourceTest {
                             });
                 }
             } finally {
-                WorldTerrainTextureSource.splat = false;
+                WorldTerrainTextureSource.splat = saved;
                 source.closeAsync().get(5, TimeUnit.SECONDS);
                 pool.closeAsync().get(5, TimeUnit.SECONDS);
             }
@@ -2410,5 +2416,17 @@ class WorldTerrainTextureSourceTest {
             source.closeAsync().get(5, TimeUnit.SECONDS);
             pool.closeAsync().get(5, TimeUnit.SECONDS);
         }
+    }
+
+    @Test
+    void splattingIsOnUnlessThePropertySaysFalse() {
+        org.junit.jupiter.api.Assertions.assertTrue(WorldTerrainTextureSource.splatEnabled(null));
+        org.junit.jupiter.api.Assertions.assertTrue(WorldTerrainTextureSource.splatEnabled("true"));
+        org.junit.jupiter.api.Assertions.assertTrue(WorldTerrainTextureSource.splatEnabled(""));
+        org.junit.jupiter.api.Assertions.assertTrue(WorldTerrainTextureSource.splatEnabled("no"));
+        org.junit.jupiter.api.Assertions.assertFalse(
+                WorldTerrainTextureSource.splatEnabled("false"));
+        org.junit.jupiter.api.Assertions.assertFalse(
+                WorldTerrainTextureSource.splatEnabled(" FALSE "));
     }
 }
