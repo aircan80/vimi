@@ -520,7 +520,10 @@ final class RaceAppearance {
             return prepared.finished();
         }
         if (unrecorded(prepared, token)
-                && recomposeTries(prepared.key(), token) < RECOMPOSE_TRIES) {
+                && storedRecomposeTries(prepared.key(), token) < RECOMPOSE_TRIES
+                // Claimed atomically: one attempt per composite and handle, however many
+                // requests reach it at once.
+                && recomposedHere.add(prepared.key())) {
             // A saved composite of an NPC whose items may attach models, composed before its
             // attachment files were recorded: it could be restored but never indexed, so the NPC
             // was resolved and planned again every session. Composed again once, which saves the
@@ -559,10 +562,7 @@ final class RaceAppearance {
 
     /** How many earlier attempts to compose {@code composite} again did not complete. */
     @SuppressWarnings("try")
-    private int recomposeTries(GeneratedKey composite, Cancellation token) {
-        if (recomposedHere.contains(composite)) {
-            return RECOMPOSE_TRIES;
-        }
+    private int storedRecomposeTries(GeneratedKey composite, Cancellation token) {
         var lower = new com.vibeminer.generated.Cancellation();
         try (var registration = token.onCancel(lower::cancel)) {
             var read = generated.read(recomposeKey(composite), lower).join();
@@ -583,8 +583,7 @@ final class RaceAppearance {
     /** Counts an attempt to compose {@code composite} again that did not complete. */
     @SuppressWarnings("try")
     private void recomposeTried(GeneratedKey composite, Cancellation token) {
-        int tries = recomposeTries(composite, token) + 1;
-        recomposedHere.add(composite);
+        int tries = storedRecomposeTries(composite, token) + 1;
         var lower = new com.vibeminer.generated.Cancellation();
         try (var registration = token.onCancel(lower::cancel)) {
             var key = recomposeKey(composite);
