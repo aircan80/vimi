@@ -32,6 +32,7 @@ public final class WorldTileCreaturesTest {
     private static final WorldFormats.Tile TILE = new WorldFormats.Tile(32, 32, 1, 0, 0);
 
     public static void main(String[] args) throws Exception {
+        aCanceledTileStopsWaitingForAQueuedNpcAppearance();
         conversionKeepsOpaqueSurfacesAndDropsCards();
         conversionRefusesWhatItCannotDraw();
         texturesReduceToPowerOfTwoOpaqueImages();
@@ -1467,5 +1468,59 @@ public final class WorldTileCreaturesTest {
 
     private static void require(boolean condition, String message) {
         if (!condition) throw new AssertionError(message);
+    }
+
+    /**
+     * #717: a tile canceled while its NPC appearance is still queued stops waiting at once; an
+     * appearance for a tile that is not canceled is returned as before.
+     */
+    private static void aCanceledTileStopsWaitingForAQueuedNpcAppearance() throws Exception {
+        var queued = new java.util.concurrent.CompletableFuture<com.vibeminer.concepts.races.RaceNpcs.Appearance>();
+        var asked = new java.util.concurrent.atomic.AtomicReference<Cancellation>();
+        var races = (com.vibeminer.concepts.races.BuildRaces) java.lang.reflect.Proxy.newProxyInstance(
+                WorldTileCreaturesTest.class.getClassLoader(),
+                new Class<?>[] {com.vibeminer.concepts.races.BuildRaces.class},
+                (proxy, method, arguments) -> {
+                    if (!method.getName().equals("npcAppearance"))
+                        throw new UnsupportedOperationException(method.getName());
+                    asked.set((Cancellation) arguments[1]);
+                    return queued;
+                });
+        var npcs = WorldTileCreatures.npcs(() -> races);
+        var token = new Cancellation();
+        var waiting = new java.util.concurrent.CompletableFuture<Throwable>();
+        var worker = Thread.ofPlatform().start(() -> {
+            try {
+                npcs.appearance(7, token);
+                waiting.complete(null);
+            } catch (Throwable failure) {
+                waiting.complete(failure);
+            }
+        });
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+        while (asked.get() == null && System.nanoTime() < deadline) Thread.onSpinWait();
+        require(asked.get() == token, "The tile's token reaches the races component");
+        require(!waiting.isDone(), "The worker waits while the appearance is queued");
+        token.cancel();
+        var failure = waiting.get(5, java.util.concurrent.TimeUnit.SECONDS);
+        worker.join(5_000);
+        require(failure instanceof CancellationException,
+                "A canceled tile stops waiting with a cancellation: " + failure);
+        require(!queued.isDone(), "The queued appearance was not waited for");
+        // Not canceled: the appearance is returned as before.
+        var answer = com.vibeminer.concepts.races.RaceNpcs.Appearance.refused("authored");
+        var done = java.util.concurrent.CompletableFuture.completedFuture(answer);
+        require(WorldTileCreatures.await(done, new Cancellation()) == answer, "A done appearance is returned");
+        // Already done before a cancellation: the answer still counts.
+        var late = new Cancellation();
+        late.cancel();
+        require(WorldTileCreatures.await(done, late) == answer, "A finished appearance is kept");
+        var failed = java.util.concurrent.CompletableFuture.<Object>failedFuture(new IllegalStateException("busy"));
+        try {
+            WorldTileCreatures.await(failed, new Cancellation());
+            require(false, "A failed appearance fails the wait");
+        } catch (java.util.concurrent.CompletionException expected) {
+            require(expected.getCause() instanceof IllegalStateException, "Its own failure: " + expected);
+        }
     }
 }

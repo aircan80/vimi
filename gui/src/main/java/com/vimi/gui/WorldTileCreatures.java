@@ -289,8 +289,26 @@ final class WorldTileCreatures implements AutoCloseable {
         return (extendedDisplayInfoId, token) -> {
             var handle = races.get();
             if (handle == null) return RaceNpcs.Appearance.refused("race data is not open");
-            return handle.npcAppearance(extendedDisplayInfoId, token).join();
+            return await(handle.npcAppearance(extendedDisplayInfoId, token), token);
         };
+    }
+
+    /**
+     * Waits for {@code future} unless {@code token} is canceled first (#717): the races component
+     * observes the token only once queued work starts, so a tile canceled while its appearance is
+     * still queued must not keep its worker waiting for the queue to drain. A canceled wait throws
+     * {@link CancellationException}; the queued work then sees the canceled token and does not run.
+     */
+    @SuppressWarnings("try")
+    static <T> T await(java.util.concurrent.CompletableFuture<T> future, Cancellation token) {
+        var canceled = new java.util.concurrent.CompletableFuture<Void>();
+        try (var registration = token.onCancel(() -> canceled.complete(null))) {
+            java.util.concurrent.CompletableFuture.anyOf(future, canceled)
+                    .handle((value, failure) -> null)
+                    .join();
+        }
+        if (!future.isDone()) token.check();
+        return future.join();
     }
 
     /** A policy choice and the client-data scale of its display (null when not recorded). */
