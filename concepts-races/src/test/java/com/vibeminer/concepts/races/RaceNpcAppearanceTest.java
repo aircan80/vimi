@@ -973,6 +973,72 @@ final class RaceNpcAppearanceTest {
         assertFalse(saved(generated, key));
     }
 
+    /**
+     * #104: a reviewed single-stage diffuse draw whose texture the model names itself (type 0, its
+     * TXID file) samples that file in a player preview; without the file it keeps neutral shading
+     * and says so. Such a preview is not saved, as the file is not among the composite's sources.
+     */
+    @Test
+    void aPlayerPreviewDrawsATextureTheModelNamesItself() throws Exception {
+        var variant = new RaceMediaTypes.Variant(3, 0, 1, 1, 1234);
+        var key = RaceAppearance.appearanceKey("hardcoded", false);
+        // The authored model's texture 0 is type 0, file 700 (TXID).
+        var files =
+                new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
+                        .add(1234, "1".repeat(32), golden("authored-274.m2"))
+                        .add(900, "2".repeat(32), golden("authored-274.skin"))
+                        .add(100, "3".repeat(32), bake())
+                        .add(700, "7".repeat(32), bake());
+        var generated = new com.vibeminer.generated.MemoryGeneratedStore();
+        var drawn = render(files, variant, false, generated, key);
+        assertTrue(drawn.appearance() != null, drawn.message());
+        assertEquals(
+                2, drawn.appearance().textures().size(), "the canvas and the model's own file");
+        assertTrue(
+                drawn.issues()
+                        .contains(
+                                "Texture files the model names itself: [700]; this preview is not saved."),
+                drawn.issues().toString());
+        assertFalse(saved(generated, key));
+        // Without file 700 the draw keeps neutral shading, which here is the whole model.
+        var missing =
+                new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
+                        .add(1234, "1".repeat(32), golden("authored-274.m2"))
+                        .add(900, "2".repeat(32), golden("authored-274.skin"))
+                        .add(100, "3".repeat(32), bake());
+        var refused =
+                render(
+                        missing,
+                        variant,
+                        false,
+                        new com.vibeminer.generated.MemoryGeneratedStore(),
+                        key);
+        assertEquals(null, refused.appearance());
+        assertTrue(
+                refused.issues().stream()
+                        .anyMatch(
+                                issue ->
+                                        issue.startsWith(
+                                                RaceAppearance.INCOMPLETE + "texture #700")),
+                refused.issues().toString());
+        // An NPC is unchanged: no texture the model names is sampled for it.
+        var npc =
+                render(
+                        new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
+                                .add(1234, "1".repeat(32), golden("authored-274.m2"))
+                                .add(900, "2".repeat(32), golden("authored-274.skin"))
+                                .add(100, "3".repeat(32), bake())
+                                .add(700, "7".repeat(32), bake()),
+                        variant,
+                        true,
+                        new com.vibeminer.generated.MemoryGeneratedStore(),
+                        RaceAppearance.appearanceKey("hardcoded", true));
+        assertTrue(
+                npc.issues().stream()
+                        .noneMatch(issue -> issue.startsWith("Texture files the model names")),
+                npc.issues().toString());
+    }
+
     @Test
     void anUnexpectedFailureIsAskedForAgainNeverAFourthState() {
         // Render-side: the future's failure is resolved, not left failed.
