@@ -640,8 +640,17 @@ final class RaceAppearance {
                 }
                 decoded.put(fid, new MeshAppearance.Texture(image.width(), image.height(), argb));
             }
+            // A player body whose whole-body base skin layer could not be decoded would be drawn
+            // black where the skin goes: refused, never presented incomplete. The Night Elf
+            // profile requires such a layer even when the plan records none.
+            boolean baseInPlan =
+                    plan.layers().stream()
+                            .anyMatch(
+                                    layer ->
+                                            RaceAppearancePlan.wholeBodyBase(
+                                                    layer, plan.canvases()));
             if (!plan.npc()
-                    && RaceAppearanceProfiles.nightElf(plan.profile())
+                    && (baseInPlan || RaceAppearanceProfiles.nightElf(plan.profile()))
                     && plan.layers().stream()
                             .noneMatch(
                                     layer ->

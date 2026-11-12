@@ -51,6 +51,39 @@ final class RaceCustomizationTest {
     }
 
     @Test
+    void anNpcRaceSamplesItsNpcOnlyChoicesAsUncheckedAndAPlayableRaceNever() {
+        // ReqType 2 (NPC only, ChrCustomizationReq 12 on 70862): the skin colours of Northrend
+        // Skeleton and race 33's models.
+        var npcOnly = new RaceCustomization.Requirement(2, 0, -1, -1, 0, 0, 0, -1, 0, false);
+        assertEquals(
+                RaceCustomization.Eligibility.UNKNOWN, RaceCustomization.evaluate(npcOnly, 0, -1));
+        assertEquals(
+                RaceCustomization.Eligibility.UNKNOWN, RaceCustomization.evaluate(npcOnly, 1, -1));
+        assertEquals(
+                RaceCustomization.Eligibility.DENIED, RaceCustomization.evaluate(npcOnly, 1, 0));
+        // Its masks still deny: a class outside the mask, or a race mask naming only others.
+        assertEquals(
+                RaceCustomization.Eligibility.DENIED,
+                RaceCustomization.evaluate(
+                        new RaceCustomization.Requirement(2, 1, -1, -1, 0, 0, 0, -1, 0, false),
+                        6,
+                        -1));
+        assertEquals(
+                RaceCustomization.Eligibility.DENIED,
+                RaceCustomization.evaluate(
+                        new RaceCustomization.Requirement(2, 0, 4, 0, 0, 0, 0, -1, 0, false),
+                        0,
+                        -1));
+        // A type naming neither players nor NPCs is denied for every race.
+        assertEquals(
+                RaceCustomization.Eligibility.DENIED,
+                RaceCustomization.evaluate(
+                        new RaceCustomization.Requirement(0, 0, -1, -1, 0, 0, 0, -1, 0, false),
+                        0,
+                        -1));
+    }
+
+    @Test
     void aMaskNamingEveryRaceAdmitsARaceWithoutAPlayableBit() {
         // NPC races (Gilnean, Haranir, Visage...) have no playable bit; every requirement their
         // models record names every race.
