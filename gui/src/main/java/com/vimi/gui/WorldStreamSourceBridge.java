@@ -336,11 +336,23 @@ final class WorldStreamSourceBridge {
      */
     @FunctionalInterface
     interface ExteriorPreparer {
+        /** {@code creatureBytes} for a tile's buildings pass: its creatures come in a later one. */
+        long BUILDINGS_ONLY = -1;
+
+        /**
+         * Whether this preparer appends creatures; the controller then prepares each tile twice,
+         * buildings only ({@link #BUILDINGS_ONLY}) and later with creatures (#175).
+         */
+        default boolean appendsCreatures() {
+            return false;
+        }
+
         /**
          * {@code objectFormats}: the BC formats the session's child samples as blocks (bit per
          * format code, {@code WorldStreamTransport.Session.objectFormats()}), 0 for RGBA8 only.
          * {@code creatureBytes}: the most bytes this tile's creatures may add ({@link
-         * WorldTileCreatures#AREA_BYTES} less what the resident tiles' creatures hold), 0 for none.
+         * WorldTileCreatures#AREA_BYTES} less what the resident tiles' creatures hold), 0 for none;
+         * {@link #BUILDINGS_ONLY} skips creatures entirely.
          */
         ExteriorCopy prepare(
                 WorldTerrainStreaming source,
@@ -349,6 +361,33 @@ final class WorldStreamSourceBridge {
                 Cancellation cancellation,
                 int objectFormats,
                 long creatureBytes);
+    }
+
+    /**
+     * The World view's preparer: buildings, interiors and textures at {@code detail}, and with
+     * {@code creatures} (null for none) each tile's creatures in a later pass than its buildings
+     * (#175).
+     */
+    static ExteriorPreparer preparer(WorldTileCreatures creatures, long mapId,
+            WorldExteriorObjects.ImageDetail detail, WorldExteriorObjects.Interiors interiors) {
+        if (creatures == null)
+            return (source, scope, tile, cancellation, formats, creatureBytes) -> prepareExterior(
+                    source, scope, tile, cancellation, null, detail, interiors, formats);
+        return new ExteriorPreparer() {
+            @Override
+            public ExteriorCopy prepare(WorldTerrainStreaming source, WorldTerrainStreaming.Scope scope,
+                    WorldFormats.Tile tile, Cancellation cancellation, int formats, long creatureBytes) {
+                return prepareExterior(source, scope, tile, cancellation,
+                        creatureBytes == BUILDINGS_ONLY ? null
+                                : (builder, owned, token) -> creatures.append(builder, mapId, owned, creatureBytes, token),
+                        detail, interiors, formats);
+            }
+
+            @Override
+            public boolean appendsCreatures() {
+                return true;
+            }
+        };
     }
 
     /** Appends one tile's creatures after its buildings; only cancellation may propagate. */

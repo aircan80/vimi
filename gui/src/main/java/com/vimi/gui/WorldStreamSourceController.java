@@ -230,9 +230,17 @@ final class WorldStreamSourceController {
         WorldObjectPicks.Tile picks;
         // Objects release revision when this offer was issued.
         long releaseRevision;
+        // The later creatures pass (#175): buildings again with the tile's creatures, replacing the
+        // drawn buildings-only set (or attached as the first set when the tile had no buildings).
+        final boolean creaturesPass;
 
         Exterior(Entry entry) {
+            this(entry, false);
+        }
+
+        Exterior(Entry entry, boolean creaturesPass) {
             this.entry = entry;
+            this.creaturesPass = creaturesPass;
         }
     }
 
@@ -242,7 +250,8 @@ final class WorldStreamSourceController {
     private final WorldStreamSourceBridge.ExteriorPreparer exteriorPreparer;
     // Worker-owned: at most one late exterior delivery, and the residents already tried.
     private ExecutorService exteriorWorker;
-    private Exterior exterior;
+    // Volatile only so measurement probes can tell whether objects are still loading.
+    private volatile Exterior exterior;
     // Worker-owned: residents refused for the objects GPU budget, with the session's objects
     // release revision at the refusal. They are offered again only once a drawn objects set was
     // released (its resident replaced), never just because the camera turned or moved.
@@ -252,6 +261,15 @@ final class WorldStreamSourceController {
     private final java.util.Set<Entry> creaturesShed = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private final java.util.Set<Entry> exteriorTried =
             java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+    // With a preparer that appends creatures, a tile's buildings go first, without them, so they
+    // never wait for creature conversion (#175); its creatures follow in a second pass once every
+    // wanted tile's buildings are in. Residents whose buildings pass ended and whose creatures pass
+    // has not, and those whose creature set was refused for budget (offered again, like
+    // exteriorBudget, once a drawn set was released).
+    private final boolean creaturesLater;
+    private final java.util.Set<Entry> creaturesPending =
+            java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+    private final IdentityHashMap<Entry, Long> creatureBudget = new IdentityHashMap<>();
     private Events events;
     private final Consumer<Runnable> fxPost;
     private final LongSupplier clock;
@@ -443,6 +461,7 @@ final class WorldStreamSourceController {
         this.residents = residents;
         maxEntries = residents + 3;
         this.exteriorPreparer = Objects.requireNonNull(exteriorPreparer);
+        this.creaturesLater = exteriorPreparer.appendsCreatures();
         this.clock = Objects.requireNonNull(clock);
         this.request = Objects.requireNonNull(request);
         this.starter = Objects.requireNonNull(starter);
@@ -1589,32 +1608,62 @@ final class WorldStreamSourceController {
                         || entry.resident().exteriorObjects()
                                 != WorldStreamTransport.ExteriorObjects.NONE) continue;
                 var work = new Exterior(entry);
-                if (exteriorWorker == null)
-                    exteriorWorker = Executors.newSingleThreadExecutor(
-                            Thread.ofPlatform().daemon().name("world-exterior-objects").factory());
-                var lane = source;
-                var owner = scope;
-                // The child's sampled BC formats, reported in SESSION, set how textures are charged.
-                int formats = session == null ? 0 : session.objectFormats();
-                long creatureBytes = creaturesShed.contains(entry) ? 0 : creatureAllowance();
-                work.prepared = CompletableFuture.supplyAsync(
-                        () -> {
-                            long preparing = WorldStageTimings.start();
-                            try {
-                                return exteriorPreparer.prepare(
-                                        lane, owner, tile, work.cancellation, formats, creatureBytes);
-                            } finally {
-                                WorldStageTimings.stop(work.cancellation.isCanceled()
-                                        ? "parent.objects.prepareCanceled" : "parent.objects.prepare",
-                                        preparing);
-                            }
-                        },
-                        exteriorWorker);
-                exterior = work;
-                work.prepared.whenComplete((ignored, failure) -> kick());
+                long creatureBytes = creaturesLater ? WorldStreamSourceBridge.ExteriorPreparer.BUILDINGS_ONLY
+                        : creaturesShed.contains(entry) ? 0 : creatureAllowance();
+                prepare(work, tile, creatureBytes, "parent.objects.prepare");
                 return;
             }
         }
+        if (!creaturesLater) return;
+        // Every wanted tile's buildings are in: creatures next, still nearest first.
+        for (var tile : wanted) {
+            for (var entry : current) {
+                if (!same(tile, entry.resident())
+                        || !creaturesPending.contains(entry)
+                        || creatureBudgetDeferred(entry)) continue;
+                var objects = entry.resident().exteriorObjects();
+                if (objects != WorldStreamTransport.ExteriorObjects.DRAWN
+                        && objects != WorldStreamTransport.ExteriorObjects.NONE) {
+                    creaturesPending.remove(entry);
+                    continue;
+                }
+                prepare(new Exterior(entry, true), tile, creatureAllowance(), "parent.objects.prepareCreatures");
+                return;
+            }
+        }
+    }
+
+    private void prepare(Exterior work, WorldFormats.Tile tile, long creatureBytes, String timing) {
+        if (exteriorWorker == null)
+            exteriorWorker = Executors.newSingleThreadExecutor(
+                    Thread.ofPlatform().daemon().name("world-exterior-objects").factory());
+        var lane = source;
+        var owner = scope;
+        // The child's sampled BC formats, reported in SESSION, set how textures are charged.
+        int formats = session == null ? 0 : session.objectFormats();
+        work.prepared = CompletableFuture.supplyAsync(
+                () -> {
+                    long preparing = WorldStageTimings.start();
+                    try {
+                        return exteriorPreparer.prepare(
+                                lane, owner, tile, work.cancellation, formats, creatureBytes);
+                    } finally {
+                        WorldStageTimings.stop(work.cancellation.isCanceled()
+                                ? "parent.objects.prepareCanceled" : timing, preparing);
+                    }
+                },
+                exteriorWorker);
+        exterior = work;
+        work.prepared.whenComplete((ignored, failure) -> kick());
+    }
+
+    /** A creature set refused for budget waits, like a buildings set, for a release since. */
+    private boolean creatureBudgetDeferred(Entry entry) {
+        Long refused = creatureBudget.get(entry);
+        if (refused == null) return false;
+        if (refused == session.objectsReleaseRevision()) return true;
+        creatureBudget.remove(entry);
+        return false;
     }
 
     /**
@@ -1651,6 +1700,15 @@ final class WorldStreamSourceController {
             } catch (RuntimeException failed) {
                 exterior = null;
                 // Preempted by terrain (or retired): untried, so it restarts when terrain idles.
+                if (work.creaturesPass) {
+                    // Its buildings stay as they are; creatures are not tried again.
+                    if (!work.cancellation.isCanceled() && live(work.entry)) {
+                        WorldDiagnostics.degraded("world creatures",
+                                "World creature objects preparation failed; tile kept without creatures", failed);
+                        creaturesPending.remove(work.entry);
+                    }
+                    return;
+                }
                 if (!work.cancellation.isCanceled() && live(work.entry)) {
                     WorldDiagnostics.degraded("exterior objects",
                             "World exterior objects preparation failed; tile kept as terrain only", failed);
@@ -1660,12 +1718,27 @@ final class WorldStreamSourceController {
                 return;
             }
             work.prepared = null;
+            if (work.creaturesPass && (copy.exterior() == null || copy.failed() || copy.creatures().drawn() == 0)) {
+                // Nothing to add to what is drawn (or the buildings failed this time): the drawn
+                // set stays, and the tile's creature counts are recorded as they are.
+                exterior = null;
+                if (!live(work.entry) || closing || !current.contains(work.entry)) return;
+                creaturesPending.remove(work.entry);
+                if (!copy.failed()) work.entry.source().creatures(copy.creatures());
+                changed();
+                return;
+            }
             if (copy.exterior() == null || closing || !current.contains(work.entry)) {
                 exterior = null;
                 if (!live(work.entry)) return;
                 if (copy.failed()) work.entry.source().exteriorFailedLate();
                 if (copy.exterior() == null) work.entry.source().creatures(copy.creatures());
                 if (copy.exterior() == null || copy.failed()) exteriorTried.add(work.entry);
+                // A tile without buildings may still have creatures: attached as its first set.
+                if (creaturesLater && copy.exterior() == null && !copy.failed()) {
+                    creaturesPending.add(work.entry);
+                    changed();
+                }
                 return;
             }
             work.summary = copy.summary();
@@ -1674,9 +1747,13 @@ final class WorldStreamSourceController {
             work.picks = copy.picks();
             long attaching = WorldStageTimings.start();
             work.releaseRevision = session.objectsReleaseRevision();
-            work.attached = session.attachObjects(work.entry.resident(), copy.exterior());
+            boolean replace = work.creaturesPass
+                    && work.entry.resident().exteriorObjects() == WorldStreamTransport.ExteriorObjects.DRAWN;
+            work.attached = replace ? session.replaceObjects(work.entry.resident(), copy.exterior())
+                    : session.attachObjects(work.entry.resident(), copy.exterior());
             work.attached.whenComplete((ignored, failure) -> {
-                WorldStageTimings.stop("parent.objects.attachRoundTrip", attaching);
+                WorldStageTimings.stop(work.creaturesPass ? "parent.objects.creaturesRoundTrip"
+                        : "parent.objects.attachRoundTrip", attaching);
                 kick();
             });
             return;
@@ -1695,6 +1772,13 @@ final class WorldStreamSourceController {
             // been released since this offer was issued (not since the refusal arrived, so a
             // release landing in between still counts), still nearest first.
             WorldStageTimings.add("parent.objects.budgetRefused", 1);
+            if (work.creaturesPass) {
+                // The buildings it would replace stay drawn.
+                WorldStageTimings.add("parent.objects.creaturesBudgetRefused", 1);
+                creatureBudget.put(work.entry, work.releaseRevision);
+                changed();
+                return;
+            }
             if (work.creatures.bytes() > 0 && creaturesShed.add(work.entry)) {
                 // Its creatures may be what did not fit: its buildings are offered again at once,
                 // without them.
@@ -1706,6 +1790,7 @@ final class WorldStreamSourceController {
             return;
         }
         exteriorTried.add(work.entry);
+        if (work.creaturesPass) creaturesPending.remove(work.entry);
         try {
             switch (work.attached.join()) {
                 case ATTACHED -> {
@@ -1713,9 +1798,17 @@ final class WorldStreamSourceController {
                     work.entry.source().creatures(work.creatures);
                     work.entry.source().picks(work.picks);
                     if (work.buildingsFailed) work.entry.source().exteriorFailedLate();
+                    if (creaturesLater && !work.creaturesPass) creaturesPending.add(work.entry);
                     updateObjects();
                 }
                 case FAILED -> {
+                    if (work.creaturesPass && work.entry.resident().exteriorObjects()
+                            == WorldStreamTransport.ExteriorObjects.DRAWN) {
+                        // A failed replacement leaves the buildings drawn.
+                        WorldDiagnostics.degraded("world creatures",
+                                "World creature objects delivery failed; tile kept without creatures", null);
+                        break;
+                    }
                     // Write, read or upload failed; the helper reports no detail of its own.
                     WorldDiagnostics.degraded("exterior objects",
                             "World exterior objects delivery failed; tile kept as terrain only", null);
@@ -1731,6 +1824,11 @@ final class WorldStreamSourceController {
                     "World exterior objects delivery failed; tile kept as terrain only", failed);
         }
         changed();
+    }
+
+    /** Whether a tile's buildings or creatures are being prepared or delivered (measurement probes). */
+    boolean loadingObjects() {
+        return exterior != null;
     }
 
     /** The current creature part of the ready detail, unclipped (measurement probes). */
@@ -1890,7 +1988,7 @@ final class WorldStreamSourceController {
                 + (buildingTiles == 0 ? "" : objectsDetail(objects, buildingTiles))
                 + (buildingFailures == 0 ? "" : "; building objects failed on " + buildingFailures)
                 + creatureDetail(creatures, creatureTiles)
-                + (exterior == null ? "" : "; loading buildings")
+                + (exterior == null ? "" : exterior.creaturesPass ? "; loading creatures" : "; loading buildings")
                 + (water != null && waterTables != null && waterTables.isDone() && !waterReady()
                         ? "; water tables unavailable"
                         : "")
@@ -2122,6 +2220,8 @@ final class WorldStreamSourceController {
             exteriorTried.remove(entry);
             exteriorBudget.remove(entry);
             creaturesShed.remove(entry);
+            creaturesPending.remove(entry);
+            creatureBudget.remove(entry);
         }
     }
 
@@ -2237,6 +2337,8 @@ final class WorldStreamSourceController {
         exteriorTried.clear();
         exteriorBudget.clear();
         creaturesShed.clear();
+        creaturesPending.clear();
+        creatureBudget.clear();
         exterior = null;
         if (exteriorWorker != null) exteriorWorker.shutdown();
         collisionCancellation.cancel();

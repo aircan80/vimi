@@ -121,15 +121,28 @@ final class WorldStreamControl {
     /**
      * Late BASIC_EXTERIOR objects file {@code tile-<txn>.wso} for the resident that tile
      * transaction staged under this exact lease. The child attaches it only while that slot
-     * generation is still active, and answers with exactly one {@code OBJECTS_DONE}.
+     * generation is still active, and answers with exactly one {@code OBJECTS_DONE}. With {@code
+     * replace} ({@code OBJECTS_REPLACE}) the generation already holds late objects and the new set
+     * takes their place only once it is fully built; until then, and whenever it does not attach,
+     * the held set stays drawn.
      */
     record LateObjects(
             WorldStreamState.Nonce nonce,
             long transaction,
             WorldStreamState.Lease lease,
             int length,
-            String sha256)
+            String sha256,
+            boolean replace)
             implements Command {
+        LateObjects(
+                WorldStreamState.Nonce nonce,
+                long transaction,
+                WorldStreamState.Lease lease,
+                int length,
+                String sha256) {
+            this(nonce, transaction, lease, length, sha256, false);
+        }
+
         LateObjects {
             Objects.requireNonNull(nonce);
             Objects.requireNonNull(lease);
@@ -428,7 +441,7 @@ final class WorldStreamControl {
                                     + " "
                                     + c.lease().generation();
                     case LateObjects c ->
-                            "OBJECTS "
+                            (c.replace() ? "OBJECTS_REPLACE " : "OBJECTS ")
                                     + c.transaction()
                                     + " "
                                     + c.lease().serial()
@@ -577,7 +590,7 @@ final class WorldStreamControl {
                                     new WorldStreamState.Lease(
                                             integer(parts[5]), number(parts[6]), number(parts[4])));
                         }
-                        case "OBJECTS" -> {
+                        case "OBJECTS", "OBJECTS_REPLACE" -> {
                             arity(parts, 10);
                             long tx = number(parts[3]);
                             basename(parts[7], WorldStreamObjectsFile.basename(tx));
@@ -587,7 +600,8 @@ final class WorldStreamControl {
                                     new WorldStreamState.Lease(
                                             integer(parts[5]), number(parts[6]), number(parts[4])),
                                     integer(parts[8]),
-                                    parts[9]);
+                                    parts[9],
+                                    parts[2].equals("OBJECTS_REPLACE"));
                         }
                         case "HORIZON" -> {
                             arity(parts, 7);

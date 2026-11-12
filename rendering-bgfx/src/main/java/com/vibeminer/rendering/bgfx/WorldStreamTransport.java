@@ -601,7 +601,8 @@ public final class WorldStreamTransport {
             return switch (metadata.objects) {
                 case 0 -> {
                     var late = metadata.late;
-                    yield late == WorldStreamStatus.LateOutcome.ATTACHED
+                    // A replacement's own outcome never hides the set it would have replaced.
+                    yield metadata.lateHeld || late == WorldStreamStatus.LateOutcome.ATTACHED
                             ? ExteriorObjects.DRAWN
                             : late == WorldStreamStatus.LateOutcome.FAILED
                                     ? ExteriorObjects.FAILED
@@ -1820,6 +1821,24 @@ public final class WorldStreamTransport {
          */
         public CompletableFuture<ObjectsOutcome> attachObjects(
                 Resident resident, WorldStreamTileWriter.Exterior exterior) {
+            return deliverLate(resident, exterior, false);
+        }
+
+        /**
+         * Replaces the late objects a resident already draws ({@link Resident#exteriorObjects} is
+         * DRAWN from a late delivery) with {@code exterior}, by the same lane and rules as {@link
+         * #attachObjects}. The child builds the new set in full while the held one stays drawn, and
+         * swaps them only then; BUDGET, FAILED or DROPPED leave the held set as it was, and the
+         * resident stays DRAWN. A resident may be replaced again after each outcome. Misuse (no
+         * held late set, or a request in flight) fails only the returned future.
+         */
+        public CompletableFuture<ObjectsOutcome> replaceObjects(
+                Resident resident, WorldStreamTileWriter.Exterior exterior) {
+            return deliverLate(resident, exterior, true);
+        }
+
+        private CompletableFuture<ObjectsOutcome> deliverLate(
+                Resident resident, WorldStreamTileWriter.Exterior exterior, boolean replace) {
             Objects.requireNonNull(resident);
             Objects.requireNonNull(exterior);
             if (!descriptor.exteriorObjects()) {
@@ -1839,7 +1858,7 @@ public final class WorldStreamTransport {
                 }
                 boolean live;
                 try {
-                    live = state.admitLateObjects(resident.metadata);
+                    live = state.admitLateObjects(resident.metadata, replace);
                 } catch (IllegalArgumentException misuse) {
                     return CompletableFuture.failedFuture(misuse);
                 }

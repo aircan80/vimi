@@ -85,6 +85,8 @@ public final class WorldStreamSourceControllerTest {
         lateObjectsAttachAfterTerrainAndReportBuildings();
         budgetRefusedObjectsRetryAfterAReleaseOnly();
         creaturesShareTheirBytesAndYieldToBuildings();
+        buildingsComeFirstAndCreaturesReplaceThemLater();
+        refusedCreatureReplacementKeepsTheBuildings();
         lateObjectFailuresStayIsolatedFromTerrain();
         lateObjectsCompletingAfterRetirementAreIgnored();
         refusedInitialQualificationRetriesOnItsDeadline();
@@ -985,6 +987,115 @@ public final class WorldStreamSourceControllerTest {
             for (int i = 0; i < 50; i++) { fixture.pump(); Thread.sleep(2); }
             check(asked.get(refusedY).size() == 2,
                     "Refused without creatures, it waits for a release as before: " + asked.get(refusedY));
+        } finally {
+            fixture.close();
+        }
+    }
+
+    /**
+     * With a preparer that appends creatures, every wanted tile's buildings go first, without
+     * creatures, and each tile's creatures follow in a later pass that replaces its drawn set (or,
+     * on a tile without buildings, attaches as its first). A tile whose creatures draw nothing is
+     * not delivered again, and a refused replacement leaves the buildings drawn.
+     */
+    private static void buildingsComeFirstAndCreaturesReplaceThemLater() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 4);
+        fixture.exteriors = true;
+        long each = WorldTileCreatures.AREA_BYTES / 8;
+        int empty = fixture.tiles.get(1).y(), still = fixture.tiles.get(2).y();
+        var asked = new java.util.concurrent.ConcurrentHashMap<Integer, List<Long>>();
+        var preparer = new WorldStreamSourceBridge.ExteriorPreparer() {
+            @Override
+            public WorldStreamSourceBridge.ExteriorCopy prepare(
+                    com.vibeminer.concepts.world.WorldTerrainStreaming source,
+                    com.vibeminer.concepts.world.WorldTerrainStreaming.Scope scope,
+                    com.vibeminer.formats.world.WorldFormats.Tile tile,
+                    com.vibeminer.access.Cancellation cancellation, int formats, long creatureBytes) {
+                asked.computeIfAbsent(tile.y(), key -> new java.util.concurrent.CopyOnWriteArrayList<>())
+                        .add(creatureBytes);
+                boolean buildings = tile.y() != empty;
+                if (creatureBytes == BUILDINGS_ONLY)
+                    return buildings ? new WorldStreamSourceBridge.ExteriorCopy(building(), 1, false, "authored")
+                            : new WorldStreamSourceBridge.ExteriorCopy(null, 0, false, "no buildings");
+                var creatures = tile.y() == still ? WorldTileCreatures.Summary.NONE
+                        : WorldTileCreatures.Summary.drawn(3, 1, each);
+                return new WorldStreamSourceBridge.ExteriorCopy(building(), buildings ? 1 : 0, false, "authored",
+                        creatures);
+            }
+
+            @Override
+            public boolean appendsCreatures() {
+                return true;
+            }
+        };
+        try {
+            fixture.start(fixture.gpu::start, () -> {}, preparer);
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 3));
+            fixture.untilPresented(() -> fixture.objectLines().size() == 4);
+            var lines = fixture.objectLines();
+            check(lines.subList(0, 2).stream().allMatch(line -> !line.contains("REPLACE") && line.endsWith(" ATTACHED"))
+                    && !lines.subList(0, 2).contains(empty + " ATTACHED"),
+                    "Both tiles with buildings got them first, without creatures: " + lines);
+            check(lines.subList(2, 4).containsAll(List.of(fixture.tiles.get(0).y() + " REPLACE ATTACHED",
+                            empty + " ATTACHED")),
+                    "Creatures replaced the drawn set, or came first on a tile without buildings: " + lines);
+            for (var tile : fixture.tiles.subList(0, 3))
+                check(asked.get(tile.y()).size() == 2 && asked.get(tile.y()).getFirst()
+                                == WorldStreamSourceBridge.ExteriorPreparer.BUILDINGS_ONLY
+                                && asked.get(tile.y()).get(1) > 0,
+                        "Each tile was prepared buildings only, then with creatures: " + asked);
+            fixture.untilPresented(() -> fixture.controller.snapshot().detail().contains("6 static creature models"));
+            check(fixture.objectLines().size() == 4, "Nothing delivered twice: " + fixture.objectLines());
+        } finally {
+            fixture.close();
+        }
+    }
+
+    /** A replacement refused for budget leaves the drawn buildings and is not offered again at once. */
+    private static void refusedCreatureReplacementKeepsTheBuildings() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 1);
+        fixture.exteriors = true;
+        Path budget = fixture.directory.resolve("authored-budget-objects");
+        var creaturesAsked = new java.util.concurrent.atomic.AtomicInteger();
+        var preparer = new WorldStreamSourceBridge.ExteriorPreparer() {
+            @Override
+            public WorldStreamSourceBridge.ExteriorCopy prepare(
+                    com.vibeminer.concepts.world.WorldTerrainStreaming source,
+                    com.vibeminer.concepts.world.WorldTerrainStreaming.Scope scope,
+                    com.vibeminer.formats.world.WorldFormats.Tile tile,
+                    com.vibeminer.access.Cancellation cancellation, int formats, long creatureBytes) {
+                if (creatureBytes == BUILDINGS_ONLY)
+                    return new WorldStreamSourceBridge.ExteriorCopy(building(), 1, false, "authored");
+                creaturesAsked.incrementAndGet();
+                try {
+                    // The buildings attached; the budget is full by the time creatures arrive.
+                    Files.writeString(budget, "full");
+                } catch (java.io.IOException error) {
+                    throw new java.io.UncheckedIOException(error);
+                }
+                return new WorldStreamSourceBridge.ExteriorCopy(building(), 1, false, "authored",
+                        WorldTileCreatures.Summary.drawn(3, 1, 1 << 20));
+            }
+
+            @Override
+            public boolean appendsCreatures() {
+                return true;
+            }
+        };
+        try {
+            fixture.start(fixture.gpu::start, () -> {}, preparer);
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            int y = fixture.tiles.get(0).y();
+            fixture.untilPresented(() -> fixture.objectLines().contains(y + " REPLACE BUDGET"));
+            for (int i = 0; i < 50; i++) { fixture.pump(); Thread.sleep(2); }
+            check(fixture.objectLines().equals(List.of(y + " ATTACHED", y + " REPLACE BUDGET"))
+                    && creaturesAsked.get() == 1, "Refused once, not offered again: " + fixture.objectLines());
+            var detail = fixture.controller.snapshot().detail();
+            check(detail.contains("1 BASIC exterior building") && !detail.contains("building objects failed"),
+                    "The buildings stay drawn: " + detail);
         } finally {
             fixture.close();
         }
