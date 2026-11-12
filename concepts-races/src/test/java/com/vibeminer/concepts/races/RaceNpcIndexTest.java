@@ -795,6 +795,31 @@ final class RaceNpcIndexTest {
                     java.nio.ByteBuffer.allocate(4).putInt(session).array(),
                     generated.read(tries).join().bytes());
         }
+        // A sequential regression guard: one handle asked three times counts one attempt. It does
+        // not prove the atomic claim, which only matters for concurrent requests (the races worker
+        // is single-threaded).
+        generated.delete(List.of(tries)).join();
+        var service = new RacesService(raw, later, generated);
+        try {
+            for (int asked = 0; asked < 3; asked++) {
+                assertTrue(service.npcAppearance(50, Cancellation.NONE).join().result().restored());
+            }
+        } finally {
+            service.closeAsync().join();
+        }
+        assertArrayEquals(
+                java.nio.ByteBuffer.allocate(4).putInt(1).array(),
+                generated.read(tries).join().bytes());
+        generated.delete(List.of(tries)).join();
+        generated
+                .put(
+                        List.of(
+                                new GeneratedTypes.Put(
+                                        tries,
+                                        java.nio.ByteBuffer.allocate(4)
+                                                .putInt(RaceAppearance.RECOMPOSE_TRIES)
+                                                .array())))
+                .join();
         // After that many attempts it is left as it was, even once composing would work.
         assertTrue(ask(raw, files, generated).result().restored());
         assertFalse(present(generated, record));

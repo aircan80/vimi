@@ -1012,6 +1012,7 @@ public final class WorldStreamSourceControllerTest {
         // The last tile's creature pass is held until every other delivery is in, as on a slow
         // runner: the controller must still come back to it once it is idle.
         var lastHeld = new java.util.concurrent.CountDownLatch(1);
+        var lastEntered = new java.util.concurrent.atomic.AtomicBoolean();
         var preparer = new WorldStreamSourceBridge.ExteriorPreparer() {
             @Override
             public WorldStreamSourceBridge.ExteriorCopy prepare(
@@ -1020,8 +1021,10 @@ public final class WorldStreamSourceControllerTest {
                     com.vibeminer.formats.world.WorldFormats.Tile tile,
                     com.vibeminer.access.Cancellation cancellation, int formats, long creatureBytes) {
                 if (tile.y() == still && creatureBytes != BUILDINGS_ONLY) {
+                    lastEntered.set(true);
                     try {
-                        lastHeld.await();
+                        if (!lastHeld.await(30, java.util.concurrent.TimeUnit.SECONDS))
+                            throw new AssertionError("The last tile's creature pass was never released");
                     } catch (InterruptedException error) {
                         throw new AssertionError(error);
                     }
@@ -1048,9 +1051,11 @@ public final class WorldStreamSourceControllerTest {
             fixture.until(() -> fixture.controller.snapshot().seed() != null);
             fixture.camera(1);
             fixture.controller.neighborhood(fixture.tiles.subList(0, 3));
-            fixture.untilPresented(() -> fixture.objectLines().size() == 4);
-            check(asked.getOrDefault(still, List.of()).size() == 1,
-                    "The last tile's creature pass is still held: " + asked);
+            // Every other delivery is in and the controller has already started the last tile's
+            // creature pass, which is held: it is still loading, and that pass has asked nothing.
+            fixture.untilPresented(() -> fixture.objectLines().size() == 4 && lastEntered.get());
+            check(fixture.controller.loadingObjects() && asked.getOrDefault(still, List.of()).size() == 1,
+                    "The last tile's creature pass started and is held: " + asked);
             lastHeld.countDown();
             // The tile whose creatures draw nothing sends no second set: its creature pass is
             // waited for as a preparation, not as a delivery line.
