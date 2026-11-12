@@ -860,6 +860,14 @@ public final class WorldTileCreaturesTest {
         require(back.vertexCount() <= appearance.mesh().vertexCount() && maxSource == back.vertexCount() - 1
                         && back.durationMillis() == 1000,
                 "The carried bytes read back to the Stand sequence over just the drawn vertices");
+        // Its serialized form was read back once; another conversion of the same animation writes
+        // without reading back, and its bytes still read.
+        require(WorldTileCreatures.roundTripped(available.animation()), "Read back once");
+        var again = standingCreatures(() -> available);
+        again.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(com.vibeminer.rendering.models.PreviewAnimation.read(new java.io.DataInputStream(
+                new java.io.ByteArrayInputStream(again.animation(7).bytes()))).durationMillis() == 1000,
+                "A later conversion's bytes read back");
         // A rest-posed model carries nothing; switching animation off keeps every model baked.
         require(model.withAnimation(carried.sources(), carried.bytes()).withRestPose("no idle").animation() == null,
                 "A rest pose has no animation");
