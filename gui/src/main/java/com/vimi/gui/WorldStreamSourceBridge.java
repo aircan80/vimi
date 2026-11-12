@@ -354,6 +354,9 @@ final class WorldStreamSourceBridge {
             return false;
         }
 
+        /** Starts what the creature passes will read first (their spawn index), without waiting. */
+        default void warm() {}
+
         /**
          * Why no creature can be drawn now (the spawn source holds none), so creature passes are
          * not scheduled; null while they may draw something. Never waits.
@@ -491,6 +494,11 @@ final class WorldStreamSourceBridge {
             @Override
             public String creaturesUnavailable() {
                 return creatures.unavailable();
+            }
+
+            @Override
+            public void warm() {
+                creatures.warm();
             }
         };
     }

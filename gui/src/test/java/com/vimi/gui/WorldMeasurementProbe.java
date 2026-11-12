@@ -1377,6 +1377,24 @@ public final class WorldMeasurementProbe {
             return inner.idle(extendedDisplayInfoId, appearance, token);
         }
 
+        // As the World view's source, these may be asked ahead (#175); outcomes are recorded too.
+        @Override
+        public java.util.concurrent.CompletableFuture<com.vibeminer.concepts.races.RaceNpcs.Appearance>
+                appearanceAsync(long extendedDisplayInfoId, Cancellation token) {
+            var asked = inner.appearanceAsync(extendedDisplayInfoId, token);
+            return asked == null ? null : asked.thenApply(answer -> {
+                outcomes.put(extendedDisplayInfoId, outcome(answer));
+                return answer;
+            });
+        }
+
+        @Override
+        public java.util.concurrent.CompletableFuture<com.vibeminer.rendering.models.PreviewAnimation> idleAsync(
+                long extendedDisplayInfoId, com.vibeminer.rendering.models.MeshAppearance appearance,
+                Cancellation token) {
+            return inner.idleAsync(extendedDisplayInfoId, appearance, token);
+        }
+
         static String outcome(com.vibeminer.concepts.races.RaceNpcs.Appearance answer) {
             if (answer == null) return "refused: no NPC appearance";
             if (answer.refusal() != null)

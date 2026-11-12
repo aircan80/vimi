@@ -2278,8 +2278,41 @@ final class WorldTileCreatures implements AutoCloseable {
         return spawns.spawns() == 0 ? noSpawns(spawns) : null;
     }
 
+    /**
+     * Starts loading the spawn index when it is not loaded or loading for the current revision, so
+     * the first tile's creatures do not wait for it (#175): the World starts it with the session,
+     * while the buildings pass runs. Failures are left for the first tile to report.
+     */
+    void warm() {
+        try {
+            indexFuture();
+        } catch (RuntimeException notNow) {
+            // Closed, or the revision cannot be read: the first tile asks again.
+        }
+    }
+
     /** The source revision's spawn index, loaded once on its own daemon thread. */
     private WorldSpawns.Index index(Cancellation token) {
+        var future = indexFuture();
+        while (true) {
+            token.check();
+            try {
+                return future.get(50, TimeUnit.MILLISECONDS);
+            } catch (TimeoutException waiting) {
+                // Keep waiting while the caller is live; the load itself is never caller-canceled.
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new CancellationException("Interrupted");
+            } catch (ExecutionException failed) {
+                var cause = failed.getCause();
+                if (cause instanceof RuntimeException runtime) throw runtime;
+                throw new IllegalStateException(cause);
+            }
+        }
+    }
+
+    /** The spawn index load for the current revision, started (or restarted) when needed. */
+    private CompletableFuture<WorldSpawns.Index> indexFuture() {
         CompletableFuture<WorldSpawns.Index> future;
         Object choicesNow;
         try {
@@ -2324,21 +2357,7 @@ final class WorldTileCreatures implements AutoCloseable {
             }
             future = index;
         }
-        while (true) {
-            token.check();
-            try {
-                return future.get(50, TimeUnit.MILLISECONDS);
-            } catch (TimeoutException waiting) {
-                // Keep waiting while the caller is live; the load itself is never caller-canceled.
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                throw new CancellationException("Interrupted");
-            } catch (ExecutionException failed) {
-                var cause = failed.getCause();
-                if (cause instanceof RuntimeException runtime) throw runtime;
-                throw new IllegalStateException(cause);
-            }
-        }
+        return future;
     }
 
     @Override

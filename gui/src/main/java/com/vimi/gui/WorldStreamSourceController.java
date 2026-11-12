@@ -497,6 +497,18 @@ final class WorldStreamSourceController {
         maxEntries = residents + 3;
         this.exteriorPreparer = Objects.requireNonNull(exteriorPreparer);
         this.creaturesLater = exteriorPreparer.appendsCreatures();
+        // The creature passes come after every wanted tile's buildings: their spawn index loads
+        // meanwhile instead of holding up the first one (#175). Started off the caller's thread
+        // (the FX thread for the World view): reading the revision may parse sources.
+        if (creaturesLater) {
+            Thread.ofPlatform().daemon().name("world-creature-warm").start(() -> {
+                try {
+                    exteriorPreparer.warm();
+                } catch (RuntimeException failed) {
+                    // Only an early start: the first creature pass loads it as before.
+                }
+            });
+        }
         this.clock = Objects.requireNonNull(clock);
         this.request = Objects.requireNonNull(request);
         this.starter = Objects.requireNonNull(starter);
