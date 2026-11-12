@@ -207,8 +207,11 @@ recorded tile within one tile of the camera (whatever the view distance),
 - transforms are the drawn objects' own (ADT origin and heading, pitch and
   roll; set doodads composed with their building).
 
-Parsed roots, groups and models are shared in a 96 MiB cache. The whole 3×3
-around Stormwind measured 35 MiB on 70862 (Ironforge and Orgrimmar 19 MiB).
+Parsed roots, groups and models are kept in the session's source cache
+(`WorldSourceCache`, 128 MiB), with the model, image and group files the
+object sets read; a file an object set already read is not read again for
+collision. The whole 3×3 around Stormwind measured 35 MiB of parsed collision
+sources on 70862 (Ironforge and Orgrimmar 19 MiB).
 Tiles are read one at a time on their own worker. Each tile's placements get
 their world transforms and boxes once, when read; merging the nine parts into
 one `ObjectCollision` (a 32-yard grid, de-duplicated when two tiles list the

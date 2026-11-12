@@ -150,7 +150,23 @@ final class WorldStreamScopes {
         return files;
     }
 
+    /**
+     * The session's source cache: the files derived reads (building groups, doodad models, their
+     * images) bind, shared with walking collision, which keeps its parsed sources there too.
+     */
+    private final WorldSourceCache sources;
+
+    WorldSourceCache sources() {
+        return sources;
+    }
+
     WorldStreamScopes(BuildTables tables, BuildFiles files) {
+        this(tables, files, new WorldSourceCache());
+    }
+
+    /** With a given source cache (tests: {@link WorldSourceCache#off} for re-read paths). */
+    WorldStreamScopes(BuildTables tables, BuildFiles files, WorldSourceCache sources) {
+        this.sources = Objects.requireNonNull(sources);
         maps = new WorldMapProofs(tables, files);
         borrowedTables = tables;
         this.files = files;
@@ -1211,7 +1227,10 @@ final class WorldStreamScopes {
                 }
                 if (source == null) {
                     long started = WorldStageTimings.start();
-                    source = engine.read(id, limit, token, classifyUnavailable);
+                    source =
+                            kind == null
+                                    ? engine.read(id, limit, token, classifyUnavailable)
+                                    : engine.readDerived(id, limit, token, classifyUnavailable);
                     if (started != 0L) {
                         WorldStageTimings.stop("source.read." + profile.name(), started);
                         WorldStageTimings.add(
@@ -1752,7 +1771,7 @@ final class WorldStreamScopes {
                                     long[] next = NONE;
                                     try {
                                         source =
-                                                engine.read(
+                                                engine.readDerived(
                                                         hint.key().id(),
                                                         hint.limit(),
                                                         read.cancel,
@@ -2391,6 +2410,31 @@ final class WorldStreamScopes {
 
     private Source read(long id, int limit, Cancellation token) {
         return read(id, limit, token, false);
+    }
+
+    /**
+     * A derived source (a building group, a doodad model or skin, an image) from the session's
+     * {@link #sources} cache, or read as {@link #read(long, int, Cancellation, boolean)} reads it
+     * and kept there. A cached file was bound by a complete read of this build, so a hit refuses
+     * only what that read would: a file over this read's {@code limit}.
+     */
+    private Source readDerived(
+            long id, int limit, Cancellation token, boolean classifyUnavailable) {
+        token.check();
+        var cached = sources.file(id);
+        if (cached != null) {
+            if (cached.bytes().length > limit) {
+                throw WorldSourceRefusals.at(
+                        classifyUnavailable
+                                ? WorldSourceRefusals.Site.SOURCE_UNAVAILABLE
+                                : WorldSourceRefusals.Site.SOURCE_INPUT);
+            }
+            return new Source(cached.contentKey(), cached.bytes(), cached.declaredLength(), limit);
+        }
+        var source = read(id, limit, token, classifyUnavailable);
+        sources.putFile(
+                id, new WorldSourceCache.File(source.key(), source.bytes(), source.declaredLength));
+        return source;
     }
 
     private static final Set<FileTypes.FileReadState> UNAVAILABLE_READS =
