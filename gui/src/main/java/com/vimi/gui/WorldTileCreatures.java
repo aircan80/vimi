@@ -119,13 +119,29 @@ final class WorldTileCreatures implements AutoCloseable {
             !"false".equalsIgnoreCase(System.getProperty("vimi.world.creatureAnimation"));
 
     /**
-     * Converted models are remembered across tiles up to this many bytes (vertices, indices,
-     * texture chains and, since #384, the idle animation each carries: about 0.4 MB a model, at
-     * most 0.8 MB, on 70862 around Stormwind). An area with the EG Link fallback uses 49-196
-     * distinct models; a count of 32, and later 128 MiB once models carried their animations,
-     * evicted them, so warm passes converted again.
+     * Converted models are remembered across tiles up to this many bytes (vertices, indices and
+     * texture chains). An area with the EG Link fallback uses 49-189 distinct models; a count of
+     * 32 evicted them, so warm passes converted again.
      */
-    static final long MODEL_CACHE_BYTES = 256L << 20;
+    static final long MODEL_CACHE_BYTES = 128L << 20;
+
+    /**
+     * Idle animations carried to the child (#384) are remembered apart from the models, up to this
+     * many bytes: about 0.4 MB for a creature and 0.6 MB for a humanoid NPC, at most 0.8 MB, on
+     * 70862 around Stormwind, where some 120 displays lie near the camera (64 MiB still evicted
+     * some before a second pass). Only displays placed near the camera carry one, so this holds
+     * the models around it; an evicted one is converted again when it is placed near the camera.
+     */
+    static final long ANIMATION_CACHE_BYTES = 96L << 20;
+
+    /**
+     * A spawn carries its model's idle only within this distance (yards) of the camera when its
+     * tile is prepared: the child's animation radius (100 yd) plus one tile. Evaluating a
+     * humanoid's race idle costs about 0.3 s, so the rest of the area does not pay for an idle it
+     * cannot play. A tile prepared while the camera was farther stays static until it is prepared
+     * again.
+     */
+    static final double IDLE_DISTANCE = 100 + WorldFormats.TILE_SIZE;
 
     /**
      * Humanoid NPC appearances draw their pre-baked texture at most this many pixels a side, a
@@ -508,6 +524,21 @@ final class WorldTileCreatures implements AutoCloseable {
                     billboardTriangles, sources.clone(), animation.clone());
         }
 
+        /** The same model without its animation (kept apart, in the animation cache). */
+        Model withoutAnimation() {
+            return animation == null ? this : new Model(vertices, indices, ranges, blends, images,
+                    omittedSurfaces, restPose, npc, billboardTriangles, null, null);
+        }
+
+        /** Whether every range is opaque or alpha-keyed, so the child may animate the model. */
+        boolean animatableSurfaces() {
+            for (int blend : blends) {
+                int kind = com.vibeminer.rendering.world.WorldObjectPicking.kind(blend);
+                if (kind != OPAQUE && kind != CUTOUT) return false;
+            }
+            return true;
+        }
+
         /**
          * Whether the child may animate this model: it carries an animation and every range is
          * opaque or alpha-keyed (a blended or additive range is drawn in the sorted pass, which
@@ -572,6 +603,50 @@ final class WorldTileCreatures implements AutoCloseable {
     private final Npcs npcs;
     private final Map<Long, Chosen> choices = lru(CHOICE_CACHE);
     private final ModelCache models = new ModelCache(MODEL_CACHE_BYTES);
+
+    /** One display's idle as carried: rest vertex per model vertex and the animation's bytes. */
+    record Animation(int[] sources, byte[] bytes) {
+        /** A display with no idle to carry (evaluated, none). */
+        static final Animation NONE = new Animation(new int[0], new byte[0]);
+
+        long size() {
+            return sources.length * 4L + bytes.length + 64;
+        }
+    }
+
+    // Guarded by this: idle animations by display, byte-bounded, least recently used out.
+    private final LinkedHashMap<Long, Animation> animations = new LinkedHashMap<>(64, .75f, true);
+    private long animationBytes;
+
+    /** Where the camera is (native x, y), or null to carry idles everywhere (tests, censuses). */
+    private volatile Supplier<double[]> camera;
+
+    /** Sets where the camera is, so only spawns near it carry their idle ({@link #IDLE_DISTANCE}). */
+    void camera(Supplier<double[]> position) {
+        camera = position;
+    }
+
+    /** Whether a spawn at native {@code (x, y)} is near enough to the camera to carry its idle. */
+    boolean nearCamera(double x, double y) {
+        var source = camera;
+        double[] at = source == null ? null : source.get();
+        return at == null || Math.hypot(x - at[0], y - at[1]) <= IDLE_DISTANCE;
+    }
+
+    synchronized Animation animation(long display) {
+        return animations.get(display);
+    }
+
+    private synchronized void remember(long display, Animation animation) {
+        if (closed) return;
+        var before = animations.put(display, animation);
+        animationBytes += animation.size() - (before == null ? 0 : before.size());
+        var eldest = animations.values().iterator();
+        while (animationBytes > ANIMATION_CACHE_BYTES && animations.size() > 1) {
+            animationBytes -= eldest.next().size();
+            eldest.remove();
+        }
+    }
 
     /** Whether models carry their idle animation to the child ({@link #ANIMATION}; tests set it). */
     private volatile boolean animation = ANIMATION;
@@ -690,9 +765,7 @@ final class WorldTileCreatures implements AutoCloseable {
     static long bytes(Converted converted) {
         var m = converted.model();
         if (m == null) return 64;
-        return (long) m.vertices().length * 4 + (long) m.indices().length * 4 + m.pixels() * 4 + 256
-                + (m.sources() == null ? 0 : m.sources().length * 4L)
-                + (m.animation() == null ? 0 : m.animation().length);
+        return (long) m.vertices().length * 4 + (long) m.indices().length * 4 + m.pixels() * 4 + 256;
     }
 
     private static <V> Map<Long, V> lru(int capacity) {
@@ -982,10 +1055,14 @@ final class WorldTileCreatures implements AutoCloseable {
         // Builder model indices of humanoid NPCs, with what each placement leaves undrawn.
         final HashMap<Integer, NpcCounts> npcModels = new HashMap<>();
         NpcCounts npcCounts = NpcCounts.NONE;
-        int restPosed, billboardsLeftOut, animated;
+        int restPosed, billboardsLeftOut;
         long animationBytes;
-        // Builder model indices the child may animate (#384).
-        final HashSet<Integer> animatedModels = new HashSet<>();
+        // Builder model indices the child may animate (#384), and those found to carry no idle.
+        final HashSet<Integer> animatedModels = new HashSet<>(), stillModels = new HashSet<>();
+        // Placements drawn per builder model index, to count the animated ones at the end.
+        final HashMap<Integer, Integer> modelPlacements = new HashMap<>();
+        // Displays already converted with their idle on this tile: not converted again for it.
+        final HashSet<Long> idleLoaded = new HashSet<>();
         // Builder model indices whose Stand pose left out billboard triangles.
         final HashSet<Integer> billboardModels = new HashSet<>();
 
@@ -1037,7 +1114,12 @@ final class WorldTileCreatures implements AutoCloseable {
                         return;
                     }
                     previewsTried++;
-                    converted = load(display, token);
+                    // Only near the camera is the idle evaluated with the model (#384).
+                    // An idle already remembered is not evaluated again with a model reconverted.
+                    boolean idle = animation && nearCamera(spawn.x(), spawn.y())
+                            && WorldTileCreatures.this.animation(display) == null;
+                    converted = load(display, token, idle);
+                    if (idle) idleLoaded.add(display);
                     if (converted.refusal() != Count.PREVIEWS_BUSY) answered = true;
                     // A busy or closed reader learned nothing: refund the preview it cost. An NPC
                     // appearance that cannot be read yet keeps its cost but is asked once per tile.
@@ -1067,13 +1149,7 @@ final class WorldTileCreatures implements AutoCloseable {
                     return;
                 }
                 model = add(builder, m);
-                long entry = 12L + m.vertexCount() * 4L + (m.animation() == null ? 0 : (m.animation().length + 3L) / 4 * 4);
-                if (animation && m.animatable() && animatedModels.size() < MAX_ANIMATED
-                        && animationBytes + entry <= ANIMATION_SECTION_BYTES) {
-                    builder.animate(model, m.sources(), m.animation());
-                    animatedModels.add(model);
-                    animationBytes += entry;
-                }
+                if (!animation || !m.animatableSurfaces()) stillModels.add(model);
                 textureBytes += m.pixels() * 4;
                 setBytes += gpuBytes(m);
                 added.put(display, model);
@@ -1092,9 +1168,12 @@ final class WorldTileCreatures implements AutoCloseable {
                     transform[3], new WorldObjectPicks.Key(model, transform[0], transform[1], transform[2],
                             transform[3])));
             placements++;
+            modelPlacements.merge(model, 1, Integer::sum);
+            if (!animatedModels.contains(model) && !stillModels.contains(model)
+                    && nearCamera(spawn.x(), spawn.y()))
+                carryIdle(model, display);
             if (restModels.contains(model)) restPosed++;
             if (billboardModels.contains(model)) billboardsLeftOut++;
-            if (animatedModels.contains(model)) animated++;
             var npc = npcModels.get(model);
             if (npc != null) npcCounts = npcCounts.plus(npc);
             counts[Count.DRAWN.ordinal()]++;
@@ -1117,7 +1196,35 @@ final class WorldTileCreatures implements AutoCloseable {
             return null;
         }
 
+        /**
+         * Attaches display {@code display}'s idle to builder model {@code model} (#384), from the
+         * animation cache or by converting the display again with its idle (a preview of this
+         * tile's budget). A display without an idle, one over the section's bounds, or one whose
+         * conversion fails stays still on this tile.
+         */
+        private void carryIdle(int model, long display) {
+            var carried = WorldTileCreatures.this.animation(display);
+            if (carried == null && !idleLoaded.contains(display) && previewsTried < TILE_PREVIEWS) {
+                previewsTried++;
+                idleLoaded.add(display);
+                load(display, token, true);
+                carried = WorldTileCreatures.this.animation(display);
+            }
+            int vertices = builder.modelVertices(model);
+            long entry = 12L + vertices * 4L + (carried == null ? 0 : (carried.bytes().length + 3L) / 4 * 4);
+            if (carried == null || carried == Animation.NONE || carried.sources().length != vertices
+                    || animatedModels.size() >= MAX_ANIMATED || animationBytes + entry > ANIMATION_SECTION_BYTES) {
+                stillModels.add(model);
+                return;
+            }
+            builder.animate(model, carried.sources(), carried.bytes());
+            animatedModels.add(model);
+            animationBytes += entry;
+        }
+
         Summary summary(String note) {
+            int animated = 0;
+            for (int model : animatedModels) animated += modelPlacements.getOrDefault(model, 0);
             return new Summary(counts, added.size(), restPosed, billboardsLeftOut, npcCounts, note, placed, setBytes)
                     .withAnimated(animated);
         }
@@ -1177,6 +1284,15 @@ final class WorldTileCreatures implements AutoCloseable {
     }
 
     private Converted load(long display, Cancellation token) {
+        return load(display, token, true);
+    }
+
+    /**
+     * Converts one display. With {@code idle}, its idle is evaluated and remembered in the
+     * animation cache (or that it has none); without, a humanoid's race idle is not evaluated and a
+     * creature's Stand is not carried. The model cache holds the model without its animation.
+     */
+    private Converted load(long display, Cancellation token, boolean idle) {
         Converted converted;
         try {
             // A humanoid NPC's display draws its race appearance: its preview (the character model,
@@ -1185,13 +1301,14 @@ final class WorldTileCreatures implements AutoCloseable {
             token.check();
             Long extended = reference == null ? null : reference.extendedDisplayInfoId();
             if (extended != null && extended > 0) {
-                converted = npc(extended, token);
+                converted = npc(extended, token, idle);
             } else {
                 var preview = previews.preview(display, token);
                 token.check();
                 extended = preview == null || preview.reference() == null ? null
                         : preview.reference().extendedDisplayInfoId();
-                converted = extended != null && extended > 0 ? npc(extended, token) : stand(display, preview, token);
+                converted = extended != null && extended > 0 ? npc(extended, token, idle)
+                        : stand(display, preview, token, idle);
             }
         } catch (Exception failed) {
             // Only this tile's cancellation propagates; a closed or retired component is a failure.
@@ -1202,9 +1319,16 @@ final class WorldTileCreatures implements AutoCloseable {
             // Not cached: a failed read may succeed on the next tile.
             return Converted.refused(Count.FAILED, failed.getClass().getSimpleName());
         }
+        if (idle && converted.model() != null && !converted.transientPose()) {
+            var m = converted.model();
+            remember(display, m.animation() == null ? Animation.NONE : new Animation(m.sources(), m.animation()));
+        }
         if (converted.transientPose()) return converted; // asked again on a later tile
+        var kept = converted.model() == null ? converted
+                : new Converted(converted.model().withoutAnimation(), converted.refusal(), converted.detail(),
+                        converted.transientPose());
         synchronized (this) {
-            if (!closed) models.put(display, converted);
+            if (!closed) models.put(display, kept);
         }
         return converted;
     }
@@ -1219,6 +1343,12 @@ final class WorldTileCreatures implements AutoCloseable {
      * and a cancellation propagate.
      */
     Converted stand(long display, DisplayModelTypes.Preview preview, Cancellation token) throws Exception {
+        return stand(display, preview, token, true);
+    }
+
+    /** As above; with {@code carry} false, the Stand is baked but not carried for the child. */
+    Converted stand(long display, DisplayModelTypes.Preview preview, Cancellation token, boolean carry)
+            throws Exception {
         if (preview == null || preview.appearance() == null) return convert(preview, token);
         String restPose;
         boolean retry = false;
@@ -1237,7 +1367,7 @@ final class WorldTileCreatures implements AutoCloseable {
                 appearance = idle.animation().pose(appearance, 0);
                 leftOut = idle.leftOut();
                 restPose = null;
-                animation = idle.animation();
+                animation = carry ? idle.animation() : null;
             }
         } catch (Exception failed) {
             token.check();
@@ -1300,6 +1430,11 @@ final class WorldTileCreatures implements AutoCloseable {
      * cannot be read yet (asked again on a later tile). Cancellation and a busy reader propagate.
      */
     Converted npc(long extendedDisplayInfoId, Cancellation token) throws Exception {
+        return npc(extendedDisplayInfoId, token, true);
+    }
+
+    /** As above; with {@code carry} false, the race idle is not evaluated (the NPC stands still). */
+    Converted npc(long extendedDisplayInfoId, Cancellation token, boolean carry) throws Exception {
         var answer = npcs.appearance(extendedDisplayInfoId, token);
         token.check();
         if (answer == null) return Converted.refused(Count.CHARACTER_APPEARANCE, "no NPC appearance");
@@ -1324,14 +1459,18 @@ final class WorldTileCreatures implements AutoCloseable {
         // The race model's Stand over this NPC's surface (#384): played near the camera; the baked
         // copy stays in the rest pose, as before.
         com.vibeminer.rendering.models.PreviewAnimation idle = null;
+        long idling = com.vibeminer.formats.world.WorldStageTimings.start();
         try {
-            idle = npcs.idle(extendedDisplayInfoId, result.appearance(), token);
+            if (carry) idle = npcs.idle(extendedDisplayInfoId, result.appearance(), token);
         } catch (Exception failed) {
             token.check();
             if (busy(failed) || failed instanceof CancellationException) throw failed;
         }
+        if (carry) com.vibeminer.formats.world.WorldStageTimings.stop("parent.creatures.npcIdle", idling);
         if (idle != null) {
+            long carrying = com.vibeminer.formats.world.WorldStageTimings.start();
             var animated = animated(model, sources, idle);
+            com.vibeminer.formats.world.WorldStageTimings.stop("parent.creatures.carryIdle", carrying);
             if (animated != null) model = animated;
         }
         return new Converted(model, null, null);

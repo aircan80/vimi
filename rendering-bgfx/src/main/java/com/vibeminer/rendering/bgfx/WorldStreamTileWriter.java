@@ -448,6 +448,18 @@ public final class WorldStreamTileWriter {
                 animated.put(model, new Object[] {sources.clone(), animation.clone()});
             }
 
+            /** The vertices of all of model {@code model}'s meshes added so far. */
+            public int modelVertices(int model) {
+                if (model < 0 || model >= models.size()) {
+                    throw new IllegalArgumentException("No such exterior model");
+                }
+                int first = models.get(model)[0], count = models.get(model)[1], sum = 0;
+                for (int m = first; m < first + count; m++) {
+                    sum += meshes.get(m)[1];
+                }
+                return sum;
+            }
+
             /** Starts a new shared model; returns its index. Following meshes belong to it. */
             public int model() {
                 open();

@@ -46,6 +46,7 @@ public final class WorldTileCreaturesTest {
         busyRetryPausesShareOneBudgetAcrossTiles();
         creaturesStandInTheirIdlePoseOrSayWhyNot();
         creaturesCarryTheirIdleForTheChildToPlay();
+        onlySpawnsNearTheCameraCarryTheirIdle();
         billboardTrianglesAreLeftOutOfTheWorldStandAndDisclosed();
         unreadableStandSequencesAreAskedAgainButUnsupportedOnesAreKept();
         cutoutReductionKeepsThinStrands();
@@ -848,17 +849,20 @@ public final class WorldTileCreaturesTest {
         require(exterior.animatedModels() == 1, "One animated model for both placements");
         require(WorldStreamSourceController.creatureDetail(tile, 1).contains("2 playing their idle near the camera"),
                 WorldStreamSourceController.creatureDetail(tile, 1));
-        var cached = creatures.cached(7).model();
-        require(cached.animation() != null && cached.sources().length == cached.vertexCount() && cached.animatable(),
-                "The converted model keeps its animation and a rest vertex per model vertex");
+        var model = creatures.cached(7).model();
+        var carried = creatures.animation(7);
+        require(model.animation() == null, "The model cache holds the model without its animation");
+        require(carried != null && carried.sources().length == model.vertexCount(),
+                "The animation cache keeps the idle and a rest vertex per model vertex");
         var back = com.vibeminer.rendering.models.PreviewAnimation.read(new java.io.DataInputStream(
-                new java.io.ByteArrayInputStream(cached.animation())));
-        int maxSource = java.util.Arrays.stream(cached.sources()).max().orElse(-1);
+                new java.io.ByteArrayInputStream(carried.bytes())));
+        int maxSource = java.util.Arrays.stream(carried.sources()).max().orElse(-1);
         require(back.vertexCount() <= appearance.mesh().vertexCount() && maxSource == back.vertexCount() - 1
                         && back.durationMillis() == 1000,
                 "The carried bytes read back to the Stand sequence over just the drawn vertices");
         // A rest-posed model carries nothing; switching animation off keeps every model baked.
-        require(cached.withRestPose("no idle").animation() == null, "A rest pose has no animation");
+        require(model.withAnimation(carried.sources(), carried.bytes()).withRestPose("no idle").animation() == null,
+                "A rest pose has no animation");
         var off = standingCreatures(() -> available);
         off.animation(false);
         var stillBuilder = WorldStreamTileWriter.Exterior.builder();
@@ -869,6 +873,59 @@ public final class WorldTileCreaturesTest {
         var missing = standingCreatures(() -> DisplayModelTypes.Idle.unavailable("no keys"));
         require(missing.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE).animated() == 0,
                 "A rest-posed creature does not animate");
+    }
+
+    /**
+     * Only spawns near the camera carry their idle (#384): a far tile neither evaluates a humanoid's
+     * race idle nor carries a creature's Stand; once the camera is near, a later tile carries it,
+     * converting the display again with its idle.
+     */
+    private static void onlySpawnsNearTheCameraCarryTheirIdle() throws Exception {
+        var appearance = standing();
+        var available = new DisplayModelTypes.Idle(DisplayModelTypes.IdleState.AVAILABLE, null, lift(appearance), "Stand");
+        var creatures = standingCreatures(() -> available);
+        double[][] at = {{-100 + 5000, -100}};
+        creatures.camera(() -> at[0]);
+        var far = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(far.drawn() == 2 && far.animated() == 0, "Far from the camera nothing carries its idle");
+        require(creatures.animation(7) == null, "No idle was evaluated for the far tile");
+        at[0] = new double[] {-100, -100};
+        var builder = WorldStreamTileWriter.Exterior.builder();
+        var near = creatures.append(builder, 0, TILE, Cancellation.NONE);
+        require(near.drawn() == 2 && near.animated() == 2 && builder.build().animatedModels() == 1,
+                "Near the camera the cached model gets its idle: " + near.animated());
+        require(WorldTileCreatures.IDLE_DISTANCE > 100 && creatures.nearCamera(-100 + WorldTileCreatures.IDLE_DISTANCE - 1, -100)
+                && !creatures.nearCamera(-100 + WorldTileCreatures.IDLE_DISTANCE + 1, -100),
+                "The idle distance is the animation radius plus one tile");
+        // A humanoid's race idle is evaluated only near the camera.
+        var asked = new AtomicInteger();
+        var clean = geosets();
+        WorldTileCreatures.Npcs npcs = new WorldTileCreatures.Npcs() {
+            public com.vibeminer.concepts.races.RaceNpcs.Appearance appearance(long extended, Cancellation token) {
+                var result = new com.vibeminer.concepts.races.RaceAppearanceTypes.Result(
+                        com.vibeminer.concepts.races.RaceTypes.State.READY, clean, Set.of(0), List.of(),
+                        List.of(), false, null);
+                return new com.vibeminer.concepts.races.RaceNpcs.Appearance(result, 0, 0, null, false);
+            }
+
+            public com.vibeminer.rendering.models.PreviewAnimation idle(long extended, MeshAppearance appearance,
+                    Cancellation token) {
+                asked.incrementAndGet();
+                return lift(appearance);
+            }
+        };
+        var humans = new WorldTileCreatures(token -> index(List.of(WorldSpawnOverlayTest.spawn(4, 1, -100, -100, 10.0))),
+                () -> "r1", (npc, token) -> qualified(10, null),
+                (display, token) -> preview(display, 100L, 0L, clean), npcs);
+        humans.camera(() -> new double[] {9000, 9000});
+        var still = humans.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(still.drawn() == 1 && still.animated() == 0 && asked.get() == 0,
+                "A far humanoid draws without evaluating its race idle");
+        humans.camera(() -> new double[] {-100, -100});
+        var playing = humans.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(playing.animated() == 1 && asked.get() == 1, "Near the camera it is evaluated once");
+        humans.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(asked.get() == 1, "and remembered");
     }
 
     private static void unreadableStandSequencesAreAskedAgainButUnsupportedOnesAreKept() throws Exception {

@@ -1548,6 +1548,13 @@ public final class WorldMeasurementProbe {
                     }
                     var scope = source.createScope(map, Cancellation.NONE);
                     source.activate(scope);
+                    // As the World view: idles are carried near the camera, here the centre tile's
+                    // centre (#384); probe.idleEverywhere=true carries them on every tile.
+                    double[] centre = {
+                        (31.5 - scenario.x()) * WorldFormats.TILE_SIZE,
+                        (31.5 - scenario.y()) * WorldFormats.TILE_SIZE
+                    };
+                    tiles.camera(Boolean.getBoolean("probe.idleEverywhere") ? null : () -> centre);
                     for (int pass = 1; pass <= passes && beforeDeadline(); pass++) {
                         long began = System.nanoTime();
                         var sum = WorldTileCreatures.Summary.NONE;
@@ -1574,6 +1581,10 @@ public final class WorldMeasurementProbe {
                         }
                         if (done < area.size()) incomplete = true;
                         say(creatureLine(scenario, pass, done, area.size(), sum, began));
+                        for (var series : WorldStageTimings.snapshot().series().values())
+                            if (series.name().startsWith("parent.creatures."))
+                                say(String.format(Locale.ROOT, "PROBE   %s n=%d total=%.1f ms",
+                                        series.name(), series.count(), series.sum() / 1e6));
                     }
                 }
                 // The Creature table as the chooser reads it: its state and row counts, through the
@@ -1692,6 +1703,12 @@ public final class WorldMeasurementProbe {
      */
     private static WorldTileCreatures streamCreatures;
 
+    /** The stream camera's native x and y, for creature idles near it (#384); null before one. */
+    private static volatile double[] streamCamera;
+
+    /** The stream mode's NPC appearance outcomes, per distinct humanoid display (#384). */
+    private static NpcAnswers streamNpcs;
+
     private static void stream(WorldMeasurementOpen opened, BuildWorld handle, WorldService.Catalog catalog)
             throws Exception {
         var scenarios =
@@ -1712,8 +1729,9 @@ public final class WorldMeasurementProbe {
                             new WorldNpcDisplays(open::creatures,
                                     NpcPreviews.egLinkBatch(sources, build, "enUS"), build.version()),
                             new WorldTileCreatures.DisplayPreviews(opened::displays, () -> "probe"),
-                            WorldTileCreatures.npcs(open::races));
+                            streamNpcs = new NpcAnswers(WorldTileCreatures.npcs(open::races)));
             say("PROBE stream creatures: on, animation " + WorldTileCreatures.ANIMATION);
+            streamCreatures.camera(() -> streamCamera);
         }
         try {
             for (var scenario : scenarios) {
@@ -1981,6 +1999,9 @@ public final class WorldMeasurementProbe {
                                                             .label())));
             say("PROBE fill status: " + fx(() -> controller.snapshot().detail()));
             say("PROBE fill creatures: " + fx(() -> controller.creatureStatus()));
+            if (streamNpcs != null)
+                streamNpcs.tally().forEach((outcome, n) ->
+                        say(String.format(Locale.ROOT, "PROBE fill humanoid displays %6d  %s", n, outcome)));
             var position = fx(() -> camera == null ? null : new double[] {camera.x(), camera.y(), camera.z()});
             say("PROBE sky: " + (position == null ? "no camera" : sky(handle, scenario.map(), position)));
             var fillTimings = WorldStageTimings.snapshot();
@@ -2133,6 +2154,7 @@ public final class WorldMeasurementProbe {
         }
 
         void sendCamera() {
+            streamCamera = new double[] {camera.x(), camera.y()};
             long revision = control.incrementAndGet();
             requested.put(revision, System.nanoTime());
             if (requested.size() > 20_000) requested.clear();
