@@ -114,44 +114,67 @@ final class WorldObjectAnimationTest {
         assertEquals(
                 WorldObjectAnimation.millis(500, 800, 2),
                 WorldObjectAnimation.millis(500, 800, 2, 0));
-        for (int model = 0; model < 64; model++) {
-            for (int phase = 0; phase < WorldObjectAnimation.PHASES; phase++) {
-                long offset = WorldObjectAnimation.stepOffset(model, phase);
-                assertTrue(offset >= 0 && offset < step, model + "/" + phase + ": " + offset);
+        for (long set = 0; set < 16; set++) {
+            for (int model = 0; model < 64; model++) {
+                for (int phase = 0; phase < WorldObjectAnimation.PHASES; phase++) {
+                    long offset = WorldObjectAnimation.stepOffset(set, model, phase);
+                    assertTrue(
+                            offset >= phase * step / WorldObjectAnimation.PHASES
+                                    && offset < (phase + 1) * step / WorldObjectAnimation.PHASES,
+                            set + "/" + model + "/" + phase + ": " + offset);
+                }
             }
         }
     }
 
     @Test
-    void posesOfManyModelsDoNotAllReskinInTheSameFrame() {
-        // 12 models x 4 phases drawn at 60 frames a second for a second: the most poses that step
-        // in one frame stays well under all of them, where unstaggered steps re-skin all 48 every
-        // 2.4 frames.
-        int poses = 12 * WorldObjectAnimation.PHASES, most = 0, total = 0;
+    void setsSharingAModelIndexStepAtDifferentTimes() {
+        // Tiles with one or two animated models each: their model 0 must not all share one offset.
+        var offsets = new java.util.HashSet<Long>();
+        for (long set = 0; set < 16; set++) {
+            offsets.add(WorldObjectAnimation.stepOffset(set, 0, 0));
+        }
+        assertTrue(offsets.size() >= 6, "distinct offsets of model 0 over 16 sets: " + offsets);
+    }
+
+    @Test
+    void posesOfManySetsDoNotAllReskinInTheSameFrameAndEachStepsOnePoseStepAtATime() {
+        // 8 sets of 2 animated models x 4 phases (64 poses), drawn at 60 frames a second for two
+        // seconds. Unstaggered, all 64 re-skin every 2.4 frames; staggered, a frame re-skins about
+        // 64 x 16.7 / 40, some 27, of them.
+        int sets = 8, models = 2, poses = sets * models * WorldObjectAnimation.PHASES;
+        long duration = 900, step = WorldObjectAnimation.STEP_MILLIS;
+        int most = 0, total = 0;
         long[] last = new long[poses];
         java.util.Arrays.fill(last, -1);
-        for (int frame = 0; frame < 60; frame++) {
+        for (int frame = 0; frame < 120; frame++) {
             long clock = 10_000 + Math.round(frame * 1000 / 60.0);
             int stepped = 0;
             for (int i = 0; i < poses; i++) {
-                int model = i / WorldObjectAnimation.PHASES,
+                int set = i / (models * WorldObjectAnimation.PHASES),
+                        model = i / WorldObjectAnimation.PHASES % models,
                         phase = i % WorldObjectAnimation.PHASES;
                 long millis =
                         WorldObjectAnimation.millis(
-                                clock, 900, phase, WorldObjectAnimation.stepOffset(model, phase));
+                                clock,
+                                duration,
+                                phase,
+                                WorldObjectAnimation.stepOffset(set, model, phase));
                 if (millis != last[i]) {
-                    last[i] = millis;
-                    if (frame > 0) {
+                    if (last[i] >= 0) {
+                        // A pose only ever advances by exactly one step of its loop.
+                        assertEquals(Math.floorMod(last[i] + step, duration), millis, "pose " + i);
                         stepped++;
                     }
+                    last[i] = millis;
                 }
             }
             most = Math.max(most, stepped);
             total += stepped;
         }
-        // Every pose still steps about 25 times a second.
-        assertTrue(total >= poses * 23 && total <= poses * 25, "total " + total);
-        assertTrue(most <= poses / 2 + 4, "most poses stepping in one frame: " + most);
+        // Every pose still steps 25 times a second, give or take the window's edges.
+        assertTrue(total >= poses * 48 && total <= poses * 50, "total " + total);
+        assertTrue(most <= 32, "most poses stepping in one frame: " + most);
     }
 
     /** A queued pose for {@link WorldObjectAnimation#skinOrder}: its last skin and its cost. */
