@@ -1392,6 +1392,16 @@ final class WorldTileCreatures implements AutoCloseable {
                 : new Converted(converted.model().withRestPose(restPose), null, null, retry);
     }
 
+    /** Animations a subset of which was written and read back (identity, held weakly). */
+    private static final java.util.Set<com.vibeminer.rendering.models.PreviewAnimation> ROUND_TRIPPED =
+            java.util.Collections.synchronizedSet(
+                    java.util.Collections.newSetFromMap(new java.util.WeakHashMap<>()));
+
+    /** Whether a subset of {@code animation} was written and read back already (tests). */
+    static boolean roundTripped(com.vibeminer.rendering.models.PreviewAnimation animation) {
+        return ROUND_TRIPPED.contains(animation);
+    }
+
     /**
      * {@code model} carrying its Stand animation for the child to play (#384), or null when it
      * cannot: the animation is camera-facing (World creatures leave those vertices out), its
@@ -1401,6 +1411,7 @@ final class WorldTileCreatures implements AutoCloseable {
     static Model animated(Model model, List<Integer> sources,
             com.vibeminer.rendering.models.PreviewAnimation animation) {
         if (animation.viewDependent() || sources.size() != model.vertexCount()) return null;
+        var whole = animation;
         // Only the rest vertices the model draws travel: a character's surface holds every geoset
         // (some 43,000 vertices) while its drawn sections use a tenth of them.
         var used = new java.util.LinkedHashMap<Integer, Integer>();
@@ -1417,9 +1428,14 @@ final class WorldTileCreatures implements AutoCloseable {
             animation.write(new java.io.DataOutputStream(out));
             bytes = out.toByteArray();
             if (bytes.length > ANIMATION_BYTES) return null;
-            var back = com.vibeminer.rendering.models.PreviewAnimation.read(
-                    new java.io.DataInputStream(new java.io.ByteArrayInputStream(bytes)));
-            if (back.vertexCount() != animation.vertexCount()) return null;
+            // The serialized form is read back once per animation: a subset of an animation whose
+            // form read back once writes the same way.
+            if (!ROUND_TRIPPED.contains(whole)) {
+                var back = com.vibeminer.rendering.models.PreviewAnimation.read(
+                        new java.io.DataInputStream(new java.io.ByteArrayInputStream(bytes)));
+                if (back.vertexCount() != animation.vertexCount()) return null;
+                ROUND_TRIPPED.add(whole);
+            }
         } catch (java.io.IOException | RuntimeException unwritable) {
             return null;
         }
