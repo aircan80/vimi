@@ -73,6 +73,8 @@ public final class WorldMeasurementProbe {
                             Math.min(
                                     MAX_DEADLINE_SECONDS,
                                     Long.getLong("probe.deadlineSeconds", MAX_DEADLINE_SECONDS)));
+    // Set once the stream fill ends: probe.png keeps the filled view.
+    private static volatile boolean pngDone;
     private static final StringBuilder REPORT = new StringBuilder();
     // Held by the main thread except while it measures, and by every open and close: the
     // watchdog never acts while it is non-zero.
@@ -2546,6 +2548,8 @@ public final class WorldMeasurementProbe {
                     && prepares() >= desired)) {
                 incomplete = true;
             }
+            // The PNG shows the filled view at probe.camera: later phases move the camera.
+            pngDone = true;
             say(
                     String.format(
                             Locale.ROOT,
@@ -2747,6 +2751,8 @@ public final class WorldMeasurementProbe {
         }
 
         /** FX: WorldView.streamChanged without widgets. */
+        private long lastPng;
+
         void changed(WorldStreamSourceController owner) {
             if (owner == null) return;
             var snapshot = owner.snapshot();
@@ -2791,6 +2797,22 @@ public final class WorldMeasurementProbe {
                 WorldStageTimings.record("fx.frame.present", now - presenting);
                 if (shown) {
                     acceptedFrames++;
+                    // probe.png=<file>: the latest shown frame, written at most once a second.
+                    String png = System.getProperty("probe.png");
+                    if (png != null && !pngDone && now - lastPng > 1_000_000_000L) {
+                        lastPng = now;
+                        try {
+                            var pixels = frame.pixels().duplicate();
+                            var data = new int[frame.width() * frame.height()];
+                            pixels.get(data);
+                            var image = new java.awt.image.BufferedImage(frame.width(), frame.height(),
+                                    java.awt.image.BufferedImage.TYPE_INT_ARGB);
+                            image.setRGB(0, 0, frame.width(), frame.height(), data, 0, frame.width());
+                            javax.imageio.ImageIO.write(image, "png", new java.io.File(png));
+                        } catch (java.io.IOException | RuntimeException failed) {
+                            say("PROBE png not written: " + failed);
+                        }
+                    }
                     if (firstFrame == 0) firstFrame = now;
                     if (lastAccepted != 0) {
                         WorldStageTimings.record("fx.frame.acceptInterval", now - lastAccepted);

@@ -929,6 +929,7 @@ final class WorldStreamSourceBridge {
             // The chain as stored: RGBA8, or the file's own BC blocks (#374).
             builder.image(image.width(), image.height(), image.format(), image.data());
         }
+        int liquidsDrawn = 0, liquidsLeftOut = 0;
         for (var model : set.models()) {
             boolean portals = startModel(builder, model.portals());
             for (var mesh : model.meshes()) {
@@ -944,8 +945,39 @@ final class WorldStreamSourceBridge {
                 }
                 builder.mesh(mesh.vertices(), mesh.indices(), ranges, blends, mesh.colours(),
                         portals ? mesh.groupOrdinal() : -1);
+                int liquid = copyLiquid(builder, set, mesh);
+                if (liquid > 0) liquidsDrawn++;
+                else if (liquid < 0) liquidsLeftOut++;
             }
         }
+        if (liquidsDrawn + liquidsLeftOut > 0) {
+            // Building water per tile, for the measurement probe: drawn, and left out (an unknown
+            // LiquidType appearance, or past the file's liquid bounds).
+            com.vibeminer.formats.world.WorldStageTimings.value("objects.liquids.drawnPerTile", liquidsDrawn);
+            com.vibeminer.formats.world.WorldStageTimings.value("objects.liquids.leftOutPerTile", liquidsLeftOut);
+        }
+    }
+
+    /**
+     * The mesh's building water, when its LiquidType's appearance is known and it fits the file's
+     * liquid bounds; returns 1 drawn, 0 none, -1 left out (unknown or over the bounds).
+     */
+    static int copyLiquid(WorldStreamTileWriter.Exterior.Builder builder,
+            WorldExteriorObjects.TileObjects set, WorldExteriorObjects.Mesh mesh) {
+        var liquid = mesh.liquid();
+        if (liquid == null) return 0;
+        int[] appearance = set.liquidAppearance(mesh.liquidType());
+        int xv = liquid.xVertices(), yv = liquid.yVertices();
+        if (appearance == null || !builder.liquidFits(xv, yv)) return -1;
+        var heights = new float[xv * yv];
+        for (int y = 0; y < yv; y++)
+            for (int x = 0; x < xv; x++) heights[y * xv + x] = liquid.height(x, y);
+        var live = new boolean[(xv - 1) * (yv - 1)];
+        for (int y = 0; y < yv - 1; y++)
+            for (int x = 0; x < xv - 1; x++) live[y * (xv - 1) + x] = liquid.live(x, y);
+        builder.liquid(appearance[0], appearance[1], xv, yv, liquid.baseX(), liquid.baseY(),
+                liquid.baseZ(), heights, live);
+        return 1;
     }
 
     /**

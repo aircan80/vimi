@@ -119,6 +119,14 @@ public final class WmoLiquid {
         throw new IllegalArgumentException("WMO group has no MOGP");
     }
 
+    /**
+     * The liquid of one MLIQ chunk body, with its group's MOGP liquid field and flags; null when no
+     * tile holds liquid. Throws {@link IllegalArgumentException} for a malformed one.
+     */
+    public static WmoLiquid parse(ByteBuffer mliq, int groupLiquid, int groupFlags) {
+        return liquid(mliq.duplicate(), groupLiquid, groupFlags);
+    }
+
     private static WmoLiquid liquid(ByteBuffer chunk, int groupLiquid, int groupFlags) {
         chunk.order(ByteOrder.LITTLE_ENDIAN);
         if (chunk.remaining() < HEADER) {
@@ -242,6 +250,24 @@ public final class WmoLiquid {
             }
         }
         return 0x0F;
+    }
+
+    public int xVertices() {
+        return xVertices;
+    }
+
+    public int yVertices() {
+        return yVertices;
+    }
+
+    /** The height of grid vertex (x, y). */
+    public float height(int x, int y) {
+        return heights[y * xVertices + x];
+    }
+
+    /** Whether tile (x, y) holds liquid. */
+    public boolean live(int x, int y) {
+        return (flags[y * xTiles + x] & 0x0F) != 0x0F;
     }
 
     public int xTiles() {
