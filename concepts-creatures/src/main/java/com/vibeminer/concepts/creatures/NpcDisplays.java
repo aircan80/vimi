@@ -8,10 +8,13 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.LongPredicate;
 
 /**
- * The display an NPC page shows for one NPC: the client's {@code Creature} record first, then an
- * outside source's observed displays (EG Link) when the record is absent or declares none.
+ * The display an NPC page shows for one NPC: the client's {@code Creature} record first, then each
+ * outside source's observed displays in order (EG Link: downloaded snapshots, newest build first,
+ * then the bundled history) when the record is absent or declares none. A display the opened
+ * build's {@code CreatureDisplayInfo} proves missing is skipped, so its source falls through.
  *
  * <p>Every candidate display is listed with its probability (weights of a display listed several
  * times add up). The one shown is the highest probability, ties broken by the lowest display ID, so
@@ -81,12 +84,33 @@ public final class NpcDisplays {
      */
     public static Resolution resolve(
             CreatureResult client, String clientProvenance, External external) {
+        return resolve(
+                client, clientProvenance, external == null ? null : List.of(external), id -> false);
+    }
+
+    /**
+     * Resolves the display to show from the client record, then each outside source in order
+     * ({@code externals}, null when none applies). A display {@code absent} proves missing from the
+     * opened build's {@code CreatureDisplayInfo} is never used: a source left with no display falls
+     * through to the next one. A display that cannot be checked (a partial table) is kept.
+     */
+    public static Resolution resolve(
+            CreatureResult client,
+            String clientProvenance,
+            List<External> externals,
+            LongPredicate absent) {
         Objects.requireNonNull(clientProvenance);
+        Objects.requireNonNull(absent);
         String clientDetail = clientState(client);
         if (clientDetail == null) {
             var declared = new LinkedHashMap<Long, Candidate>();
+            int missing = 0;
             for (var slot : client.detail().summary().slots()) {
                 if (slot.state() == CreatureSlotState.DECLARED && slot.displayId() > 0) {
+                    if (absent.test(slot.displayId())) {
+                        missing++;
+                        continue;
+                    }
                     declared.merge(
                             (long) slot.displayId(),
                             new Candidate(
@@ -102,18 +126,37 @@ public final class NpcDisplays {
                 return chosen(
                         Source.CLIENT, declared.values(), clientProvenance, "client Creature");
             }
-            clientDetail = "The client Creature record declares no display";
+            clientDetail =
+                    missing > 0
+                            ? "The client Creature record's displays are not in this build's"
+                                    + " CreatureDisplayInfo"
+                            : "The client Creature record declares no display";
         }
-        if (external != null && !external.candidates().isEmpty()) {
+        int passed = 0;
+        for (var external : externals == null ? List.<External>of() : externals) {
             var listed = new LinkedHashMap<Long, Candidate>();
             for (var candidate : external.candidates()) {
-                listed.merge(candidate.displayId(), candidate, NpcDisplays::sum);
+                if (!absent.test(candidate.displayId())) {
+                    listed.merge(candidate.displayId(), candidate, NpcDisplays::sum);
+                }
             }
-            return chosen(
-                    Source.EXTERNAL,
-                    listed.values(),
-                    external.provenance(),
-                    clientDetail + "; observed displays");
+            if (!listed.isEmpty()) {
+                return chosen(
+                        Source.EXTERNAL,
+                        listed.values(),
+                        external.provenance(),
+                        clientDetail
+                                + "; observed displays"
+                                + (passed == 0
+                                        ? ""
+                                        : passed == 1
+                                                ? " (one newer source had none in this build)"
+                                                : " ("
+                                                        + passed
+                                                        + " newer sources had none in this"
+                                                        + " build)"));
+            }
+            passed++;
         }
         return new Resolution(
                 Source.NONE,
@@ -121,9 +164,12 @@ public final class NpcDisplays {
                 null,
                 clientProvenance,
                 clientDetail
-                        + (external == null
+                        + (externals == null || externals.isEmpty()
                                 ? "; no outside display source applies"
-                                : "; the outside source records no display for this NPC"));
+                                : externals.size() == 1
+                                        ? "; the outside source records no display for this NPC"
+                                        : "; no outside source records a display for this NPC"
+                                                + " in this build"));
     }
 
     /** Null when the client record can supply displays, else why not. */

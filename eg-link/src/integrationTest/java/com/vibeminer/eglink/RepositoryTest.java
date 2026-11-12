@@ -394,6 +394,267 @@ final class RepositoryTest {
         }
     }
 
+    private static void index(Source source, Map<String, Object> builds) throws Exception {
+        source.files.put(
+                "data/index.json",
+                EgJson.bytes(
+                        Map.of(
+                                "license",
+                                EgLinkTypes.LICENSE,
+                                "attribution",
+                                EgLinkTypes.ATTRIBUTION,
+                                "products",
+                                Map.of("wowf", builds))));
+    }
+
+    @Test
+    void eachProductKeepsItsNewestBuildsBeforeRepeatedCommitsAndPrunesTheRest() throws Exception {
+        var source = new Source();
+        byte[] current = source.files.get("data/wowf/" + VERSION + "/creature_details.enUS.json");
+        var versions = java.util.List.of("1.60.1.70100", "1.60.1.70200", "1.60.1.70300");
+        var builds = new java.util.HashMap<String, Object>();
+        for (String version : versions) {
+            var dataset = EgJson.object(EgJson.parse(current, 1 << 20));
+            EgJson.object(dataset.get("meta")).put("clientBuild", version);
+            source.files.put(
+                    "data/wowf/" + version + "/creature_details.enUS.json", EgJson.bytes(dataset));
+            builds.put(
+                    version,
+                    Map.of(
+                            "creature_details.enUS",
+                            Map.of("records", 2, "sources", 1, "lastCollectedOn", "2026-11-01")));
+        }
+        index(source, builds);
+        try (var repository = new EgLinkRepository(folder, source, 3)) {
+            var catalog = repository.check(Cancellation.NONE).join();
+            for (var build : catalog.builds()) {
+                repository.download(build, progress -> {}, Cancellation.NONE).join();
+            }
+            // The latest build changes on each of three more commits.
+            for (int day = 2; day <= 4; day++) {
+                builds.put(
+                        "1.60.1.70300",
+                        Map.of(
+                                "creature_details.enUS",
+                                Map.of(
+                                        "records",
+                                        2,
+                                        "sources",
+                                        1,
+                                        "lastCollectedOn",
+                                        "2026-11-0" + day)));
+                index(source, builds);
+                source.revision = Integer.toHexString(day).repeat(40);
+                repository.sync(progress -> {}, Cancellation.NONE).join();
+            }
+            var kept = repository.snapshots(Cancellation.NONE).join();
+            assertEquals(3, kept.size(), "each product keeps three snapshots");
+            assertEquals(
+                    java.util.Set.of("1.60.1.70100", "1.60.1.70200", "1.60.1.70300"),
+                    kept.stream()
+                            .map(value -> value.build().version())
+                            .collect(java.util.stream.Collectors.toSet()),
+                    "every build outlasts repeated commits of the latest one");
+            var latest =
+                    kept.stream()
+                            .filter(value -> value.build().version().equals("1.60.1.70300"))
+                            .findFirst()
+                            .orElseThrow();
+            assertEquals("4".repeat(40), latest.build().revision(), "the newest commit is kept");
+            try (var listed = java.nio.file.Files.list(folder.resolve("sources"))) {
+                assertEquals(
+                        3,
+                        listed.filter(path -> path.getFileName().toString().matches("[0-9a-f]{64}"))
+                                .count(),
+                        "pruned snapshots are deleted");
+            }
+            try (var listed = java.nio.file.Files.list(folder.resolve("derived"))) {
+                assertTrue(
+                        listed.filter(path -> path.toString().endsWith(".sqlite")).count() <= 3,
+                        "pruned databases are deleted");
+            }
+        }
+    }
+
+    /** Three builds downloaded and prepared at one commit; the repository retains two. */
+    private EgLinkRepository crowded(Source source, java.util.Map<String, Object> builds)
+            throws Exception {
+        byte[] current = source.files.get("data/wowf/" + VERSION + "/creature_details.enUS.json");
+        for (String version : java.util.List.of("1.60.1.70100", "1.60.1.70200", "1.60.1.70300")) {
+            var dataset = EgJson.object(EgJson.parse(current, 1 << 20));
+            EgJson.object(dataset.get("meta")).put("clientBuild", version);
+            source.files.put(
+                    "data/wowf/" + version + "/creature_details.enUS.json", EgJson.bytes(dataset));
+            builds.put(version, collected("2026-11-01"));
+        }
+        index(source, builds);
+        var repository = new EgLinkRepository(folder, source, 2);
+        for (var build : repository.check(Cancellation.NONE).join().builds()) {
+            var held = repository.download(build, progress -> {}, Cancellation.NONE).join();
+            repository.prepare(held.id(), progress -> {}, Cancellation.NONE).join();
+        }
+        return repository;
+    }
+
+    private static Map<String, Object> collected(String date) {
+        return Map.of(
+                "creature_details.enUS",
+                Map.of("records", 2, "sources", 1, "lastCollectedOn", date));
+    }
+
+    private static String idOf(java.util.List<EgLinkTypes.Snapshot> held, String version) {
+        return held.stream()
+                .filter(value -> value.build().version().equals(version))
+                .map(EgLinkTypes.Snapshot::id)
+                .findFirst()
+                .orElseThrow();
+    }
+
+    @Test
+    void aSnapshotABuildStillReadsIsNeverPruned() throws Exception {
+        var source = new Source();
+        var builds = new HashMap<String, Object>();
+        try (var repository = crowded(source, builds)) {
+            var synced =
+                    repository
+                            .sync(
+                                    progress -> {},
+                                    held -> java.util.Set.of(idOf(held, "1.60.1.70100")),
+                                    Cancellation.NONE)
+                            .join();
+            assertTrue(synced.issues().isEmpty(), synced.issues().toString());
+            var versions =
+                    synced.snapshots().stream().map(value -> value.build().version()).toList();
+            // Two retained (70300, 70200) plus the kept 70100, which would otherwise go.
+            assertEquals(3, versions.size(), versions.toString());
+            assertTrue(versions.contains("1.60.1.70100"));
+            var plain = repository.sync(progress -> {}, Cancellation.NONE).join();
+            assertEquals(2, plain.snapshots().size(), "without the keep, it goes");
+        }
+    }
+
+    @Test
+    void aBuildNoLongerAdvertisedIsAWarningNotAFailure() throws Exception {
+        var source = new Source();
+        var builds = new HashMap<String, Object>();
+        try (var repository = crowded(source, builds)) {
+            builds.remove("1.60.1.70200");
+            index(source, builds);
+            source.revision = "b".repeat(40);
+            var synced =
+                    repository
+                            .sync(progress -> {}, held -> java.util.Set.of(), Cancellation.NONE)
+                            .join();
+            assertTrue(synced.issues().isEmpty(), synced.issues().toString());
+            assertTrue(
+                    synced.warnings().stream().anyMatch(w -> w.startsWith("No longer advertised")),
+                    synced.warnings().toString());
+        }
+    }
+
+    @Test
+    void aSnapshotThatCannotBeReleasedIsAWarningAndStaysListed() throws Exception {
+        var source = new Source();
+        var builds = new HashMap<String, Object>();
+        var released = new java.util.ArrayList<String>();
+        try (var repository = crowded(source, builds)) {
+            EgLinkRepository.releaseForTest =
+                    id -> {
+                        released.add(id);
+                        // As Windows refuses to delete a database a handle still holds open.
+                        throw new IllegalStateException("file is in use");
+                    };
+            var synced = repository.sync(progress -> {}, Cancellation.NONE).join();
+            assertEquals(1, released.size(), "released before anything is deleted");
+            assertTrue(synced.issues().isEmpty(), "not a failure: " + synced.issues());
+            assertEquals(1, synced.warnings().size(), synced.warnings().toString());
+            assertTrue(synced.warnings().getFirst().contains("file is in use"));
+            assertEquals(3, synced.snapshots().size(), "the snapshot stays, complete");
+            assertEquals(3, synced.reused(), "the rest of the sync still counts");
+            EgLinkRepository.releaseForTest = released::add;
+            var retried = repository.sync(progress -> {}, Cancellation.NONE).join();
+            assertTrue(retried.issues().isEmpty(), retried.issues().toString());
+            assertTrue(retried.warnings().isEmpty(), retried.warnings().toString());
+            assertEquals(2, retried.snapshots().size(), "removed at the next sync");
+        } finally {
+            EgLinkRepository.releaseForTest = null;
+        }
+    }
+
+    @Test
+    void pruningASnapshotWithAnOpenPooledHandleClosesItAndDeletesCleanly() throws Exception {
+        var source = new Source();
+        var builds = new HashMap<String, Object>();
+        try (var repository = crowded(source, builds)) {
+            String oldest = idOf(repository.snapshots(Cancellation.NONE).join(), "1.60.1.70100");
+            // A lookup leaves the snapshot's database open in the pool and remembers its answer.
+            assertTrue(
+                    repository
+                            .creatureDisplays(oldest, "enUS", 197, Cancellation.NONE)
+                            .join()
+                            .isPresent());
+            assertEquals(1, repository.openSnapshotCount().join());
+            var synced = repository.sync(progress -> {}, Cancellation.NONE).join();
+            assertTrue(synced.issues().isEmpty(), synced.issues().toString());
+            assertEquals(0, repository.openSnapshotCount().join(), "the pooled handle is closed");
+            assertFalse(Files.exists(folder.resolve("sources").resolve(oldest)));
+            try (var listed = Files.list(folder.resolve("derived"))) {
+                assertFalse(
+                        listed.anyMatch(path -> path.getFileName().toString().startsWith(oldest)),
+                        "its database and journal files are deleted");
+            }
+            // The remembered answer went with it: the lookup no longer finds the snapshot.
+            assertThrows(
+                    CompletionException.class,
+                    () ->
+                            repository
+                                    .creatureDisplays(oldest, "enUS", 197, Cancellation.NONE)
+                                    .join());
+        }
+    }
+
+    @Test
+    void aRemovalInterruptedAfterTheTrashRenameLeavesNoHalfSnapshot() throws Exception {
+        var source = new Source();
+        var builds = new HashMap<String, Object>();
+        try (var repository = crowded(source, builds)) {
+            EgLinkRepository.trashedForTest =
+                    id -> {
+                        throw new IllegalStateException("crash after the rename");
+                    };
+            var synced = repository.sync(progress -> {}, Cancellation.NONE).join();
+            EgLinkRepository.trashedForTest = null;
+            assertTrue(synced.issues().isEmpty(), synced.issues().toString());
+            assertEquals(1, synced.warnings().size(), synced.warnings().toString());
+            assertEquals(2, synced.snapshots().size(), "the trashed snapshot is not listed");
+            try (var listed = Files.list(folder.resolve("sources"))) {
+                for (Path path : listed.toList()) {
+                    String name = path.getFileName().toString();
+                    if (name.matches("[0-9a-f]{64}")) {
+                        assertTrue(
+                                Files.exists(path.resolve("source.json")),
+                                "every listed folder keeps its manifest");
+                    }
+                }
+            }
+            try (var listed = Files.list(folder.resolve("sources"))) {
+                assertTrue(
+                        listed.anyMatch(
+                                path -> path.getFileName().toString().startsWith(".trash-")),
+                        "the interrupted removal left its trash");
+            }
+            repository.sync(progress -> {}, Cancellation.NONE).join();
+            try (var listed = Files.list(folder.resolve("sources"))) {
+                assertFalse(
+                        listed.anyMatch(
+                                path -> path.getFileName().toString().startsWith(".trash-")),
+                        "the next sync purges it");
+            }
+        } finally {
+            EgLinkRepository.trashedForTest = null;
+        }
+    }
+
     @Test
     void syncUpdatesLatestAndInstalledBuildsAndReusesUnchangedPreparedData() throws Exception {
         var source = new Source();
@@ -445,11 +706,30 @@ final class RepositoryTest {
             assertEquals(
                     requests + 1, source.requests, "Unchanged commit makes one head request only");
             source.revision = "b".repeat(40);
+            var moved = repository.sync(progress -> {}, Cancellation.NONE).join();
+            assertEquals(0, moved.downloaded(), "A commit that leaves both builds alone");
+            assertEquals(2, moved.reused());
+            assertEquals(2, moved.snapshots().size());
+            var collected = Map.of("records", 2, "sources", 1, "lastCollectedOn", "2026-11-02");
+            index(
+                    source,
+                    Map.of(
+                            old, Map.of("creature_details.enUS", collected),
+                            middle, Map.of("creature_details.enUS", spec),
+                            VERSION, Map.of("creature_details.enUS", collected)));
+            source.revision = "c".repeat(40);
             var changed = repository.sync(progress -> {}, Cancellation.NONE).join();
             assertEquals(2, changed.downloaded());
             assertEquals(2, changed.prepared());
             assertEquals(4, changed.snapshots().size(), "Earlier exact revisions remain available");
-            source.revision = "c".repeat(40);
+            source.revision = "d".repeat(40);
+            var again = Map.of("records", 2, "sources", 1, "lastCollectedOn", "2026-11-03");
+            index(
+                    source,
+                    Map.of(
+                            old, Map.of("creature_details.enUS", again),
+                            middle, Map.of("creature_details.enUS", spec),
+                            VERSION, Map.of("creature_details.enUS", again)));
             source.files.put(
                     "data/wowf/" + old + "/creature_details.enUS.json", new byte[] {'{', '}'});
             var partial = repository.sync(progress -> {}, Cancellation.NONE).join();

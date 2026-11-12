@@ -78,6 +78,24 @@ public final class DataSourcesService {
             List<com.vibeminer.eglink.EgLinkTypes.Snapshot> snapshots, String issue) {}
     private volatile EgLinkState egLinkState = new EgLinkState(new com.vibeminer.eglink.EgLinkTypes.Catalog(null, null, List.of()), List.of(), null);
     private final com.vibeminer.eglink.EgLinkRepository egLink;
+
+    /** A library or opened build whose EG Link snapshots pruning keeps. */
+    public record BuildKey(String product, String version) {}
+
+    /** The library's builds, for the EG Link snapshots pruning must keep; set by the application. */
+    private volatile java.util.function.Supplier<java.util.Collection<BuildKey>> libraryBuilds = List::of;
+    /**
+     * Builds opened recently, in the order first seen: a workspace opened them, or their NPC,
+     * quest or location sources were read. Persisted (the last {@link #OPENED_BUILDS}), so a
+     * recently used build that was never saved keeps its EG Link snapshots across restarts.
+     */
+    private final java.util.Set<BuildKey> openedBuilds = java.util.Collections.synchronizedSet(new java.util.LinkedHashSet<>());
+    static final int OPENED_BUILDS = 32;
+    private static final String OPENED_KEY = "eg-link.opened-builds";
+    /** EG Link snapshots a user downloaded or prepared by hand this session. */
+    private final java.util.Set<String> chosenEgLink = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    /** Notes a job leaves for its completed status (warnings of a sync that completed). */
+    private final Map<Id, String> completionNotes = new java.util.concurrent.ConcurrentHashMap<>();
     public record PolestarState(java.util.Optional<com.vibeminer.polestar.PolestarTypes.Catalog> catalog,
             List<com.vibeminer.polestar.PolestarTypes.Snapshot> snapshots, String issue) {
         public PolestarState { snapshots = List.copyOf(snapshots); }
@@ -208,6 +226,10 @@ public final class DataSourcesService {
         this.names = names;
         this.catalog = catalog;
         this.questieDirectory = directory;
+        for (String line : preferences.get(OPENED_KEY, "").split("\n")) {
+            String[] parts = line.split("\t");
+            if (parts.length == 2) openedBuilds.add(new BuildKey(parts[0], parts[1]));
+        }
         for (Id id : Id.values()) {
             policy(id);
             activity.put(id, new Activity(false, null, -1, null));
@@ -247,27 +269,42 @@ public final class DataSourcesService {
     }
 
     /**
-     * The prepared EG Link snapshot whose {@code creature_details} serve as the NPC display
-     * fallback for this build (same product, the newest build not after it), or null.
-     */
-    public com.vibeminer.eglink.EgLinkTypes.Snapshot npcDisplaySnapshot(BuildInfo build, String locale) {
-        if (egLink == null || build == null || !policy(Id.EG_LINK).enabled()) return null;
-        return npcDisplaySnapshot(egLinkState.snapshots(), build.product(), build.version(), locale);
-    }
-
-    /**
      * The prepared snapshot of {@code product} with {@code creature_details.<locale>} whose build is
      * the newest of the same x.y.z not after {@code version}, or null. Pure.
      */
     static com.vibeminer.eglink.EgLinkTypes.Snapshot npcDisplaySnapshot(
+            List<com.vibeminer.eglink.EgLinkTypes.Snapshot> snapshots, String product, String version, String locale) {
+        var ordered = npcDisplaySnapshots(snapshots, product, version, locale);
+        return ordered.isEmpty() ? null : ordered.getFirst();
+    }
+
+    /** Every prepared snapshot an NPC's displays may come from, in the order they are tried. */
+    public List<com.vibeminer.eglink.EgLinkTypes.Snapshot> npcDisplaySnapshots(BuildInfo build, String locale) {
+        if (egLink == null || build == null || !policy(Id.EG_LINK).enabled()) return List.of();
+        opened(build);
+        return npcDisplaySnapshots(egLinkState.snapshots(), build.product(), build.version(), locale);
+    }
+
+    /**
+     * The prepared snapshots of {@code product} with {@code creature_details.<locale>} of the same
+     * x.y.z and not after {@code version}: newest build first, then the newest commit of a build
+     * first. Never a snapshot newer than the opened build. Pure.
+     */
+    static List<com.vibeminer.eglink.EgLinkTypes.Snapshot> npcDisplaySnapshots(
             List<com.vibeminer.eglink.EgLinkTypes.Snapshot> snapshots, String product, String version, String locale) {
         return snapshots.stream()
                 .filter(v -> v.indexedRecords() != null && v.problem() == null
                         && v.build().product().equals(product)
                         && compatibleNpcBuild(v.build().version(), version)
                         && v.build().datasets().stream().anyMatch(d -> d.name().equals("creature_details." + locale)))
-                .max(java.util.Comparator.comparing(v -> v.build().version(), DataSourcesService::compareNpcBuild))
-                .orElse(null);
+                .sorted(java.util.Comparator.comparing(
+                                (com.vibeminer.eglink.EgLinkTypes.Snapshot v) -> v.build().version(),
+                                DataSourcesService::compareNpcBuild)
+                        .reversed()
+                        .thenComparing(com.vibeminer.eglink.EgLinkTypes.Snapshot::downloadedAt,
+                                java.util.Comparator.reverseOrder())
+                        .thenComparing(com.vibeminer.eglink.EgLinkTypes.Snapshot::id))
+                .toList();
     }
 
     /** The NPC's observed displays in {@code snapshot}, or empty. Reads local data only. */
@@ -291,6 +328,7 @@ public final class DataSourcesService {
 
     /** Local prepared snapshots only, frozen for one NPC catalogue load. */
     public List<com.vibeminer.concepts.npcs.NpcCatalog.Input> npcInputs(BuildInfo build, String locale) {
+        opened(build);
         var result = new java.util.ArrayList<com.vibeminer.concepts.npcs.NpcCatalog.Input>();
         var mapping = mapping(build);
         if (mapping.versionId() != null) result.add(com.vibeminer.concepts.npcs.NpcSources.questie(questie, mapping.versionId(), build.product(), build.version(), locale));
@@ -309,6 +347,7 @@ public final class DataSourcesService {
     }
 
     public List<com.vibeminer.concepts.quests.QuestCatalog.Input> questInputs(BuildInfo build, String locale) {
+        opened(build);
         var result = new java.util.ArrayList<com.vibeminer.concepts.quests.QuestCatalog.Input>();
         var mapping = mapping(build);
         if (mapping.versionId() != null) result.add(com.vibeminer.concepts.quests.QuestSources.questie(questie, mapping.versionId(), build.product(), build.version(), locale));
@@ -328,6 +367,7 @@ public final class DataSourcesService {
 
     /** Same prepared-source selection policy as NPC/quest catalogues; no downloads. */
     public List<com.vibeminer.concepts.locations.LocationInput> locationInputs(BuildInfo build, String locale) {
+        opened(build);
         var result = new java.util.ArrayList<com.vibeminer.concepts.locations.LocationInput>();
         var mapping = mapping(build);
         if (mapping.versionId() != null)
@@ -810,14 +850,93 @@ public final class DataSourcesService {
         }
     }
 
+    /**
+     * Records that {@code build} was opened (a workspace or job opened it, or its sources were
+     * read), so EG Link pruning keeps the snapshots it reads. Persists only when the set changes.
+     */
+    void opened(BuildInfo build) {
+        if (build == null || build.product() == null || build.version() == null
+                || build.product().contains("\t") || build.product().contains("\n")
+                || build.version().contains("\t") || build.version().contains("\n")) return;
+        String value;
+        synchronized (openedBuilds) {
+            if (!openedBuilds.add(new BuildKey(build.product(), build.version()))) return;
+            while (openedBuilds.size() > OPENED_BUILDS) openedBuilds.remove(openedBuilds.iterator().next());
+            value = String.join("\n", openedBuilds.stream().map(k -> k.product() + "\t" + k.version()).toList());
+        }
+        submit(() -> preferences.put(OPENED_KEY, value));
+    }
+
+    /** The builds recorded as opened, oldest first (tests). */
+    List<BuildKey> openedBuilds() {
+        synchronized (openedBuilds) { return List.copyOf(openedBuilds); }
+    }
+
+    /**
+     * A sync's notes for its completed status, or null when it has none; throws when a build
+     * failed to download or prepare. Warnings (a build no longer advertised, an older snapshot
+     * left for the next sync, pruning skipped) never fail the job. Pure.
+     */
+    static String egLinkOutcome(com.vibeminer.eglink.EgLinkTypes.Sync result) {
+        if (!result.issues().isEmpty()) {
+            var all = new java.util.ArrayList<>(result.issues());
+            all.addAll(result.warnings());
+            throw new IllegalStateException(String.join("; ", all));
+        }
+        return result.warnings().isEmpty() ? null : String.join("; ", result.warnings());
+    }
+
+    /** Sets where the library's builds come from, for the EG Link snapshots pruning keeps. */
+    void libraryBuilds(java.util.function.Supplier<java.util.Collection<BuildKey>> builds) {
+        libraryBuilds = java.util.Objects.requireNonNull(builds);
+    }
+
+    /**
+     * The EG Link snapshots pruning keeps: for each library or opened build, the newest compatible
+     * prepared snapshot holding each dataset (what its NPC, quest, location and display lookups
+     * read), and every snapshot chosen by hand. Pure.
+     */
+    static java.util.Set<String> keptEgLink(List<com.vibeminer.eglink.EgLinkTypes.Snapshot> snapshots,
+            java.util.Collection<BuildKey> builds, java.util.Collection<String> chosen) {
+        var kept = new java.util.HashSet<String>(chosen);
+        var newestFirst = java.util.Comparator.comparing(
+                        (com.vibeminer.eglink.EgLinkTypes.Snapshot v) -> v.build().version(),
+                        DataSourcesService::compareNpcBuild)
+                .reversed()
+                .thenComparing(com.vibeminer.eglink.EgLinkTypes.Snapshot::downloadedAt,
+                        java.util.Comparator.reverseOrder());
+        for (var build : builds) {
+            var compatible = snapshots.stream()
+                    .filter(v -> v.indexedRecords() != null && v.problem() == null
+                            && v.build().product().equals(build.product())
+                            && compatibleNpcBuild(v.build().version(), build.version()))
+                    .sorted(newestFirst)
+                    .toList();
+            var covered = new java.util.HashSet<String>();
+            for (var snapshot : compatible) {
+                for (var dataset : snapshot.build().datasets()) {
+                    if (covered.add(dataset.name())) kept.add(snapshot.id());
+                }
+            }
+        }
+        return java.util.Set.copyOf(kept);
+    }
+
     public CompletableFuture<Void> syncEgLink() {
         return egLinkJob((token, progress) -> {
-            var result = egLink.sync(progress, token).join();
+            var result = egLink.sync(progress, held -> {
+                // Runs on the EG Link worker; the library supplier reads the build registry, which
+                // never waits on EG Link, so blocking here cannot deadlock.
+                var builds = new java.util.LinkedHashSet<BuildKey>(libraryBuilds.get());
+                synchronized (openedBuilds) { builds.addAll(openedBuilds); }
+                return keptEgLink(held, builds, chosenEgLink);
+            }, token).join();
             submit(() -> {
                 preferences.put("checked.EG_LINK", Instant.now().toString());
                 loadEgLink(); revision.incrementAndGet();
             }).join();
-            if (!result.issues().isEmpty()) throw new IllegalStateException(String.join("; ", result.issues()));
+            String notes = egLinkOutcome(result);
+            if (notes != null) completionNotes.put(Id.EG_LINK, notes);
         });
     }
 
@@ -834,13 +953,14 @@ public final class DataSourcesService {
 
     public CompletableFuture<Void> downloadEgLink(com.vibeminer.eglink.EgLinkTypes.Build build) {
         return egLinkJob((token, progress) -> {
-            egLink.download(build, progress, token).join();
+            chosenEgLink.add(egLink.download(build, progress, token).join().id());
             submit(() -> { loadEgLink(); revision.incrementAndGet(); }).join();
         });
     }
 
     public CompletableFuture<Void> prepareEgLink(String sourceId) {
         return egLinkJob((token, progress) -> {
+            chosenEgLink.add(sourceId);
             egLink.prepare(sourceId, progress, token).join();
             submit(() -> { loadEgLink(); revision.incrementAndGet(); }).join();
         });
@@ -1070,6 +1190,10 @@ public final class DataSourcesService {
                 throws Exception;
     }
 
+    static String completed(String notes) {
+        return notes == null ? "Completed" : "Completed with notes: " + notes;
+    }
+
     private synchronized CompletableFuture<Void> job(Id id, Work work) {
         if (closing || !policy(id).enabled())
             return CompletableFuture.failedFuture(
@@ -1079,6 +1203,7 @@ public final class DataSourcesService {
         var token = new com.vibeminer.generated.Cancellation();
         var done = new CompletableFuture<Void>();
         jobs.put(id, done);
+        completionNotes.remove(id);
         tokens.put(id, token);
         activity.put(id, new Activity(true, "Starting…", -1, null));
         revision.incrementAndGet();
@@ -1113,7 +1238,9 @@ public final class DataSourcesService {
                                     false,
                                     token.isCanceled()
                                             ? "Canceled; completed data retained"
-                                            : failure == null ? "Completed" : null,
+                                            : failure == null
+                                                    ? completed(completionNotes.remove(id))
+                                                    : null,
                                     -1,
                                     failure == null || token.isCanceled()
                                             ? null

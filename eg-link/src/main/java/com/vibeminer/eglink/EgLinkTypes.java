@@ -72,15 +72,23 @@ public final class EgLinkTypes {
             Long databaseBytes,
             String problem) {}
 
+    /**
+     * A sync's outcome. {@code issues} are failures: a build that could not be downloaded or
+     * prepared. {@code warnings} are notes on a sync that otherwise completed: a build no longer
+     * advertised (its data retained), an older snapshot left for the next sync to remove, pruning
+     * skipped because what is in use was unknown.
+     */
     public record Sync(
             List<Snapshot> snapshots,
             int downloaded,
             int prepared,
             int reused,
-            List<String> issues) {
+            List<String> issues,
+            List<String> warnings) {
         public Sync {
             snapshots = List.copyOf(snapshots);
             issues = List.copyOf(issues);
+            warnings = List.copyOf(warnings);
         }
     }
 
