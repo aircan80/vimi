@@ -56,6 +56,45 @@ final class WorldStreamSession {
                     Thread.ofVirtual().name("world-v2-horizon-decoder").factory());
     private CompletableFuture<HorizonDecoded> horizonDecoding;
 
+    /** How often the owner loop tells the parent it still runs. */
+    static final long HEARTBEAT_NANOS = 1_000_000_000L;
+
+    /**
+     * How long one native present may block and still count as working: a window minimised or
+     * covered for this long is unusual, and a present stuck past it is a hang.
+     */
+    static final long PRESENT_CAP_NANOS = 300_000_000_000L;
+
+    // Set by the owner loop: when it last finished a step (commands, commits, uploads, a draw),
+    // and whether it is inside a native present now, since when. The heartbeat thread reads them.
+    private volatile long lastStep = System.nanoTime(), presentingSince;
+    private volatile boolean presenting;
+
+    /**
+     * Sends a heartbeat every {@link #HEARTBEAT_NANOS} while the owner loop works: it finished a
+     * step (commands, commits, upload steps, a draw, a readback) within the last two beats, or it
+     * is inside a native window present, for at most {@link #PRESENT_CAP_NANOS} (a present that
+     * blocks while the window is minimised or covered is not a hang). A loop stuck anywhere else
+     * stops the beat, and the parent notices.
+     */
+    private void beat() {
+        long beats = 0;
+        while (!closing.get()) {
+            LockSupport.parkNanos(HEARTBEAT_NANOS);
+            if (beating(presenting, presentingSince, lastStep, System.nanoTime())) {
+                status.alive(++beats);
+            }
+        }
+    }
+
+    /** Whether the owner loop counts as working now. Pure, for tests. */
+    static boolean beating(boolean presenting, long presentingSince, long lastStep, long now) {
+        if (presenting && now - presentingSince < PRESENT_CAP_NANOS) {
+            return true;
+        }
+        return now - lastStep < 2 * HEARTBEAT_NANOS;
+    }
+
     private record HorizonDecoded(
             com.vibeminer.formats.world.WorldLowRes.LowRes lowRes, Throwable error) {}
 
@@ -174,6 +213,7 @@ final class WorldStreamSession {
                                         : "SESSION TERRAIN_BASIC_V1 ")
                                 + objectFormats);
                 advertiseCredit();
+                Thread.ofVirtual().name("world-v2-heartbeat").start(this::beat);
                 while (!closing.get()) {
                     if (mailbox.closing() || status.failure() != null) {
                         if (mailbox.failed()) {
@@ -227,6 +267,9 @@ final class WorldStreamSession {
                     }
                     // GPU mutations must precede draw submission in the same bgfx frame.
                     long now = System.nanoTime();
+                    // Commands, commits and upload steps are done for this iteration: the
+                    // heartbeat counts that as progress (#306).
+                    lastStep = now;
                     // Native presentation draws every presented frame; readback keeps its cap.
                     if (camera != null
                             && (window != null || now - lastDraw >= DRAW_INTERVAL)
@@ -234,7 +277,22 @@ final class WorldStreamSession {
                         lastDraw = nextDrawBase(lastDraw, now);
                         status.cameraApplied(camera.policy(), camera.width(), camera.height());
                     }
-                    if (owner.advance()) {
+                    lastStep = System.nanoTime();
+                    // Only a native window present may block on the window (minimised or
+                    // covered): it counts as working, up to PRESENT_CAP_NANOS. A draw, a bgfx
+                    // frame in readback mode or a readback are ordinary steps.
+                    if (window != null) {
+                        presentingSince = System.nanoTime();
+                        presenting = true;
+                    }
+                    boolean advanced;
+                    try {
+                        advanced = owner.advance();
+                    } finally {
+                        presenting = false;
+                    }
+                    lastStep = System.nanoTime();
+                    if (advanced) {
                         // Wake the parent's frame reader; the mapping write already completed.
                         status.framePublished(owner.publishedSequence());
                     }

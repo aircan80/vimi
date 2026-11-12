@@ -167,27 +167,24 @@ class RequiredGateTest(unittest.TestCase):
 
 
 class BroaderGateTest(unittest.TestCase):
-    def test_crash_and_interop_must_both_pass_or_both_be_deliberately_skipped(self):
-        workflow = Path(__file__).resolve().parents[2] / ".github/workflows/storage-compatibility.yml"
+    def test_crash_must_pass_or_be_deliberately_skipped(self):
+        workflow = Path(__file__).resolve().parents[2] / ".github/workflows/storage-crash.yml"
         gate = textwrap.dedent(workflow.read_text(encoding="utf-8").split(
             "      - name: Require selected broader suites to pass", 1
         )[1].split("        run: |\n", 1)[1])
         for selected in ["true", "false", ""]:
             for selection_status in ["success", "failure", "cancelled", "skipped"]:
                 for crash in ["success", "failure", "cancelled", "skipped"]:
-                    for interop in ["success", "failure", "cancelled", "skipped"]:
-                        expected = selection_status == "success" and (
-                            (selected == "true" and crash == interop == "success")
-                            or (selected == "false" and crash == interop == "skipped")
-                        )
-                        with self.subTest(selected=selected, selection=selection_status,
-                                          crash=crash, interop=interop):
-                            result = subprocess.run(["bash", "-eo", "pipefail", "-c", gate], env={
-                                **os.environ, "OBJECT_STORE": selected,
-                                "SELECTION_RESULT": selection_status,
-                                "CRASH_RESULT": crash, "INTEROP_RESULT": interop,
-                            })
-                            self.assertEqual(expected, result.returncode == 0)
+                    expected = selection_status == "success" and (
+                        (selected == "true" and crash == "success")
+                        or (selected == "false" and crash == "skipped")
+                    )
+                    with self.subTest(selected=selected, selection=selection_status, crash=crash):
+                        result = subprocess.run(["bash", "-eo", "pipefail", "-c", gate], env={
+                            **os.environ, "OBJECT_STORE": selected,
+                            "SELECTION_RESULT": selection_status, "CRASH_RESULT": crash,
+                        })
+                        self.assertEqual(expected, result.returncode == 0)
 
 
 class AssetWorkflowWiringTest(unittest.TestCase):
@@ -196,22 +193,11 @@ class AssetWorkflowWiringTest(unittest.TestCase):
         for name, task, report in [
             ("unit-tests.yml", ":formats-assets:test", "formats-assets/build/test-results/test/"),
             ("integration-tests.yml", ":formats-assets:check", "formats-assets/build/test-results/"),
-            ("storage-compatibility.yml", ":formats-assets:interopTest", "formats-assets/build/test-results/interopTest/"),
         ]:
             text = (root / ".github/workflows" / name).read_text(encoding="utf-8")
             with self.subTest(workflow=name):
                 self.assertIn(task, text)
                 self.assertIn(report, text)
-
-    def test_asset_reference_checkout_contains_original_sources_and_exact_fixtures(self):
-        root = Path(__file__).resolve().parents[2]
-        text = (root / ".github/workflows/storage-compatibility.yml").read_text(encoding="utf-8")
-        for path in [
-            "/src/backend/VibeMiner.Formats/",
-            "/tests/backend/VibeMiner.Formats.Testing/ModelFixtures.cs",
-            "/tests/backend/VibeMiner.Formats.Tests/Models/AppearanceModels.cs",
-        ]:
-            self.assertIn(path, text)
 
 
 class PolestarWorkflowWiringTest(unittest.TestCase):
@@ -230,19 +216,17 @@ class PolestarWorkflowWiringTest(unittest.TestCase):
 
 
 class ConceptWorkflowWiringTest(unittest.TestCase):
-    PORTED_MODULES = ("concepts-core", "concepts-items", "concepts-creatures", "concepts-effects")
-    MODULES = PORTED_MODULES + ("concepts-talents", "concepts-races", "eg-link")
+    MODULES = ("concepts-core", "concepts-items", "concepts-creatures", "concepts-effects",
+               "concepts-talents", "concepts-races", "eg-link")
 
     def test_concepts_run_and_retain_reports_in_every_selected_suite(self):
         root = Path(__file__).resolve().parents[2]
         for workflow, task, report in [
             ("unit-tests.yml", "test", "test-results/test/"),
             ("integration-tests.yml", "check", "test-results/"),
-            ("storage-compatibility.yml", "interopTest", "test-results/interopTest/"),
         ]:
             text = (root / ".github/workflows" / workflow).read_text(encoding="utf-8")
-            modules = self.PORTED_MODULES if task == "interopTest" else self.MODULES
-            for module in modules:
+            for module in self.MODULES:
                 with self.subTest(workflow=workflow, module=module):
                     self.assertIn(f":{module}:{task}", text)
                     self.assertIn(f"{module}/build/{report}", text)
@@ -253,22 +237,12 @@ class ConceptWorkflowWiringTest(unittest.TestCase):
         settings = (root / "settings.gradle").read_text(encoding="utf-8")
         lifecycle = (root / "build.gradle").read_text(encoding="utf-8")
         checks = (root / "scripts/check.sh").read_text(encoding="utf-8")
-        interop = (root / "scripts/interop.sh").read_text(encoding="utf-8")
         for module in self.MODULES:
             with self.subTest(module=module):
                 self.assertIn(f"include '{module}'", settings)
                 self.assertIn(f"':{module}:check'", lifecycle)
                 self.assertIn(f"':{module}:assemble'", lifecycle)
                 self.assertIn(f":{module}:test", checks)
-                if module in self.PORTED_MODULES:
-                    self.assertIn(f":{module}:interopTest", interop)
-
-    def test_concept_reference_sources_and_release_assembly_are_available(self):
-        root = Path(__file__).resolve().parents[2]
-        text = (root / ".github/workflows/storage-compatibility.yml").read_text(encoding="utf-8")
-        self.assertIn("/src/backend/VibeMiner.Concepts/", text)
-        self.assertIn("/tests/backend/VibeMiner.Formats.Testing/InMemoryTables.cs", text)
-        self.assertIn("dotnet build ../vibeminer/src/backend/VibeMiner.Concepts/VibeMiner.Concepts.csproj --configuration Release", text)
 
 
 if __name__ == "__main__":

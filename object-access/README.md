@@ -79,7 +79,7 @@ exact heap-accounting guarantee. Streaming buffers are bounded independently. Th
 table cache holds at most 16 entries/8 MiB; host metadata holds at most 256 entries.
 Progress callbacks execute outside transfer workers and cannot fail committed results.
 
-## Qualification against the C# reference
+## Qualification and differences from the C# implementation
 
 Core local/shared/CDN selection, verification, staging/resume, archive merge/member
 fallback, range proof, observation/history, commits, scheduling, cancellation and

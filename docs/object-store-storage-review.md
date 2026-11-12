@@ -25,13 +25,13 @@ a comparison helps, to the C# reference.
 | Read-only media (`ReadOnlyMediaTest`) | POSIX modes | POSIX modes | Native ACLs (PR #258, not yet merged) |
 | Native SQLite tests (`SqliteLibraryTest`) | 5 | 5 | 6, default name via `PATH` with a control case (PR #258) |
 | Resource bounds | regression suite + benchmark baseline | regression suite | regression suite + benchmark below |
-| Java/C# interop (`interopTest`, record only) | 41 | 41 | 41 |
+| Java/C# interop (`interopTest`, record only; suite removed in #274) | 41 | 41 | 41 |
 
 The crash and interop rows are part of the full-suite totals, not additions to them.
 The case counts grew between runs as tests were added (361 → 453). Each run was
 green at its own commit. Hosted CI runs unit and integration on all three
-platforms, and Linux crash and interop on every PR. Interop results are kept as a
-record of where the formats still agree. They are not an acceptance requirement.
+platforms, and Linux crash recovery on every PR. The interop results are a record of
+the runs at review time; #274 has since removed that suite.
 
 Windows resource benchmark (`:object-store:benchmark -PbenchmarkObjects=64
 -PbenchmarkBytes=65536`), JDK 25.0.5.0.2, 24 CPUs, three JVM runs, MiB/s:

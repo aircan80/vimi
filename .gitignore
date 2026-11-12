@@ -40,14 +40,9 @@ replay_pid*
 
 # Test and native build artifacts
 /artifacts/
-/object-store/src/interopTest/csharp/bin/
-/object-store/src/interopTest/csharp/obj/
 
 # CI helper bytecode
 /scripts/ci/__pycache__/
-
-/generated-store/src/interopTest/csharp/bin/
-/generated-store/src/interopTest/csharp/obj/
 
 # Native prerelease output and helper bytecode
 /dist/

@@ -337,7 +337,7 @@ final class WorldTileCreatures implements AutoCloseable {
             public RaceNpcs.Appearance appearance(long extendedDisplayInfoId, Cancellation token) {
                 var handle = races.get();
                 if (handle == null) return RaceNpcs.Appearance.refused("race data is not open");
-                return handle.npcAppearance(extendedDisplayInfoId, token).join();
+                return await(handle.npcAppearance(extendedDisplayInfoId, token), token);
             }
 
             @Override
@@ -345,10 +345,28 @@ final class WorldTileCreatures implements AutoCloseable {
                     MeshAppearance appearance, Cancellation token) {
                 var handle = races.get();
                 if (handle == null) return null;
-                var idle = handle.npcIdle(extendedDisplayInfoId, appearance, token).join();
+                var idle = await(handle.npcIdle(extendedDisplayInfoId, appearance, token), token);
                 return idle.animation() != null && idle.animation().matches(appearance) ? idle.animation() : null;
             }
         };
+    }
+
+    /**
+     * Waits for {@code future} unless {@code token} is canceled first (#717): the races component
+     * observes the token only once queued work starts, so a tile canceled while its appearance is
+     * still queued must not keep its worker waiting for the queue to drain. A canceled wait throws
+     * {@link CancellationException}; the queued work then sees the canceled token and does not run.
+     */
+    @SuppressWarnings("try")
+    static <T> T await(java.util.concurrent.CompletableFuture<T> future, Cancellation token) {
+        var canceled = new java.util.concurrent.CompletableFuture<Void>();
+        try (var registration = token.onCancel(() -> canceled.complete(null))) {
+            java.util.concurrent.CompletableFuture.anyOf(future, canceled)
+                    .handle((value, failure) -> null)
+                    .join();
+        }
+        if (!future.isDone()) token.check();
+        return future.join();
     }
 
     /** A policy choice and the client-data scale of its display (null when not recorded). */
@@ -821,74 +839,206 @@ final class WorldTileCreatures implements AutoCloseable {
         var nearby = spawns.near(mapId, centerX, centerY, size * Math.sqrt(.5) + 1, WorldSpawns.MAX_NEARBY,
                 spawn -> WorldBookmarks.tileIndex(spawn.x()) == tile.x()
                         && WorldBookmarks.tileIndex(spawn.y()) == tile.y());
-        var counts = new int[Count.values().length];
-        var added = new HashMap<Long, Integer>();
-        var placed = new java.util.ArrayList<WorldObjectPicks.Creature>();
-        int placements = 0, previewsTried = 0;
-        long textureBytes = 0, setBytes = 0;
-        // Displays whose preview was busy, or whose NPC appearance cannot be read yet, on this
-        // tile: not asked again for every later spawn.
-        var busyDisplays = new HashMap<Long, Count>();
-        // Builder model indices drawn in their rest pose; their placements are disclosed.
-        var restModels = new HashSet<Integer>();
-        // Builder model indices of humanoid NPCs, with what each placement leaves undrawn.
-        var npcModels = new HashMap<Integer, NpcCounts>();
-        var npcCounts = NpcCounts.NONE;
-        int restPosed = 0, billboardsLeftOut = 0, animated = 0;
-        long animationBytes = 0;
-        // Builder model indices the child may animate (#384).
-        var animatedModels = new HashSet<Integer>();
-        // Builder model indices whose Stand pose left out billboard triangles.
-        var billboardModels = new HashSet<Integer>();
-        var tileChooser = tileChooser(nearby.placed(), tile, token);
+        var placing = new Placing(builder, allowance, spawns, tileChooser(nearby.placed(), tile, token), token);
+        var deferred = new ArrayList<Deferred>();
         for (var spawn : nearby.placed()) {
             token.check();
             if (WorldBookmarks.tileIndex(spawn.x()) != tile.x() || WorldBookmarks.tileIndex(spawn.y()) != tile.y()) continue;
+            placing.place(spawn, null, deferred);
+        }
+        // A display refused because the model reader was busy is asked again before the tile's
+        // objects are attached (#484): after a short, doubling pause, a few times, within the
+        // tile's preview budget and the pause budget shared by consecutive tiles. Still busy
+        // after that, its spawns count as busy as before.
+        if (placing.answered) busyAnswered();
+        for (int round = 0; round < BUSY_RETRIES && !deferred.isEmpty(); round++) {
+            long millis = BUSY_PAUSE_MILLIS << round;
+            if (!busyPause(millis) || !pause.pause(millis, token)) break;
+            placing.busyDisplays.values().removeIf(refusal -> refusal == Count.PREVIEWS_BUSY);
+            var again = new ArrayList<>(deferred);
+            deferred.clear();
+            placing.retries++;
+            for (var pending : again) {
+                token.check();
+                placing.place(pending.spawn(), pending.chosen(), deferred);
+            }
+        }
+        if (placing.answered) busyAnswered();
+        else if (!deferred.isEmpty() && placing.retries > 0) busyStuck();
+        placing.counts[Count.PREVIEWS_BUSY.ordinal()] += deferred.size();
+        return placing.summary(nearby.omitted() == 0 ? null
+                : nearby.omitted() + " nearby points beyond the query limit were not considered");
+    }
+
+    /** Busy-refused spawns: asked again at most this many times per tile (#484). */
+    static final int BUSY_RETRIES = 3;
+
+    /** The first pause before a busy reader is asked again; it doubles each time (#484). */
+    static final long BUSY_PAUSE_MILLIS = 100;
+
+    /**
+     * Retry pauses all tiles may spend together within {@link #BUSY_WINDOW_NANOS}: the exterior
+     * objects of tiles are prepared one at a time, so a pause delays every tile behind it.
+     */
+    static final long BUSY_BUDGET_MILLIS = 1_000;
+
+    /** The window the shared pause budget covers, and how long a stuck reader skips retries. */
+    static final long BUSY_WINDOW_NANOS = 10_000_000_000L;
+
+    // The shared retry pause budget (#484), guarded by this: what the current window has spent,
+    // when it began, and when a tile last found the reader still busy after all its retries.
+    private long busySpentMillis, busyWindowStart, busyStuckAt;
+    private boolean busyWindow, busyStuck;
+
+    /**
+     * Whether a retry may pause {@code millis} now, charging it to the shared budget: not while a
+     * reader that stayed busy through a tile's retries has not answered since (for up to {@link
+     * #BUSY_WINDOW_NANOS}), and not past {@link #BUSY_BUDGET_MILLIS} in the current window.
+     */
+    private synchronized boolean busyPause(long millis) {
+        long now = clock.getAsLong();
+        if (busyStuck && now - busyStuckAt < BUSY_WINDOW_NANOS) return false;
+        busyStuck = false;
+        if (!busyWindow || now - busyWindowStart >= BUSY_WINDOW_NANOS) {
+            busyWindow = true;
+            busyWindowStart = now;
+            busySpentMillis = 0;
+        }
+        if (busySpentMillis + millis > BUSY_BUDGET_MILLIS) return false;
+        busySpentMillis += millis;
+        return true;
+    }
+
+    /** A tile's retries all stayed busy: later tiles do not pause for a while. */
+    private synchronized void busyStuck() {
+        busyStuck = true;
+        busyStuckAt = clock.getAsLong();
+    }
+
+    /** The reader answered a preview: retries may pause again. */
+    private synchronized void busyAnswered() {
+        busyStuck = false;
+    }
+
+    /**
+     * Waits between busy retries. Returns false to stop retrying (the thread was interrupted);
+     * throws when the tile is canceled.
+     */
+    @FunctionalInterface
+    interface Pause {
+        boolean pause(long millis, Cancellation token);
+
+        Pause SLEEP = WorldTileCreatures::sleep;
+    }
+
+    /**
+     * Sleeps {@code millis}, or less when {@code token} is canceled, which then throws. An
+     * interrupt keeps the thread's interrupt flag and returns false, so the tile stops retrying
+     * without failing.
+     */
+    @SuppressWarnings("try")
+    static boolean sleep(long millis, Cancellation token) {
+        var woken = new java.util.concurrent.CountDownLatch(1);
+        try (var registration = token.onCancel(woken::countDown)) {
+            woken.await(millis, java.util.concurrent.TimeUnit.MILLISECONDS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            token.check();
+            return false;
+        }
+        token.check();
+        return true;
+    }
+
+    private volatile Pause pause = Pause.SLEEP;
+
+    /** Tests replace the pause between busy retries. */
+    void pause(Pause next) {
+        pause = Objects.requireNonNull(next);
+    }
+
+    /** A spawn whose display was refused as busy, with its choice, to place on a retry. */
+    private record Deferred(WorldSpawns.Spawn spawn, Chosen chosen) {}
+
+    /** One tile's placement state across its first pass and its busy retries. */
+    private final class Placing {
+        final WorldStreamTileWriter.Exterior.Builder builder;
+        final long allowance;
+        final WorldSpawns.Index spawns;
+        final Chooser tileChooser;
+        final Cancellation token;
+        final int[] counts = new int[Count.values().length];
+        final HashMap<Long, Integer> added = new HashMap<>();
+        final java.util.ArrayList<WorldObjectPicks.Creature> placed = new java.util.ArrayList<>();
+        int placements, previewsTried, retries;
+        // Whether the reader answered any preview on this tile (anything but busy).
+        boolean answered;
+        long textureBytes, setBytes;
+        // Displays whose preview was busy, or whose NPC appearance cannot be read yet, on this
+        // tile: not asked again for every later spawn of the same pass.
+        final HashMap<Long, Count> busyDisplays = new HashMap<>();
+        // Builder model indices drawn in their rest pose; their placements are disclosed.
+        final HashSet<Integer> restModels = new HashSet<>();
+        // Builder model indices of humanoid NPCs, with what each placement leaves undrawn.
+        final HashMap<Integer, NpcCounts> npcModels = new HashMap<>();
+        NpcCounts npcCounts = NpcCounts.NONE;
+        int restPosed, billboardsLeftOut, animated;
+        long animationBytes;
+        // Builder model indices the child may animate (#384).
+        final HashSet<Integer> animatedModels = new HashSet<>();
+        // Builder model indices whose Stand pose left out billboard triangles.
+        final HashSet<Integer> billboardModels = new HashSet<>();
+
+        Placing(WorldStreamTileWriter.Exterior.Builder builder, long allowance, WorldSpawns.Index spawns,
+                Chooser tileChooser, Cancellation token) {
+            this.builder = builder;
+            this.allowance = allowance;
+            this.spawns = spawns;
+            this.tileChooser = tileChooser;
+            this.token = token;
+        }
+
+        /**
+         * Places one spawn of the tile, or counts why it is not drawn; a spawn whose display the
+         * reader refused as busy goes to {@code deferred} instead. {@code known} is its choice
+         * from an earlier pass, or null.
+         */
+        void place(WorldSpawns.Spawn spawn, Chosen known, List<Deferred> deferred) {
+            token.check();
             // Once nothing more can be placed, the rest is capped without any lookup.
             if (placements == TILE_PLACEMENTS || builder.placementRoom() == 0 || builder.drawRoom() == 0) {
                 counts[Count.CAPPED.ordinal()]++;
-                continue;
+                return;
             }
-            Chosen chosen;
-            try {
-                chosen = chosen(tileChooser, spawn.npcId(), token);
-            } catch (CancellationException canceled) {
-                // Only this tile's cancellation propagates; a component's own is a failed lookup.
-                if (token.isCanceled()) throw canceled;
-                counts[Count.FAILED.ordinal()]++;
-                continue;
-            } catch (ChoiceLater later) {
-                counts[Count.FAILED.ordinal()]++;
-                continue;
-            } catch (Exception failed) {
-                token.check();
-                WorldDiagnostics.degraded("creature lookups", "World creature model lookup failed", failed);
-                counts[Count.FAILED.ordinal()]++;
-                continue;
-            }
+            Chosen chosen = known != null ? known : choose(spawn);
+            if (chosen == null) return;
             var choice = chosen.choice();
             if (choice.state() != CreatureModelPolicy.State.QUALIFIED || choice.displayId() == null) {
                 counts[Count.NOT_QUALIFIED.ordinal()]++;
-                continue;
+                return;
             }
             long display = choice.displayId();
             Integer model = added.get(display);
             if (model == null) {
                 Converted converted;
-                synchronized (this) {
+                synchronized (WorldTileCreatures.this) {
                     converted = models.get(display);
                 }
                 if (converted == null && busyDisplays.containsKey(display)) {
-                    counts[busyDisplays.get(display).ordinal()]++;
-                    continue;
+                    var refusal = busyDisplays.get(display);
+                    // A busy reader is asked again after this pass (#484), not counted yet.
+                    if (refusal == Count.PREVIEWS_BUSY) deferred.add(new Deferred(spawn, chosen));
+                    else counts[refusal.ordinal()]++;
+                    return;
                 }
                 if (converted == null) {
                     if (previewsTried == TILE_PREVIEWS) {
                         counts[Count.CAPPED.ordinal()]++;
-                        continue;
+                        return;
                     }
                     previewsTried++;
                     converted = load(display, token);
+                    if (converted.refusal() != Count.PREVIEWS_BUSY) answered = true;
                     // A busy or closed reader learned nothing: refund the preview it cost. An NPC
                     // appearance that cannot be read yet keeps its cost but is asked once per tile.
                     if (converted.refusal() == Count.PREVIEWS_BUSY) {
@@ -898,9 +1048,13 @@ final class WorldTileCreatures implements AutoCloseable {
                         busyDisplays.put(display, Count.CHARACTER_RETRY);
                     }
                 }
+                if (converted.refusal() == Count.PREVIEWS_BUSY) {
+                    deferred.add(new Deferred(spawn, chosen));
+                    return;
+                }
                 if (converted.refusal() != null) {
                     counts[converted.refusal().ordinal()]++;
-                    continue;
+                    return;
                 }
                 var m = converted.model();
                 if (added.size() == TILE_MODELS
@@ -910,7 +1064,7 @@ final class WorldTileCreatures implements AutoCloseable {
                         || !builder.fits(m.images().size(), m.pixels(), 1, m.vertexCount(), m.indices().length,
                                 m.ranges().length / 3)) {
                     counts[Count.CAPPED.ordinal()]++;
-                    continue;
+                    return;
                 }
                 model = add(builder, m);
                 long entry = 12L + m.vertexCount() * 4L + (m.animation() == null ? 0 : (m.animation().length + 3L) / 4 * 4);
@@ -929,7 +1083,7 @@ final class WorldTileCreatures implements AutoCloseable {
             }
             if (builder.drawCost(model) > builder.drawRoom()) {
                 counts[Count.CAPPED.ordinal()]++;
-                continue;
+                return;
             }
             var transform = transform(spawn, chosen);
             builder.placement(model, transform[0], transform[1], transform[2], transform[3], transform[4],
@@ -945,9 +1099,28 @@ final class WorldTileCreatures implements AutoCloseable {
             if (npc != null) npcCounts = npcCounts.plus(npc);
             counts[Count.DRAWN.ordinal()]++;
         }
-        return new Summary(counts, added.size(), restPosed, billboardsLeftOut, npcCounts, nearby.omitted() == 0 ? null
-                : nearby.omitted() + " nearby points beyond the query limit were not considered", placed, setBytes)
-                .withAnimated(animated);
+
+        /** The spawn's choice, or null after counting why it has none. */
+        private Chosen choose(WorldSpawns.Spawn spawn) {
+            try {
+                return chosen(tileChooser, spawn.npcId(), token);
+            } catch (CancellationException canceled) {
+                // Only this tile's cancellation propagates; a component's own is a failed lookup.
+                if (token.isCanceled()) throw canceled;
+            } catch (ChoiceLater later) {
+                // Counted as failed below.
+            } catch (Exception failed) {
+                token.check();
+                WorldDiagnostics.degraded("creature lookups", "World creature model lookup failed", failed);
+            }
+            counts[Count.FAILED.ordinal()]++;
+            return null;
+        }
+
+        Summary summary(String note) {
+            return new Summary(counts, added.size(), restPosed, billboardsLeftOut, npcCounts, note, placed, setBytes)
+                    .withAnimated(animated);
+        }
     }
 
     /**

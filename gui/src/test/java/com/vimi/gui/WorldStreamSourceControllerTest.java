@@ -29,6 +29,7 @@ public final class WorldStreamSourceControllerTest {
     private WorldStreamSourceControllerTest() {}
 
     public static void main(String[] args) throws Exception {
+        aHelperHungMidCommitFailsTheSessionWithADiagnostic();
         retryCommitKeepsExactTargetUntilPriorFileActuallyRetires();
         retirementBetweenRefusalAndRetryStillWakesTheCommit();
         failedFxWakeStillCancelsHeldInitialSourceQualification();
@@ -1115,6 +1116,54 @@ public final class WorldStreamSourceControllerTest {
                 throw failure;
             } catch (Exception failure) {
                 throw new AssertionError(failure);
+            }
+        }
+    }
+
+    /**
+     * #306: a helper that stops in the middle of a commit (the authored child holds it and sends
+     * nothing more) fails the session once the reply quiet time passes, with a diagnostic naming
+     * the commit, as a helper crash fails it; the view then offers its usual retry.
+     */
+    private static void aHelperHungMidCommitFailsTheSessionWithADiagnostic() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 13);
+        Path hold = fixture.directory.resolve("authored-hold-commit");
+        String previous = System.getProperty("vimi.world.replyQuietMillis");
+        System.setProperty("vimi.world.replyQuietMillis", "1000");
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 9));
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase() == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == 9);
+            long last = fixture.commitLines().stream().mapToLong(line -> Long.parseLong(line.split(" ")[0]))
+                    .max().orElseThrow();
+            Files.writeString(hold, Long.toString(last + 1));
+            fixture.controller.neighborhood(fixture.tiles.subList(4, 13));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+            while (fixture.controller.snapshot().phase() != WorldStreamSourceController.Phase.FAILED
+                    && System.nanoTime() < deadline) {
+                fixture.controller.pulse();
+                Runnable task;
+                while ((task = fixture.fx.poll()) != null) task.run();
+                Thread.sleep(5);
+            }
+            check(Files.exists(fixture.directory.resolve("authored-held-commit")), "The commit was held");
+            var snapshot = fixture.controller.snapshot();
+            check(snapshot.phase() == WorldStreamSourceController.Phase.FAILED,
+                    "A hung commit fails the session: " + snapshot);
+            check(String.valueOf(snapshot.detail()).contains("stopped answering")
+                            && String.valueOf(snapshot.detail()).contains("a commit"),
+                    "The failure names the hang and the commit: " + snapshot.detail());
+        } finally {
+            if (previous == null) System.clearProperty("vimi.world.replyQuietMillis");
+            else System.setProperty("vimi.world.replyQuietMillis", previous);
+            Files.deleteIfExists(hold);
+            try {
+                fixture.close();
+            } catch (Exception | AssertionError closedFailed) {
+                // The session already failed; its close reports that failure.
             }
         }
     }

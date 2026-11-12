@@ -77,7 +77,7 @@ are immutable snapshots.
 ./gradlew :builds:check :builds:assemble -PsqliteLibrary=/absolute/path/to/sqlite-library
 ```
 
-The resolver's 49 fast tests require no SQLite, HTTP or .NET. They include shared
+The resolver's 49 fast tests require no SQLite or HTTP. They include shared
 contracts against `BuildOpener` over a scripted layer 2 boundary and
 `MemoryBuilds`, complete synthetic binary metadata, corruption/bounds tests,
 source-state mapping, range-only reads, shared-open cancellation, FIFO admission,
@@ -89,5 +89,5 @@ body returned by layer 2, truncated-range refusal, failed range-proof propagatio
 aggregate BLTE authentication and cancellation while a range is pending. The
 boundary is deliberately small to test the same public result shape without a
 large resident fixture; it is not a measurement of production-size memory use.
-The full builds module also includes separate catalog persistence/interop checks
+The full builds module also includes separate catalog persistence checks
 documented by its owner.

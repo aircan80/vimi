@@ -2,8 +2,8 @@
 
 The `Unit tests` workflow runs `:object-store:test :generated-store:test :network-clients:test :object-access:test :builds:test :files:test :formats-assets:test :formats-tables:test :concepts-core:test :concepts-items:test :concepts-creatures:test :concepts-effects:test :gui:prototypeTest :gui:backendTest :gui:openingTest :gui:preparationTest :gui:localMetadataTest :gui:preparationStatusTest :gui:nativeWorkspaceTest :gui:overviewPresentationTest :gui:researchBrowserDataTest :gui:iconRequestsTest` on GitHub-hosted
 `ubuntu-24.04`, `windows-2025` and `macos-15` runners. Each job installs a full
-Temurin Java 25 JDK matching the runner architecture. The fast tasks need neither
-native SQLite nor .NET nor the original C# checkout. Generated record tests use
+Temurin Java 25 JDK matching the runner architecture. The fast tasks don't need
+native SQLite. Generated record tests use
 the architecture-matched zstd library bundled in the locked zstd-jni dependency.
 Gradle compiler lint remains
 enabled; formatting and native integration are separate checks.
@@ -68,7 +68,7 @@ include runner OS/architecture and hashes of Gradle build scripts, dependency
 lockfiles, wrapper configuration and Gradle properties.
 
 The workflow does not publish artifacts as releases or modify source/branches.
-Native integration, crash recovery and C# compatibility are tracked independently
+Native integration and crash recovery are tracked independently
 in #14 and #20. Three-platform unit jobs and affected-component selection implement
 #9 and #15 respectively.
 GitHub-hosted jobs are permitted on all three platforms. Before hands-on native
@@ -107,39 +107,22 @@ with `chmod u+rw /path/to/store/writer.lock`. Do not delete or replace the lock 
 locks belong to its inode. The library preserves existing file permissions and
 never changes them automatically.
 
-## Crash and reference compatibility jobs
+## Crash recovery job
 
-`Storage compatibility` runs process-kill crash recovery and Java/C# interoperation
-as independent Linux x64 jobs. They use the same change selector: relevant storage,
-build, workflow and unknown changes run both jobs on pushes and pull requests;
-documentation-only changes skip both while the aggregate gate completes. Manual
-dispatch and a Monday 05:00 UTC schedule force both suites. Scheduled/manual events
-become available after the workflow reaches the default branch.
+`Storage crash recovery` (`.github/workflows/storage-crash.yml`) runs the
+process-kill crash recovery suite, `:object-store:crashTest`, on Linux x64. Relevant
+storage, build, workflow and unknown changes run it on pushes and pull requests;
+documentation-only changes skip it while the aggregate gate completes. Manual
+dispatch and a Monday 05:00 UTC schedule force it. It keeps a seven-day HTML/JUnit
+artifact named `crash-reports-Linux`. JUnit failure output includes the existing
+child-process failure diagnostics; test data remains temporary/synthetic.
 
-The interoperation job checks out public `aircan80/vibeminer` at commit
-`4fd92d2a36add50c9b82e1c92bf72706e8d0df2b`, sparse to the Objects, Generated, Cdn, ObjectAccess, Builds, Files, Formats and Concepts source trees plus the exact ModelFixtures.cs, InMemoryTables.cs and AppearanceModels.cs fixture files,
-root build properties, editor settings and `global.json`. It installs the specified
-.NET SDK 10.0.402 and builds `VibeMiner.Generated`, `VibeMiner.Formats` and `VibeMiner.Concepts`,
-including their Objects/Builds/ObjectAccess/Cdn dependencies, in Release with locked NuGet restore. Java and reference checkouts occupy sibling `vimi/` and `vibeminer/`
-directories, as required by the existing reference harness. The Java invocation is
-`:object-store:interopTest :generated-store:interopTest :builds:interopTest :files:interopTest :formats-assets:interopTest :formats-tables:interopTest :concepts-core:interopTest :concepts-items:interopTest :concepts-creatures:interopTest :concepts-effects:interopTest` with the absolute `dotnet` executable resolved from
-`command -v dotnet`, plus an explicit SQLite library path. The harness expects an
-absolute executable path; a bare `-Pdotnet=dotnet` is not sufficient.
-Missing reference source, SDK, dependencies or assembly fails rather than skipping.
-No repository secret or private-source access is needed; the reference is public.
-Reference-version updates require reviewing the pinned commit and rerunning the
-compatibility suite. NuGet caching is disabled in this initial workflow.
-
-Crash jobs run `:object-store:crashTest` independently and need no .NET/reference
-checkout. Both jobs retain separate seven-day HTML/JUnit artifacts named
-`crash-reports-Linux` and `interop-reports-Linux`. JUnit failure output includes the
-existing child-process failure diagnostics; test data remains temporary/synthetic.
-Broader Windows/macOS crash/interoperation coverage is not claimed by this initial
-Linux workflow. Those platforms first need the native validation milestone and
-hands-on development on the corresponding machine when necessary.
+C# compatibility is not a goal (owner decision, 2026-11-05), so there is no Java/C#
+interoperation job. Until #274 it ran here with a sparse checkout of the C# reference
+and the .NET SDK; the history below records those runs.
 
 For storage changes, the recommended required aggregates are `Unit tests`,
-`Integration tests` and `Storage compatibility`. Each always runs and rejects
+`Integration tests` and `Storage crash recovery`. Each always runs and rejects
 failed/canceled selection or selected tests; platform-job names are conditional
 and should not be required individually. Branch protection itself is unchanged.
 The workflows publish test reports only, never releases.
@@ -180,10 +163,7 @@ remain unchanged.
 The generated-store module participates in the existing stable aggregate checks.
 Unit tests run shared memory contracts and record-file behavior; integration jobs
 run shared disk contracts, persistence, compaction, error mapping and the 64 MiB
-object boundary, plus generated-store formatting/Checkstyle. The Linux compatibility
-job builds the pinned `VibeMiner.Generated` reference (which also builds Objects)
-and runs both modules’ opt-in interoperability suites. Record-file exchange checks
-metadata, all rows, pages, unsigned-ID lookup and bidirectional writer exclusion.
+object boundary, plus generated-store formatting/Checkstyle.
 Native Windows validation remains deferred; hosted Windows jobs continue.
 
 ## Layer 1 network coverage
@@ -195,7 +175,7 @@ length checks, source bounds, signed-URL redaction, redirect policies, truncated
 transfers, header/idle/total deadlines, cancellation, sink backpressure and source
 concurrency. Tests never contact Blizzard or GitHub or require live credentials.
 The existing stable aggregates and conservative selector include these checks;
-network changes also retain the storage compatibility gate.
+network changes also retain the storage crash recovery gate.
 
 ## Layer 2 and layer 3 coverage
 
@@ -206,9 +186,8 @@ pipeline through actual storage, source coordination, catalog projection, build
 resolution and offline reopen/reconstruction. Builds uses the same externally
 supplied SQLite library; no second bundled native dependency is introduced.
 
-The Linux compatibility job additionally runs `:builds:interopTest` against the
-pinned C# schema v1 catalog, and retains its XML/HTML reports. Tests use temporary
-synthetic fixtures; they do not perform live service requests or use user data.
+Tests use temporary synthetic fixtures; they do not perform live service requests
+or use user data.
 
 ## Layer 4 coverage
 
@@ -217,27 +196,21 @@ Salsa20 vectors, BLTE integrity/protected/wrong-key cases, lifecycle, bounded
 admission, Ensure cancellation/progress, names/parser/index/delta behavior and
 offline reconstruction. Integration includes the disk-backed Files pipeline with
 real object/generated stores and names reconstruction after generated-index deletion.
-Linux compatibility exchanges VMLD and names indexes through `:files:interopTest`,
-using the pinned C# Files reference (including all lower projects).
 
 ## Layer 5 asset coverage
 
-The assets module adds 80 unit cases, one disk pipeline and one original-C# golden
-regeneration case to the existing gates. The disk case follows real Files into BLP
-and model/SKIN parsing, generated image persistence and offline reopen. The Linux
-compatibility job compiles selected original pure asset sources with two exact pinned
-reference fixture files, then compares regenerated BLP/model/appearance/VMG1 bytes
-and identities. The reference Formats and Concepts projects are built for the table/concept assembly harnesses. All reports join
-the existing seven-day unit, integration and interop artifacts.
+The assets module adds 80 unit cases and one disk pipeline to the existing gates.
+The disk case follows real Files into BLP and model/SKIN parsing, generated image
+persistence and offline reopen. Checked-in BLP/model/appearance/VMG1 goldens are
+verified by the unit tests. All reports join the existing seven-day unit and
+integration artifacts.
 
 ## Table format coverage
 
 Table checks cover DB2 layouts/values, strict definitions and selection, generated
 rows/metadata/identities, real/fake table contracts, queries and references, TACT
 bootstrap, preload and lifecycle. The disk pipeline proves generated rows reopen
-without their encoded DB2 source. Linux compatibility compares C# row/identity
-goldens and exchanges generated table caches in both directions; its sparse reference
-includes Formats and the pinned embedded WoWDBDefs resources.
+without their encoded DB2 source.
 
 ## Layer 6 concept coverage
 
@@ -253,16 +226,8 @@ provenance. Core and Items also supply disk integration checks through real lowe
 stores; Creatures and Effects run their deterministic service and lifecycle suites
 with quality checks in the integration group.
 
-The Linux compatibility group now runs ten opt-in module suites: the previous six
-plus all four concepts. Core and Items compile unchanged selected original C#
-query/fact sources with type-only seams; Creatures uses the original Concepts
-project, and Effects uses its Release assemblies plus the exact original
-InMemoryTables fixture. Reports are retained alongside all existing suites. The
-sparse reference checkout includes those sources and the full Concepts project,
-and the workflow explicitly builds the pinned Concepts Release assembly before
-Gradle starts the harnesses. All fixtures are authored/synthetic, with no live
-service or game-data requests. Hands-on Windows validation remains deferred;
-hosted Linux, Windows and macOS unit/integration jobs continue.
+Hands-on Windows validation is recorded in `HANDOFF.md`; hosted Linux, Windows and
+macOS unit/integration jobs continue.
 
 The layer 7 GUI also runs its headless fixture/adapter checks in the unit group.
 Integration checks build its platform-specific application distribution without

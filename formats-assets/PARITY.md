@@ -1,5 +1,7 @@
 # Pinned source inventory
 
+C# compatibility is not a goal (owner decision, 2026-11-05). This file records how the Java port relates to the original C# implementation as background; differences are product choices, not defects.
+
 Reference: `VibeMiner.Formats` at `4fd92d2a36add50c9b82e1c92bf72706e8d0df2b`. Every Images/Models source file is accounted for below. Java uses nested immutable messages instead of one public file per C# record; pure parsers accept `AssetSource` rather than mutable `Stream` position.
 
 | C# source | Java implementation |

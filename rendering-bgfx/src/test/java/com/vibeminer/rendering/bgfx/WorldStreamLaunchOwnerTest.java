@@ -636,4 +636,264 @@ class WorldStreamLaunchOwnerTest {
             return handle;
         }
     }
+
+    @Test
+    void startupRunsOutOnQuietOrAtTheCapNotWhileTheChildShowsProgress() {
+        long q = TimeUnit.MILLISECONDS.toNanos(100);
+        long start = 1_000_000_000L;
+        assertEquals(
+                null, WorldStreamLaunchOwner.Handle.startupExpired(start, start, start + q - 1, q));
+        assertTrue(
+                WorldStreamLaunchOwner.Handle.startupExpired(start, start, start + q, q)
+                        .contains("no sign of progress"));
+        // Progress restarts the quiet window, up to the cap of four windows.
+        assertEquals(
+                null,
+                WorldStreamLaunchOwner.Handle.startupExpired(
+                        start, start + 3 * q, start + 3 * q + q / 2, q));
+        assertTrue(
+                WorldStreamLaunchOwner.Handle.startupExpired(
+                                start, start + 4 * q - 1, start + 4 * q, q)
+                        .contains("still not ready"));
+        // A progress time older than the start (set before launch) counts from the start.
+        assertEquals(
+                null,
+                WorldStreamLaunchOwner.Handle.startupExpired(
+                        start, start - 5 * q, start + q / 2, q));
+    }
+
+    @Test
+    void aChildThatKeepsShowingProgressOutlastsTheQuietWindowAndAHungOneDoesNot() throws Exception {
+        // Ready after 600 ms with progress every 20 ms: more than twice the 250 ms quiet window,
+        // with room for scheduling jitter both within a window and before the 1 s cap.
+        var ready = new CountDownLatch(1);
+        var busy =
+                WorldStreamLaunchOwner.launch(
+                        WorldStreamPreparedFiles.create(directory, SESSION, null),
+                        arguments -> new Child(),
+                        (process, handle) ->
+                                Thread.ofVirtual()
+                                        .start(
+                                                () -> {
+                                                    long until =
+                                                            System.nanoTime()
+                                                                    + TimeUnit.MILLISECONDS.toNanos(
+                                                                            600);
+                                                    while (System.nanoTime() < until) {
+                                                        handle.progress();
+                                                        try {
+                                                            Thread.sleep(20);
+                                                        } catch (InterruptedException e) {
+                                                            return;
+                                                        }
+                                                    }
+                                                    handle.initialized();
+                                                    ready.countDown();
+                                                }),
+                        0,
+                        1000,
+                        250);
+        assertTrue(ready.await(5, TimeUnit.SECONDS));
+        Thread.sleep(300);
+        assertFalse(busy.stopping(), "a slow child that shows progress starts");
+        busy.closeAsync().get(3, TimeUnit.SECONDS);
+        // Progress forever without becoming ready: stopped at the cap of four windows.
+        var stop = new java.util.concurrent.atomic.AtomicBoolean();
+        var spinning =
+                WorldStreamLaunchOwner.launch(
+                        WorldStreamPreparedFiles.create(directory, SESSION, null),
+                        arguments -> new Child(),
+                        (process, handle) ->
+                                Thread.ofVirtual()
+                                        .start(
+                                                () -> {
+                                                    while (!stop.get()) {
+                                                        handle.progress();
+                                                        try {
+                                                            Thread.sleep(10);
+                                                        } catch (InterruptedException e) {
+                                                            return;
+                                                        }
+                                                    }
+                                                }),
+                        0,
+                        1000,
+                        100);
+        try {
+            long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (!spinning.stopping() && System.nanoTime() < until) {
+                Thread.sleep(2);
+            }
+            assertTrue(spinning.stopping(), "a child that never becomes ready is stopped");
+            assertTrue(
+                    spinning.failure().getMessage().contains("still not ready"),
+                    spinning.failure().getMessage());
+        } finally {
+            stop.set(true);
+        }
+        try {
+            spinning.closeAsync().get(3, TimeUnit.SECONDS);
+        } catch (java.util.concurrent.ExecutionException expected) {
+            // The startup failure.
+        }
+    }
+
+    @Test
+    void onlyAFinishedStderrLineCountsAsProgress() {
+        byte[] partial = "World v2 rend".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        byte[] line = "erer: Vulkan\n".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        assertFalse(WorldStreamTransport.Session.endsALine(partial, partial.length));
+        assertTrue(WorldStreamTransport.Session.endsALine(line, line.length));
+        assertFalse(
+                WorldStreamTransport.Session.endsALine(line, line.length - 1),
+                "only the read part");
+    }
+
+    @Test
+    void aReplyTimesOutOnlyAfterTheQuietTimeSinceItWasOwedOrTheLastProgress() {
+        long q = TimeUnit.SECONDS.toNanos(30);
+        long owed = 5_000_000_000L;
+        assertEquals(
+                null,
+                WorldStreamLaunchOwner.Handle.repliesExpired(
+                        "1 command", owed, 0, owed + q - 1, q));
+        String reason =
+                WorldStreamLaunchOwner.Handle.repliesExpired(
+                        "1 command (a commit)", owed, 0, owed + q, q);
+        assertTrue(
+                reason.contains("no sign of progress for 30000 ms") && reason.contains("a commit"),
+                reason);
+        // Progress after the reply was owed restarts the quiet time; progress before it does not.
+        assertEquals(
+                null,
+                WorldStreamLaunchOwner.Handle.repliesExpired("x", owed, owed + q / 2, owed + q, q));
+        assertTrue(
+                WorldStreamLaunchOwner.Handle.repliesExpired("x", owed, owed - q, owed + q, q)
+                        != null);
+        assertEquals(30_000, WorldStreamLaunchOwner.Handle.replyQuietMillis(null));
+        assertEquals(30_000, WorldStreamLaunchOwner.Handle.replyQuietMillis("50"));
+        assertEquals(30_000, WorldStreamLaunchOwner.Handle.replyQuietMillis("x"));
+        assertEquals(5_000, WorldStreamLaunchOwner.Handle.replyQuietMillis(" 5000 "));
+    }
+
+    @Test
+    void aChildThatOwesAReplyAndStopsShowingProgressIsFailedAndAProgressingOneIsNot()
+            throws Exception {
+        var now = new java.util.concurrent.atomic.AtomicLong(1_000_000_000L);
+        var attached = new CountDownLatch(1);
+        var handles =
+                new java.util.concurrent.atomic.AtomicReference<WorldStreamLaunchOwner.Handle>();
+        var owner =
+                WorldStreamLaunchOwner.launch(
+                        WorldStreamPreparedFiles.create(directory, SESSION, null),
+                        arguments -> new Child(),
+                        (process, handle) -> {
+                            handle.clockForTest(now::get);
+                            handle.initialized();
+                            handles.set(handle);
+                            attached.countDown();
+                        },
+                        0,
+                        1000,
+                        0);
+        assertTrue(attached.await(2, TimeUnit.SECONDS));
+        var handle = handles.get();
+        var owed = new java.util.concurrent.atomic.AtomicReference<String>();
+        var polls = new java.util.concurrent.atomic.AtomicInteger();
+        var watcher =
+                Thread.ofVirtual()
+                        .start(
+                                () ->
+                                        handle.watchReplies(
+                                                () -> {
+                                                    polls.incrementAndGet();
+                                                    return owed.get();
+                                                },
+                                                30_000,
+                                                TimeUnit.MILLISECONDS.toNanos(1)));
+        // Nothing owed: an hour of quiet is fine.
+        now.addAndGet(TimeUnit.HOURS.toNanos(1));
+        awaitPolls(polls, 5);
+        assertFalse(owner.stopping());
+        // Owed, with progress every 10 s for two minutes: still fine.
+        owed.set("1 command (a commit)");
+        awaitPolls(polls, 5);
+        for (int i = 0; i < 12; i++) {
+            now.addAndGet(TimeUnit.SECONDS.toNanos(10));
+            handle.progress();
+            awaitPolls(polls, 3);
+        }
+        assertFalse(owner.stopping(), "a slow child that keeps showing progress is not failed");
+        // Then 30 s without progress: failed, naming what it owed.
+        now.addAndGet(TimeUnit.SECONDS.toNanos(30));
+        long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (!owner.stopping() && System.nanoTime() < until) {
+            Thread.sleep(2);
+        }
+        assertTrue(owner.stopping(), "a hung child is failed");
+        assertTrue(
+                owner.failure().getMessage().contains("stopped answering"),
+                owner.failure().getMessage());
+        assertTrue(owner.failure().getMessage().contains("a commit"), owner.failure().getMessage());
+        watcher.join(5_000);
+        assertFalse(watcher.isAlive(), "the watcher ends with the session");
+        try {
+            owner.closeAsync().get(3, TimeUnit.SECONDS);
+        } catch (java.util.concurrent.ExecutionException expected) {
+            // The liveness failure.
+        }
+    }
+
+    private static void awaitPolls(java.util.concurrent.atomic.AtomicInteger polls, int more)
+            throws InterruptedException {
+        int target = polls.get() + more;
+        long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (polls.get() < target && System.nanoTime() < until) {
+            Thread.sleep(1);
+        }
+    }
+
+    @Test
+    void nothingIsOwedOnceTheSessionIsClosingAndWhatIsOwedIsNamed() {
+        assertEquals(null, WorldStreamTransport.Session.owed(false, 0, false, false, false, false));
+        assertEquals(
+                null,
+                WorldStreamTransport.Session.owed(true, 3, true, true, false, true),
+                "a slow teardown after CLOSE is not a hang");
+        assertEquals(
+                "1 command (a commit)",
+                WorldStreamTransport.Session.owed(false, 1, true, false, false, false));
+        assertEquals(
+                "3 commands (a commit, a tile upload, late objects)",
+                WorldStreamTransport.Session.owed(false, 3, true, true, true, true));
+        assertEquals(
+                "1 command (a tile cancellation)",
+                WorldStreamTransport.Session.owed(false, 1, false, false, true, false));
+        assertEquals(
+                "2 commands",
+                WorldStreamTransport.Session.owed(false, 2, false, false, false, false));
+    }
+
+    @Test
+    void theChildBeatsWhileItStepsOrPresentsAndNotWhenAStepIsStuck() {
+        long beat = WorldStreamSession.HEARTBEAT_NANOS;
+        long cap = WorldStreamSession.PRESENT_CAP_NANOS;
+        long now = 1_000 * beat;
+        assertTrue(
+                WorldStreamSession.beating(false, 0, now - beat, now), "a step finished recently");
+        assertFalse(
+                WorldStreamSession.beating(false, 0, now - 2 * beat, now),
+                "a step (a draw, a readback) stuck for two beats");
+        assertTrue(
+                WorldStreamSession.beating(true, now - 60 * beat, now - 60 * beat, now),
+                "a native present blocked for a minute (a minimised window) is not a hang");
+        assertTrue(
+                WorldStreamSession.beating(true, now - cap + 1, now - cap, now),
+                "just under the cap it still beats");
+        assertFalse(
+                WorldStreamSession.beating(true, now - cap, now - cap, now),
+                "a present blocked past the cap is a hang");
+        // Readback mode never sets the flag: a stuck readback is only a stale step.
+        assertFalse(WorldStreamSession.beating(false, now - beat, now - 3 * beat, now));
+    }
 }

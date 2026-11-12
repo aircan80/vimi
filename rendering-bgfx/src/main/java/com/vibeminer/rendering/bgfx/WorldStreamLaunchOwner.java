@@ -50,8 +50,11 @@ final class WorldStreamLaunchOwner {
         }
     }
 
-    /** Transport workers: commands, statuses, stderr, files, frames, cancellation, objects. */
-    static final int MAX_WORKERS = 7;
+    /**
+     * Transport workers: commands, statuses, stderr, files, frames, cancellation, objects and
+     * liveness.
+     */
+    static final int MAX_WORKERS = 8;
 
     private WorldStreamLaunchOwner() {}
 
@@ -93,6 +96,10 @@ final class WorldStreamLaunchOwner {
         private final WorldStreamPreparedFiles.LaunchFiles files;
         private final long graceMillis, deadlineMillis, startupMillis;
         private final AtomicBoolean initialized = new AtomicBoolean();
+        // When the child last showed it is working (System.nanoTime); see progress().
+        private volatile long lastProgress = System.nanoTime();
+        // The monotonic clock of progress and reply liveness; only tests replace it.
+        private volatile java.util.function.LongSupplier clock = System::nanoTime;
         private volatile boolean startupDone;
         private final AtomicBoolean stopping = new AtomicBoolean();
         // Runs once, without a lock, when stopping first becomes true (or at once if it already
@@ -139,6 +146,20 @@ final class WorldStreamLaunchOwner {
         static long exitWaitMillis(
                 boolean acknowledged, long sinceCloseMillis, long graceMillis, long drainMillis) {
             return acknowledged ? graceMillis : drainMillis - sinceCloseMillis;
+        }
+
+        /**
+         * The child showed it is still working (it wrote diagnostics or a status line): the startup
+         * deadline counts quiet time from now.
+         */
+        void progress() {
+            lastProgress = clock.getAsLong();
+        }
+
+        /** Tests drive progress and reply liveness with their own clock. */
+        void clockForTest(java.util.function.LongSupplier next) {
+            clock = Objects.requireNonNull(next);
+            lastProgress = next.getAsLong();
         }
 
         /** Metadata acknowledgement only; never a callback or a source readiness claim. */
@@ -190,7 +211,11 @@ final class WorldStreamLaunchOwner {
                                         task.run();
                                     } catch (Throwable error) {
                                         try {
-                                            failure = detached(error);
+                                            // A worker failing because the session was already
+                                            // failed (a hung helper killed) keeps that cause.
+                                            if (failure == null || !stopping.get()) {
+                                                failure = detached(error);
+                                            }
                                         } finally {
                                             closeAsync();
                                         }
@@ -377,12 +402,23 @@ final class WorldStreamLaunchOwner {
             }
         }
 
+        /**
+         * Startup fails when the child stays quiet (no {@link #progress}) for {@code
+         * startupMillis}, or is still not ready after {@link #STARTUP_CAP} times that however busy
+         * it looks. A child that exits fails at once through its exit, never waiting out either
+         * bound.
+         */
         private void watchStartup() {
             try {
-                long until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(startupMillis);
+                long started = System.nanoTime();
+                long quiet = TimeUnit.MILLISECONDS.toNanos(startupMillis);
                 while (!initialized.get() && !stopping.get()) {
-                    if (System.nanoTime() - until >= 0) {
-                        failure = new IOException("World initialization deadline exceeded");
+                    long now = System.nanoTime();
+                    String reason = startupExpired(started, lastProgress, now, quiet);
+                    if (reason != null) {
+                        failure =
+                                new IOException(
+                                        "World initialization deadline exceeded: " + reason);
                         closeAsync();
                         return;
                     }
@@ -391,6 +427,98 @@ final class WorldStreamLaunchOwner {
             } finally {
                 startupDone = true;
             }
+        }
+
+        /**
+         * After startup: fails the session when a command awaits the child's reply ({@code owed}
+         * names it, or null when nothing is owed) and the child shows no sign of progress (a status
+         * line, its heartbeat included, or a diagnostic line) for {@code quietMillis}. A healthy
+         * child sends a heartbeat every second from its render loop, so this catches a child stuck
+         * in a commit, an upload or a driver call; a slow but working one keeps beating. Runs as an
+         * owner worker until stopping.
+         */
+        void watchReplies(
+                java.util.function.Supplier<String> owed, long quietMillis, long pollNanos) {
+            long quiet = TimeUnit.MILLISECONDS.toNanos(quietMillis);
+            long owedSince = 0;
+            boolean owing = false;
+            while (!stopping.get()) {
+                long now = clock.getAsLong();
+                String waiting = initialized.get() ? owed.get() : null;
+                if (waiting == null) {
+                    owing = false;
+                } else {
+                    if (!owing) {
+                        owing = true;
+                        owedSince = now;
+                    }
+                    String reason = repliesExpired(waiting, owedSince, lastProgress, now, quiet);
+                    if (reason != null) {
+                        failure = new IOException("World helper stopped answering: " + reason);
+                        closeAsync();
+                        return;
+                    }
+                }
+                LockSupport.parkNanos(pollNanos);
+            }
+        }
+
+        /**
+         * Why the child is judged hung at {@code now}, or null: {@code owed} has waited since
+         * {@code owedSince} and nothing showed progress for {@code quietNanos} since then. Quiet
+         * time before the reply was owed does not count. Pure, for tests.
+         */
+        static String repliesExpired(
+                String owed, long owedSince, long lastProgress, long now, long quietNanos) {
+            long since = lastProgress - owedSince > 0 ? lastProgress : owedSince;
+            if (now - since < quietNanos) {
+                return null;
+            }
+            return "no sign of progress for "
+                    + TimeUnit.NANOSECONDS.toMillis(now - since)
+                    + " ms while "
+                    + owed
+                    + " awaited its reply";
+        }
+
+        /**
+         * The quiet time after which a child owing a reply is judged hung: {@code
+         * vimi.world.replyQuietMillis} when set within 1 s to 10 minutes, else 30 s.
+         */
+        static long replyQuietMillis(String property) {
+            if (property != null) {
+                try {
+                    long millis = Long.parseLong(property.strip());
+                    if (millis >= 1_000 && millis <= 600_000) {
+                        return millis;
+                    }
+                } catch (NumberFormatException invalid) {
+                    // The default below.
+                }
+            }
+            return 30_000;
+        }
+
+        /** How many quiet windows a busy child may take in all before startup fails. */
+        static final int STARTUP_CAP = 4;
+
+        /**
+         * Why startup has run out at {@code now}, or null while it may go on: no progress for the
+         * quiet window, or the overall cap of {@link #STARTUP_CAP} windows reached. Pure, for
+         * tests.
+         */
+        static String startupExpired(long started, long lastProgress, long now, long quietNanos) {
+            if (now - started >= quietNanos * STARTUP_CAP) {
+                return "still not ready after "
+                        + TimeUnit.NANOSECONDS.toMillis(quietNanos * STARTUP_CAP)
+                        + " ms";
+            }
+            if (now - Math.max(started, lastProgress) >= quietNanos) {
+                return "no sign of progress for "
+                        + TimeUnit.NANOSECONDS.toMillis(quietNanos)
+                        + " ms";
+            }
+            return null;
         }
 
         private boolean workersDone() {

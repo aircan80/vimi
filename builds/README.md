@@ -9,7 +9,8 @@ the reference. No JavaFX or application launcher dependency is included.
 
 - `BuildCatalog` / `Catalog`: offline build listings projected from versions history,
   explicit versions/CDN refresh and summary discovery.
-- `BuildIdentity`: byte-identical identity v2 with pinned C# golden vectors, sorted
+- `BuildIdentity`: byte-identical identity v2 with checked-in golden vectors that
+  originated in the C# implementation, sorted
   field framing and UTF-8 byte lengths. Region/CDNConfig are observation attributes;
   missing and empty ProductConfig fields remain distinct identities.
 - `Products`, `VersionsTable`, `VersionsReply`, `Summaries`: strict bounded parsing,
@@ -40,18 +41,6 @@ figures and download-all jobs. Integration tests exercise the same catalog
 contracts against native SQLite, cache reopen/rebuild, foreign/newer-file refusal,
 active SQLite cancellation, accepted-work draining and uncertain commit recovery.
 `check` includes formatting, Checkstyle and compiler lint with warnings as errors.
-
-The optional catalog compatibility suite uses the unchanged pinned C# reference:
-
-```sh
-../vibeminer/.local/toolchains/dotnet/dotnet build ../vibeminer/src/backend/VibeMiner.Builds/VibeMiner.Builds.csproj --configuration Release -p:RestoreLockedMode=true -p:NuGetAudit=false
-./gradlew :builds:interopTest -Pdotnet=/absolute/path/to/dotnet -PsqliteLibrary=/absolute/path/to/sqlite-library
-```
-
-For an isolated Java worktree, also pass `-PreferenceRoot=/absolute/path/to/vibeminer`.
-The harness uses the reference's existing test-friend assembly name solely to
-exchange catalog cache files in both directions. It does not modify reference
-source. .NET is not needed for ordinary unit/integration checks.
 
 ## Catalog behavior
 
