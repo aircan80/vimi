@@ -293,15 +293,28 @@ public final class WorldExplorerInputTest {
         }
     }
 
-    /** A pulse whose time is before the last one's (two clocks) moves nothing and never throws. */
+    /**
+     * A pulse timed before the last one (a test's fake clock beside the toolkit's pulses) moves
+     * neither the body nor the camera, never throws, and keeps the later time: the next pulse
+     * after it integrates from there.
+     */
     private static void aPulseTimedBeforeTheLastOneDoesNotStepBackwards() {
         var host = new Host();
         var input = exact(host);
         input.motion(WorldExplorerInput.Mode.WALK, false);
+        input.keyPressed(KeyCode.W);
         input.pulse(5_000_000_000L);
         input.pulse(6_000_000_000L);
+        var body = input.body().body();
+        double x = body.x(), y = body.y(), z = body.z();
+        var camera = host.camera();
         input.pulse(1_000_000_000L);
-        input.pulse(1_100_000_000L);
+        require(body.x() == x && body.y() == y && body.z() == z, "The body did not move backwards");
+        require(java.util.Objects.equals(host.camera(), camera), "Nor did the camera");
+        // Still before the kept time: nothing again.
+        input.pulse(5_900_000_000L);
+        require(body.x() == x && body.y() == y && body.z() == z, "Nothing before the kept time either");
+        input.keyReleased(KeyCode.W);
     }
 
     /**

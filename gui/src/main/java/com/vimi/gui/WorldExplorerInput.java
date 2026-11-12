@@ -221,6 +221,8 @@ final class WorldExplorerInput {
     private Mode mode = Mode.FREE;
     private final Set<KeyCode> keys = new HashSet<>();
     private long lastTick, lastRender, lastNearby;
+    // Whether a pulse timed before the previous one was logged (once per input).
+    private boolean backwardsLogged;
     private WorldControls controls = WorldControls.DEFAULTS;
     private Pointer pointer = Pointer.NONE;
     private boolean looking, captureOff, awaitingEcho, lateEcho;
@@ -578,9 +580,18 @@ final class WorldExplorerInput {
             pendingX = pendingY = 0;
             return;
         }
-        // A pulse timed before the last one (two clocks disagreeing) integrates nothing.
+        // The FX timer is monotonic, so a pulse timed before the last one should not happen; a
+        // test that drives pulses with its own fake clock beside the toolkit's real pulses can send
+        // one. It integrates nothing and keeps the later time, and the first is logged.
+        if (lastTick != 0 && now < lastTick && !backwardsLogged) {
+            backwardsLogged = true;
+            System.getLogger(WorldExplorerInput.class.getName())
+                    .log(System.Logger.Level.DEBUG,
+                            "Explorer pulse timed {0} ns before the previous one; nothing integrated",
+                            lastTick - now);
+        }
         double dt = lastTick == 0 ? 0 : Math.clamp((now - lastTick) / 1e9, 0, .1);
-        lastTick = now;
+        lastTick = Math.max(lastTick, now);
         if (mode != Mode.FREE) {
             bodyPulse(now, camera, dt);
             return;
