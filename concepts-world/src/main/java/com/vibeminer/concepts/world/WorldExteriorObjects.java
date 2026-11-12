@@ -6,8 +6,10 @@ import com.vibeminer.formats.images.Blp2Decoder;
 import com.vibeminer.formats.images.Blp2Types;
 import com.vibeminer.formats.images.BlpFormatException;
 import com.vibeminer.formats.models.M2Combiners;
+import com.vibeminer.formats.models.M2IdleAnimation;
 import com.vibeminer.formats.models.M2ModelReader;
 import com.vibeminer.formats.models.M2SkinReader;
+import com.vibeminer.formats.models.M2StandWeights;
 import com.vibeminer.formats.models.M2Types;
 import com.vibeminer.formats.models.ModelFormatException;
 import com.vibeminer.formats.world.WmoFormats;
@@ -252,6 +254,46 @@ public final class WorldExteriorObjects {
      */
     static int packColour(int b, int g, int r) {
         return r | g << 8 | b << 16;
+    }
+
+    /**
+     * A doodad model's texture weights (transparency tracks) at the static Stand sample, in track
+     * order, NaN for a track whose value is not decided ({@link M2StandWeights}); null when the
+     * model declares none or its Stand cannot be read, which leaves every batch drawn as before.
+     */
+    static float[] standWeights(byte[] raw, M2Types.Model model, Cancellation token) {
+        boolean declared =
+                model.declarations().stream()
+                        .anyMatch(d -> d.name().equals("weights") && d.count() > 0);
+        if (!declared) {
+            return null;
+        }
+        java.util.List<M2StandWeights.Weight> read;
+        try {
+            var stand = M2IdleAnimation.read(AssetSource.bytes(raw), model, token).join();
+            read = M2StandWeights.read(AssetSource.bytes(raw), model, stand, token).join();
+        } catch (RuntimeException undecided) {
+            token.check();
+            return null;
+        }
+        var weights = new float[read.size()];
+        for (int i = 0; i < weights.length; i++) {
+            weights[i] = read.get(i).resolved() ? read.get(i).value() : Float.NaN;
+        }
+        return weights;
+    }
+
+    /**
+     * Whether a doodad batch's first texture is fully transparent at the Stand sample: its texture
+     * weight track is decided and 0. The client multiplies the texture by that weight, so it draws
+     * nothing; the model's static pose would otherwise draw it opaque.
+     */
+    static boolean transparent(List<Integer> weightLookup, int combo, float[] weights) {
+        if (weights == null || combo < 0 || combo >= weightLookup.size()) {
+            return false;
+        }
+        int track = weightLookup.get(combo);
+        return track != 65535 && track < weights.length && weights[track] == 0f;
     }
 
     /**
@@ -576,6 +618,12 @@ public final class WorldExteriorObjects {
         MODEL_EMPTY,
         MODEL_BATCH_DRAWN,
         MODEL_BATCH_UNSUPPORTED,
+        /**
+         * Doodad batches left out because their texture weight (transparency track) is 0 at the
+         * static Stand sample ({@link M2StandWeights}): the client draws them fully transparent, as
+         * on the invisible carriers of particle emitters.
+         */
+        MODEL_BATCH_TRANSPARENT,
         /**
          * An otherwise admitted doodad batch omitted because every one of its triangles has a
          * vertex weighted to a billboard bone (or a descendant of one). Billboards turn to face the
@@ -3953,6 +4001,7 @@ public final class WorldExteriorObjects {
                             model.skinFileDataIds().getFirst(),
                             model,
                             skin,
+                            null,
                             new int[counts.length],
                             cancel);
             if (pending == null || pending == ALL_BILLBOARD) {
@@ -5640,10 +5689,14 @@ public final class WorldExteriorObjects {
                 return RootState.FAILED;
             }
             long parsing = WorldStageTimings.start();
+            float[] weights;
             try (input) {
                 byte[] raw = input.bytes();
                 model = await(modelReader.read(id, raw, token));
                 WorldStageTimings.stop("objects.m2.modelParse", parsing);
+                long sampling = WorldStageTimings.start();
+                weights = standWeights(raw, model, token);
+                WorldStageTimings.stop("objects.m2.standWeights", sampling);
             } catch (ModelFormatException malformed) {
                 count(modelOutcome(malformed));
                 return RootState.FAILED;
@@ -5675,7 +5728,7 @@ public final class WorldExteriorObjects {
             int[] local = new int[counts.length];
             PendingMesh pending;
             try {
-                pending = copyModel(id, skinId, model, skin, local, token);
+                pending = copyModel(id, skinId, model, skin, weights, local, token);
             } catch (RuntimeException failure) {
                 return readerFailed(failure);
             }
@@ -5757,6 +5810,7 @@ public final class WorldExteriorObjects {
                 long skinId,
                 M2Types.Model model,
                 M2Types.Skin skin,
+                float[] weights,
                 int[] local,
                 Cancellation cancel) {
             var lookup = skin.vertexLookup();
@@ -5800,6 +5854,10 @@ public final class WorldExteriorObjects {
                         || range.triangleStart() % 3 != 0
                         || range.triangleStart() + range.triangleCount() > triangles.size()) {
                     local[Count.MODEL_BATCH_UNSUPPORTED.ordinal()]++;
+                    continue;
+                }
+                if (transparent(model.textureWeights(), batch.textureWeightComboIndex(), weights)) {
+                    local[Count.MODEL_BATCH_TRANSPARENT.ordinal()]++;
                     continue;
                 }
                 seen[section] = true;
