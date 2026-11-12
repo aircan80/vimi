@@ -598,7 +598,7 @@ final class WorldPreparedTerrain {
         WorldTileCollision reader;
         synchronized (this) {
             if (collision == null) {
-                collision = new WorldTileCollision(scopes.files());
+                collision = new WorldTileCollision(scopes.files(), scopes.sources());
             }
             reader = collision;
         }
@@ -971,6 +971,8 @@ final class WorldPreparedTerrain {
             closed = true;
             retired = List.copyOf(outputs);
         }
+        // The session's source files and parsed sources go with it.
+        scopes.sources().clear();
         Thread.startVirtualThread(
                 () -> {
                     CompletableFuture<Void> scopeDrain;
