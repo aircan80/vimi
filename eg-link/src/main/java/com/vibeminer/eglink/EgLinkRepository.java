@@ -720,8 +720,12 @@ public final class EgLinkRepository implements AutoCloseable {
         return open;
     }
 
-    /** Worker only: forgets a snapshot about to be replaced. */
-    private void forget(String source) throws Exception {
+    /**
+     * Worker only: closes a snapshot's open database handle and forgets its remembered answers.
+     * Call it before replacing or deleting the snapshot's database (pruning included): an open
+     * SQLite file cannot be deleted on Windows.
+     */
+    void forget(String source) throws Exception {
         var open = openSnapshots.remove(source);
         if (open != null) {
             open.connection().close();
