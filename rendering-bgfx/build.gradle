@@ -456,7 +456,7 @@ tasks.register('nativeGpuWorldStreamObjectsTextureBudgetProof', JavaExec) {
 
 tasks.register('nativeGpuWorldStreamObjectsSharedTexturesProof', JavaExec) {
     group = 'verification'
-    description = 'Proves object sets share identical textures: one handle per image, released by its last set.'
+    description = 'Proves object sets share identical textures and model geometry, released by their last set.'
     dependsOn testClasses, tasks.named('verifyWorldStreamShaders'), tasks.named('verifyShaders')
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.vibeminer.rendering.bgfx.WorldStreamObjectsSharedTexturesProof'

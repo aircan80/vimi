@@ -403,6 +403,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         private int imageFormat;
 
         private int imageStep;
+
+        /** The model whose geometry uploads next, and how far its vertices and indices are. */
+        private int model;
+
         private boolean failed, budget;
 
         /** Steps spent waiting for bgfx to return released texture handles, since waitStarted. */
@@ -543,7 +547,23 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
          */
         final int[] placementParents, placementGroups;
 
-        short vertices = INVALID, indices = INVALID;
+        /** The session's geometry library this set holds its models' buffers from. */
+        final WorldStreamObjectGeometry geometryLibrary;
+
+        /**
+         * Per model: its geometry entry, held from {@link #geometryLibrary}; null once released.
+         */
+        final WorldStreamObjectGeometry.Entry[] geometry;
+
+        /** Per model: whether this set creates and fills its buffers (else it shares them). */
+        final boolean[] createsGeometry;
+
+        /** Per model: its vertex and index buffers; INVALID until created. */
+        final short[] modelVertices, modelIndices;
+
+        /** Per mesh: its model, and its first vertex and first index within its model's buffers. */
+        final int[] meshModel, meshVertexBase, meshIndexBase;
+
         long bytes;
 
         /**
@@ -606,8 +626,42 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         SlotObjects(
                 WorldStreamPackedObjects source,
                 WorldStreamObjectTextures shared,
-                WorldStreamObjectTextures.Plan plan) {
+                WorldStreamObjectTextures.Plan plan,
+                WorldStreamObjectGeometry geometryLibrary,
+                WorldStreamObjectGeometry.Plan geometryPlan) {
             this.shared = shared;
+            this.geometryLibrary = geometryLibrary;
+            int modelCount = source.models.length / 2;
+            modelVertices = new short[modelCount];
+            modelIndices = new short[modelCount];
+            java.util.Arrays.fill(modelVertices, INVALID);
+            java.util.Arrays.fill(modelIndices, INVALID);
+            createsGeometry = new boolean[modelCount];
+            for (int m = 0; m < modelCount; m++) {
+                createsGeometry[m] = geometryPlan.creates(m);
+            }
+            int meshCount = source.meshes.length / 6;
+            meshModel = new int[meshCount];
+            meshVertexBase = new int[meshCount];
+            meshIndexBase = new int[meshCount];
+            for (int m = 0; m < modelCount; m++) {
+                for (int mesh = source.models[m * 2];
+                        mesh < source.models[m * 2] + source.models[m * 2 + 1];
+                        mesh++) {
+                    meshModel[mesh] = m;
+                    meshVertexBase[mesh] = source.meshes[mesh * 6] - source.modelVertexFirst[m];
+                    meshIndexBase[mesh] = source.meshes[mesh * 6 + 2] - source.modelIndexFirst[m];
+                }
+            }
+            // Held last of the geometry fields: shared buffers are known at once, created ones
+            // once this set makes them (stepObjects).
+            geometry = geometryLibrary.hold(geometryPlan);
+            for (int m = 0; m < modelCount; m++) {
+                if (geometry[m].complete()) {
+                    modelVertices[m] = geometry[m].vertices();
+                    modelIndices[m] = geometry[m].indices();
+                }
+            }
             waterRuns = source.water.runs;
             models = source.models;
             meshes = source.meshes;
@@ -752,13 +806,15 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 org.lwjgl.bgfx.BGFX.bgfx_destroy_index_buffer(waterIndices);
                 waterIndices = INVALID;
             }
-            if (vertices != INVALID) {
-                bgfx_destroy_dynamic_vertex_buffer(vertices);
-                vertices = INVALID;
-            }
-            if (indices != INVALID) {
-                bgfx_destroy_dynamic_index_buffer(indices);
-                indices = INVALID;
+            // One release per model; the last holder of shared geometry keeps it as a zombie.
+            for (int m = 0; m < geometry.length; m++) {
+                if (geometry[m] != null) {
+                    var entry = geometry[m];
+                    geometry[m] = null;
+                    modelVertices[m] = INVALID;
+                    modelIndices[m] = INVALID;
+                    geometryLibrary.release(entry);
+                }
             }
             // One release per image; the last holder of a texture destroys it, created or not.
             for (int i = 0; i < entries.length; i++) {
@@ -797,6 +853,26 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     // Object textures shared across sets by exact image identity (owner thread only).
     private final WorldStreamObjectTextures objectTextures =
             new WorldStreamObjectTextures(handle -> bgfx_destroy_texture(handle));
+
+    /**
+     * GPU bytes of model geometry no set holds that the session keeps for tiles that come back
+     * (zombies, {@link WorldStreamObjectGeometry}); within the objects budget, and given back first
+     * when a set needs room.
+     */
+    static final long GEOMETRY_ZOMBIE_BYTES = 64L << 20;
+
+    // Object model geometry shared across sets by model asset (owner thread only, #380).
+    private final WorldStreamObjectGeometry objectGeometry =
+            new WorldStreamObjectGeometry(
+                    (vertices, indices) -> {
+                        if (vertices != INVALID) {
+                            bgfx_destroy_dynamic_vertex_buffer(vertices);
+                        }
+                        if (indices != INVALID) {
+                            bgfx_destroy_dynamic_index_buffer(indices);
+                        }
+                    },
+                    GEOMETRY_ZOMBIE_BYTES);
     private final AtomicReference<Upload> uploading = new AtomicReference<>();
     private final AtomicLong callbackCount = new AtomicLong();
     private final AtomicReference<String> callbackFailure = new AtomicReference<>();
@@ -1540,10 +1616,18 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 // A texture another set has uploaded is shared: only this set's buffers and the
                 // textures it creates are charged, in bytes and in handles.
                 var plan = planTextures(source);
-                long need = source.bufferBytes() + plan.newBytes();
+                var geometryPlan = planGeometry(source);
+                long need = setNeed(source, plan, geometryPlan);
                 if (!objectsFit(objectBudget, reservedObjectBytes(), need)) {
-                    // Animation poses no frame drew lately give their bytes back first (#384).
-                    releasePosesUntil(() -> objectsFit(objectBudget, reservedObjectBytes(), need));
+                    // Geometry no set holds gives its bytes back first, then animation poses no
+                    // frame drew lately (#384). Evicting may take a model this plan shared, so the
+                    // plan is made again.
+                    objectGeometry.evict(reservedObjectBytes() + need - objectBudget);
+                    geometryPlan = planGeometry(source);
+                    long replanned = setNeed(source, plan, geometryPlan);
+                    releasePosesUntil(
+                            () -> objectsFit(objectBudget, reservedObjectBytes(), replanned));
+                    need = replanned;
                 }
                 if (!objectsFit(objectBudget, reservedObjectBytes(), need)) {
                     build.budget = true;
@@ -1570,23 +1654,42 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                     refuseForTextures(build, images, held);
                     return 0;
                 }
-                var built = new SlotObjects(source, objectTextures, plan);
-                built.reserved = source.bufferBytes();
+                var built =
+                        new SlotObjects(source, objectTextures, plan, objectGeometry, geometryPlan);
+                built.reserved = source.water.bytes();
                 build.building = built;
+                // Buffers for the models this set creates; shared ones are already complete.
                 try (var layout = objectLayout()) {
-                    built.vertices =
-                            valid(
-                                    bgfx_create_dynamic_vertex_buffer(
-                                            source.vertices.capacity()
-                                                    / WorldStreamPackedObjects.GPU_VERTEX_BYTES,
-                                            layout,
-                                            BGFX_BUFFER_NONE));
+                    for (int m = 0; m < built.geometry.length; m++) {
+                        if (!built.createsGeometry[m]) {
+                            continue;
+                        }
+                        short vertexBuffer =
+                                valid(
+                                        bgfx_create_dynamic_vertex_buffer(
+                                                Math.max(1, source.modelVertexCount[m]),
+                                                layout,
+                                                BGFX_BUFFER_NONE));
+                        short indexBuffer;
+                        try {
+                            indexBuffer =
+                                    valid(
+                                            bgfx_create_dynamic_index_buffer(
+                                                    Math.max(1, source.modelIndexCount[m]),
+                                                    BGFX_BUFFER_NONE));
+                        } catch (RuntimeException failed) {
+                            bgfx_destroy_dynamic_vertex_buffer(vertexBuffer);
+                            throw failed;
+                        }
+                        objectGeometry.created(built.geometry[m], vertexBuffer, indexBuffer);
+                    }
                 }
-                built.indices =
-                        valid(
-                                bgfx_create_dynamic_index_buffer(
-                                        source.indices.capacity() / 2, BGFX_BUFFER_NONE));
-                built.bytes = source.vertices.capacity() + (long) source.indices.capacity();
+                for (int m = 0; m < built.geometry.length; m++) {
+                    // A repeat of an earlier model of this set takes that model's buffers.
+                    built.modelVertices[m] = built.geometry[m].vertices();
+                    built.modelIndices[m] = built.geometry[m].indices();
+                }
+                built.bytes = source.water.bytes();
                 var water = source.water;
                 if (water.vertices != null) {
                     // Static: building water never changes; bgfx_copy takes the bytes at once.
@@ -1608,30 +1711,46 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 return 0;
             }
             var built = build.building;
-            step = "vertices";
-            if (build.vertexAt < source.vertices.capacity()) {
-                // Whole vertices only: the chunk is rounded down to the vertex stride.
-                int chunk =
-                        OBJECT_CHUNK
-                                / WorldStreamPackedObjects.GPU_VERTEX_BYTES
-                                * WorldStreamPackedObjects.GPU_VERTEX_BYTES;
-                int count = Math.min(chunk, source.vertices.capacity() - build.vertexAt);
-                bgfx_update_dynamic_vertex_buffer(
-                        built.vertices,
-                        build.vertexAt / WorldStreamPackedObjects.GPU_VERTEX_BYTES,
-                        bgfx_copy(source.vertices.slice(build.vertexAt, count)));
-                build.vertexAt += count;
-                return count;
-            }
-            step = "indices";
-            if (build.indexAt < source.indices.capacity()) {
-                int count = Math.min(OBJECT_CHUNK, source.indices.capacity() - build.indexAt);
-                bgfx_update_dynamic_index_buffer(
-                        built.indices,
-                        build.indexAt / 2,
-                        bgfx_copy(source.indices.slice(build.indexAt, count)));
-                build.indexAt += count;
-                return count;
+            step = "geometry";
+            // The models this set creates, one at a time: vertices, then indices, then shared.
+            while (build.model < built.geometry.length) {
+                int m = build.model;
+                if (!built.createsGeometry[m]) {
+                    build.model++;
+                    continue;
+                }
+                int stride = WorldStreamPackedObjects.GPU_VERTEX_BYTES;
+                int vertexBytes = source.modelVertexCount[m] * stride;
+                if (build.vertexAt < vertexBytes) {
+                    // Whole vertices only: the chunk is rounded down to the vertex stride.
+                    int chunk = OBJECT_CHUNK / stride * stride;
+                    int count = Math.min(chunk, vertexBytes - build.vertexAt);
+                    bgfx_update_dynamic_vertex_buffer(
+                            built.modelVertices[m],
+                            build.vertexAt / stride,
+                            bgfx_copy(
+                                    source.vertices.slice(
+                                            source.modelVertexFirst[m] * stride + build.vertexAt,
+                                            count)));
+                    build.vertexAt += count;
+                    return count;
+                }
+                int indexBytes = source.modelIndexCount[m] * 2;
+                if (build.indexAt < indexBytes) {
+                    int count = Math.min(OBJECT_CHUNK, indexBytes - build.indexAt);
+                    bgfx_update_dynamic_index_buffer(
+                            built.modelIndices[m],
+                            build.indexAt / 2,
+                            bgfx_copy(
+                                    source.indices.slice(
+                                            source.modelIndexFirst[m] * 2 + build.indexAt, count)));
+                    build.indexAt += count;
+                    return count;
+                }
+                objectGeometry.complete(built.geometry[m]);
+                build.model++;
+                build.vertexAt = 0;
+                build.indexAt = 0;
             }
             step = "textures";
             // Images whose texture this set shares need no upload: skip them all in this step.
@@ -3593,8 +3712,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             submitRange(
                     frame,
                     objects,
-                    objects.vertices,
-                    objects.meshes[mesh * 6],
+                    objects.modelVertices[objects.meshModel[mesh]],
+                    objects.meshVertexBase[mesh],
                     mesh,
                     r,
                     count,
@@ -3782,8 +3901,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                         submitRange(
                                 frame,
                                 objects,
-                                objects.vertices,
-                                objects.meshes[at],
+                                objects.modelVertices[objects.meshModel[mesh]],
+                                objects.meshVertexBase[mesh],
                                 mesh,
                                 r,
                                 count,
@@ -3827,8 +3946,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         }
         bgfx_set_dynamic_vertex_buffer(0, vertexBuffer, firstVertex, objects.meshes[at + 1]);
         bgfx_set_dynamic_index_buffer(
-                objects.indices,
-                objects.meshes[at + 2] + objects.ranges[r * stride],
+                objects.modelIndices[objects.meshModel[mesh]],
+                objects.meshIndexBase[mesh] + objects.ranges[r * stride],
                 objects.ranges[r * stride + 1]);
         org.lwjgl.bgfx.BGFX.bgfx_set_instance_data_buffer(frame.instances, 0, count);
         bgfx_set_texture(
@@ -4096,6 +4215,23 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         return objectTextures.references();
     }
 
+    /** The set's models against the session's geometry library. */
+    private WorldStreamObjectGeometry.Plan planGeometry(WorldStreamPackedObjects source) {
+        var bytes = new long[source.modelKeys.length];
+        for (int m = 0; m < bytes.length; m++) {
+            bytes[m] = source.modelBytes(m);
+        }
+        return objectGeometry.plan(source.modelKeys, bytes);
+    }
+
+    /** GPU bytes a set adds: its water and the geometry and textures it creates. */
+    private static long setNeed(
+            WorldStreamPackedObjects source,
+            WorldStreamObjectTextures.Plan textures,
+            WorldStreamObjectGeometry.Plan geometry) {
+        return source.water.bytes() + geometry.newBytes() + textures.newBytes();
+    }
+
     /** How a set's images would be held now: shared, repeated in the set, or created. */
     private WorldStreamObjectTextures.Plan planTextures(WorldStreamPackedObjects source) {
         int count = source.imageCount();
@@ -4115,6 +4251,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                                 ? 0
                                 : upload.objects.building.reserved)
                         + objectTextures.reservedBytes()
+                        + objectGeometry.reservedBytes()
                         + (body == null ? 0 : body.bytes());
         if (late != null && late.build.building != null) {
             total += late.build.building.reserved;
@@ -4125,6 +4262,12 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             }
         }
         return total;
+    }
+
+    /** The session's shared model geometry (measurement and native proofs). Owner thread only. */
+    WorldStreamObjectGeometry objectGeometry() {
+        requireOwner();
+        return objectGeometry;
     }
 
     /** GPU bytes all object sets, textures, the body and poses reserve now (measurement). */
@@ -4147,7 +4290,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private long objectBytes(Upload upload) {
         long total =
                 (upload == null || upload.objects == null ? 0 : upload.objects.builtBytes())
-                        + objectTextures.issuedBytes();
+                        + objectTextures.issuedBytes()
+                        + objectGeometry.reservedBytes();
         if (late != null) {
             total += late.build.builtBytes();
         }
@@ -4217,6 +4361,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 slot.objects.destroy();
                 slot.objects = null;
             }
+        }
+        // Every set released its geometry: what remains are zombies, destroyed with the session.
+        objectGeometry.close();
+        for (var slot : slots) {
             if (slot != null) {
                 if (slot.vertices != INVALID) {
                     bgfx_destroy_dynamic_vertex_buffer(slot.vertices);
