@@ -456,6 +456,155 @@ final class RaceNpcIdleIndexTest {
         }
     }
 
+    /**
+     * A stored READY Stand comes back through {@code RacesService.npcIdle} in a later session, and
+     * the fit attaches the NPC's helmet vertices with the stored attachment points: no race model
+     * is read. The Stand is authored over NPC 50's own surface (the fixtures carry no boned race
+     * model or drawn helmet), with its root still and bone 1 lifted by 1; the helmet part follows
+     * attachment point 11, stored on bone 1.
+     */
+    @Test
+    void aStoredReadyStandIsFittedWithItsStoredAttachmentPoints() throws Exception {
+        var raw = raw();
+        var files = files(MODEL_KEY);
+        var generated = new MemoryGeneratedStore();
+        // A first session resolves NPC 50 and keeps its resolution.
+        var service = new RacesService(raw, files, generated);
+        com.vibeminer.rendering.models.MeshAppearance base;
+        long chrModel;
+        try {
+            base = service.npcAppearance(50, Cancellation.NONE).join().result().appearance();
+            chrModel = service.npcIdle(50, base, Cancellation.NONE).join().variant().chrModelId();
+            var mesh = base.mesh();
+            int vertices = mesh.vertexCount();
+            int[] bones = new int[vertices * 4], weights = new int[vertices * 4];
+            for (int v = 0; v < vertices; v++) {
+                weights[v * 4] = 255;
+            }
+            var stand =
+                    new PreviewAnimation(
+                            "Stand",
+                            1000,
+                            new long[0],
+                            List.of(
+                                    new PreviewAnimation.Bone(-1, 0, 0, 0, null, null, null, false),
+                                    new PreviewAnimation.Bone(
+                                            -1,
+                                            0,
+                                            0,
+                                            0,
+                                            new PreviewAnimation.Track(
+                                                    PreviewAnimation.Interpolation.LINEAR,
+                                                    -1,
+                                                    3,
+                                                    new int[] {0},
+                                                    new float[] {0, 0, 1}),
+                                            null,
+                                            null,
+                                            false)),
+                            mesh,
+                            base.normals(),
+                            bones,
+                            weights);
+            assertTrue(
+                    service.idleIndex.writeStand(
+                            chrModel,
+                            1234,
+                            MODEL_KEY,
+                            new RaceNpcIdleIndex.Stand(
+                                    RaceTypes.State.READY,
+                                    List.of(),
+                                    List.of("Stand is bound to the authored surface."),
+                                    "Stand idle",
+                                    stand,
+                                    Map.of(11, 1),
+                                    Map.of(1234L, MODEL_KEY)),
+                            Cancellation.NONE));
+        } finally {
+            service.closeAsync().join();
+        }
+        // NPC 50 wearing a helmet: three item vertices after its surface, on attachment point 11.
+        var mesh = base.mesh();
+        int vertices = mesh.vertexCount();
+        float[] positions = java.util.Arrays.copyOf(mesh.positions(), (vertices + 3) * 3);
+        positions[vertices * 3] = 5;
+        positions[vertices * 3 + 4] = 5;
+        positions[vertices * 3 + 8] = 5;
+        int[] indices = java.util.Arrays.copyOf(mesh.indices(), mesh.indices().length + 3);
+        for (int k = 0; k < 3; k++) {
+            indices[mesh.indices().length + k] = vertices + k;
+        }
+        var parts = new java.util.ArrayList<>(mesh.parts());
+        parts.add(
+                new PreviewMesh.Part(
+                        RaceNpcAttachments.FIRST_PART + 11 * 100, mesh.indices().length, 3));
+        var helmeted =
+                new com.vibeminer.rendering.models.MeshAppearance(
+                        new PreviewMesh(positions, indices, parts),
+                        new float[(vertices + 3) * 2],
+                        java.util.Arrays.copyOf(base.normals(), (vertices + 3) * 3),
+                        List.of(),
+                        List.of());
+
+        var opens = new AtomicInteger();
+        var later = new RacesService(raw, counted(files, 1234, opens), generated);
+        try {
+            later.npcAppearance(50, Cancellation.NONE).join();
+            var idle = later.npcIdle(50, helmeted, Cancellation.NONE).join();
+            assertEquals(RaceTypes.State.READY, idle.state(), idle.message());
+            assertEquals(0, opens.get(), "neither resolved nor assessed: no race model read");
+            assertTrue(idle.animation().matches(helmeted));
+            float[] posed = new float[(vertices + 3) * 3];
+            idle.animation().skin(250, posed, new float[(vertices + 3) * 3]);
+            for (int v = 0; v < vertices + 3; v++) {
+                float lift = v < vertices ? 0 : 1;
+                for (int axis = 0; axis < 3; axis++) {
+                    assertEquals(
+                            positions[v * 3 + axis] + (axis == 2 ? lift : 0),
+                            posed[v * 3 + axis],
+                            1e-5f,
+                            "vertex " + v + " axis " + axis);
+                }
+            }
+        } finally {
+            later.closeAsync().join();
+        }
+
+        // The stored points decide: without attachment point 11 the helmet cannot follow. (The
+        // appearance entry goes first, so the rewriting handle reads the tables it names.)
+        generated.delete(List.of(new RaceNpcIndex(raw, files, generated).key(50))).join();
+        handle(
+                raw,
+                files,
+                generated,
+                each -> {
+                    var stored = each.idleIndex.stand(chrModel, 1234, MODEL_KEY, Cancellation.NONE);
+                    assertTrue(
+                            each.idleIndex.writeStand(
+                                    chrModel,
+                                    1234,
+                                    MODEL_KEY,
+                                    new RaceNpcIdleIndex.Stand(
+                                            stored.state(),
+                                            stored.reasons(),
+                                            stored.facts(),
+                                            stored.message(),
+                                            stored.animation(),
+                                            Map.of(1, 1),
+                                            stored.sources()),
+                                    Cancellation.NONE));
+                });
+        var without = new RacesService(raw, files, generated);
+        try {
+            without.npcAppearance(50, Cancellation.NONE).join();
+            var idle = without.npcIdle(50, helmeted, Cancellation.NONE).join();
+            assertEquals(RaceTypes.State.UNSUPPORTED, idle.state(), idle.message());
+            assertTrue(idle.message().contains("attachment point"), idle.message());
+        } finally {
+            without.closeAsync().join();
+        }
+    }
+
     @Test
     void theCodeDigestCoversTheIdlePath() {
         assertNotNull(RaceNpcIdleIndex.CODE);
