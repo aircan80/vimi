@@ -104,6 +104,43 @@ class NpcDisplaysTest {
     }
 
     @Test
+    void aMalformedRecordIsStatedAsSuchNeverAsNoDisplay() {
+        var malformed =
+                new NpcDisplays.External("EG Link 70888", List.of(), "displays is not a list");
+        assertTrue(malformed.malformed());
+        var only = NpcDisplays.resolve(absent(), "client", List.of(malformed), id -> false);
+        assertEquals(NpcDisplays.Source.NONE, only.source());
+        assertEquals(1, only.malformed());
+        assertEquals(
+                "No client Creature record for this NPC; the outside source's record for this NPC"
+                        + " is malformed (EG Link 70888: displays is not a list)",
+                only.detail());
+        // An older source that records displays is used, and the malformed one is stated.
+        var older =
+                new NpcDisplays.External(
+                        "EG Link 70862", List.of(new NpcDisplays.Candidate(2029, 1.0, 1.0)));
+        var drawn = NpcDisplays.resolve(absent(), "client", List.of(malformed, older), id -> false);
+        assertEquals(2029, drawn.shown().displayId());
+        assertEquals(1, drawn.malformed());
+        assertTrue(
+                drawn.detail().contains("one outside record for this NPC is malformed"),
+                drawn.detail());
+        // Beside a source that records no display, the malformed one is still named.
+        var empty = new NpcDisplays.External("EG Link 70862", List.of());
+        var none = NpcDisplays.resolve(absent(), "client", List.of(malformed, empty), id -> false);
+        assertTrue(none.detail().contains("is malformed"), none.detail());
+        assertTrue(
+                org.junit.jupiter.api.Assertions.assertThrows(
+                                IllegalArgumentException.class,
+                                () ->
+                                        new NpcDisplays.External(
+                                                "x",
+                                                List.of(new NpcDisplays.Candidate(1, 1, null)),
+                                                "bad"))
+                        != null);
+    }
+
+    @Test
     void sourcesAreTriedInOrderAndADisplayMissingFromTheBuildFallsThrough() {
         var downloaded =
                 new NpcDisplays.External(

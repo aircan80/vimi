@@ -48,7 +48,14 @@ public final class CreatureModelPolicy {
         CREATURE_ABSENT,
         CREATURE_PROTECTED,
         CREATURE_UNREADABLE,
-        NO_CREATURE_DATA
+        NO_CREATURE_DATA,
+        /**
+         * No client display: the display an outside source observed the NPC with ({@link
+         * NpcDisplays}), the highest probability, then the lowest ID.
+         */
+        OBSERVED_DISPLAY,
+        /** No client display, and the outside source's record for the NPC is malformed. */
+        OBSERVED_MALFORMED
     }
 
     /**
@@ -204,27 +211,9 @@ public final class CreatureModelPolicy {
                             + " → FileDataID "
                             + chain.modelFileDataId());
         }
-        Reason reason =
-                switch (chain.state()) {
-                    case NO_DECLARED_DISPLAY -> Reason.NO_DISPLAY;
-                    case INVALID_DISPLAY_REFERENCE -> Reason.INVALID_DISPLAY;
-                    case DISPLAY_ABSENT -> Reason.DISPLAY_ABSENT;
-                    case DISPLAY_PROTECTED -> Reason.DISPLAY_PROTECTED;
-                    case DISPLAY_NOT_READABLE,
-                            DISPLAY_UNSUPPORTED,
-                            DISPLAY_UNKNOWN,
-                            DISPLAY_INVALID ->
-                            Reason.DISPLAY_UNREADABLE;
-                    case NO_DECLARED_MODEL -> Reason.NO_MODEL;
-                    case MODEL_ABSENT -> Reason.MODEL_ABSENT;
-                    case MODEL_PROTECTED -> Reason.MODEL_PROTECTED;
-                    case MODEL_NOT_READABLE, MODEL_UNSUPPORTED, MODEL_UNKNOWN, MODEL_INVALID ->
-                            Reason.MODEL_UNREADABLE;
-                    case NO_DECLARED_MODEL_FILE, METADATA_RESOLVED -> Reason.NO_MODEL_FILE;
-                };
         return new Choice(
                 State.UNRESOLVED,
-                reason,
+                stop(chain.state()),
                 1,
                 displayId,
                 model,
@@ -235,6 +224,78 @@ public final class CreatureModelPolicy {
                         + " stops: "
                         + describe(chain.state())
                         + (chain.message() == null ? "" : " (" + chain.message() + ")"));
+    }
+
+    /**
+     * The model of a display an outside source observed the NPC with, when the client Creature
+     * record supplies none ({@link NpcDisplays}): {@link State#QUALIFIED} ({@link
+     * Reason#OBSERVED_DISPLAY}) when the display's chain in the opened build resolves to a model
+     * file, else {@link State#UNRESOLVED} with where it stops. {@code candidates} counts the
+     * source's distinct displays; {@code detail} says how the display was chosen and from where.
+     * Pure.
+     */
+    public static Choice observed(
+            int displayId, CreatureDisplayChain chain, int candidates, String detail) {
+        Objects.requireNonNull(detail);
+        if (chain == null || chain.state() == null) {
+            return new Choice(
+                    State.UNRESOLVED,
+                    Reason.DISPLAY_UNREADABLE,
+                    candidates,
+                    displayId,
+                    null,
+                    null,
+                    detail + "; no display chain was resolved for display " + displayId);
+        }
+        Long model = chain.modelId();
+        if (chain.state() == CreatureDisplayChainState.METADATA_RESOLVED
+                && chain.modelFileDataId() != null
+                && chain.modelFileDataId() > 0) {
+            return new Choice(
+                    State.QUALIFIED,
+                    Reason.OBSERVED_DISPLAY,
+                    candidates,
+                    displayId,
+                    model,
+                    chain.modelFileDataId(),
+                    detail
+                            + " → CreatureModelData "
+                            + model
+                            + " → FileDataID "
+                            + chain.modelFileDataId());
+        }
+        return new Choice(
+                State.UNRESOLVED,
+                stop(chain.state()),
+                candidates,
+                displayId,
+                model,
+                null,
+                detail
+                        + "; display "
+                        + displayId
+                        + (model == null ? "" : " → CreatureModelData " + model)
+                        + " stops: "
+                        + describe(chain.state())
+                        + (chain.message() == null ? "" : " (" + chain.message() + ")"));
+    }
+
+    /** Why a display's chain gives no model file. */
+    private static Reason stop(CreatureDisplayChainState state) {
+        return switch (state) {
+            case NO_DECLARED_DISPLAY -> Reason.NO_DISPLAY;
+            case INVALID_DISPLAY_REFERENCE -> Reason.INVALID_DISPLAY;
+            case DISPLAY_ABSENT -> Reason.DISPLAY_ABSENT;
+            case DISPLAY_PROTECTED -> Reason.DISPLAY_PROTECTED;
+            case DISPLAY_NOT_READABLE, DISPLAY_UNSUPPORTED, DISPLAY_UNKNOWN, DISPLAY_INVALID ->
+                    Reason.DISPLAY_UNREADABLE;
+            case NO_DECLARED_MODEL -> Reason.NO_MODEL;
+            case MODEL_ABSENT -> Reason.MODEL_ABSENT;
+            case MODEL_PROTECTED -> Reason.MODEL_PROTECTED;
+            case MODEL_NOT_READABLE, MODEL_UNSUPPORTED, MODEL_UNKNOWN, MODEL_INVALID ->
+                    Reason.MODEL_UNREADABLE;
+            case NO_DECLARED_MODEL_FILE, METADATA_RESOLVED -> Reason.NO_MODEL_FILE;
+        };
     }
 
     /** Largest drawn scale admitted from client data; larger products are not claimed. */
@@ -255,15 +316,23 @@ public final class CreatureModelPolicy {
             if (chain.slot() == null || chain.slot().displayId() != displayId) {
                 continue;
             }
-            Double display = factValue(chain.displayFacts());
-            Double model = factValue(chain.modelFacts());
-            if (display == null || model == null) {
-                return null;
-            }
-            double product = display * model;
-            return product > 0 && product <= MAX_SCALE ? product : null;
+            return scale(chain);
         }
         return null;
+    }
+
+    /** As {@link #scale(CreatureResult, int)}, from one display's chain. Pure. */
+    public static Double scale(CreatureDisplayChain chain) {
+        if (chain == null) {
+            return null;
+        }
+        Double display = factValue(chain.displayFacts());
+        Double model = factValue(chain.modelFacts());
+        if (display == null || model == null) {
+            return null;
+        }
+        double product = display * model;
+        return product > 0 && product <= MAX_SCALE ? product : null;
     }
 
     private static Double factValue(CreatureTypes.CreatureRecordFacts facts) {

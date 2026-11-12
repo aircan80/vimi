@@ -63,6 +63,8 @@ public final class WorldTileCreaturesTest {
         tooLargeModelsAreSkippedAndSmallerOnesStillFit();
         onlyNpcConversionsUseTheNpcSide();
         npcImagesUseTheSmallerSide();
+        aTileHandsItsUnchosenNpcsToTheChooserTogether();
+        aChooserRevisionRemakesChoicesButKeepsModels();
         BridgeAssembly.run();
         System.out.println("WorldTileCreaturesTest passed");
     }
@@ -741,6 +743,76 @@ public final class WorldTileCreaturesTest {
         var empty = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0,
                 new WorldFormats.Tile(10, 10, 1, 0, 0), Cancellation.NONE);
         require(empty.drawn() == 0 && empty.omitted() == 0 && empty.note() == null, "A tile without spawns is empty");
+    }
+
+    /** Outside sources that change remake the choices only; converted models stay cached. */
+    private static void aChooserRevisionRemakesChoicesButKeepsModels() {
+        var outside = new AtomicReference<Object>("snapshot 1");
+        var chooses = new AtomicInteger();
+        var previews = new AtomicInteger();
+        WorldTileCreatures.Chooser chooser = new WorldTileCreatures.Chooser() {
+            @Override
+            public WorldTileCreatures.Chosen choose(long npcId, Cancellation token) {
+                chooses.incrementAndGet();
+                return qualified(7, null);
+            }
+
+            @Override
+            public Object revision() {
+                return outside.get();
+            }
+        };
+        var creatures = new WorldTileCreatures(
+                token -> index(List.of(WorldSpawnOverlayTest.spawn(1, 1, -100, -100, 10.0))), () -> "r1",
+                chooser, (display, token) -> {
+                    previews.incrementAndGet();
+                    return preview(display, 0L, 0L, appearance(true));
+                });
+        creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(chooses.get() == 1 && previews.get() == 1, "Cached while nothing changes");
+        outside.set("snapshot 2");
+        var drawn = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(drawn.drawn() == 1 && chooses.get() == 2 && previews.get() == 1,
+                "A new outside source remakes the choice and keeps the converted model");
+        require(creatures.cached(7) != null, "The model cache survives");
+    }
+
+    /** The tile's own NPCs not chosen yet go to {@code forNpcs} at once; the rest stay cached. */
+    private static void aTileHandsItsUnchosenNpcsToTheChooserTogether() {
+        var asked = new ArrayList<List<Long>>();
+        var fail = new java.util.concurrent.atomic.AtomicBoolean();
+        WorldTileCreatures.Chooser chooser = new WorldTileCreatures.Chooser() {
+            @Override
+            public WorldTileCreatures.Chosen choose(long npcId, Cancellation token) {
+                return qualified(7, null);
+            }
+
+            @Override
+            public WorldTileCreatures.Chooser forNpcs(java.util.Collection<Long> npcIds, Cancellation token)
+                    throws Exception {
+                asked.add(List.copyOf(npcIds));
+                if (fail.get()) throw new java.io.IOException("outside source unreadable");
+                return this;
+            }
+        };
+        var rows = List.of(
+                WorldSpawnOverlayTest.spawn(1, 1, -100, -100, 10.0),
+                WorldSpawnOverlayTest.spawn(2, 2, -120, -100, 11.0),
+                WorldSpawnOverlayTest.spawn(1, 3, -110, -110, 12.0),
+                WorldSpawnOverlayTest.spawn(9, 4, -600, -100, 13.0));
+        var revision = new AtomicReference<Object>("r1");
+        var creatures = new WorldTileCreatures(token -> index(rows), revision::get, chooser,
+                (display, token) -> preview(display, 0L, 0L, appearance(true)));
+        creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(asked.equals(List.of(List.of(1L, 2L))), "One call for the tile's distinct NPCs: " + asked);
+        creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(asked.size() == 1, "Chosen NPCs are not handed over again");
+        // A failed batch leaves each NPC to be chosen by itself; the tile still draws.
+        revision.set("r2");
+        fail.set(true);
+        var drawn = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(asked.size() == 2 && drawn.drawn() == 3, "A failed batch still draws: " + drawn.drawn());
     }
 
     private static void buildingsKeepTheirBudgetFirst() {

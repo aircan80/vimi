@@ -303,6 +303,35 @@ final class WorldTileCreatures implements AutoCloseable {
     @FunctionalInterface
     interface Chooser {
         Chosen choose(long npcId, Cancellation token) throws Exception;
+
+        /**
+         * A chooser for these NPCs (one tile's, not yet chosen) that may read what they share at
+         * once, such as their outside displays; this one by default.
+         */
+        default Chooser forNpcs(java.util.Collection<Long> npcIds, Cancellation token) throws Exception {
+            return this;
+        }
+
+        /**
+         * What the choices depend on besides the World's own revision (outside display sources),
+         * or null. When it changes, choices are made again; converted models, keyed by display,
+         * are kept. Tiles already drawn keep their choices until they are prepared again.
+         */
+        default Object revision() {
+            return null;
+        }
+    }
+
+    /**
+     * A choice that cannot be made now and whose cause was already reported once (an outside
+     * source that could not be read for the tile): counted as failed, not logged again, not cached.
+     */
+    static final class ChoiceLater extends Exception {
+        private static final long serialVersionUID = 1L;
+
+        ChoiceLater(String message) {
+            super(message, null, false, false);
+        }
     }
 
     @FunctionalInterface
@@ -435,6 +464,8 @@ final class WorldTileCreatures implements AutoCloseable {
     private final Map<Long, Chosen> choices = lru(CHOICE_CACHE);
     private final ModelCache models = new ModelCache(MODEL_CACHE_BYTES);
     private Object cachedRevision;
+    /** The chooser's last {@link Chooser#revision}; guarded by this. */
+    private Object choiceRevision;
     private CompletableFuture<WorldSpawns.Index> index;
     private long indexFailedAt;
     private final java.util.function.LongSupplier clock;
@@ -550,7 +581,10 @@ final class WorldTileCreatures implements AutoCloseable {
         };
     }
 
-    /** Production chooser: the data-only creature chain of the opened build. */
+    /**
+     * The client-only chooser: the data-only creature chain of the opened build. The World uses
+     * {@link WorldNpcDisplays}, which falls back to outside sources.
+     */
     static Chooser chooser(Supplier<BuildCreatures> creatures) {
         return (npcId, token) -> {
             var handle = creatures.get();
@@ -698,6 +732,7 @@ final class WorldTileCreatures implements AutoCloseable {
         int restPosed = 0, billboardsLeftOut = 0;
         // Builder model indices whose Stand pose left out billboard triangles.
         var billboardModels = new HashSet<Integer>();
+        var tileChooser = tileChooser(nearby.placed(), tile, token);
         for (var spawn : nearby.placed()) {
             token.check();
             if (WorldBookmarks.tileIndex(spawn.x()) != tile.x() || WorldBookmarks.tileIndex(spawn.y()) != tile.y()) continue;
@@ -708,10 +743,13 @@ final class WorldTileCreatures implements AutoCloseable {
             }
             Chosen chosen;
             try {
-                chosen = chosen(spawn.npcId(), token);
+                chosen = chosen(tileChooser, spawn.npcId(), token);
             } catch (CancellationException canceled) {
                 // Only this tile's cancellation propagates; a component's own is a failed lookup.
                 if (token.isCanceled()) throw canceled;
+                counts[Count.FAILED.ordinal()]++;
+                continue;
+            } catch (ChoiceLater later) {
                 counts[Count.FAILED.ordinal()]++;
                 continue;
             } catch (Exception failed) {
@@ -806,12 +844,39 @@ final class WorldTileCreatures implements AutoCloseable {
         return new double[] {spawn.x(), spawn.y(), spawn.z(), scale, -1, 0};
     }
 
-    private Chosen chosen(long npcId, Cancellation token) throws Exception {
+    /**
+     * The chooser for one tile: the NPCs of its spawns not chosen yet are handed to {@link
+     * Chooser#forNpcs} together. A failure there leaves each NPC to be chosen by itself.
+     */
+    private Chooser tileChooser(List<WorldSpawns.Spawn> spawns, WorldFormats.Tile tile, Cancellation token) {
+        var ids = new java.util.LinkedHashSet<Long>();
+        synchronized (this) {
+            for (var spawn : spawns) {
+                if (WorldBookmarks.tileIndex(spawn.x()) == tile.x() && WorldBookmarks.tileIndex(spawn.y()) == tile.y()
+                        && !choices.containsKey(spawn.npcId())) {
+                    ids.add(spawn.npcId());
+                }
+            }
+        }
+        if (ids.isEmpty()) return chooser;
+        try {
+            return Objects.requireNonNull(chooser.forNpcs(List.copyOf(ids), token));
+        } catch (CancellationException canceled) {
+            if (token.isCanceled()) throw canceled;
+            return chooser;
+        } catch (Exception failed) {
+            token.check();
+            WorldDiagnostics.degraded("creature lookups", "World creature display lookup failed", failed);
+            return chooser;
+        }
+    }
+
+    private Chosen chosen(Chooser tileChooser, long npcId, Cancellation token) throws Exception {
         synchronized (this) {
             var cached = choices.get(npcId);
             if (cached != null) return cached;
         }
-        var chosen = chooser.choose(npcId, token);
+        var chosen = tileChooser.choose(npcId, token);
         token.check();
         synchronized (this) {
             if (!closed) choices.put(npcId, chosen);
@@ -1272,8 +1337,19 @@ final class WorldTileCreatures implements AutoCloseable {
     /** The source revision's spawn index, loaded once on its own daemon thread. */
     private WorldSpawns.Index index(Cancellation token) {
         CompletableFuture<WorldSpawns.Index> future;
+        Object choicesNow;
+        try {
+            choicesNow = chooser.revision();
+        } catch (RuntimeException unavailable) {
+            choicesNow = choiceRevision; // unknown now: the choices stand
+        }
         synchronized (this) {
             if (closed) throw new CancellationException("Creature models closed");
+            if (!Objects.equals(choicesNow, choiceRevision)) {
+                // Outside display sources changed: choose again, but keep converted models.
+                choices.clear();
+                choiceRevision = choicesNow;
+            }
             var now = revision.get();
             // A failed load is reused within its revision until the back-off ends, so a broken
             // source costs one load per minute, not one per tile.
