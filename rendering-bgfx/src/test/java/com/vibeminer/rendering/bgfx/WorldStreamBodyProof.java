@@ -134,7 +134,7 @@ final class WorldStreamBodyProof {
             check(differing(none, hidden) == 0, "a hidden body draws nothing");
             check(owner.bodySubmits() == 0, "a hidden body submits nothing");
             var summary = new StringBuilder();
-            for (int sequence : new int[] {0, 4, 5}) {
+            for (int sequence : new int[] {0, 4, 5, 135}) {
                 var animation = body.animation(sequence);
                 if (animation == null) {
                     System.out.println("BODY sequence " + sequence + " not in the model");
@@ -144,7 +144,18 @@ final class WorldStreamBodyProof {
                 int moving = 0;
                 for (int k = 0; k < 4; k++) {
                     long millis = animation.durationMillis() * k / 4;
-                    var pose = pose(yaw, sequence, millis, false);
+                    // Fly is posed in the air, a third of the body's height above the ground.
+                    var pose =
+                            sequence == 135
+                                    ? new WorldStreamTransport.Body(
+                                            X,
+                                            Y,
+                                            GROUND + height(body) / 3,
+                                            yaw,
+                                            sequence,
+                                            millis,
+                                            false)
+                                    : pose(yaw, sequence, millis, false);
                     long uploads = owner.bodyUploads();
                     int[] seen = shooter.shoot(behind, pose);
                     check(owner.bodyUploads() == uploads + 1, "a new pose uploads once");
@@ -171,6 +182,21 @@ final class WorldStreamBodyProof {
                 }
             }
             System.out.print(summary);
+            if (arguments.length > 2) {
+                // A swap: the second body replaces the first and holds only its own textures.
+                var other = WorldStreamBodyFile.decode(Files.readAllBytes(Path.of(arguments[2])));
+                owner.attachBody(other);
+                check(
+                        owner.objectTexturesHeld() == heldBefore + other.images().size(),
+                        "a swapped body holds only its own textures");
+                var otherAnimation = other.animation(0);
+                long millis = otherAnimation == null ? 0 : otherAnimation.durationMillis() / 2;
+                int[] seen = shooter.shoot(behind, pose(yaw, 0, millis, false));
+                check(differing(none, seen) > 200, "the swapped body draws");
+                save(output, "swapped-stand", seen);
+                System.out.println(
+                        "BODY swap to " + Path.of(arguments[2]).getFileName() + " drawn");
+            }
             System.out.println("BODY proof passed; frames in " + output);
         }
     }
@@ -180,6 +206,7 @@ final class WorldStreamBodyProof {
             case 0 -> "stand";
             case 4 -> "walk";
             case 5 -> "run";
+            case 135 -> "fly";
             default -> "sequence" + sequence;
         };
     }

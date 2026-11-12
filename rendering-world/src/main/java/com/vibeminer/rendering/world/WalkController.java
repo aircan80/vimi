@@ -44,6 +44,8 @@ public final class WalkController {
         SLIDING,
         /** Flying. */
         FLYING,
+        /** Flying, but still and resting on walkable ground (flying does not land by itself). */
+        LANDED,
         /** Waiting for collision data around the body. */
         LOADING,
         /** Fell out of the known world and was put back where it last stood. */
@@ -546,6 +548,14 @@ public final class WalkController {
         unstick();
         double[] moved = slide(x, y, z, dx, dy, dz, false);
         set(moved[0], moved[1], moved[2]);
+        if (len <= 1e-9 && status == Status.FLYING) {
+            // Still, on walkable ground just below: resting there (it stays in flying mode).
+            double probe = .05;
+            var below = collision.sweep(shape, x, y, z, 0, 0, -probe);
+            if (below != null && below.faceNz() >= walkable && below.nz() > 0) {
+                status = Status.LANDED;
+            }
+        }
     }
 
     /**

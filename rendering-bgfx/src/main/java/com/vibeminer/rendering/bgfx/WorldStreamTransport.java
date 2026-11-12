@@ -1157,15 +1157,14 @@ public final class WorldStreamTransport {
         private HorizonOperation horizonOperation;
         private boolean horizonRequested, horizonStarted, committedOnce;
 
-        // The session's one walking body model.
+        // The latest body model; one delivery at a time, each replacing the drawn body.
         private BodyOperation bodyOperation;
-        private boolean bodyRequested, bodyStarted;
 
-        /** The one body delivery: file write, BODY_MODEL, reply, file delete. */
+        /** One body delivery: file write, BODY_MODEL, reply, file delete. */
         private static final class BodyOperation {
             final byte[] file;
             final CompletableFuture<BodyOutcome> result = new CompletableFuture<>();
-            boolean advertised;
+            boolean advertised, started;
             WorldStreamStatus.BodyOutcome reply;
 
             BodyOperation(byte[] file) {
@@ -1523,10 +1522,11 @@ public final class WorldStreamTransport {
         }
 
         /**
-         * Sends the walking body's model and animations ({@link WorldStreamBodyFile}) for the child
-         * to draw wherever a camera carries a body pose; at most once per session, after the first
-         * commit. The future completes with the child's one outcome; any failure only means no
-         * body. A stopping session cancels it.
+         * Sends a body's model and animations ({@link WorldStreamBodyFile}) for the child to draw
+         * wherever a camera carries a body pose, after the first commit; a later one replaces the
+         * drawn body (the walking murloc, the flying gryphon). One at a time: while one is still
+         * unanswered another is refused. The future completes with the child's one outcome; any
+         * failure only means no body. A stopping session cancels it.
          */
         public CompletableFuture<BodyOutcome> attachBody(byte[] file) {
             Objects.requireNonNull(file);
@@ -1539,11 +1539,10 @@ public final class WorldStreamTransport {
                     return CompletableFuture.failedFuture(
                             new java.util.concurrent.CancellationException("World stopped"));
                 }
-                if (bodyRequested) {
+                if (bodyOperation != null && !bodyOperation.result.isDone()) {
                     return CompletableFuture.failedFuture(
-                            new IllegalStateException("Body already sent for this session"));
+                            new IllegalStateException("A body is still being delivered"));
                 }
-                bodyRequested = true;
                 var operation = new BodyOperation(file.clone());
                 bodyOperation = operation;
                 lock.notifyAll();
@@ -1874,10 +1873,10 @@ public final class WorldStreamTransport {
                             && wdl == null
                             && bodyOperation != null
                             && committedOnce
-                            && !bodyStarted
+                            && !bodyOperation.started
                             && !handle.stopping()) {
                         // The body likewise goes after the first visible tile.
-                        bodyStarted = true;
+                        bodyOperation.started = true;
                         body = bodyOperation;
                     }
                     if (operation == null && wdl == null && body == null) {
@@ -1887,7 +1886,7 @@ public final class WorldStreamTransport {
                                         new java.util.concurrent.CancellationException(
                                                 "World stopped"));
                             }
-                            if (bodyOperation != null && !bodyStarted) {
+                            if (bodyOperation != null && !bodyOperation.started) {
                                 bodyOperation.result.completeExceptionally(
                                         new java.util.concurrent.CancellationException(
                                                 "World stopped"));

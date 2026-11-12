@@ -286,9 +286,16 @@ final class WorldStreamSourceController {
     private volatile WorldStreamTransport.Session session;
     // Whether this session's WDL horizon was asked for (#372); once per session.
     private boolean horizonStarted;
-    // The walking body's file, once a source is attached; sent once per session.
-    private volatile java.util.function.Supplier<java.util.concurrent.CompletableFuture<byte[]>> bodySource;
-    private boolean bodyStarted;
+    // The body the view wants drawn (a key, its display, and its file); each key is sent once,
+    // one at a time, and a different key replaces the drawn body (walking murloc, flying gryphon).
+    private record BodyWanted(
+            long key, java.util.function.Supplier<java.util.concurrent.CompletableFuture<byte[]>> source) {}
+    private volatile BodyWanted bodyWanted;
+    // Worker only: the key last sent. Shared: whether a send is unanswered, and the drawn key.
+    private long bodySent = -1;
+    private final java.util.concurrent.atomic.AtomicBoolean bodyInFlight =
+            new java.util.concurrent.atomic.AtomicBoolean();
+    private volatile long bodyDrawn = -1;
     private List<WorldFormats.Tile> desired;
     // Tiles one ring beyond the demand (#366): a pending tile there is kept, not canceled.
     private List<WorldFormats.Tile> keep = List.of();
@@ -548,31 +555,48 @@ final class WorldStreamSourceController {
     }
 
     /**
-     * The walking body's file ({@link com.vibeminer.rendering.bgfx.WorldStreamBodyFile}), asked for
-     * once the session draws; any failure only means no body.
+     * The body to draw ({@link com.vibeminer.rendering.bgfx.WorldStreamBodyFile}) under {@code key}
+     * (its creature display): asked for and sent once the session draws, replacing the drawn body
+     * when the key differs from the last one sent. The same key again is not sent again; any
+     * failure only means no body (see {@link #bodyDrawn}).
      */
-    void body(java.util.function.Supplier<java.util.concurrent.CompletableFuture<byte[]>> source) {
-        bodySource = Objects.requireNonNull(source);
+    void body(long key, java.util.function.Supplier<java.util.concurrent.CompletableFuture<byte[]>> source) {
+        bodyWanted = new BodyWanted(key, Objects.requireNonNull(source));
         kick();
     }
 
-    /** Once per session, when a body source is attached: hands the body to the World child. */
+    /** The key of the body the World child draws now, or -1 before any (or after a failed swap). */
+    long bodyDrawn() {
+        return bodyDrawn;
+    }
+
+    /** Hands the wanted body to the World child when it is not the one last sent; one at a time. */
     private void startBody() {
-        var source = bodySource;
-        if (bodyStarted || closing || source == null) return;
-        bodyStarted = true;
+        var wanted = bodyWanted;
+        if (closing || wanted == null || wanted.key() == bodySent || !bodyInFlight.compareAndSet(false, true))
+            return;
+        bodySent = wanted.key();
         var opened = session;
-        source.get().whenComplete((file, failure) -> {
-            if (failure != null) {
-                WorldDiagnostics.degradedUnlessClean("body", "World body unavailable", failure);
+        wanted.source().get().whenComplete((file, failure) -> {
+            if (failure != null || closing) {
+                if (failure != null)
+                    WorldDiagnostics.degradedUnlessClean("body", "World body unavailable", failure);
+                bodyDrawn = -1;
+                bodyInFlight.set(false);
+                kick();
                 return;
             }
-            if (closing) return;
             opened.attachBody(file).whenComplete((outcome, sendFailure) -> {
                 if (sendFailure != null)
                     WorldDiagnostics.degradedUnlessClean("body", "World body was not delivered", sendFailure);
                 else if (outcome != com.vibeminer.rendering.bgfx.WorldStreamTransport.BodyOutcome.DRAWN)
                     WorldDiagnostics.degraded("body", "The World child could not draw the body", null);
+                // A failed swap leaves the child's previous body, which is not the one wanted.
+                bodyDrawn = sendFailure == null
+                        && outcome == com.vibeminer.rendering.bgfx.WorldStreamTransport.BodyOutcome.DRAWN
+                        ? wanted.key() : -1;
+                bodyInFlight.set(false);
+                kick();
             });
         });
     }

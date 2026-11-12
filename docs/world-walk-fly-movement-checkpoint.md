@@ -109,6 +109,14 @@ player flight, so these controls are an approximation. Flight never waits for
 collision: it collides with what is loaded and the status line says when that is
 not all.
 
+Flying down onto ground stops there; flying never lands by itself (as since
+#704). A flying body that is still on walkable ground rests there: the status
+line says "resting on the ground (the walk/fly key lands)", the gryphon plays
+Stand, and it stays in fly mode until the walk/fly key switches to walking.
+
+The flying body is a gryphon (creature display 1149, model 792, the taxi
+gryphon); see "Drawn body" below.
+
 ## Camera
 
 `FollowCamera` orbits the eye (90% of the capsule height) at a zoom distance
@@ -236,7 +244,7 @@ accept a 0.01 yd overlap.
 No game data or screenshots are included. Real-client movement parity is not
 claimed for the flagged values.
 
-## Body sequences (murloc)
+## Body sequences (murloc, gryphon)
 
 The drawn body's data:
 
@@ -246,18 +254,27 @@ The drawn body's data:
   `BuildDisplayModels.worldSequences` admits several under the World profile
   from one parse. Display 441 (murloc, model 31) has Stand, Walk, Run,
   SwimIdle and Swim, all in the model; it has no jump or fall sequence.
+  Display 1149 (gryphon, model 792) stores Stand 0, Death 1, Walk 4, Run 5,
+  StandWound 8, CombatWound 9, CombatCritical 10, AttackUnarmed 16,
+  Whirlwind 126, Birth 127 and Fly 135 (`-Pprobe.mode=body -Pprobe.display=1149
+  -Pprobe.allSequences=true` lists every stored ID up to 999): no idle-in-air
+  sequence (no FlyStand 229, Hover 193, FlyHover 422 or InFlight 144; names
+  from the public AnimationData list).
 - `PreviewAnimation.write`/`read` carry an animation to another process (a
   versioned stream; another version, a truncated stream or more keys than the
   bounds is refused), and a `Skinner` poses it into caller arrays every frame
   without allocating.
 - `BodyAnimation.choose` picks the sequence from the body's mode, status and
   direction: backpedalling plays WalkBackwards (else Walk, else Run), moving
-  forward runs (walks at walk speed), deep water swims; it falls back to what
-  the model has. `BodyAnimation.rate` runs a sequence's clock at the body's
+  forward runs (walks at walk speed), deep water swims; flying moving plays
+  Fly, flying still in the air FlyStand, else Hover, else Fly (the gryphon:
+  Fly), and a flying body resting on the ground Stand; it falls back to what
+  the model has and never makes up a pose. `BodyAnimation.rate` runs a sequence's clock at the body's
   speed over the sequence's move speed, so the feet keep pace with the ground.
 - `BodyAnimation.capsule` sizes the body from the model's GeoBox times
   CreatureDisplayInfo.CreatureModelScale times CreatureModelData.ModelScale
-  (`BuildDisplayModels.bodySize`; murloc: radius 0.51, height 1.29 yd), because
+  (`BuildDisplayModels.bodySize`; murloc: radius 0.51, height 1.29 yd;
+  gryphon: radius 2.30, height 5.35 yd), because
   CreatureModelData's collision size is the same default for every model probed.
 - Walking collision forgets the sources it refused for a missing or wrong key
   (or protected sections) when the build's key set changes
@@ -265,26 +282,31 @@ The drawn body's data:
 - The measurement probe's `body` mode renders each sequence of a display at four
   times on the CPU, and writes the World's body file (`body-441.wsb`).
 
-## Drawn body (murloc)
+## Drawn body (murloc walking, gryphon flying)
 
-- `WorldBodyModel` builds the body on a worker the first time the view enters
-  walk or fly mode (never when only the free camera is used), once per World
-  view: the
+- Walking draws the murloc (display 441), flying the gryphon (display 1149).
+  `WorldBodyModel` builds each body on a worker the first time the view enters
+  its mode (never when only the free camera is used), once per World view: the
   display's World binding converted exactly as the World converts creatures
   (`WorldTileCreatures.convert`, which also reports the rest vertex behind each
   model vertex), its sequences and its size, packed as one body file
   (`WorldStreamBodyFile`: model, vertex map, scale, and each animation's
   `PreviewAnimation.write` record). The capsule takes the recorded size.
-- From then on the stream controller hands the file to the World child once
-  per session (again after a restart), after the first visible tile, as file
-  `body-1.wsb` and command `BODY_MODEL`;
+- From then on the stream controller hands the current mode's file to the World
+  child (again after a restart), after the first visible tile, as file
+  `body-1.wsb` and command `BODY_MODEL`. Switching walk and fly sends the other
+  body, which replaces the drawn one; each body is built once and the same body
+  is not sent twice in a row. Body commands go one at a time: the next only
+  after the child answered the previous. Until the swapped body is drawn (and
+  after a failed one) no body is drawn, never the other mode's;
   the child checks length, digest and every count and reference, builds the
   index buffer, textures and a dynamic vertex buffer in the objects' layout,
   and answers one `BODY_DONE` (`DRAWN` or `FAILED`; a failure only means no
   body). The body is charged to the objects' accounting like an object set: its
   texture handles count against the object handle limit (#658) and its buffer
-  and texture bytes against the objects budget (#660), from attach until the
-  session closes; a body that does not fit is refused (`FAILED`).
+  and texture bytes against the objects budget (#660), from attach until it is
+  replaced or the session closes; a body that does not fit is refused
+  (`FAILED`) and the previous one stays attached.
 - Each camera line in a body mode carries a `BODY` tail: the feet in
   thousandths of a yard, the yaw in ten-thousandths of a radian, the sequence,
   its clock in milliseconds and a hidden flag (first person). The longest
@@ -306,13 +328,15 @@ The drawn body's data:
   plays; none in first person (the body is hidden) or while the view is not
   focused.
 - Proofs: `nativeGpuWorldStreamBodyProof` draws a body (an authored one, or
-  `-PbodyFile=body-441.wsb` from the probe) standing, walking and running from
-  the follow camera and from the side at four times each, and checks that it
-  draws, that a hidden body draws nothing, that the legs move and that a
-  repeated pose is not uploaded; `nativeGpuWorldStreamBodySessionProof` sends a
-  body through the real World child and checks `BODY_DONE 1 DRAWN` and its
-  frames.
-- Not yet: jump and fall sequences,
-  the body turning toward its movement while strafing, and the gryphon for
-  flying.
+  `-PbodyFile=body-441.wsb` or `body-1149.wsb` from the probe) standing,
+  walking, running and, when it has Fly, flying above the ground, from the
+  follow camera and from the side at four times each, and checks that it draws,
+  that a hidden body draws nothing, that the legs (or wings) move and that a
+  repeated pose is not uploaded; `-PswapBodyFile=` then swaps in a second body
+  and checks it draws holding only its own textures.
+  `nativeGpuWorldStreamBodySessionProof` sends a body through the real World
+  child and checks `BODY_DONE 1 DRAWN` and its frames, then swaps in a second,
+  larger body and checks its own `BODY_DONE` and that the frame shows it.
+- Not yet: jump and fall sequences, and the body turning toward its movement
+  while strafing.
 

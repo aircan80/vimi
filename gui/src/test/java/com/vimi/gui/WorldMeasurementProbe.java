@@ -945,6 +945,10 @@ public final class WorldMeasurementProbe {
     private static void body(WorldMeasurementOpen opened) throws Exception {
         long display = Long.getLong("probe.display", 441);
         int[] ids = {0, 4, 5, 13, 41, 42, 135};
+        if ("true".equals(System.getProperty("probe.allSequences"))) {
+            // Every AnimationData ID up to 1000: which ones the model stores.
+            ids = java.util.stream.IntStream.range(0, 1000).toArray();
+        }
         try (var displays = opened.displays()) {
             var preview = displays.worldPreview(display, Cancellation.NONE).get(2, TimeUnit.MINUTES);
             say("PROBE body display " + display + ": preview " + preview.state() + " " + preview.message());
@@ -960,8 +964,15 @@ public final class WorldMeasurementProbe {
             java.nio.file.Files.write(bodyFile, built.file());
             say("PROBE body file " + bodyFile.getFileName() + ": " + built.file().length + " bytes, capsule "
                     + built.capsule() + ", sequences " + built.durations() + " ms, move speeds " + built.moveSpeeds());
+            var stored = new TreeMap<String, List<Integer>>();
+            for (var entry : sequences.entrySet())
+                stored.computeIfAbsent(entry.getValue().state().toString(), k -> new ArrayList<>()).add(entry.getKey());
+            stored.forEach((state, list) -> say("PROBE body sequences " + state + ": "
+                    + (list.size() > 40 ? list.size() + " IDs" : list.toString())));
             for (var entry : sequences.entrySet()) {
                 var idle = entry.getValue();
+                if (idle.state() != com.vibeminer.concepts.models.DisplayModelTypes.IdleState.AVAILABLE
+                        && ids.length > 7) continue;
                 say("PROBE body sequence " + entry.getKey() + ": " + idle.state() + " · " + idle.message()
                         + (idle.animation() == null ? "" : " · move speed " + idle.animation().moveSpeed()));
                 if (idle.animation() == null || preview.appearance() == null) continue;

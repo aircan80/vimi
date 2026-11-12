@@ -58,7 +58,7 @@ public final class WorldStreamSourceControllerTest {
         heldPresentationBackpressuresTwelveUniqueOwnersAndKeepsFinalFrame();
         nativePresentationAcceptsCurrentContentAndRelievesTwelveOwners();
         nativePresentationWithAStillCameraAcceptsEachCommit();
-        everySessionSendsTheBodyOnceAfterItsFirstCommit();
+        everySessionSendsEachBodyOnceAfterItsFirstCommit();
         nativeReportBeforeTheReceiptIsStillAccepted();
         poolReleaseRetriesWithoutDemandOrParentCapacityChange();
         capacityChangeBetweenTileRefusalAndRetryStillWakesPreparation();
@@ -2557,16 +2557,17 @@ public final class WorldStreamSourceControllerTest {
 
     /**
      * A body source is asked once per session, after the first commit, and the body goes to the
-     * child once; a new session (a restart) asks and sends it again.
+     * child once; the same body again is not sent again, a different one (flying) replaces it;
+     * a new session (a restart) asks and sends it again.
      */
-    private static void everySessionSendsTheBodyOnceAfterItsFirstCommit() throws Exception {
+    private static void everySessionSendsEachBodyOnceAfterItsFirstCommit() throws Exception {
         for (int session = 0; session < 2; session++) {
             var fixture = new Fixture(new AuthoredTerrainSource.Files(), 9);
             var asked = new java.util.concurrent.atomic.AtomicInteger();
             var outcome = new java.util.concurrent.CompletableFuture<byte[]>();
             try {
                 fixture.start();
-                fixture.controller.body(() -> {
+                fixture.controller.body(441, () -> {
                     asked.incrementAndGet();
                     return java.util.concurrent.CompletableFuture.completedFuture(new byte[64]);
                 });
@@ -2583,8 +2584,9 @@ public final class WorldStreamSourceControllerTest {
                         return false;
                     }
                 });
-                // A second hand-over in the same session (walk entered again) is not a second send.
-                fixture.controller.body(() -> {
+                fixture.until(() -> fixture.controller.bodyDrawn() == 441);
+                // A second hand-over of the same body (walk entered again) is not a second send.
+                fixture.controller.body(441, () -> {
                     asked.incrementAndGet();
                     return outcome;
                 });
@@ -2593,6 +2595,14 @@ public final class WorldStreamSourceControllerTest {
                 long sent = Files.readString(log).lines().filter(line -> line.startsWith("BodyModel[")).count();
                 check(sent == 1, "Session " + session + " sent the body once: " + sent);
                 check(asked.get() == 1, "The body was asked for once per session: " + asked.get());
+                // Flying hands over another body: it replaces the drawn one.
+                fixture.controller.body(1149, () -> {
+                    asked.incrementAndGet();
+                    return java.util.concurrent.CompletableFuture.completedFuture(new byte[96]);
+                });
+                fixture.until(() -> fixture.controller.bodyDrawn() == 1149);
+                sent = Files.readString(log).lines().filter(line -> line.startsWith("BodyModel[")).count();
+                check(sent == 2 && asked.get() == 2, "The flying body was sent once more: " + sent);
             } finally {
                 outcome.complete(new byte[64]);
                 fixture.close();

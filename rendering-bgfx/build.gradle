@@ -363,8 +363,10 @@ tasks.register('nativeGpuWorldStreamHorizonProof', JavaExec) {
 }
 
 // The walking body: attached once, posed by the camera's body tail, drawn by the objects
-// pass. -PbodyFile=<body-441.wsb from the measurement probe's body mode> draws a real body;
-// without it an authored body swings its leg. Frames go to -PbodyProofOutput or the build folder.
+// pass. -PbodyFile=<body-441.wsb from the measurement probe's body mode> draws a real body
+// (standing, walking, running, and flying when it has Fly), and -PswapBodyFile=<another .wsb>
+// then swaps it for a second one, as switching walk and fly does; without them an authored
+// body swings its leg. The session proof also swaps an authored body through the real child. Frames go to -PbodyProofOutput or the build folder.
 tasks.register('nativeGpuWorldStreamBodySessionProof', JavaExec) {
     group = 'verification'
     description = 'Sends an authored body to the real World child and checks BODY_DONE and its frames.'
@@ -386,8 +388,10 @@ tasks.register('nativeGpuWorldStreamBodyProof', JavaExec) {
     jvmArgs '--enable-native-access=ALL-UNNAMED'
     systemProperty 'vimi.worldProof.backend', providers.gradleProperty('worldProofBackend').getOrElse('vulkan')
     def body = providers.gradleProperty('bodyFile')
+    def swap = providers.gradleProperty('swapBodyFile')
     args([providers.gradleProperty('bodyProofOutput').getOrElse(layout.buildDirectory.dir('native-world-stream-body').get().asFile.absolutePath)]
-        + (body.isPresent() ? [body.get()] : []))
+        + (body.isPresent() ? [body.get()] : [])
+        + (body.isPresent() && swap.isPresent() ? [swap.get()] : []))
 }
 
 // Raw terrain frames of one authored tile, for before/after comparisons of the terrain path.

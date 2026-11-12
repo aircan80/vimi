@@ -75,12 +75,39 @@ final class WorldStreamBodySessionProof {
                 int[] none = frame(reader, 3, 400, 250);
                 WorldStreamSessionProof.require(
                         differing(before, none) == 0, "A hidden body was drawn");
-                WorldStreamSessionProof.send(child, command);
+                // A swap (flying): a second body, twice the size, replaces the first once answered.
+                var first0 = WorldStreamBodyProof.authored();
+                var bigger =
+                        new WorldStreamBodyFile.Body(
+                                first0.vertices(),
+                                first0.indices(),
+                                first0.ranges(),
+                                first0.blends(),
+                                first0.images(),
+                                first0.sources(),
+                                first0.scale() * 2,
+                                first0.sequences(),
+                                first0.animations());
+                byte[] swap = WorldStreamBodyFile.encode(bigger);
+                Files.delete(directory.resolve(WorldStreamControl.BodyModel.BASENAME));
+                Files.write(directory.resolve(WorldStreamControl.BodyModel.BASENAME), swap);
+                String swapSha =
+                        java.util.HexFormat.of()
+                                .formatHex(
+                                        java.security.MessageDigest.getInstance("SHA-256")
+                                                .digest(swap));
+                WorldStreamSessionProof.send(
+                        child, new WorldStreamControl.BodyModel(nonce, swap.length, swapSha));
+                // Its own answer: a second BODY_DONE.
+                statuses.await("BODY_DONE 1 DRAWN");
+                WorldStreamSessionProof.send(child, camera(nonce, 4, pose));
+                int[] swapped = frame(reader, 4, 400, 250);
+                int grown = differing(before, swapped);
+                WorldStreamSessionProof.require(
+                        grown > changed,
+                        "The swapped body is not the bigger one: " + grown + " vs " + changed);
                 WorldStreamSessionProof.send(child, new WorldStreamControl.Close(nonce));
                 statuses.await("CLOSED");
-                WorldStreamSessionProof.require(
-                        !statuses.observed.toString().matches("(?s).*BODY_DONE.*BODY_DONE.*"),
-                        "A repeated BODY_MODEL was answered");
                 WorldStreamSessionProof.require(
                         child.waitFor(10, TimeUnit.SECONDS) && child.exitValue() == 0,
                         "Child failed clean close");
@@ -90,6 +117,8 @@ final class WorldStreamBodySessionProof {
                                 + child.pid()
                                 + " outcome=DRAWN changed="
                                 + changed
+                                + " swapped="
+                                + grown
                                 + "/"
                                 + before.length);
             } finally {

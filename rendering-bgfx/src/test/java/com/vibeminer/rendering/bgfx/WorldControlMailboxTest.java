@@ -156,14 +156,18 @@ class WorldControlMailboxTest {
     }
 
     @Test
-    void theBodyLaneTakesOneCommandAndIgnoresRepeats() {
+    void theBodyLaneKeepsTheNewestPendingCommand() {
         var mailbox = new WorldControlMailbox(NONCE);
         var first = new WorldStreamControl.BodyModel(NONCE, 100, "d".repeat(64));
         assertEquals(WorldControlMailbox.Result.ACCEPTED, mailbox.offer(first));
-        assertEquals(
-                WorldControlMailbox.Result.ACCEPTED,
-                mailbox.offer(new WorldStreamControl.BodyModel(NONCE, 200, "e".repeat(64))));
         assertEquals(first, mailbox.takeBody());
+        assertNull(mailbox.takeBody());
+        // A later body (a swap) is taken in turn; a newer pending one replaces an older one.
+        var second = new WorldStreamControl.BodyModel(NONCE, 200, "e".repeat(64));
+        var third = new WorldStreamControl.BodyModel(NONCE, 300, "f".repeat(64));
+        assertEquals(WorldControlMailbox.Result.ACCEPTED, mailbox.offer(second));
+        assertEquals(WorldControlMailbox.Result.ACCEPTED, mailbox.offer(third));
+        assertEquals(third, mailbox.takeBody());
         assertNull(mailbox.takeBody());
         assertNull(mailbox.takeHorizon(), "its own lane");
         assertFalse(mailbox.failed());

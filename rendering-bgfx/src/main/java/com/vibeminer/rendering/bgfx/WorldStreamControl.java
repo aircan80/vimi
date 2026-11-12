@@ -161,8 +161,9 @@ final class WorldStreamControl {
 
     /**
      * The walking body's model and animations, file {@code body-1.wsb} ({@link
-     * WorldStreamBodyFile}). At most one per session, outside the tile transaction sequence; the
-     * child answers with exactly one {@code BODY_DONE}, and any failure only means no body.
+     * WorldStreamBodyFile}). One at a time, outside the tile transaction sequence: the child
+     * answers each with exactly one {@code BODY_DONE}, a later one replaces the drawn body (walking
+     * and flying bodies), and any failure only means no body.
      */
     record BodyModel(WorldStreamState.Nonce nonce, int length, String sha256) implements Command {
         static final String BASENAME = "body-1.wsb";
