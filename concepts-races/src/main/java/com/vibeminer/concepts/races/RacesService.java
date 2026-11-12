@@ -24,6 +24,9 @@ public final class RacesService implements BuildRaces {
             MAX_ABILITIES = 8192;
     private final BuildTables tables;
 
+    /** The persistent humanoid NPC appearance index; reads the borrowed tables directly. */
+    final RaceNpcIndex npcIndex;
+
     /** Reverse relation indexes for per-key lookups (humanoid NPCs, #385). */
     final com.vibeminer.concepts.core.RelationIndexes relations;
 
@@ -64,11 +67,13 @@ public final class RacesService implements BuildRaces {
             BuildTables tables,
             com.vibeminer.files.BuildFiles files,
             com.vibeminer.generated.GeneratedStore generated) {
-        this.tables = Objects.requireNonNull(tables);
+        npcIndex = new RaceNpcIndex(Objects.requireNonNull(tables), files, generated);
+        // With an index, every table read is recorded so an entry names the tables it came from.
+        this.tables = npcIndex.available() ? npcIndex.recording(tables) : tables;
         this.relations = new com.vibeminer.concepts.core.RelationIndexes(this.tables);
-        media = new RaceMedia(this, tables, files, generated);
-        voices = new RaceVoices(this, media, tables, files, generated);
-        appearance = new RaceAppearance(this, media, tables, files, generated);
+        media = new RaceMedia(this, this.tables, files, generated);
+        voices = new RaceVoices(this, media, this.tables, files, generated);
+        appearance = new RaceAppearance(this, media, this.tables, files, generated);
         idle = new RaceIdleAnimations(media, files);
         filesForModels = files;
     }
@@ -198,6 +203,12 @@ public final class RacesService implements BuildRaces {
                             }
                             var issues = new ArrayList<String>();
                             try {
+                                // Resolve, omissions and plan are skipped while the index entry
+                                // and everything it came from are unchanged.
+                                var indexed = appearance.indexed(extendedDisplayInfoId, request);
+                                if (indexed != null) {
+                                    return new Planned(null, 0, 0, indexed);
+                                }
                                 var resolution =
                                         RaceNpcs.resolve(
                                                 this,
@@ -215,14 +226,20 @@ public final class RacesService implements BuildRaces {
                                 }
                                 var spec = resolution.spec();
                                 var omissions = appearance.npcOmissions(spec, request);
-                                var prepared = appearance.prepareNpc(spec, request);
-                                return new Planned(
-                                        prepared,
+                                int omitted =
                                         spec.omittedItems()
                                                 + omissions.missing()
-                                                + omissions.undrawn(),
-                                        omissions.attachments(),
-                                        null);
+                                                + omissions.undrawn();
+                                var prepared =
+                                        appearance.prepareNpc(
+                                                spec,
+                                                request,
+                                                new RaceAppearance.Indexing(
+                                                        extendedDisplayInfoId,
+                                                        omitted,
+                                                        omissions.attachments()));
+                                return new Planned(
+                                        prepared, omitted, omissions.attachments(), null);
                             } catch (Unreadable unreadable) {
                                 return new Planned(
                                         null,
