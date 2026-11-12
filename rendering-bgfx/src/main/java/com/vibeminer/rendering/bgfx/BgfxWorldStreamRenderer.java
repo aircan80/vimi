@@ -546,6 +546,14 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         short vertices = INVALID, indices = INVALID;
         long bytes;
 
+        /**
+         * Building water ({@link WorldObjectWater}): static buffers in terrain water's layout and
+         * per run its first index, index count, placement and mesh; INVALID and empty without.
+         */
+        short waterVertices = INVALID, waterIndices = INVALID;
+
+        final int[] waterRuns;
+
         /** Per model: its idle animation (#384), or null for a static model. */
         final WorldStreamPackedObjects.ObjectAnimation[] animations;
 
@@ -600,6 +608,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 WorldStreamObjectTextures shared,
                 WorldStreamObjectTextures.Plan plan) {
             this.shared = shared;
+            waterRuns = source.water.runs;
             models = source.models;
             meshes = source.meshes;
             ranges = source.ranges;
@@ -735,6 +744,14 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 }
             }
             poseBytes = 0;
+            if (waterVertices != INVALID) {
+                bgfx_destroy_vertex_buffer(waterVertices);
+                waterVertices = INVALID;
+            }
+            if (waterIndices != INVALID) {
+                org.lwjgl.bgfx.BGFX.bgfx_destroy_index_buffer(waterIndices);
+                waterIndices = INVALID;
+            }
             if (vertices != INVALID) {
                 bgfx_destroy_dynamic_vertex_buffer(vertices);
                 vertices = INVALID;
@@ -850,6 +867,19 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private final WorldStreamPortalCulling portalCulling = new WorldStreamPortalCulling();
 
     private int framePortalWalks, framePortalCulled, framePortalPlacementsCulled;
+
+    /** Building water runs drawn and skipped (culled, or an interior not reached) last frame. */
+    private int frameWaterSubmits, frameWaterCulled;
+
+    /** Building water runs drawn in the last frame, and skipped (proofs). */
+    int waterSubmits() {
+        return frameWaterSubmits;
+    }
+
+    int waterCulled() {
+        return frameWaterCulled;
+    }
+
     private int frameChunks, frameChunksCulled, frameTerrainSubmits;
     private int framePlacements, frameCulled, frameObjectSubmits, frameCameraUniforms;
 
@@ -1557,6 +1587,24 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                                 bgfx_create_dynamic_index_buffer(
                                         source.indices.capacity() / 2, BGFX_BUFFER_NONE));
                 built.bytes = source.vertices.capacity() + (long) source.indices.capacity();
+                var water = source.water;
+                if (water.vertices != null) {
+                    // Static: building water never changes; bgfx_copy takes the bytes at once.
+                    try (var layout = meshLayout()) {
+                        built.waterVertices =
+                                valid(
+                                        bgfx_create_vertex_buffer(
+                                                bgfx_copy(water.vertices),
+                                                layout,
+                                                BGFX_BUFFER_NONE));
+                    }
+                    built.waterIndices =
+                            valid(
+                                    org.lwjgl.bgfx.BGFX.bgfx_create_index_buffer(
+                                            bgfx_copy(water.indices),
+                                            org.lwjgl.bgfx.BGFX.BGFX_BUFFER_INDEX32));
+                    built.bytes += water.bytes();
+                }
                 return 0;
             }
             var built = build.building;
@@ -2095,6 +2143,14 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         objectCulling = enabled;
     }
 
+    /** Proof seam: false draws no building water, so a proof can compare pixels without it. */
+    void objectWater(boolean enabled) {
+        requireOwner();
+        objectWater = enabled;
+    }
+
+    private boolean objectWater = true;
+
     /** Object animation on or off (#384); a proof compares both. */
     void objectAnimation(boolean enabled) {
         requireOwner();
@@ -2520,6 +2576,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             framePlacements = frameCulled = frameObjectSubmits = frameSortedSubmits = 0;
             frameInstances = frameInstancesDropped = 0;
             framePortalWalks = framePortalCulled = framePortalPlacementsCulled = 0;
+            frameWaterSubmits = frameWaterCulled = 0;
             portalCulling.frame(view);
             frameMaterial = -1;
             frameBodySubmits = 0;
@@ -2590,6 +2647,17 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                         0);
                 bgfx_submit(0, program, 0, BGFX_DISCARD_ALL);
             }
+            // Building water (WMO liquid) with the same shader, light and state as terrain water,
+            // after it; a placement culled this frame, or an interior its walk did not reach,
+            // draws none.
+            if (wmoProgram != INVALID && objectWater) {
+                for (var lease : active) {
+                    var slot = slots[lease.slot()];
+                    if (slot.objects != null && slot.objects.waterVertices != INVALID) {
+                        drawObjectWater(slot, slot.objects, recordedSky);
+                    }
+                }
+            }
             // Alpha-blended object ranges last, after water, farthest placement first.
             if (wmoProgram != INVALID) {
                 drawBlended(frame, view, origin);
@@ -2615,6 +2683,54 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                         framePortalCulled,
                         framePortalPlacementsCulled);
         return new Ticket(cameraRevision, content, policy, width, height);
+    }
+
+    /**
+     * One object set's building water: each run whose placement this frame's culling kept, and
+     * whose group (an interior of a portal set) the placement's walk reached, drawn as terrain
+     * water is (u_worldAtlas.w = -1, the water light, blended, strict reversed depth with depth
+     * write, so a building recorded by two tiles draws its water once).
+     */
+    private void drawObjectWater(
+            Slot slot, SlotObjects objects, WorldStreamTransport.Sky recordedSky) {
+        try (var stack = MemoryStack.stackPush()) {
+            int stride = WorldObjectWater.RUN_INTS;
+            for (int r = 0; r < objects.waterRuns.length / stride; r++) {
+                int p = objects.waterRuns[r * stride + 2], mesh = objects.waterRuns[r * stride + 3];
+                if (!objects.visible[p] || objects.dropped[p]) {
+                    frameWaterCulled++;
+                    continue;
+                }
+                var walked = objects.portalVisible[p];
+                var portals = objects.portals[objects.placementModels[p]];
+                if (walked != null
+                        && portals != null
+                        && portalSkipped(objects, portals, walked, mesh)) {
+                    frameWaterCulled++;
+                    continue;
+                }
+                bgfx_set_uniform(atlasUniform, stack.floats(slot.anchorX, slot.anchorY, 0, -1), 1);
+                bgfx_set_uniform(splatUniform, stack.floats(0, 0, 0, 0), 1);
+                bgfx_set_uniform(worldWater, stack.floats(waterUniform(recordedSky)), 4);
+                bgfx_set_texture(0, sampler, slot.texture, SAMPLER_FLAGS);
+                bindSplat(slot);
+                bgfx_set_vertex_buffer(0, objects.waterVertices, 0, 0xFFFFFFFF);
+                org.lwjgl.bgfx.BGFX.bgfx_set_index_buffer(
+                        objects.waterIndices,
+                        objects.waterRuns[r * stride],
+                        objects.waterRuns[r * stride + 1]);
+                bgfx_set_state(
+                        BGFX_STATE_WRITE_RGB
+                                | BGFX_STATE_WRITE_Z
+                                | BGFX_STATE_DEPTH_TEST_GREATER
+                                | org.lwjgl.bgfx.BGFX.BGFX_STATE_BLEND_FUNC(
+                                        org.lwjgl.bgfx.BGFX.BGFX_STATE_BLEND_SRC_ALPHA,
+                                        org.lwjgl.bgfx.BGFX.BGFX_STATE_BLEND_INV_SRC_ALPHA),
+                        0);
+                bgfx_submit(0, program, 0, BGFX_DISCARD_ALL);
+                frameWaterSubmits++;
+            }
+        }
     }
 
     /** Sky state: colour and alpha, no depth write, only where depth is still the cleared 0. */

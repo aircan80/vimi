@@ -31,8 +31,11 @@ public final class PreviewAnimation {
     /** The highest recorded sequence move speed accepted, yards per second. */
     public static final float MAX_MOVE_SPEED = 1000;
 
-    /** First field of {@link #write}'s stream: "VPA" and the format version. */
-    static final int STREAM_MAGIC = 0x56504101;
+    /**
+     * First field of {@link #write}'s stream: "VPA" and the format version. Version 2 carries the
+     * framing bounds.
+     */
+    static final int STREAM_MAGIC = 0x56504102;
 
     /**
      * Global clocks loop independently of the played sequence and are sampled modulo their own
@@ -42,6 +45,9 @@ public final class PreviewAnimation {
     public static final long MAX_GLOBAL_MILLIS = Integer.MAX_VALUE;
 
     private static final int FRAMING_SAMPLES = 96;
+
+    /** Poses a stream's stored framing is checked against on {@link #read}. */
+    static final int READ_CHECK_SAMPLES = 8;
 
     public enum Interpolation {
         STEP,
@@ -336,6 +342,39 @@ public final class PreviewAnimation {
             int[] influenceBones,
             int[] influenceWeights,
             float moveSpeed) {
+        this(
+                label,
+                durationMillis,
+                globalSequenceMillis,
+                bones,
+                restMesh,
+                restNormals,
+                influenceBones,
+                influenceWeights,
+                moveSpeed,
+                null,
+                0);
+    }
+
+    /**
+     * As above. With {@code framing} (minimum x, y, z then maximum x, y, z) the poses of rest
+     * vertices below {@code framedVertices} are known to lie inside it: only the vertices from
+     * there on are evaluated for the framing bounds, which are the union of both. The framing must
+     * be conservative; {@link #subset}, {@link #withRigidVertices} and {@link #read} pass bounds an
+     * earlier evaluation of the same bones and vertices produced.
+     */
+    private PreviewAnimation(
+            String label,
+            long durationMillis,
+            long[] globalSequenceMillis,
+            List<Bone> bones,
+            PreviewMesh restMesh,
+            float[] restNormals,
+            int[] influenceBones,
+            int[] influenceWeights,
+            float moveSpeed,
+            float[] framing,
+            int framedVertices) {
         this.label = Objects.requireNonNull(label);
         if (!(moveSpeed >= 0 && moveSpeed <= MAX_MOVE_SPEED)) {
             throw new IllegalArgumentException("Invalid sequence move speed");
@@ -450,6 +489,14 @@ public final class PreviewAnimation {
         for (int axis = 0; axis < 3; axis++) {
             frameMin[axis] = restMesh.minimum(axis);
             frameMax[axis] = restMesh.maximum(axis);
+            if (framing != null) {
+                frameMin[axis] = Math.min(frameMin[axis], framing[axis]);
+                frameMax[axis] = Math.max(frameMax[axis], framing[3 + axis]);
+            }
+        }
+        int from = framing == null ? 0 : framedVertices;
+        if (from < 0 || from > vertices) {
+            throw new IllegalArgumentException("Framed vertices outside the rest surface");
         }
         float[] scratch = new float[rest.length];
         var working = new Scratch(this.bones.size());
@@ -465,12 +512,12 @@ public final class PreviewAnimation {
             }
         }
         int samples = viewDependent ? FRAMING_SAMPLES / 8 : FRAMING_SAMPLES;
-        for (var view : views) {
+        for (var view : from == vertices ? List.<View>of() : views) {
             for (int sample = 0; sample < samples; sample++) {
                 long time = durationMillis * sample / samples;
                 matrices(time, view, working);
-                skin(working.matrices, working.scales, scratch, null);
-                for (int i = 0; i < scratch.length; i++) {
+                skin(working.matrices, working.scales, scratch, null, from, vertices);
+                for (int i = from * 3; i < scratch.length; i++) {
                     frameMin[i % 3] = Math.min(frameMin[i % 3], scratch[i]);
                     frameMax[i % 3] = Math.max(frameMax[i % 3], scratch[i]);
                 }
@@ -568,6 +615,7 @@ public final class PreviewAnimation {
             bonesOut[at] = bone;
             weightsOut[at] = 255;
         }
+        // The surface's own vertices pose as before: only the added ones are evaluated.
         return new PreviewAnimation(
                 label,
                 durationMillis,
@@ -577,7 +625,16 @@ public final class PreviewAnimation {
                 normals,
                 bonesOut,
                 weightsOut,
-                moveSpeed);
+                moveSpeed,
+                framing(),
+                base);
+    }
+
+    /** The framing bounds: minimum x, y, z then maximum x, y, z. */
+    private float[] framing() {
+        return new float[] {
+            frameMin[0], frameMin[1], frameMin[2], frameMax[0], frameMax[1], frameMax[2]
+        };
     }
 
     /** True only for the exact rest surface these influences were prepared for. */
@@ -695,7 +752,10 @@ public final class PreviewAnimation {
                 normals,
                 boneIndices,
                 weights,
-                moveSpeed);
+                moveSpeed,
+                // Its vertices pose as they did here, inside these bounds.
+                framing(),
+                count);
     }
 
     /**
@@ -747,6 +807,9 @@ public final class PreviewAnimation {
         for (int i = 0; i < rest.length / 3 * 4; i++) {
             out.writeShort(influenceBones[i]);
             out.writeByte(influenceWeights[i]);
+        }
+        for (float v : framing()) {
+            out.writeFloat(v);
         }
     }
 
@@ -827,18 +890,79 @@ public final class PreviewAnimation {
             influenceBones[i] = in.readUnsignedShort();
             influenceWeights[i] = in.readUnsignedByte();
         }
+        float[] framing = new float[6];
+        for (int i = 0; i < 6; i++) {
+            framing[i] = in.readFloat();
+        }
+        for (int axis = 0; axis < 3; axis++) {
+            if (!Float.isFinite(framing[axis])
+                    || !Float.isFinite(framing[3 + axis])
+                    || framing[axis] > framing[3 + axis]
+                    || Math.abs(framing[axis]) > 1_000_000
+                    || Math.abs(framing[3 + axis]) > 1_000_000) {
+                throw new IllegalArgumentException("Invalid stored framing");
+            }
+        }
         var mesh =
                 new PreviewMesh(rest, new int[] {0, 0, 0}, List.of(new PreviewMesh.Part(0, 0, 3)));
-        return new PreviewAnimation(
-                label,
-                duration,
-                globalMillis,
-                bones,
-                mesh,
-                normals,
-                influenceBones,
-                influenceWeights,
-                moveSpeed);
+        // The stored framing stands for the full evaluation; a few poses are checked against it,
+        // so a stream whose bounds do not hold its poses is refused.
+        var animation =
+                new PreviewAnimation(
+                        label,
+                        duration,
+                        globalMillis,
+                        bones,
+                        mesh,
+                        normals,
+                        influenceBones,
+                        influenceWeights,
+                        moveSpeed,
+                        framing,
+                        restLength / 3);
+        if (!animation.holds(framing)) {
+            throw new IllegalArgumentException("Stored framing does not hold the poses");
+        }
+        return animation;
+    }
+
+    /**
+     * Whether {@link #READ_CHECK_SAMPLES} poses spread over the loop (and, for a camera-facing
+     * animation, two of its views) lie inside {@code framing}, within a small tolerance for
+     * rounding. The poses and views are points of the grid the framing was evaluated on, so a
+     * framing that grid produced always holds them, however the bones move between its points.
+     */
+    private boolean holds(float[] framing) {
+        float[] scratch = new float[rest.length];
+        var working = new Scratch(bones.size());
+        List<View> views = new ArrayList<>();
+        views.add(viewDependent ? View.orbit(0 * Math.PI / 4, 0) : null);
+        if (viewDependent) {
+            views.add(View.orbit(4 * Math.PI / 4, 1.1));
+        }
+        int grid = viewDependent ? FRAMING_SAMPLES / 8 : FRAMING_SAMPLES;
+        for (var view : views) {
+            for (int sample = 0; sample < READ_CHECK_SAMPLES; sample++) {
+                long point = (long) sample * grid / READ_CHECK_SAMPLES;
+                matrices(durationMillis * point / grid, view, working);
+                skin(working.matrices, working.scales, scratch, null);
+                for (int i = 0; i < scratch.length; i++) {
+                    int axis = i % 3;
+                    float slack =
+                            1e-4f
+                                    * Math.max(
+                                            1,
+                                            Math.max(
+                                                    Math.abs(framing[axis]),
+                                                    Math.abs(framing[3 + axis])));
+                    if (!(scratch[i] >= framing[axis] - slack
+                            && scratch[i] <= framing[3 + axis] + slack)) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
     }
 
     private static int bounded(int value, int maximum) {
@@ -1120,7 +1244,13 @@ public final class PreviewAnimation {
     }
 
     private void skin(double[] m, double[] scales, float[] positions, float[] normals) {
-        for (int v = 0; v < rest.length / 3; v++) {
+        skin(m, scales, positions, normals, 0, rest.length / 3);
+    }
+
+    /** As above, for rest vertices {@code from} to {@code to} only. */
+    private void skin(
+            double[] m, double[] scales, float[] positions, float[] normals, int from, int to) {
+        for (int v = from; v < to; v++) {
             double x = rest[v * 3], y = rest[v * 3 + 1], z = rest[v * 3 + 2];
             int billboard = rigidBillboard[v];
             if (billboard >= 0) {

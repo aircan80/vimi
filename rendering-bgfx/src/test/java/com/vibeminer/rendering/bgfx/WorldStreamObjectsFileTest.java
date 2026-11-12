@@ -145,6 +145,168 @@ final class WorldStreamObjectsFileTest {
                         .count());
     }
 
+    /**
+     * The small set with a liquid on its mesh: a 3 x 2 grid at (0, 0, 5), heights 5, its second
+     * tile empty.
+     */
+    static WorldStreamTileWriter.Exterior wet() {
+        var builder = WorldStreamTileWriter.Exterior.builder();
+        builder.image(2, 2, chain(2, 2, rgba(4, 10)));
+        builder.image(4, 1, chain(4, 1, rgba(4, 20)));
+        builder.model();
+        builder.mesh(
+                FloatBuffer.wrap(small().data().vertices),
+                IntBuffer.wrap(new int[] {0, 1, 2, 2, 1, 3}),
+                new int[] {0, 3, 0, 3, 3, 1},
+                new int[2],
+                IntBuffer.wrap(SMALL_COLOURS));
+        builder.liquid(
+                WorldStreamTileWriter.Exterior.Builder.LIQUID_RIVER,
+                0,
+                3,
+                2,
+                0,
+                0,
+                5,
+                new float[] {5, 5, 5, 5, 6, 5},
+                new boolean[] {true, false});
+        builder.placement(0, -100.25, -200.5, 12, 1, 1, 0);
+        builder.placement(0, -110.25, -205.5, 13, 2, 0, 1);
+        return builder.build();
+    }
+
+    @Test
+    void aLiquidSectionRoundTripsAndBuildsWaterForEachPlacement() throws Exception {
+        var exterior = wet();
+        var reference = write(exterior);
+        assertEquals(exterior.bytes(), reference.length());
+        assertEquals(small().bytes() + 32 + 6 * 4 + 4, reference.length());
+        var read = WorldStreamObjectsFile.read(objectsPath(), IDENTITY, reference, () -> false);
+        assertEquals(1, read.liquids.count());
+        assertEquals(0, read.liquids.meshes[0]);
+        assertArrayEquals(new byte[] {1, 0}, read.liquids.live[0]);
+        try (var packed = WorldStreamPackedObjects.pack(read, () -> false)) {
+            var water = packed.water;
+            assertEquals(2, water.runCount(), "one run per placement");
+            assertEquals(2, water.tiles, "one live tile each");
+            assertEquals(6, water.runs[1], "two triangles per tile");
+            assertEquals(
+                    1, water.runs[WorldObjectWater.RUN_INTS + 2], "the second run's placement");
+            assertEquals(2 * 4 * WorldStreamPackedTile.VERTEX_BYTES + 2 * 6 * 4, water.bytes());
+            assertTrue(packed.bufferBytes() >= water.bytes(), "charged with the set's buffers");
+            // Native positions through each placement: the first turns local (a, b) to (-a, -b),
+            // the second (scale 2, a quarter turn) to (2b, -2a); heights are scaled too.
+            double unit = com.vibeminer.formats.world.WmoLiquid.UNIT;
+            int stride = WorldStreamPackedTile.VERTEX_BYTES;
+            var v = water.vertices;
+            assertEquals(-100.25, v.getFloat(0), 1e-4);
+            assertEquals(-200.5, v.getFloat(4), 1e-4);
+            assertEquals(17, v.getFloat(8), 1e-4);
+            assertEquals(-100.25 - unit, v.getFloat(stride), 1e-3);
+            assertEquals(-110.25, v.getFloat(4 * stride + stride), 1e-3);
+            assertEquals(-205.5 - 2 * unit, v.getFloat(4 * stride + stride + 4), 1e-3);
+            assertEquals(13 + 2 * 5, v.getFloat(4 * stride + stride + 8), 1e-3);
+            // MCCV slot: deep water, river kind; a zero normal: unlit, as terrain water.
+            assertEquals(255, v.get(16) & 255);
+            assertEquals(WorldStreamObjectsFile.LIQUID_RIVER, v.get(17));
+            assertEquals(128, v.get(20) & 255);
+            // The quad splits on its (0, 0)--(1, 1) diagonal: corners 0, 1, 3 and 0, 3, 2.
+            int[] first = new int[6];
+            for (int i = 0; i < 6; i++) {
+                first[i] = water.indices.getInt(i * 4);
+            }
+            assertArrayEquals(new int[] {0, 1, 3, 0, 3, 2}, first);
+        }
+    }
+
+    /** Two meshes of one model, each with a 3 x 2 liquid. */
+    static WorldStreamTileWriter.Exterior twoWet() {
+        var builder = WorldStreamTileWriter.Exterior.builder();
+        builder.image(2, 2, chain(2, 2, rgba(4, 10)));
+        builder.model();
+        for (int mesh = 0; mesh < 2; mesh++) {
+            builder.mesh(
+                    FloatBuffer.wrap(small().data().vertices),
+                    IntBuffer.wrap(new int[] {0, 1, 2, 2, 1, 3}),
+                    new int[] {0, 6, 0});
+            builder.liquid(
+                    WorldStreamTileWriter.Exterior.Builder.LIQUID_OCEAN,
+                    0,
+                    3,
+                    2,
+                    0,
+                    0,
+                    5,
+                    new float[] {5, 5, 5, 5, 5, 5},
+                    new boolean[] {true, true});
+        }
+        builder.placement(0, 1, 2, 3, 1, 1, 0);
+        return builder.build();
+    }
+
+    /** The bytes of {@code exterior}'s file with {@code change} applied at a liquid offset. */
+    private byte[] liquidBytes(
+            WorldStreamTileWriter.Exterior exterior, java.util.function.Consumer<ByteBuffer> change)
+            throws Exception {
+        Files.deleteIfExists(objectsPath());
+        write(exterior);
+        var bytes = Files.readAllBytes(objectsPath());
+        Files.delete(objectsPath());
+        change.accept(ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN));
+        return bytes;
+    }
+
+    @Test
+    void aCorruptLiquidSectionIsRefused() throws Exception {
+        // wet(): one 60-byte entry at the end: mesh, kind, colour, x and y vertices, corner (3
+        // floats), six heights, two tile bytes and two padding bytes.
+        int entry = 60;
+        java.util.function.IntUnaryOperator at = offset -> -entry + offset;
+        assertEquals(
+                "Liquid padding",
+                refusedFile(liquidBytes(wet(), b -> b.put(b.capacity() - 1, (byte) 1))));
+        assertEquals(
+                "Liquid tile byte",
+                refusedFile(
+                        liquidBytes(
+                                wet(), b -> b.put(b.capacity() + at.applyAsInt(56), (byte) 2))));
+        assertEquals(
+                "Liquid mesh",
+                refusedFile(liquidBytes(wet(), b -> b.putInt(b.capacity() + at.applyAsInt(0), 5))));
+        assertEquals(
+                "Liquid entry",
+                refusedFile(liquidBytes(wet(), b -> b.putInt(b.capacity() + at.applyAsInt(4), 3))),
+                "an unknown kind");
+        // A grid larger than the section holds: the entry overruns it.
+        assertEquals(
+                "Liquid entry bounds",
+                refusedFile(
+                        liquidBytes(wet(), b -> b.putInt(b.capacity() + at.applyAsInt(12), 4))));
+        // Counts and bytes disagree, or the section is longer or shorter than the file.
+        assertEquals(
+                "Objects liquid counts", refusedFile(liquidBytes(wet(), b -> b.putInt(180, 0))));
+        assertEquals(
+                "Objects header counts",
+                refusedFile(liquidBytes(wet(), b -> b.putInt(184, b.getInt(184) + 4))),
+                "a section longer than the file");
+        assertEquals(
+                "Objects header counts",
+                refusedFile(liquidBytes(wet(), b -> b.putInt(184, b.getInt(184) - 4))),
+                "a section shorter than the file");
+        // Two entries whose meshes do not ascend.
+        assertEquals(
+                "Liquid meshes ascend",
+                refusedFile(liquidBytes(twoWet(), b -> b.putInt(b.capacity() - 2 * entry, 1))));
+        // The untouched file reads.
+        Files.deleteIfExists(objectsPath());
+        var reference = write(twoWet());
+        assertEquals(
+                2,
+                WorldStreamObjectsFile.read(objectsPath(), IDENTITY, reference, () -> false)
+                        .liquids
+                        .count());
+    }
+
     /** A one-model set whose model (4 vertices) carries five animation bytes (one pad of 3). */
     private static WorldStreamTileWriter.Exterior animated(int[] sources) {
         var builder = WorldStreamTileWriter.Exterior.builder();
@@ -405,7 +567,7 @@ final class WorldStreamObjectsFileTest {
         // classes of #367) fails its header check instead of being misread.
         var clean = Files.readAllBytes(objectsPath());
         assertEquals(WorldStreamObjectsFile.VERSION, clean[8]);
-        assertEquals(10, WorldStreamObjectsFile.VERSION);
+        assertEquals(11, WorldStreamObjectsFile.VERSION);
         // Version 5 (#367, before the vertex colours of #375), version 6 (#375, before the
         // portal tables and mesh groups of #383), version 7 (before the INTERIOR_LIGHT range
         // flag of #383) and version 8 (before placement portal ties) are stale as well.
@@ -857,12 +1019,15 @@ final class WorldStreamObjectsFileTest {
         // Within the caps but not the file's length.
         assertEquals("Objects header counts", refused.apply(164, 12));
         // Byte 148 is #466's format mask, BC bits only; bytes 172-179 count the animation section
-        // (#384); the reserved bytes from 180 must be zero.
+        // (#384), bytes 180-187 the liquid section; the reserved bytes from 188 must be zero.
         assertEquals("Objects header counts", refused.apply(148, 1));
         assertEquals("Objects animation counts", refused.apply(172, 1));
         assertEquals("Objects animation counts", refused.apply(176, 4));
         assertEquals("Objects animation counts", refused.apply(172, -1));
-        assertEquals("Reserved objects bytes", refused.apply(180, 1));
+        assertEquals("Objects liquid counts", refused.apply(180, 1));
+        assertEquals("Objects liquid counts", refused.apply(184, 4));
+        assertEquals("Objects liquid counts", refused.apply(180, -1));
+        assertEquals("Reserved objects bytes", refused.apply(188, 1));
         assertEquals("Reserved objects bytes", refused.apply(252, 1));
     }
 
@@ -1106,9 +1271,10 @@ final class WorldStreamObjectsFileTest {
                                 WmoPortalSet.MAX_TILE_PORTALS,
                                 WmoPortalSet.MAX_TILE_VERTICES,
                                 WmoPortalSet.MAX_TILE_REFS)
-                        + WorldStreamObjectsFile.MAX_ANIMATION_BYTES;
+                        + WorldStreamObjectsFile.MAX_ANIMATION_BYTES
+                        + WorldStreamObjectsFile.Liquids.maxBytes();
         assertTrue(caps > (25 << 20) && caps <= WorldStreamObjectsFile.MAX_BYTES, "caps " + caps);
-        assertEquals(69 << 20, WorldStreamObjectsFile.MAX_BYTES);
+        assertEquals(70 << 20, WorldStreamObjectsFile.MAX_BYTES, "the liquid section adds 1 MiB");
         // The ceiling itself is enforced by the reference and by the tile header.
         assertThrows(
                 IllegalArgumentException.class,
@@ -1558,7 +1724,7 @@ final class WorldStreamObjectsFileTest {
         assertEquals(
                 WorldStreamObjectsFile.ADDITIVE | WorldStreamObjectsFile.UNLIT, read.ranges[11]);
         assertEquals(WorldStreamObjectsFile.OPAQUE | WorldStreamObjectsFile.UNLIT, read.ranges[15]);
-        assertEquals(10, WorldStreamObjectsFile.VERSION);
+        assertEquals(11, WorldStreamObjectsFile.VERSION);
         assertEquals(h, read.placements[8], 0);
         // An unknown class, a scaled matrix or a reflection is refused.
         // Modulate (4) and unknown flag bits stay refused: 0x800 alone and beside a known kind

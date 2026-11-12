@@ -106,6 +106,9 @@ final class WorldStreamPackedObjects implements AutoCloseable {
 
     ByteBuffer vertices, indices, pixels;
 
+    /** The set's building water, built here on the decoder worker ({@link WorldObjectWater}). */
+    WorldObjectWater water = WorldObjectWater.NONE;
+
     private WorldStreamPackedObjects(
             WorldStreamObjectsFile.Data data,
             int[] images,
@@ -301,6 +304,12 @@ final class WorldStreamPackedObjects implements AutoCloseable {
                             compressed,
                             canceled);
             vertices = indices = pixels = null;
+            try {
+                result.water = WorldObjectWater.build(data, canceled);
+            } catch (RuntimeException failed) {
+                result.close();
+                throw failed;
+            }
             return result;
         } finally {
             free(vertices);
@@ -416,7 +425,8 @@ final class WorldStreamPackedObjects implements AutoCloseable {
     /** Native vertex and index bytes: the set's own GPU buffers. */
     long bufferBytes() {
         return (vertices == null ? 0 : vertices.capacity())
-                + (long) (indices == null ? 0 : indices.capacity());
+                + (long) (indices == null ? 0 : indices.capacity())
+                + water.bytes();
     }
 
     /** Byte offset of image i in pixels. */
@@ -434,6 +444,7 @@ final class WorldStreamPackedObjects implements AutoCloseable {
         free(indices);
         free(pixels);
         vertices = indices = pixels = null;
+        water.free();
     }
 
     private static void free(ByteBuffer buffer) {

@@ -50,8 +50,10 @@ import java.util.function.BooleanSupplier;
  * (four floats), the portal vertices (three floats) and per reference (portal, group, side), every
  * index relative to its set. Then the animation section of #384 ({@link Animations}): per entry its
  * model, vertex count and animation byte length, the rest vertex of each of the model's vertices,
- * and the animation's bytes padded to four. Every count, offset, index and float is validated;
- * reserved bytes must be zero.
+ * and the animation's bytes padded to four. Then the liquid section ({@link Liquids}): per entry
+ * the mesh whose group holds it, its kind and colour, its grid's vertex counts and corner, one
+ * height per grid vertex and one live byte per tile padded to four. Every count, offset, index and
+ * float is validated; reserved bytes must be zero.
  */
 final class WorldStreamObjectsFile {
     // Version 5 (#367): range classes add ADDITIVE and the UNLIT flag, on #420's version 4.
@@ -63,8 +65,9 @@ final class WorldStreamObjectsFile {
     // interior group lit by its vertex colours (its raw MOCV) instead of the sun. Version 9: the
     // placement's formerly reserved int is its portal tie ({@link #tie}), zero for none. Version 10
     // (#384): an animation section after the portal tables ({@link Animations}), whose entry count
-    // and byte length follow at header bytes 172-179.
-    static final int VERSION = 10, HEADER_BYTES = 256;
+    // and byte length follow at header bytes 172-179. Version 11: a liquid section after the
+    // animations ({@link Liquids}, building water), its entry count and byte length at 180-187.
+    static final int VERSION = 11, HEADER_BYTES = 256;
     // The tables are the sums of the producer's pools (ExteriorObjectLimits): opaque buildings,
     // their cutout and blended surfaces, and doodads. Creature models share whatever room remains.
     static final int MAX_MODELS = ExteriorObjectLimits.MODELS;
@@ -183,6 +186,15 @@ final class WorldStreamObjectsFile {
     static final int MAX_ANIMATION_BYTES = 16 << 20, MAX_ENTRY_ANIMATION_BYTES = 6 << 20;
 
     /**
+     * Liquids per tile (building water, WMO MLIQ) and their grid vertices together: the Stormwind
+     * canals are one grid of 98 x 143 vertices (14,014). The section is at most about 1.1 MiB.
+     */
+    static final int MAX_LIQUIDS = 256, MAX_LIQUID_VERTICES = 1 << 18;
+
+    /** Liquid kinds, as terrain water's: river or lake water, ocean, and a flat-coloured liquid. */
+    static final int LIQUID_RIVER = 0, LIQUID_OCEAN = 1, LIQUID_FLAT = 2;
+
+    /**
      * The file ceiling: every table at its cap ({@link #length}, with the mesh group column) plus
      * the portal tables at theirs ({@link #portalLength}), rounded up to the next MiB. With the
      * #308 pools, #375's vertex colours, #383's portal tables, the large and interior allowances of
@@ -206,7 +218,8 @@ final class WorldStreamObjectsFile {
                                     WmoPortalSet.MAX_TILE_PORTALS,
                                     WmoPortalSet.MAX_TILE_VERTICES,
                                     WmoPortalSet.MAX_TILE_REFS)
-                            + MAX_ANIMATION_BYTES);
+                            + MAX_ANIMATION_BYTES
+                            + Liquids.maxBytes());
 
     private static int ceilingMiB(int bytes) {
         return (bytes + (1 << 20) - 1) >>> 20 << 20;
@@ -271,6 +284,118 @@ final class WorldStreamObjectsFile {
 
         static long entryBytes(int vertices, int animationBytes) {
             return 12L + vertices * 4L + (animationBytes + 3L) / 4 * 4;
+        }
+    }
+
+    /**
+     * Building liquids of one object set: per entry the mesh whose group holds it (portal culling
+     * follows that group), its kind ({@link #LIQUID_RIVER}, {@link #LIQUID_OCEAN} or {@link
+     * #LIQUID_FLAT}) and 0xRRGGBB colour (a flat liquid's; 0 otherwise), its grid's vertex counts x
+     * and y (2 to 1024 each), corner (model space), one height per vertex row by row along y, and
+     * one byte per tile: 1 where it holds liquid, 0 where not. Meshes ascend and are unique.
+     */
+    static final class Liquids {
+        static final Liquids NONE =
+                new Liquids(
+                        new int[0],
+                        new int[0],
+                        new int[0],
+                        new int[0],
+                        new float[0],
+                        new float[0][],
+                        new byte[0][]);
+
+        final int[] meshes, kinds, colours, grids;
+        final float[] corners;
+        final float[][] heights;
+        final byte[][] live;
+
+        Liquids(
+                int[] meshes,
+                int[] kinds,
+                int[] colours,
+                int[] grids,
+                float[] corners,
+                float[][] heights,
+                byte[][] live) {
+            this.meshes = Objects.requireNonNull(meshes);
+            this.kinds = Objects.requireNonNull(kinds);
+            this.colours = Objects.requireNonNull(colours);
+            this.grids = Objects.requireNonNull(grids);
+            this.corners = Objects.requireNonNull(corners);
+            this.heights = Objects.requireNonNull(heights);
+            this.live = Objects.requireNonNull(live);
+            int n = meshes.length;
+            require(
+                    n <= MAX_LIQUIDS
+                            && kinds.length == n
+                            && colours.length == n
+                            && grids.length == n * 2
+                            && corners.length == n * 3
+                            && heights.length == n
+                            && live.length == n,
+                    "Liquid counts");
+            long vertices = 0;
+            for (int i = 0; i < n; i++) {
+                require(i == 0 || meshes[i] > meshes[i - 1], "Liquid meshes ascend");
+                int xv = grids[i * 2], yv = grids[i * 2 + 1];
+                require(
+                        xv >= 2
+                                && xv <= 1024
+                                && yv >= 2
+                                && yv <= 1024
+                                && kinds[i] >= LIQUID_RIVER
+                                && kinds[i] <= LIQUID_FLAT
+                                && (colours[i] & ~0xFFFFFF) == 0
+                                && heights[i] != null
+                                && heights[i].length == xv * yv
+                                && live[i] != null
+                                && live[i].length == (xv - 1) * (yv - 1),
+                        "Liquid entry");
+                for (byte b : live[i]) {
+                    require(b == 0 || b == 1, "Liquid tile byte");
+                }
+                for (float h : heights[i]) {
+                    require(Float.isFinite(h) && Math.abs(h) <= 1_000_000, "Liquid height");
+                }
+                for (int c = 0; c < 3; c++) {
+                    float v = corners[i * 3 + c];
+                    require(Float.isFinite(v) && Math.abs(v) <= 1_000_000, "Liquid corner");
+                }
+                vertices += (long) xv * yv;
+            }
+            require(vertices <= MAX_LIQUID_VERTICES, "Liquid vertices");
+        }
+
+        int count() {
+            return meshes.length;
+        }
+
+        int bytes() {
+            long bytes = 0;
+            for (int i = 0; i < meshes.length; i++) {
+                bytes += entryBytes(grids[i * 2], grids[i * 2 + 1]);
+            }
+            return (int) bytes;
+        }
+
+        /** Live tiles of entry {@code i}. */
+        int liveTiles(int i) {
+            int count = 0;
+            for (byte b : live[i]) {
+                count += b;
+            }
+            return count;
+        }
+
+        static long entryBytes(int xVertices, int yVertices) {
+            long tiles = (long) (xVertices - 1) * (yVertices - 1);
+            return 32L + xVertices * (long) yVertices * 4 + (tiles + 3) / 4 * 4;
+        }
+
+        /** The section's ceiling: every entry header and every vertex and tile at its cap. */
+        static int maxBytes() {
+            return (int) (MAX_LIQUIDS * 36L + MAX_LIQUID_VERTICES * 5L);
         }
     }
 
@@ -348,6 +473,9 @@ final class WorldStreamObjectsFile {
 
         /** Animated models (#384); {@link Animations#NONE} without any. */
         final Animations animations;
+
+        /** Building liquids; {@link Liquids#NONE} without any. */
+        final Liquids liquids;
 
         /**
          * Compressed formats this file charges at their stored size (bit per {@link
@@ -503,10 +631,11 @@ final class WorldStreamObjectsFile {
             this.placementParents = Objects.requireNonNull(placementParents);
             this.placementGroups = Objects.requireNonNull(placementGroups);
             this.animations = Animations.NONE;
+            this.liquids = Liquids.NONE;
             draws = validate();
         }
 
-        private Data(Data base, Animations animations) {
+        private Data(Data base, Animations animations, Liquids liquids) {
             compressedFormats = base.compressedFormats;
             models = base.models;
             meshes = base.meshes;
@@ -530,6 +659,10 @@ final class WorldStreamObjectsFile {
             placementGroups = base.placementGroups;
             draws = base.draws;
             this.animations = Objects.requireNonNull(animations);
+            this.liquids = Objects.requireNonNull(liquids);
+            for (int i = 0; i < liquids.count(); i++) {
+                require(liquids.meshes[i] >= 0 && liquids.meshes[i] < meshCount(), "Liquid mesh");
+            }
             for (int i = 0; i < animations.count(); i++) {
                 int model = animations.models[i];
                 require(model >= 0 && model < modelCount(), "Animated model");
@@ -543,7 +676,14 @@ final class WorldStreamObjectsFile {
         Data withAnimations(Animations animations) {
             return animations.count() == 0 && this.animations.count() == 0
                     ? this
-                    : new Data(this, animations);
+                    : new Data(this, animations, liquids);
+        }
+
+        /** The same set with building {@code liquids}, checked against its meshes. */
+        Data withLiquids(Liquids liquids) {
+            return liquids.count() == 0 && this.liquids.count() == 0
+                    ? this
+                    : new Data(this, animations, liquids);
         }
 
         /** Vertices of all of a model's meshes. */
@@ -693,7 +833,8 @@ final class WorldStreamObjectsFile {
                                     portalCount(),
                                     portalVertexCount(),
                                     portalRefCount())
-                            + animations.bytes();
+                            + animations.bytes()
+                            + liquids.bytes();
             return bytes > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) bytes;
         }
 
@@ -1189,6 +1330,26 @@ final class WorldStreamObjectsFile {
                         output.writeByte(0);
                     }
                 }
+                var liquids = data.liquids;
+                for (int i = 0; i < liquids.count(); i++) {
+                    check(canceled);
+                    for (int v :
+                            new int[] {
+                                liquids.meshes[i],
+                                liquids.kinds[i],
+                                liquids.colours[i],
+                                liquids.grids[i * 2],
+                                liquids.grids[i * 2 + 1]
+                            }) {
+                        output.writeInt(Integer.reverseBytes(v));
+                    }
+                    writeFloats(output, Arrays.copyOfRange(liquids.corners, i * 3, i * 3 + 3));
+                    writeFloats(output, liquids.heights[i]);
+                    output.write(liquids.live[i]);
+                    for (int pad = liquids.live[i].length; pad % 4 != 0; pad++) {
+                        output.writeByte(0);
+                    }
+                }
                 output.flush();
                 if (channel.size() != data.bytes()) {
                     throw new IOException("Objects file length differs");
@@ -1269,9 +1430,17 @@ final class WorldStreamObjectsFile {
                             && in.getInt(100) == 0
                             && in.getLong(104) == identity.lease().serial(),
                     "Objects header identity");
-            for (int i = 180; i < HEADER_BYTES; i++) {
+            for (int i = 188; i < HEADER_BYTES; i++) {
                 require(head[i] == 0, "Reserved objects bytes");
             }
+            int liquidCount = in.getInt(180), liquidBytes = in.getInt(184);
+            require(
+                    liquidCount >= 0
+                            && liquidCount <= MAX_LIQUIDS
+                            && liquidBytes >= 0
+                            && liquidBytes <= Liquids.maxBytes()
+                            && (liquidCount == 0) == (liquidBytes == 0),
+                    "Objects liquid counts");
             int animated = in.getInt(172), animationBytes = in.getInt(176);
             require(
                     animated >= 0
@@ -1334,6 +1503,7 @@ final class WorldStreamObjectsFile {
                                                     portalVertices,
                                                     portalRefs)
                                             + animationBytes
+                                            + liquidBytes
                                     == reference.length(),
                     "Objects header counts");
             // Bounded by the counts above before any body allocation.
@@ -1421,6 +1591,40 @@ final class WorldStreamObjectsFile {
                 }
             }
             require(animationLeft == 0, "Animation section length");
+            int[] liquidMeshes = new int[liquidCount], liquidKinds = new int[liquidCount];
+            int[] liquidColours = new int[liquidCount], liquidGrids = new int[liquidCount * 2];
+            float[] liquidCorners = new float[liquidCount * 3];
+            float[][] liquidHeights = new float[liquidCount][];
+            byte[][] liquidLive = new byte[liquidCount][];
+            long liquidLeft = liquidBytes;
+            for (int i = 0; i < liquidCount; i++) {
+                check(canceled);
+                require(liquidLeft >= 32, "Liquid entry bounds");
+                liquidMeshes[i] = Integer.reverseBytes(input.readInt());
+                liquidKinds[i] = Integer.reverseBytes(input.readInt());
+                liquidColours[i] = Integer.reverseBytes(input.readInt());
+                int xv = Integer.reverseBytes(input.readInt());
+                int yv = Integer.reverseBytes(input.readInt());
+                require(
+                        xv >= 2
+                                && xv <= 1024
+                                && yv >= 2
+                                && yv <= 1024
+                                && Liquids.entryBytes(xv, yv) <= liquidLeft,
+                        "Liquid entry bounds");
+                liquidLeft -= Liquids.entryBytes(xv, yv);
+                liquidGrids[i * 2] = xv;
+                liquidGrids[i * 2 + 1] = yv;
+                float[] corner = floats(input, 3);
+                System.arraycopy(corner, 0, liquidCorners, i * 3, 3);
+                liquidHeights[i] = floats(input, xv * yv);
+                liquidLive[i] = new byte[(xv - 1) * (yv - 1)];
+                input.readFully(liquidLive[i]);
+                for (int pad = liquidLive[i].length; pad % 4 != 0; pad++) {
+                    require(input.readByte() == 0, "Liquid padding");
+                }
+            }
+            require(liquidLeft == 0, "Liquid section length");
             check(canceled);
             if (input.read() != -1
                     || channel.size() != reference.length()
@@ -1452,7 +1656,16 @@ final class WorldStreamObjectsFile {
                             tiedGroups);
             require(data.draws == draws, "Object draw count");
             return data.withAnimations(
-                    new Animations(animatedModels, animationSources, animationData));
+                            new Animations(animatedModels, animationSources, animationData))
+                    .withLiquids(
+                            new Liquids(
+                                    liquidMeshes,
+                                    liquidKinds,
+                                    liquidColours,
+                                    liquidGrids,
+                                    liquidCorners,
+                                    liquidHeights,
+                                    liquidLive));
         } catch (EOFException truncated) {
             throw new IOException("Truncated objects file", truncated);
         } catch (IllegalArgumentException invalid) {
@@ -1475,6 +1688,7 @@ final class WorldStreamObjectsFile {
         out.putInt(data.portalCount()).putInt(data.portalVertexCount());
         out.putInt(data.portalRefCount());
         out.putInt(data.animations.count()).putInt(data.animations.bytes());
+        out.putInt(data.liquids.count()).putInt(data.liquids.bytes());
         return out.array();
     }
 
