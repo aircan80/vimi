@@ -368,7 +368,23 @@ public final class DataSourcesServiceTest {
                     require(
                             sources.mapping(build).versionId() == null,
                             "No default database is invented");
+                    var other =
+                            new BuildInfo(
+                                    "wowf", "Forever", "1.60.1.70001", "us", "b".repeat(32),
+                                    BuildInfo.BuildSource.SAVED, false, null, 0);
                     sources.opened(build);
+                    sources.opened(other);
+                    sources.opened(build); // reopened: moves to the end
+                    sources.opened(build); // already last: no change
+                    require(
+                            sources.openedBuilds()
+                                    .equals(
+                                            java.util.List.of(
+                                                    new DataSourcesService.BuildKey(
+                                                            "wowf", "1.60.1.70001"),
+                                                    new DataSourcesService.BuildKey(
+                                                            "wowf", "1.60.1.70000"))),
+                            "Opened builds are most recently used last");
                     sources.setMapping(build, "TBC").join();
                     sources.setEnabled(DataSourcesService.Id.LISTFILE, false).join();
                     sources.setEnabled(DataSourcesService.Id.QUESTIE, false).join();
@@ -405,8 +421,13 @@ public final class DataSourcesServiceTest {
                             "Build override survives restart");
                     require(
                             reopened.openedBuilds()
-                                    .contains(new DataSourcesService.BuildKey("wowf", "1.60.1.70000")),
-                            "An opened build is remembered across restarts for EG Link pruning");
+                                    .equals(
+                                            java.util.List.of(
+                                                    new DataSourcesService.BuildKey(
+                                                            "wowf", "1.60.1.70001"),
+                                                    new DataSourcesService.BuildKey(
+                                                            "wowf", "1.60.1.70000"))),
+                            "Opened builds and their order survive a restart for EG Link pruning");
                     reopened.setChecks(
                                     DataSourcesService.Id.QUESTIE, DataSourcesService.Checks.MANUAL)
                             .join();
