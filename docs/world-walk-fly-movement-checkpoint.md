@@ -98,17 +98,28 @@ the terrain liquid (`LiquidSurface.with`); the highest surface answers. A
 building recorded on several tiles counts once (by building and group). Only a
 building turned about the vertical is admitted: a liquid under a building with
 pitch or roll is left out and counted ("building liquid tilted"). The liquid's
-kind follows the group's liquid field and the root's flag 0x4 (the IDs open
-server emulators derive: WMO water 13, ocean 14, magma 19, slime 20). Building
+LiquidType ID follows TrinityCore's vmap4 extractor (`WMOGroup::open` in
+`src/tools/vmap4_extractor/wmo.cpp`) exactly: the MOGP liquid field (header
+byte 52; 48 holds the fog IDs) through `GetLiquidTypeId` with the root's flag
+0x4, else 15 meaning none and any other field, 0 included, as field + 1; with
+none, the first tile whose low four bits are not 15. Basic IDs map to WMO water
+13, ocean 14, magma 19 and slime 20, which give the kind; any other ID is kept
+and its kind is "other" until the LiquidType table is consulted (the
+Stormwind canals are LiquidType 1344). Swimming is the same in every kind. Building
 water is not drawn yet (it needs its own draw in the objects pass); only
 swimming uses it. The older MCLQ chunk liquid is not read; flying ignores
 water.
 
 Real data (build 70862, `-Pprobe.mode=swim -Pprobe.objects=true`, Stormwind
 48,30): the 3 x 3 has 3 building liquids (20 records across tiles), all water.
-The canals are one liquid over 404 x 592 yd at 95.47, with no terrain liquid
-under the points probed: a body over the canal swims in all four headings and
-stays in; in a 21 x 21 yd pool it swims and walks out after about 8 yd. Reading
+The canals are one liquid (LiquidType 1344) over 404 x 592 yd at 95.47, with no
+terrain liquid under the points probed: a body over the canal swims in all four
+headings and stays in, stopped by the quay walls after 26 to 35 of the 38 yd it
+could swim in 8 s, also with Space held. A swimmer leaves water only where
+walkable ground lifts it out (steps, ramps, a sloping bank): there is no jump
+out of water, so at a vertical quay wall it stays in the canal until it reaches
+steps. In a 21 x 21 yd pool (LiquidType 13, water) it swims and walks out after
+about 8 yd. Reading
 the 3 x 3's buildings with their liquids took 2.3 s.
 
 Real data (build 70862, `-Pprobe.mode=swim`, Elwynn 49,31, `-Pprobe.swimArea=18`,

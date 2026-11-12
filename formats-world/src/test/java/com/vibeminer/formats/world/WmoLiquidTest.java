@@ -50,7 +50,7 @@ class WmoLiquidTest {
 
     static byte[] group(int groupFlags, int groupLiquid, byte[] mliq) {
         var header = buffer(68);
-        header.putInt(8, groupFlags).putInt(48, groupLiquid);
+        header.putInt(8, groupFlags).putInt(52, groupLiquid);
         return join(
                 chunk("MVER", buffer(4).putInt(17).array()),
                 chunk(
@@ -76,31 +76,71 @@ class WmoLiquidTest {
     }
 
     @Test
-    void theLiquidTypeFollowsTheRootFlagAndTheLegacyRules() {
-        // Legacy (root flag 0x4 clear): the field plus one; 0 or 15 falls back to the tile.
-        assertEquals(
-                13,
-                WmoLiquid.read(group(0, 0, mliq((byte) 0, (byte) 0)), () -> false).liquidType(0));
-        assertEquals(
-                14,
-                WmoLiquid.read(group(0x80000, 0, mliq((byte) 0, (byte) 0)), () -> false)
-                        .liquidType(0));
-        assertEquals(
-                14,
-                WmoLiquid.read(group(0, 0, mliq((byte) 1, (byte) 0)), () -> false).liquidType(0));
-        assertEquals(
-                19,
-                WmoLiquid.read(group(0, 2, mliq((byte) 0, (byte) 0)), () -> false).liquidType(0));
-        assertEquals(
-                20,
-                WmoLiquid.read(group(0, 15, mliq((byte) 3, (byte) 0)), () -> false).liquidType(0));
-        // Root flag 0x4: the field is the ID.
-        assertEquals(
-                19,
-                WmoLiquid.read(group(0, 19, mliq((byte) 0, (byte) 0)), () -> false).liquidType(4));
-        assertEquals(
-                181,
-                WmoLiquid.read(group(0, 181, mliq((byte) 0, (byte) 0)), () -> false).liquidType(4));
+    void theLiquidFieldIsTheOneTheGroupHeaderReads() {
+        // A full group WmoFormats.group accepts (as WmoFormatsTest builds one), with distinct
+        // fog IDs (+48) and liquid field (+52).
+        var header = buffer(68);
+        header.putInt(-1).putInt(-2).putInt(0x82009).put(floats(-1, -1, -1, 2, 2, 1));
+        header.putShort((short) 0).putShort((short) 0).putShort((short) 0).putShort((short) 0);
+        header.putShort((short) 1).putShort((short) 0x1234);
+        header.putInt(0x01020304).putInt(6).putInt(-5).putInt(-6).putInt(-7);
+        var batch = buffer(24);
+        batch.putShort((short) 0).putShort((short) 0).putShort((short) 0).putShort((short) 0);
+        batch.putShort((short) 0).putShort((short) -1).putInt(0);
+        batch.putShort((short) 3).putShort((short) 0).putShort((short) 2).put((byte) 2);
+        batch.put((byte) 255);
+        var movi = buffer(6).putShort((short) 0).putShort((short) 1).putShort((short) 2);
+        var bytes =
+                join(
+                        chunk("MVER", buffer(4).putInt(17).array()),
+                        chunk(
+                                "MOGP",
+                                join(
+                                        header.array(),
+                                        chunk("MOVT", floats(0, 0, 0, 1, 0, 0, 0, 2, 0)),
+                                        chunk("MONR", floats(0, 0, 1, 0, 0, 1, 0, 0, 1)),
+                                        chunk("MOTV", floats(0, 0, 1, 0, 0, 1)),
+                                        chunk("MOVI", movi.array()),
+                                        chunk("MOPY", new byte[] {1, (byte) 255}),
+                                        chunk("MOBA", batch.array()),
+                                        chunk("MLIQ", mliq((byte) 0, (byte) 0)))));
+        var parsed = WmoFormats.group(bytes, WmoFormats.Limits.basicPreview(), () -> false);
+        var liquid = WmoLiquid.read(bytes, () -> false);
+        assertEquals(parsed.header().liquidType(), liquid.groupLiquid());
+        assertEquals(6, liquid.groupLiquid(), "not the fog IDs at +48");
+        assertEquals(parsed.header().flags(), Integer.toUnsignedLong(liquid.groupFlags()));
+    }
+
+    static byte[] floats(float... values) {
+        var b = buffer(values.length * 4);
+        for (float f : values) {
+            b.putFloat(f);
+        }
+        return b.array();
+    }
+
+    static int type(int groupFlags, int field, int firstTile, int rootFlags) {
+        return WmoLiquid.read(
+                        group(groupFlags, field, mliq((byte) firstTile, (byte) 0)), () -> false)
+                .liquidType(rootFlags);
+    }
+
+    @Test
+    void theLiquidTypeFollowsTheExtractorsRules() {
+        // Root flag 0x4 clear: GetLiquidTypeId(field + 1), only 15 meaning none: field 0 is
+        // water whatever the tiles say.
+        assertEquals(13, type(0, 0, 2, 0));
+        assertEquals(14, type(0x80000, 0, 0, 0), "MOGP flag 0x80000: ocean");
+        assertEquals(14, type(0, 1, 0, 0));
+        assertEquals(19, type(0, 2, 0, 0));
+        assertEquals(20, type(0, 3, 0, 0));
+        // 15: none, so the first tile whose low bits are not 15 gives it (3 + 1: slime).
+        assertEquals(20, type(0, 15, 3, 0));
+        // Root flag 0x4: GetLiquidTypeId(field), and 0 falls back to the tile.
+        assertEquals(19, type(0, 19, 0, 4));
+        assertEquals(19, type(0, 3, 0, 4));
+        assertEquals(181, type(0, 181, 0, 4));
+        assertEquals(13, type(0, 0, 0, 4), "field 0 with the flag: the tile's kind 0 + 1, water");
     }
 
     @Test

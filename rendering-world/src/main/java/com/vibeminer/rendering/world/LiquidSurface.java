@@ -50,6 +50,11 @@ public final class LiquidSurface {
         double minHeight();
 
         double maxHeight();
+
+        /** Its LiquidType ID, 0 when unknown (informational: the kind is {@link Placed#kind}). */
+        default int liquidType() {
+            return 0;
+        }
     }
 
     /**

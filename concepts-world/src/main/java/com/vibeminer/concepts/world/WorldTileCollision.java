@@ -316,7 +316,9 @@ public final class WorldTileCollision {
                     liquids.add(
                             new LiquidSurface.Placed(
                                     new Key('L', p.uniqueId(), g),
-                                    new Local(group.liquid()),
+                                    new Local(
+                                            group.liquid(),
+                                            group.liquid().liquidType(root.flags())),
                                     kind(group.liquid().liquidType(root.flags())),
                                     r,
                                     scale,
@@ -563,7 +565,7 @@ public final class WorldTileCollision {
     }
 
     /** A group's liquid in its own coordinates, for {@link LiquidSurface}. */
-    record Local(WmoLiquid liquid) implements LiquidSurface.Local {
+    record Local(WmoLiquid liquid, int liquidType) implements LiquidSurface.Local {
         @Override
         public double heightAt(double x, double y) {
             return liquid.heightAt(x, y);

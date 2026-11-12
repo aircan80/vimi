@@ -710,16 +710,19 @@ public final class WorldMeasurementProbe {
             body.place(x, y, surface + 30, 200, world, liquids);
             var here = liquids.at(x, y);
             var report = new StringBuilder(String.format(Locale.ROOT,
-                    "PROBE swim %s building liquid %s, box %.0f x %.0f yd, surface %.2f..%.2f, at %.1f, %.1f:"
+                    "PROBE swim %s building liquid %s (LiquidType " + p.liquid().liquidType() + "), box %.0f x %.0f yd, surface %.2f..%.2f, at %.1f, %.1f:"
                             + " surface %.2f (terrain liquid there %s), placed %s %s feet %.2f under, swim depth %.2f",
                     scenario.name(), p.kind(), b[2] - b[0], b[3] - b[1], p.z() + p.liquid().minHeight() * p.scale(),
                     p.z() + p.liquid().maxHeight() * p.scale(), x, y, surface,
                     terrainHere == null ? "none" : String.format(Locale.ROOT, "%.2f", terrainHere.height()),
                     body.status(), body.liquid(), here.height() - body.z(), body.swimDepth()));
-            for (int heading = 0; heading < 4; heading++) {
+            for (int run = 0; run < 8; run++) {
+                // Runs 4 to 7 repeat the headings holding Space (up) too: rising, never jumping out.
+                int heading = run % 4;
+                boolean space = run >= 4;
                 body.place(x, y, surface + 30, 200, world, liquids);
                 double yaw = heading * Math.PI / 2;
-                var in = new com.vibeminer.rendering.world.WalkController.Input(1, 0, 0, yaw, 0, false, 0);
+                var in = new com.vibeminer.rendering.world.WalkController.Input(1, 0, space ? 1 : 0, yaw, 0, space, 0);
                 int switches = 0, swimSteps = 0;
                 boolean was = body.swimming();
                 double floatGap = Double.NaN, ox = body.x(), oy = body.y();
@@ -738,9 +741,10 @@ public final class WorldMeasurementProbe {
                         floatGap = at.height() - body.z();
                     }
                 }
-                report.append(String.format(Locale.ROOT, "; heading %d: swam %d steps, floats %.2f under, %s, %d switches, %.1f yd, %s",
-                        heading * 90, swimSteps, floatGap, left, switches,
-                        Math.hypot(body.x() - ox, body.y() - oy), body.status()));
+                report.append(String.format(Locale.ROOT, "; heading %d%s: swam %d steps, floats %.2f under, %s, %d switches, %.1f of %.1f yd free, %s",
+                        heading * 90, space ? " with Space" : "", swimSteps, floatGap, left, switches,
+                        Math.hypot(body.x() - ox, body.y() - oy),
+                        com.vibeminer.rendering.world.MovementParity.SWIM_SPEED * 8, body.status()));
             }
             say(report.toString());
         }

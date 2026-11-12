@@ -90,7 +90,9 @@ public final class WmoLiquid {
                     throw new IllegalArgumentException("MOGP header truncated");
                 }
                 int groupFlags = input.getInt(input.position() + 8);
-                int groupLiquid = input.getInt(input.position() + 48);
+                // MOGP: names, flags, box (36 bytes), six 16-bit counts, fog IDs (+48), liquid
+                // (+52), as WmoFormats.GroupHeader reads it.
+                int groupLiquid = input.getInt(input.position() + 52);
                 input.position(input.position() + 68);
                 int nested = 0;
                 while (end - input.position() >= 8) {
@@ -197,23 +199,30 @@ public final class WmoLiquid {
     }
 
     /**
-     * The group's LiquidType ID as open server emulators derive it: with the root's flag 0x4 the
-     * MOGP field is the ID, otherwise the field plus one (15 meaning none); with none, the first
-     * live tile's low flag bits plus one. Basic IDs 1 to 20 then map by their kind ({@code (id - 1)
-     * & 3}: water, ocean, magma, slime) to the WMO rows 13 or 14 (water; 14 when the group has MOGP
-     * flag 0x80000, or the kind is ocean), 19 (magma) and 20 (slime). 0 when unknown.
+     * The group's LiquidType ID exactly as TrinityCore's vmap4 extractor derives it ({@code
+     * WMOGroup::open} in {@code src/tools/vmap4_extractor/wmo.cpp}): with the root's flag 0x4,
+     * {@code GetLiquidTypeId(field)}; otherwise 15 means none and any other field, 0 included,
+     * {@code GetLiquidTypeId(field + 1)}. When that gives none, the first tile whose low four flag
+     * bits are not 15 gives {@code GetLiquidTypeId(bits + 1)}. {@code GetLiquidTypeId} maps a basic
+     * ID 1 to 20 by {@code (id - 1) & 3} to 13 (or 14 with MOGP flag 0x80000), 14, 19 and 20 (WMO
+     * water, ocean, magma, slime) and keeps any other ID. 0 when there is none.
      */
     public int liquidType(int rootFlags) {
         int id;
         if ((rootFlags & 0x4) != 0) {
-            id = groupLiquid;
+            id = typeId(groupLiquid);
         } else {
-            id = groupLiquid == 15 || groupLiquid == 0 ? 0 : groupLiquid + 1;
+            id = groupLiquid == 15 ? 0 : typeId(groupLiquid + 1);
         }
         if (id == 0) {
             int tile = firstTileKind();
-            id = tile == 0x0F ? 0 : tile + 1;
+            id = tile == 0x0F ? 0 : typeId(tile + 1);
         }
+        return id;
+    }
+
+    /** The extractor's {@code GetLiquidTypeId}. */
+    private int typeId(int id) {
         if (id > 0 && id < 21) {
             return switch ((id - 1) & 3) {
                 case 0 -> (groupFlags & 0x80000) != 0 ? 14 : 13;
