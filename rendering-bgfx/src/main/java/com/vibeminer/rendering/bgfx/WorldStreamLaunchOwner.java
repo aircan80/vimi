@@ -93,6 +93,8 @@ final class WorldStreamLaunchOwner {
         private final WorldStreamPreparedFiles.LaunchFiles files;
         private final long graceMillis, deadlineMillis, startupMillis;
         private final AtomicBoolean initialized = new AtomicBoolean();
+        // When the child last showed it is working (System.nanoTime); see progress().
+        private volatile long lastProgress = System.nanoTime();
         private volatile boolean startupDone;
         private final AtomicBoolean stopping = new AtomicBoolean();
         // Runs once, without a lock, when stopping first becomes true (or at once if it already
@@ -139,6 +141,14 @@ final class WorldStreamLaunchOwner {
         static long exitWaitMillis(
                 boolean acknowledged, long sinceCloseMillis, long graceMillis, long drainMillis) {
             return acknowledged ? graceMillis : drainMillis - sinceCloseMillis;
+        }
+
+        /**
+         * The child showed it is still working (it wrote diagnostics or a status line): the startup
+         * deadline counts quiet time from now.
+         */
+        void progress() {
+            lastProgress = System.nanoTime();
         }
 
         /** Metadata acknowledgement only; never a callback or a source readiness claim. */
@@ -377,12 +387,23 @@ final class WorldStreamLaunchOwner {
             }
         }
 
+        /**
+         * Startup fails when the child stays quiet (no {@link #progress}) for {@code
+         * startupMillis}, or is still not ready after {@link #STARTUP_CAP} times that however busy
+         * it looks. A child that exits fails at once through its exit, never waiting out either
+         * bound.
+         */
         private void watchStartup() {
             try {
-                long until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(startupMillis);
+                long started = System.nanoTime();
+                long quiet = TimeUnit.MILLISECONDS.toNanos(startupMillis);
                 while (!initialized.get() && !stopping.get()) {
-                    if (System.nanoTime() - until >= 0) {
-                        failure = new IOException("World initialization deadline exceeded");
+                    long now = System.nanoTime();
+                    String reason = startupExpired(started, lastProgress, now, quiet);
+                    if (reason != null) {
+                        failure =
+                                new IOException(
+                                        "World initialization deadline exceeded: " + reason);
                         closeAsync();
                         return;
                     }
@@ -391,6 +412,28 @@ final class WorldStreamLaunchOwner {
             } finally {
                 startupDone = true;
             }
+        }
+
+        /** How many quiet windows a busy child may take in all before startup fails. */
+        static final int STARTUP_CAP = 4;
+
+        /**
+         * Why startup has run out at {@code now}, or null while it may go on: no progress for the
+         * quiet window, or the overall cap of {@link #STARTUP_CAP} windows reached. Pure, for
+         * tests.
+         */
+        static String startupExpired(long started, long lastProgress, long now, long quietNanos) {
+            if (now - started >= quietNanos * STARTUP_CAP) {
+                return "still not ready after "
+                        + TimeUnit.NANOSECONDS.toMillis(quietNanos * STARTUP_CAP)
+                        + " ms";
+            }
+            if (now - Math.max(started, lastProgress) >= quietNanos) {
+                return "no sign of progress for "
+                        + TimeUnit.NANOSECONDS.toMillis(quietNanos)
+                        + " ms";
+            }
+            return null;
         }
 
         private boolean workersDone() {

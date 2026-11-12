@@ -991,9 +991,15 @@ public final class WorldStreamTransport {
             this.files = files;
         }
 
+        /**
+         * The helper's startup window: it fails after this long without a sign of progress (a
+         * diagnostic or status line), or after four windows in all, and at once if it exits.
+         */
+        static final long STARTUP_MILLIS = 30_000;
+
         /** Transfers file ownership before asynchronous external process creation. */
         public Session launch(Starter starter) {
-            return launch(starter, 10000, 5000);
+            return launch(starter, STARTUP_MILLIS, 5000);
         }
 
         Session launch(Starter starter, long startupMillis, long closeMillis) {
@@ -2704,6 +2710,7 @@ public final class WorldStreamTransport {
                         }
                         return;
                     }
+                    handle.progress();
                     var change = state.status(message);
                     var seam = statusSeam;
                     if (seam != null) {
@@ -3013,7 +3020,23 @@ public final class WorldStreamTransport {
             int read;
             while ((read = errors.read(scratch)) != -1) {
                 stderrTail.accept(scratch, 0, read);
+                // A finished diagnostic line while starting shows the helper is working (shader
+                // and device setup); a partial line does not count until it ends.
+                var handle = owner;
+                if (handle != null && endsALine(scratch, read)) {
+                    handle.progress();
+                }
             }
+        }
+
+        /** Whether {@code bytes[0..length)} holds a line end. */
+        static boolean endsALine(byte[] bytes, int length) {
+            for (int i = 0; i < length; i++) {
+                if (bytes[i] == '\n') {
+                    return true;
+                }
+            }
+            return false;
         }
 
         /**

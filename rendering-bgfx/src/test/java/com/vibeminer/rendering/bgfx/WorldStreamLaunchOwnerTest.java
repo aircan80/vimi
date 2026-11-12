@@ -636,4 +636,116 @@ class WorldStreamLaunchOwnerTest {
             return handle;
         }
     }
+
+    @Test
+    void startupRunsOutOnQuietOrAtTheCapNotWhileTheChildShowsProgress() {
+        long q = TimeUnit.MILLISECONDS.toNanos(100);
+        long start = 1_000_000_000L;
+        assertEquals(
+                null, WorldStreamLaunchOwner.Handle.startupExpired(start, start, start + q - 1, q));
+        assertTrue(
+                WorldStreamLaunchOwner.Handle.startupExpired(start, start, start + q, q)
+                        .contains("no sign of progress"));
+        // Progress restarts the quiet window, up to the cap of four windows.
+        assertEquals(
+                null,
+                WorldStreamLaunchOwner.Handle.startupExpired(
+                        start, start + 3 * q, start + 3 * q + q / 2, q));
+        assertTrue(
+                WorldStreamLaunchOwner.Handle.startupExpired(
+                                start, start + 4 * q - 1, start + 4 * q, q)
+                        .contains("still not ready"));
+        // A progress time older than the start (set before launch) counts from the start.
+        assertEquals(
+                null,
+                WorldStreamLaunchOwner.Handle.startupExpired(
+                        start, start - 5 * q, start + q / 2, q));
+    }
+
+    @Test
+    void aChildThatKeepsShowingProgressOutlastsTheQuietWindowAndAHungOneDoesNot() throws Exception {
+        // Ready after 600 ms with progress every 20 ms: more than twice the 250 ms quiet window,
+        // with room for scheduling jitter both within a window and before the 1 s cap.
+        var ready = new CountDownLatch(1);
+        var busy =
+                WorldStreamLaunchOwner.launch(
+                        WorldStreamPreparedFiles.create(directory, SESSION, null),
+                        arguments -> new Child(),
+                        (process, handle) ->
+                                Thread.ofVirtual()
+                                        .start(
+                                                () -> {
+                                                    long until =
+                                                            System.nanoTime()
+                                                                    + TimeUnit.MILLISECONDS.toNanos(
+                                                                            600);
+                                                    while (System.nanoTime() < until) {
+                                                        handle.progress();
+                                                        try {
+                                                            Thread.sleep(20);
+                                                        } catch (InterruptedException e) {
+                                                            return;
+                                                        }
+                                                    }
+                                                    handle.initialized();
+                                                    ready.countDown();
+                                                }),
+                        0,
+                        1000,
+                        250);
+        assertTrue(ready.await(5, TimeUnit.SECONDS));
+        Thread.sleep(300);
+        assertFalse(busy.stopping(), "a slow child that shows progress starts");
+        busy.closeAsync().get(3, TimeUnit.SECONDS);
+        // Progress forever without becoming ready: stopped at the cap of four windows.
+        var stop = new java.util.concurrent.atomic.AtomicBoolean();
+        var spinning =
+                WorldStreamLaunchOwner.launch(
+                        WorldStreamPreparedFiles.create(directory, SESSION, null),
+                        arguments -> new Child(),
+                        (process, handle) ->
+                                Thread.ofVirtual()
+                                        .start(
+                                                () -> {
+                                                    while (!stop.get()) {
+                                                        handle.progress();
+                                                        try {
+                                                            Thread.sleep(10);
+                                                        } catch (InterruptedException e) {
+                                                            return;
+                                                        }
+                                                    }
+                                                }),
+                        0,
+                        1000,
+                        100);
+        try {
+            long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (!spinning.stopping() && System.nanoTime() < until) {
+                Thread.sleep(2);
+            }
+            assertTrue(spinning.stopping(), "a child that never becomes ready is stopped");
+            assertTrue(
+                    spinning.failure().getMessage().contains("still not ready"),
+                    spinning.failure().getMessage());
+        } finally {
+            stop.set(true);
+        }
+        try {
+            spinning.closeAsync().get(3, TimeUnit.SECONDS);
+        } catch (java.util.concurrent.ExecutionException expected) {
+            // The startup failure.
+        }
+    }
+
+    @Test
+    void onlyAFinishedStderrLineCountsAsProgress() {
+        byte[] partial = "World v2 rend".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        byte[] line = "erer: Vulkan\n".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        assertFalse(WorldStreamTransport.Session.endsALine(partial, partial.length));
+        assertTrue(WorldStreamTransport.Session.endsALine(line, line.length));
+        assertFalse(
+                WorldStreamTransport.Session.endsALine(line, line.length - 1),
+                "only the read part");
+    }
 }
