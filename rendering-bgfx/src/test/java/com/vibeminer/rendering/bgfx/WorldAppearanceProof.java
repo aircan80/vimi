@@ -55,7 +55,7 @@ public final class WorldAppearanceProof {
                     AppearanceImages.compare(
                             actual, reference, AppearanceImages.Tolerance.STANDARD.pixelDelta());
             var near =
-                    AppearanceImages.compareNear(
+                    AppearanceImages.compareNearBothWays(
                             actual,
                             reference,
                             WIDTH,

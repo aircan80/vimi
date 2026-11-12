@@ -126,4 +126,30 @@ class AppearanceImagesTest {
         // Sizes that differ never match.
         assertFalse(AppearanceImages.matches(new int[10], reference, width, height));
     }
+
+    @Test
+    void aOnePixelLineThatAppearsOrDisappearsFailsAndAWholeShiftPasses() {
+        int width = 480, height = 300;
+        int[] ground = new int[width * height];
+        java.util.Arrays.fill(ground, 0xffa0b0c0);
+        int[] line = ground.clone();
+        for (int x = 0; x < width; x++) {
+            line[150 * width + x] = 0xff102030;
+        }
+        // Within the old pixel tolerance (0.33 % of the pixels), but a feature: it must fail.
+        assertTrue(
+                AppearanceImages.compare(line, ground, 8)
+                        .matches(AppearanceImages.Tolerance.STANDARD));
+        assertFalse(AppearanceImages.matches(line, ground, width, height), "a line appears");
+        assertFalse(AppearanceImages.matches(ground, line, width, height), "a line disappears");
+        // One way alone misses the disappearing line: every background pixel matches beside it.
+        assertEquals(
+                0, AppearanceImages.compareNear(ground, line, width, height, 8).outlierShare());
+        // The same line one pixel lower: an edge a pixel apart, which passes.
+        int[] lower = ground.clone();
+        for (int x = 0; x < width; x++) {
+            lower[151 * width + x] = 0xff102030;
+        }
+        assertTrue(AppearanceImages.matches(lower, line, width, height));
+    }
 }

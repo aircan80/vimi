@@ -10,9 +10,10 @@ import javax.imageio.ImageIO;
 /**
  * Reference-image comparison for the World appearance proofs (#379). Frames are compared pixel by
  * pixel, channel by channel, as the 32-bit values the helper returned (a backend's channel order is
- * its own; references are kept per backend). A frame matches when its mean absolute channel
- * difference and the share of pixels differing by more than {@link Tolerance#pixelDelta} in any
- * channel both stay within the tolerance. Pure Java: no GPU.
+ * its own; references are kept per backend). A frame matches ({@link #matches}) when, compared
+ * within one pixel of each place in both directions, its mean absolute channel difference and the
+ * share of pixels differing by more than {@link Tolerance#pixelDelta} in any channel both stay
+ * within {@link Tolerance#NEAR}. Pure Java: no GPU.
  */
 final class AppearanceImages {
     private AppearanceImages() {}
@@ -23,17 +24,21 @@ final class AppearanceImages {
      * outlierShare}: largest share of outlier pixels.
      */
     record Tolerance(double meanDelta, int pixelDelta, double outlierShare) {
-        /** Driver rounding and edge rasterization differences between runs and GPUs. */
+        /**
+         * Pixel-by-pixel limits for driver rounding. The proof prints this measurement for
+         * comparison only: its outlier share lets a line one pixel wide appear or disappear.
+         */
         static final Tolerance STANDARD = new Tolerance(1.5, 8, 0.005);
 
         /**
-         * The same frame where each pixel may match its reference within one pixel of its place
-         * ({@link #compareNear}): a GPU that places MSAA samples or rasterizes an edge a pixel
-         * apart from the one that recorded the reference moves edges, not regions. A lost texture,
-         * a wrong light, a changed gradient, a missing surface or a region drawn differently still
-         * fails.
+         * The frame compared within a pixel both ways: every pixel of each frame must match the
+         * other within one pixel of its place (see {@link AppearanceImages#compareNearBothWays}),
+         * so a GPU that places MSAA samples or rasterizes an edge a pixel apart passes, while a
+         * feature that appears or disappears, even a line one pixel wide, does not. Its outlier
+         * share is a tenth of the pixel tolerance's, so about 70 pixels of such a feature in a 480
+         * x 300 frame already fail.
          */
-        static final Tolerance NEAR = new Tolerance(1.5, 8, 0.005);
+        static final Tolerance NEAR = new Tolerance(1.5, 8, 0.0005);
     }
 
     /** How a frame differs from its reference; {@code matches} applies the tolerance. */
@@ -125,14 +130,30 @@ final class AppearanceImages {
     }
 
     /**
-     * Whether a frame matches its reference: within {@link Tolerance#STANDARD} pixel by pixel, or
-     * within {@link Tolerance#NEAR} where each pixel may match within one pixel of its place.
+     * {@link #compareNear} both ways, actual against reference and reference against actual: the
+     * larger mean, outlier share and maximum. One way alone misses a thin feature that disappears
+     * (each remaining pixel still finds a match beside it).
+     */
+    static Difference compareNearBothWays(
+            int[] actual, int[] reference, int width, int height, int pixelDelta) {
+        var forward = compareNear(actual, reference, width, height, pixelDelta);
+        var backward = compareNear(reference, actual, width, height, pixelDelta);
+        return new Difference(
+                Math.max(forward.meanDelta(), backward.meanDelta()),
+                Math.max(forward.outlierShare(), backward.outlierShare()),
+                Math.max(forward.maxDelta(), backward.maxDelta()),
+                forward.sameSize() && backward.sameSize());
+    }
+
+    /**
+     * Whether a frame matches its reference: within {@link Tolerance#NEAR}, both ways ({@link
+     * #compareNearBothWays}). Identical frames, driver rounding and edges a pixel apart pass; a
+     * changed gradient, light or texture, and a feature that appears or disappears (down to a line
+     * one pixel wide across the frame) fail.
      */
     static boolean matches(int[] actual, int[] reference, int width, int height) {
-        return compare(actual, reference, Tolerance.STANDARD.pixelDelta())
-                        .matches(Tolerance.STANDARD)
-                || compareNear(actual, reference, width, height, Tolerance.NEAR.pixelDelta())
-                        .matches(Tolerance.NEAR);
+        return compareNearBothWays(actual, reference, width, height, Tolerance.NEAR.pixelDelta())
+                .matches(Tolerance.NEAR);
     }
 
     static int[] pixels(IntBuffer frame) {
