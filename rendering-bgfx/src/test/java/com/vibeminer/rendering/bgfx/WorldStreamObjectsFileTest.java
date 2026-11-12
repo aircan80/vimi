@@ -80,7 +80,7 @@ final class WorldStreamObjectsFileTest {
                         .rgba());
     }
 
-    private static ByteBuffer rgba(int pixels, int seed) {
+    static ByteBuffer rgba(int pixels, int seed) {
         byte[] bytes = new byte[pixels * 4];
         for (int i = 0; i < bytes.length; i++) {
             bytes[i] = (byte) (seed + i);
