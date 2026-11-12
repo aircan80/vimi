@@ -1433,7 +1433,7 @@ public final class WorldMeasurementProbe {
             // carry portal sets the renderer culls with.
             var interiors = probeInteriors(map);
             WorldStreamSourceBridge.ExteriorPreparer preparer =
-                    (source, scope, tile, cancellation, formats) ->
+                    (source, scope, tile, cancellation, formats, creatureBytes) ->
                             WorldStreamSourceBridge.prepareExterior(
                                     source,
                                     scope,

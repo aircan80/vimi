@@ -3402,11 +3402,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
         // portal sets hide them from outside.
         var interiors = interiorMode(inventory.map());
         WorldStreamSourceBridge.ExteriorPreparer preparer = creatureSource == null
-                ? (source, scope, tile, cancellation, formats) -> WorldStreamSourceBridge.prepareExterior(
+                ? (source, scope, tile, cancellation, formats, creatureBytes) -> WorldStreamSourceBridge.prepareExterior(
                         source, scope, tile, cancellation, null, detail, interiors, formats)
-                : (source, scope, tile, cancellation, formats) -> WorldStreamSourceBridge.prepareExterior(
+                : (source, scope, tile, cancellation, formats, creatureBytes) -> WorldStreamSourceBridge.prepareExterior(
                         source, scope, tile, cancellation,
-                        (builder, owned, token) -> creatureSource.append(builder, creatureMap, owned, token),
+                        (builder, owned, token) -> creatureSource.append(builder, creatureMap, owned, creatureBytes, token),
                         detail, interiors, formats);
         stallWatchdog.reset();
         // #381: native presentation when asked for, on Windows, unless it already failed here.
