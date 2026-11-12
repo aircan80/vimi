@@ -1039,6 +1039,52 @@ final class RaceNpcAppearanceTest {
                 npc.issues().toString());
     }
 
+    /**
+     * #104: a player composite saved before textures the model names itself were sampled (those
+     * surfaces neutral) is never restored: the player key names the change. NPC keys are unchanged.
+     */
+    @Test
+    void aPlayerCompositeSavedBeforeModelNamedTexturesIsNotRestored() throws Exception {
+        String identity = "race-static-appearance-v2\nsample";
+        var before =
+                com.vibeminer.generated.GeneratedKey.hash(
+                        (identity
+                                        + RaceAppearance.SKELETON_WEIGHTS_IDENTITY
+                                        + RaceAppearance.ASSUMED_WEIGHTS_IDENTITY)
+                                .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        assertFalse(before.equals(RaceAppearance.appearanceKey(identity, false)));
+        assertEquals(
+                com.vibeminer.generated.GeneratedKey.hash(
+                        (identity + RaceAppearance.SKELETON_WEIGHTS_IDENTITY)
+                                .getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+                RaceAppearance.appearanceKey(identity, true),
+                "an NPC key is unchanged");
+        // A new preview renders under the new key and samples the model-named texture.
+        var generated = new com.vibeminer.generated.MemoryGeneratedStore();
+        var variant = new RaceMediaTypes.Variant(3, 0, 1, 1, 1234);
+        var key = RaceAppearance.appearanceKey("stale", false);
+        var oldKey =
+                com.vibeminer.generated.GeneratedKey.hash(
+                        ("stale"
+                                        + RaceAppearance.SKELETON_WEIGHTS_IDENTITY
+                                        + RaceAppearance.ASSUMED_WEIGHTS_IDENTITY)
+                                .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        assertFalse(oldKey.equals(key));
+        var fresh =
+                render(
+                        new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
+                                .add(1234, "1".repeat(32), golden("authored-274.m2"))
+                                .add(900, "2".repeat(32), golden("authored-274.skin"))
+                                .add(100, "3".repeat(32), bake())
+                                .add(700, "7".repeat(32), bake()),
+                        variant,
+                        false,
+                        generated,
+                        key);
+        assertTrue(fresh.appearance() != null && !fresh.restored(), fresh.message());
+        assertEquals(2, fresh.appearance().textures().size(), "the model-named texture is sampled");
+    }
+
     @Test
     void anUnexpectedFailureIsAskedForAgainNeverAFourthState() {
         // Render-side: the future's failure is resolved, not left failed.

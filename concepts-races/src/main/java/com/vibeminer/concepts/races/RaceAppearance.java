@@ -829,6 +829,7 @@ final class RaceAppearance {
                 // single-stage diffuse draw, sampled from that file rather than a composed canvas
                 // (#104). A player preview only; an NPC (a World creature) is unchanged.
                 if (texture.type() == 0
+                        && textureTypes.get(0) == null
                         && !plan.npc()
                         && !firstStage
                         && texture.fileDataId() != null
@@ -1059,9 +1060,20 @@ final class RaceAppearance {
      */
     static GeneratedKey appearanceKey(String identity, boolean npc) {
         return GeneratedKey.hash(
-                (identity + SKELETON_WEIGHTS_IDENTITY + (npc ? "" : ASSUMED_WEIGHTS_IDENTITY))
+                (identity
+                                + SKELETON_WEIGHTS_IDENTITY
+                                + (npc
+                                        ? ""
+                                        : ASSUMED_WEIGHTS_IDENTITY + MODEL_NAMED_TEXTURES_IDENTITY))
                         .getBytes(StandardCharsets.UTF_8));
     }
+
+    /**
+     * Names, in a player composite's key, that a draw of a texture the model names itself (type 0)
+     * is sampled from that file: composites saved before, with those surfaces neutral, are never
+     * restored (#104). NPC composites never sample one, so their keys are unchanged.
+     */
+    static final String MODEL_NAMED_TEXTURES_IDENTITY = "\nmodel-named-textures-v1";
 
     /**
      * Names the weight proof read through the model's external skeleton, in every composite's key:
