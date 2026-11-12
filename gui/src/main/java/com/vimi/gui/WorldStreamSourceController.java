@@ -320,6 +320,8 @@ final class WorldStreamSourceController {
     private final IdentityHashMap<Entry, Optional<TerrainGround.Tile>> heights =
             new IdentityHashMap<>();
     private volatile TerrainGround ground = TerrainGround.empty();
+    private volatile com.vibeminer.rendering.world.LiquidSurface liquids =
+            com.vibeminer.rendering.world.LiquidSurface.empty();
     // Walking collision of buildings and doodads: the parts of the 3x3 tiles around the camera,
     // read and prepared on their own worker (never the source lane), merged there and published
     // as one set. Parts farther than one tile are dropped, so at most nine are held.
@@ -643,6 +645,11 @@ final class WorldStreamSourceController {
     /** Rendered-surface heights of the current resident tiles; never source or payload handles. */
     TerrainGround ground() {
         return closing ? TerrainGround.empty() : ground;
+    }
+
+    /** Terrain liquid surface of the current resident tiles, for a swimming body. */
+    com.vibeminer.rendering.world.LiquidSurface liquids() {
+        return closing ? com.vibeminer.rendering.world.LiquidSurface.empty() : liquids;
     }
 
     /** Buildings and doodads around the camera for a walking body; empty until read. */
@@ -2004,7 +2011,11 @@ final class WorldStreamSourceController {
         areaMetadata.keySet().retainAll(live);
         var tiles = new ArrayList<TerrainGround.Tile>();
         var metadata = new ArrayList<WorldFormats.AreaMetadata>();
+        var liquidTiles = new ArrayList<com.vibeminer.rendering.world.LiquidSurface.Tile>();
         for (var entry : current) {
+            var liquid = entry.source().liquids();
+            if (liquid != null && liquidTiles.size() < com.vibeminer.rendering.world.LiquidSurface.MAX_TILES)
+                liquidTiles.add(liquid);
             var known = heights.get(entry);
             var recorded = areaMetadata.get(entry);
             if (known == null || recorded == null) {
@@ -2025,6 +2036,7 @@ final class WorldStreamSourceController {
             recorded.ifPresent(metadata::add);
         }
         ground = TerrainGround.of(tiles);
+        liquids = com.vibeminer.rendering.world.LiquidSurface.of(liquidTiles);
         areas = List.copyOf(metadata);
         updateObjects();
     }

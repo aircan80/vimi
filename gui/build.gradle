@@ -904,6 +904,8 @@ check.dependsOn preparedBuildReaderTest
 // -Pprobe.mode=collision counts the collision bytes of every obj0 placement around each scenario;
 // -Pprobe.mode=walk walks a body over each scenario's real 3x3 terrain in eight headings and
 // reports where it ended, slides and falls.
+// -Pprobe.mode=swim reads the scenario's terrain liquid, lists the water per area, and walks a body
+// from eight shores into the deepest water (or -Pprobe.swimArea's) and back out (#716).
 // -Pprobe.mode=races previews every race model variant's textured sample and groups the untextured
 // ones by reason (-Pprobe.raceImages=<race IDs> writes PNG renders, -Pprobe.raceDetail=true adds
 // issues); -Pprobe.mode=raceSkin dumps the customization chain of -Pprobe.models (ChrModel IDs) or
@@ -932,7 +934,7 @@ tasks.register('worldMeasurementProbe', JavaExec) {
      'probe.rotateSeconds', 'probe.flySeconds', 'probe.settleSeconds', 'probe.mapSeconds',
      'probe.deadlineSeconds', 'probe.size', 'probe.passes', 'probe.objects', 'probe.interiors', 'probe.root',
      'vimi.world.objectTextures', 'vimi.world.creatures', 'vimi.world.viewDistance',
-     'vimi.gpu.backend', 'probe.stride', 'probe.limit', 'probe.raceDetail', 'probe.models', 'probe.displays', 'probe.raceImages', 'probe.online', 'probe.files', 'probe.layouts', 'probe.raceZoom', 'probe.racePitch'].each { name ->
+     'vimi.gpu.backend', 'probe.stride', 'probe.limit', 'probe.raceDetail', 'probe.models', 'probe.displays', 'probe.raceImages', 'probe.online', 'probe.files', 'probe.layouts', 'probe.raceZoom', 'probe.racePitch', 'probe.swimArea'].each { name ->
         def value = providers.gradleProperty(name)
         if (value.isPresent()) systemProperty name, value.get()
     }

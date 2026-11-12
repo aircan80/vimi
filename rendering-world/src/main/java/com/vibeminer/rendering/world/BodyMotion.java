@@ -88,13 +88,39 @@ public final class BodyMotion {
             double flySpeed,
             double seconds,
             CollisionWorld world) {
+        return step(
+                current,
+                forward,
+                strafe,
+                vertical,
+                turn,
+                tilt,
+                flySpeed,
+                seconds,
+                world,
+                LiquidSurface.empty());
+    }
+
+    /** As above; a walking body swims in {@code liquids} ({@link WalkController}). */
+    public Step step(
+            TerrainRenderer.Camera current,
+            int forward,
+            int strafe,
+            int vertical,
+            int turn,
+            int tilt,
+            double flySpeed,
+            double seconds,
+            CollisionWorld world,
+            LiquidSurface liquids) {
         Objects.requireNonNull(current);
         Objects.requireNonNull(world);
+        Objects.requireNonNull(liquids);
         boolean replaced = !current.equals(shown);
         if (replaced) {
             yaw = current.yaw();
             pitch = current.pitch();
-            body.place(current.x(), current.y(), current.z() - eye(), PLACE_DROP, world);
+            body.place(current.x(), current.y(), current.z() - eye(), PLACE_DROP, world, liquids);
             follow.reset();
         }
         look(
@@ -104,7 +130,8 @@ public final class BodyMotion {
                 new WalkController.Input(
                         forward, strafe, vertical, yaw, pitch, vertical > 0, flySpeed),
                 seconds,
-                world);
+                world,
+                liquids);
         var next = follow.place(body.x(), body.y(), body.z() + eye(), yaw, pitch, seconds, world);
         boolean moved = replaced || !next.equals(current);
         shown = next;

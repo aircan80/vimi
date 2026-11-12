@@ -31,7 +31,7 @@ frame; longer gaps are dropped, not caught up):
 - Walls stop the body one radius away; moving at an angle slides along them.
 - Terrain holes are open: the body falls through. A body that falls 500 yd below
   where it last stood (a hole into nothing) is put back there.
-- There is no swimming yet: in water the body walks on the lake or river bed.
+- In deep terrain water the body swims (see Swimming below).
 - Where collision is not loaded yet, a walking body waits: it does not move into
   the unknown area and does not fall while its own footprint is unknown. The
   status line says so (amber mode icon).
@@ -43,6 +43,61 @@ collide-and-slide. Steps go up by the step height, slide, then down. A contact
 supports the body when its triangle is walkable and the touched point is at most
 a step above the feet, so the rim of a tall ledge cannot be climbed with the
 capsule's rounded side.
+
+## Swimming
+
+A walking body swims once its feet are 0.6 of its height below the terrain's
+liquid surface (1.22 yd for the default capsule). The fraction is flagged: the
+client's threshold is unknown, to be measured by wading into a lake until the
+swim animation starts. While swimming:
+
+- No gravity. Swim 4.722 yd/s forward and sideways, 2.5 yd/s backwards
+  (emulator constants).
+- Forward follows the view's pitch, so looking down dives and looking up rises;
+  Space rises straight up and the descend key sinks. The body never rises above
+  the swim depth: at the surface it floats, following a sloping surface, and it
+  stays at its depth when no key is held.
+- The bed and banks collide. Only walkable ground lifts the body toward the
+  shore; a steep bank is a wall. It walks again once walkable ground lifts its
+  feet 0.05 of its height above the swim depth (flagged, so the body does not
+  switch at the edge every step), and falls where the liquid ends.
+- The murloc plays SwimIdle at rest and Swim when moving; the status line says
+  "Swimming".
+
+The surface comes from `LiquidSurface` (`rendering-world`): every MH2O cell of
+the resident tiles, drawn or left out of the packet, with its corner heights,
+split on the NE--SW diagonal like the drawn quad; where layers overlap the
+highest surface answers. Each cell keeps its kind: water or ocean as drawn, and
+magma (LiquidType 3) or slime (LiquidType 4) for coloured layers; any other
+coloured liquid is "other". Swimming is the same in every kind.
+
+A tile's liquid arrives with its terrain: the stream copies the water while it
+prepares the tile, before the tile's heights reach the body, so there is no
+moment with ground but no water. Where a tile's water is refused or its copy
+fails, that tile has no liquid surface: a body walks or falls to the bed there
+and walks on it (the tile's water note says "no swimming here"). If the water
+appears later (the tile is read again), a body on a bed deeper than its swim
+depth starts swimming where it stands, on the bed, and Space takes it up to the
+surface; it is not lifted by itself. The surface is built apart from the drawn
+water: a drawn copy that fails keeps it, and a tile with more liquid cells than
+`LiquidSurface.MAX_CELLS` keeps its highest layers and notes the rest.
+
+The exit is decided where the body would stand: the walk-out check snaps the
+feet down to the ground it found (up to 0.1 yd) and walks out only when they
+are still above the exit depth there, so a short body (the murloc, 1.29 yd
+tall, whose margin is 0.065 yd) cannot snap back below its swim depth.
+
+Not covered: water inside buildings (WMO liquid, such as the Stormwind canals)
+and the older MCLQ chunk liquid are not read, so a body walks through them;
+flying ignores water.
+
+Real data (build 70862, `-Pprobe.mode=swim`, Elwynn 49,31, `-Pprobe.swimArea=18`,
+Crystal Lake): 2,258 water cells, surface 57.6 to 59.1. Walking in from eight
+shores, the body starts swimming 3.7 to 5.3 yd past the shore line where the
+ground lies 1.24 to 1.35 yd under the surface, swims at 4.71 to 4.73 yd/s,
+floats 1.22 to 1.27 yd under, and walks out with the ground 1.12 to 1.19 yd
+under, switching once each way (three paths cross the lake and walk out on the
+far side over shallows, switching there too). A step costs under 0.05 ms.
 
 ## Flying
 
@@ -73,7 +128,9 @@ the ground below.
 | Value | Explorer | Source |
 | --- | --- | --- |
 | Run, walk, backpedal | 7.0, 2.5, 4.5 yd/s | Emulator constants; client check owed |
-| Swim forward, back | 4.722, 2.5 yd/s | Emulator constants (swimming not yet used) |
+| Swim forward, back | 4.722, 2.5 yd/s | Emulator constants |
+| Swim depth | 0.6 of the body height | Flagged: unknown, to be measured |
+| Swim exit margin | 0.05 of the body height | Flagged: explorer default |
 | Turn rate | π rad/s | Emulator constant |
 | Gravity, terminal speed | 19.291105 yd/s², 60.148003 yd/s | Emulator constants |
 | Jump velocity | 7.95554 yd/s | Emulator constant |
@@ -153,6 +210,20 @@ accept a 0.01 yd overlap.
   fall; falling out of the world puts the body back; unknown collision waits;
   flight without gravity, along the pitch, skimming the ground; plane, edge and
   corner sweeps.
+- `WalkControllerSwimTest`: the swim values; floating at the surface without
+  drift; swim, swim-back and strafe speeds; diving along the pitch, Space rising
+  to the surface and no higher, sinking to the bed; walking into a lake and
+  back out with one switch each way; a fall into deep water stopping; falling
+  where the liquid ends; a steep bank stopping a swimmer without flicker;
+  following a sloping surface; flight and dry ground never swimming; the
+  murloc's capsule over beds around its exit and swim depths, and walking into
+  the lake and out with one switch each way.
+- `worldStreamSourceBridgeTest`: every source cell reaches the surface (also a
+  layer capped out of the packet); past the cell bound the highest layers are
+  kept with a note; a layer with a NaN corner is skipped; a drawn copy that
+  fails keeps the surface.
+- `LiquidSurfaceTest`: cell lookup and edges, the NE--SW split, the highest
+  of overlapping layers, coordinates far from the origin.
 - `BodyMotionTest`: placement on the ground below the camera, own and foreign
   cameras, turning, the camera pulled in by a wall and the ground and easing
   back, first person and the zoom limit, flight along the pitch.
@@ -241,7 +312,7 @@ The drawn body's data:
   repeated pose is not uploaded; `nativeGpuWorldStreamBodySessionProof` sends a
   body through the real World child and checks `BODY_DONE 1 DRAWN` and its
   frames.
-- Not yet: swimming (needs a liquid-surface query), jump and fall sequences,
+- Not yet: jump and fall sequences,
   the body turning toward its movement while strafing, and the gryphon for
   flying.
 
