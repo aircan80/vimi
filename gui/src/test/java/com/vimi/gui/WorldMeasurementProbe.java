@@ -40,7 +40,9 @@ import javax.management.openmbean.CompositeData;
  * neighbourhoods; {@code prep} times the real source path alone (terrain prepareAndWrite and
  * exterior preparation per tile, no helper or FX); {@code refusals} counts terrain texture
  * refusals over whole maps; {@code water} counts water outcomes over sampled tiles (#171). All
- * report per-stage timings ({@code -Dvimi.world.stageTimings=true}).
+ * report per-stage timings ({@code -Dvimi.world.stageTimings=true}). {@code census} prepares every
+ * tile of whole maps (terrain, then objects) and counts refusals by site, naming the read state of
+ * each file of the first refused tiles.
  *
  * <p>What it touches: see {@link WorldMeasurementOpen} and docs/world-measurement-baseline.md. It
  * runs only on a copy of the library ({@code -PdataDirectory}), never prepares anything, and
@@ -243,6 +245,7 @@ public final class WorldMeasurementProbe {
                             case "m2" -> m2(opened);
                             case "creatures" -> creatures(opened, handle, catalog);
                             case "displays" -> displays(opened);
+                            case "census" -> census(opened, handle, catalog);
                             default -> stream(opened, handle, catalog);
                         }
                         return null;
@@ -1259,6 +1262,94 @@ public final class WorldMeasurementProbe {
             unreadable.merge(kind + " failed", 1, Integer::sum);
             return null;
         }
+    }
+
+    /**
+     * Refusal census over whole maps ({@code probe.maps}, default 0,1): each tile's terrain is
+     * prepared and, unless {@code probe.objects=false}, its objects; outcomes are counted by what
+     * refused and at which site. For the first {@code probe.limit} (default 25) refused tiles the
+     * read state and length of each of the tile's files are printed, which tells a file the local
+     * library lacks ({@code NEEDS_NETWORK}) from a real refusal. {@code probe.stride} samples every
+     * n-th tile; {@code probe.mapSeconds} (default 170) bounds each map.
+     */
+    private static void census(WorldMeasurementOpen opened, BuildWorld handle, WorldService.Catalog catalog)
+            throws Exception {
+        var source = handle.terrainStreaming().orElseThrow(() -> new IllegalStateException("No terrain streaming"));
+        boolean objects = !"false".equals(System.getProperty("probe.objects"));
+        int stride = Math.max(1, Integer.getInteger("probe.stride", 1));
+        int shown = Integer.getInteger("probe.limit", 25);
+        long budget = TimeUnit.SECONDS.toNanos(Long.getLong("probe.mapSeconds", 170));
+        for (String mapText : System.getProperty("probe.maps", "0,1").split(",")) {
+            long mapId = Long.parseLong(mapText.strip());
+            var map = catalog.maps().stream().filter(m -> m.id() == mapId).findFirst().orElse(null);
+            if (map == null) {
+                say("PROBE map " + mapId + " not in catalog");
+                continue;
+            }
+            var tiles = handle.inventory(map, Cancellation.NONE).get(5, TimeUnit.MINUTES).world().tiles();
+            var scope = source.createScope(map, Cancellation.NONE);
+            source.activate(scope);
+            var outcomes = new TreeMap<String, Integer>();
+            int done = 0, printed = 0;
+            long began = System.nanoTime();
+            for (int i = 0; i < tiles.size(); i += stride) {
+                if (System.nanoTime() - began > budget || !beforeDeadline()) {
+                    incomplete = true;
+                    break;
+                }
+                var tile = tiles.get(i);
+                done++;
+                String stage = "terrain";
+                try {
+                    source.prepareAndWrite(scope, tile, Cancellation.NONE, (borrow, token) -> () -> {}).close();
+                    outcomes.merge("terrain drawn", 1, Integer::sum);
+                    if (objects) {
+                        stage = "objects";
+                        try (var set = source.prepareExteriorObjects(
+                                scope, tile, Cancellation.NONE, WorldStreamGpuOwner.IMAGE_DETAIL, probeInteriors(map), 0)) {
+                            outcomes.merge(set.placements().isEmpty() ? "objects none" : "objects drawn", 1, Integer::sum);
+                        }
+                    }
+                } catch (com.vibeminer.concepts.world.WorldTerrainStreaming.Refusal refused) {
+                    String key = stage + " refused " + refused.site() + refused.detail().map(d -> " (" + d + ")").orElse("");
+                    outcomes.merge(key, 1, Integer::sum);
+                    if (printed++ < shown) {
+                        say("PROBE census refused " + mapId + " " + tile.x() + "," + tile.y() + " " + key + ":"
+                                + fileStates(opened, tile));
+                    }
+                } catch (RuntimeException failed) {
+                    outcomes.merge(stage + " failed " + failed.getClass().getSimpleName(), 1, Integer::sum);
+                }
+            }
+            say(String.format(Locale.ROOT, "PROBE census map %d (%s): %d of %d tiles (every %d) in %.1f s: %s",
+                    mapId, map.directory(), done, (tiles.size() + stride - 1) / stride, stride,
+                    seconds(System.nanoTime() - began), outcomes));
+        }
+    }
+
+    /** Each file of {@code tile}: its read state and length, or none. Opens without reading. */
+    private static String fileStates(WorldMeasurementOpen opened, WorldFormats.Tile tile) throws Exception {
+        long[] ids = {tile.rootId(), tile.tex0Id(), tile.obj0Id(), tile.obj1Id(), tile.lodId(),
+                tile.mapTextureId(), tile.mapTextureNId(), tile.minimapId()};
+        String[] names = {"root", "tex0", "obj0", "obj1", "lod", "mapTexture", "mapTextureN", "minimap"};
+        var text = new StringBuilder();
+        for (int f = 0; f < ids.length; f++) {
+            text.append(' ').append(names[f]).append('=');
+            if (ids[f] <= 0) {
+                text.append("none");
+                continue;
+            }
+            var open = opened.files().openRead(com.vibeminer.files.FileTypes.FileRef.id(ids[f]), Cancellation.NONE)
+                    .get(5, TimeUnit.MINUTES);
+            text.append(open.state());
+            if (open.stream() != null) {
+                try (var stream = open.stream()) {
+                    text.append('/').append(stream.length());
+                    if (!stream.holes().isEmpty()) text.append("/holes ").append(stream.holes().size());
+                }
+            }
+        }
+        return text.toString();
     }
 
     private static void prep(BuildWorld handle, WorldService.Catalog catalog) throws Exception {
