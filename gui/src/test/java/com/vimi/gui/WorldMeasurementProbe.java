@@ -192,10 +192,20 @@ public final class WorldMeasurementProbe {
                                         null,
                                         issue -> say("PROBE " + issue),
                                         DEADLINE - System.nanoTime(),
+                                        // The library's community TACT keys, as the World view
+                                        // has: the creature counts need them, and so does stream
+                                        // mode with creatures on, whose humanoid NPCs read the
+                                        // encrypted rows of CreatureDisplayInfoOption.
                                         List.of("creatures", "displays", "body")
-                                                .contains(
-                                                        System.getProperty(
-                                                                "probe.mode", "stream"))));
+                                                        .contains(
+                                                                System.getProperty(
+                                                                        "probe.mode", "stream"))
+                                                || "stream"
+                                                                .equals(
+                                                                        System.getProperty(
+                                                                                "probe.mode",
+                                                                                "stream"))
+                                                        && WorldStreamGpuOwner.CREATURES));
         try {
             BuildWorld handle = opened.world();
             var catalog =
