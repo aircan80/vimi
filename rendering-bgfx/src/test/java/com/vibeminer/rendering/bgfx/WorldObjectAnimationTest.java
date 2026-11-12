@@ -102,6 +102,58 @@ final class WorldObjectAnimationTest {
         assertEquals(0, WorldObjectAnimation.millis(1234, 0, 2));
     }
 
+    @Test
+    void offsetPosesStepAtTheirOwnTimesAndStillAdvanceOneStepAtATime() {
+        long step = WorldObjectAnimation.STEP_MILLIS;
+        // An offset pose steps that much earlier, still once per step, and plays the same loop.
+        // (Before its first step it plays the step before the loop's start, 10 ms from the end.)
+        assertEquals(800 - 10, WorldObjectAnimation.millis(step - 11, 800, 0, 10));
+        assertEquals(step - 10, WorldObjectAnimation.millis(step - 10, 800, 0, 10));
+        assertEquals(step - 10, WorldObjectAnimation.millis(2 * step - 11, 800, 0, 10));
+        assertEquals(2 * step - 10, WorldObjectAnimation.millis(2 * step - 10, 800, 0, 10));
+        assertEquals(
+                WorldObjectAnimation.millis(500, 800, 2),
+                WorldObjectAnimation.millis(500, 800, 2, 0));
+        for (int model = 0; model < 64; model++) {
+            for (int phase = 0; phase < WorldObjectAnimation.PHASES; phase++) {
+                long offset = WorldObjectAnimation.stepOffset(model, phase);
+                assertTrue(offset >= 0 && offset < step, model + "/" + phase + ": " + offset);
+            }
+        }
+    }
+
+    @Test
+    void posesOfManyModelsDoNotAllReskinInTheSameFrame() {
+        // 12 models x 4 phases drawn at 60 frames a second for a second: the most poses that step
+        // in one frame stays well under all of them, where unstaggered steps re-skin all 48 every
+        // 2.4 frames.
+        int poses = 12 * WorldObjectAnimation.PHASES, most = 0, total = 0;
+        long[] last = new long[poses];
+        java.util.Arrays.fill(last, -1);
+        for (int frame = 0; frame < 60; frame++) {
+            long clock = 10_000 + Math.round(frame * 1000 / 60.0);
+            int stepped = 0;
+            for (int i = 0; i < poses; i++) {
+                int model = i / WorldObjectAnimation.PHASES,
+                        phase = i % WorldObjectAnimation.PHASES;
+                long millis =
+                        WorldObjectAnimation.millis(
+                                clock, 900, phase, WorldObjectAnimation.stepOffset(model, phase));
+                if (millis != last[i]) {
+                    last[i] = millis;
+                    if (frame > 0) {
+                        stepped++;
+                    }
+                }
+            }
+            most = Math.max(most, stepped);
+            total += stepped;
+        }
+        // Every pose still steps about 25 times a second.
+        assertTrue(total >= poses * 23 && total <= poses * 25, "total " + total);
+        assertTrue(most <= poses / 2 + 4, "most poses stepping in one frame: " + most);
+    }
+
     /** A queued pose for {@link WorldObjectAnimation#skinOrder}: its last skin and its cost. */
     private static final class Queued implements WorldObjectAnimation.Skinned {
         long at = Long.MIN_VALUE;

@@ -3116,7 +3116,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 frameAnimated += drawn;
                 long millis =
                         WorldObjectAnimation.millis(
-                                animationClock, animation.animation.durationMillis(), phase);
+                                animationClock,
+                                animation.animation.durationMillis(),
+                                phase,
+                                WorldObjectAnimation.stepOffset(m, phase));
                 pose.used(animationFrame, millis);
                 if (pose.skinned() != millis) {
                     queueSkin(pose);
