@@ -1873,12 +1873,18 @@ final class WorldStreamSourceController {
 
     /**
      * What the next tile's creatures may add: {@link WorldTileCreatures#AREA_BYTES} less the bytes
-     * the resident tiles' attached creatures hold. A tile retired gives its share back.
+     * the resident tiles' attached creatures hold, each display once: the session shares a model's
+     * GPU geometry and textures across tiles (#773), so a display drawn on several tiles is held
+     * once. The preparer learns those displays, which the next tile then adds at no cost. A tile
+     * retired gives its share back.
      */
     private long creatureAllowance() {
-        long held = 0;
-        for (var entry : entries.values()) held += entry.source().creatures().bytes();
-        return Math.max(0, WorldTileCreatures.AREA_BYTES - held);
+        var held = new java.util.HashMap<Long, Long>();
+        for (var entry : entries.values()) entry.source().creatures().displays().forEach(held::putIfAbsent);
+        long bytes = 0;
+        for (long b : held.values()) bytes += b;
+        exteriorPreparer.creatureArea(java.util.Set.copyOf(held.keySet())::contains);
+        return Math.max(0, WorldTileCreatures.AREA_BYTES - bytes);
     }
 
     /** A budget-refused resident waits until objects budget was released after its refusal. */
@@ -2115,6 +2121,14 @@ final class WorldStreamSourceController {
             for (var count : WorldTileCreatures.Count.values()) {
                 if (count == WorldTileCreatures.Count.DRAWN || creatures.count(count) == 0) continue;
                 text.append(separator).append(creatures.count(count)).append(' ').append(count.label);
+                if (count == WorldTileCreatures.Count.CAPPED) {
+                    // Which bound capped them (#380 follow-up): the tightest is the one to raise.
+                    var bounds = new java.util.ArrayList<String>();
+                    for (var cap : WorldTileCreatures.Cap.values()) {
+                        if (creatures.capped(cap) > 0) bounds.add(creatures.capped(cap) + " " + cap.label);
+                    }
+                    if (!bounds.isEmpty()) text.append(" (").append(String.join(", ", bounds)).append(')');
+                }
                 separator = ", ";
             }
         }

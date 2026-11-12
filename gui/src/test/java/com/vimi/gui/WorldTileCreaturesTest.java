@@ -53,6 +53,8 @@ public final class WorldTileCreaturesTest {
         displayGeosetRowsApplyOnlyWhenTheModelRecordsGeosetData();
         appendDrawsOnlyQualifiedSpawnsOfTheTile();
         buildingsKeepTheirBudgetFirst();
+        cappedSpawnsSayWhichBoundCappedThem();
+        displaysTheAreaDrawsAlreadyCostNoAllowance();
         cachesPerRevisionAndRetriesFailures();
         cancellationPropagatesAndSourceFailuresAreNotes();
         statusDisclosure();
@@ -1447,6 +1449,84 @@ public final class WorldTileCreaturesTest {
         require(shared.drawn() == 4 && shared.count(WorldTileCreatures.Count.CAPPED) == spawns - 4,
                 "Buildings keep their placements; creatures fill only what remains");
         require(builder.build().placements() == room, "The shared file stays within its profile");
+    }
+
+    /**
+     * Every capped spawn is put down to exactly one bound, and the status line names them: here
+     * the per-tile placements, the objects set's placements, the texture bytes and the allowance.
+     */
+    private static void cappedSpawnsSayWhichBoundCappedThem() {
+        var rows = new ArrayList<Map<String, Object>>();
+        int spawns = WorldTileCreatures.TILE_PLACEMENTS + 8;
+        for (int i = 0; i < spawns; i++) rows.add(WorldSpawnOverlayTest.spawn(1, i + 1, -100 - i, -100, 10.0));
+        var creatures = new WorldTileCreatures(token -> index(rows), () -> "r1",
+                (npc, token) -> qualified(7, null), (display, token) -> preview(display, 0L, 0L, appearance(true)));
+        var placements = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(placements.capped(WorldTileCreatures.Cap.PLACEMENTS) == 8
+                        && placements.count(WorldTileCreatures.Count.CAPPED) == 8,
+                "Spawns past the tile's placements are put down to them");
+        String text = WorldStreamSourceController.creatureDetail(placements, 1);
+        require(text.endsWith("; spawns not drawn: 8 over the tile budget (8 tile placements)"), "Status line: " + text);
+        // A set whose buildings leave room for four placements.
+        var builder = WorldStreamTileWriter.Exterior.builder();
+        int room = builder.placementRoom();
+        builder.image(1, 1, ByteBuffer.allocate(4));
+        builder.model();
+        builder.mesh(FloatBuffer.wrap(new float[24]), IntBuffer.wrap(new int[] {0, 1, 2}), new int[] {0, 3, 0});
+        for (int p = 0; p < room - 4; p++) builder.placement(0, 0, 0, 0, 1, 1, 0);
+        var full = creatures.append(builder, 0, TILE, Cancellation.NONE);
+        require(full.capped(WorldTileCreatures.Cap.SET_PLACEMENTS) == spawns - 4,
+                "Spawns past the set's placements are put down to the set");
+        // Distinct big models: past the texture bytes; with an allowance of one, past the allowance.
+        var bigRows = new ArrayList<Map<String, Object>>();
+        int displays = 40;
+        for (int i = 0; i < displays; i++) bigRows.add(WorldSpawnOverlayTest.spawn(i + 1, 1, -100 - i, -100, 10.0));
+        var big = textured(256);
+        var distinct = new WorldTileCreatures(token -> index(bigRows), () -> "r1",
+                (npc, token) -> qualified((int) (100 + npc), null), (display, token) -> preview(display, 0L, 0L, big));
+        var bytes = distinct.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(bytes.capped(WorldTileCreatures.Cap.TEXTURE_BYTES) == bytes.count(WorldTileCreatures.Count.CAPPED)
+                        && bytes.capped(WorldTileCreatures.Cap.TEXTURE_BYTES) > 0,
+                "Big models past the tile's texture bytes are put down to them");
+        long gpu = WorldTileCreatures.gpuBytes(WorldTileCreatures.surfaces(big, Set.of(0), new int[0], false,
+                Cancellation.NONE).model());
+        var allowed = distinct.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, gpu, Cancellation.NONE);
+        require(allowed.models() == 1 && allowed.capped(WorldTileCreatures.Cap.AREA_BYTES) == displays - 1,
+                "Models past the allowance are put down to the area share");
+        int sum = 0;
+        for (var cap : WorldTileCreatures.Cap.values()) sum += allowed.capped(cap);
+        require(sum == allowed.count(WorldTileCreatures.Count.CAPPED), "The bounds sum to the capped spawns");
+        var both = allowed.plus(bytes);
+        require(both.capped(WorldTileCreatures.Cap.AREA_BYTES) == displays - 1
+                        && both.capped(WorldTileCreatures.Cap.TEXTURE_BYTES) == bytes.capped(WorldTileCreatures.Cap.TEXTURE_BYTES),
+                "Summed tiles sum their bounds");
+    }
+
+    /**
+     * A display the resident tiles already draw is added at no cost against the allowance (#773
+     * shares its GPU data); every drawn display is reported with its bytes for the area.
+     */
+    private static void displaysTheAreaDrawsAlreadyCostNoAllowance() {
+        var rows = new ArrayList<Map<String, Object>>();
+        for (int i = 0; i < 3; i++) rows.add(WorldSpawnOverlayTest.spawn(i + 1, 1, -100 - i, -100, 10.0));
+        var big = textured(256);
+        var creatures = new WorldTileCreatures(token -> index(rows), () -> "r1",
+                (npc, token) -> qualified((int) (100 + npc), null), (display, token) -> preview(display, 0L, 0L, big));
+        long gpu = WorldTileCreatures.gpuBytes(WorldTileCreatures.surfaces(big, Set.of(0), new int[0], false,
+                Cancellation.NONE).model());
+        var first = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, gpu * 3, Cancellation.NONE);
+        require(first.models() == 3 && first.bytes() == gpu * 3 && first.displays().size() == 3
+                        && first.displays().values().stream().allMatch(b -> b == gpu),
+                "Each drawn display is reported with its bytes");
+        // The area draws displays 101 and 102: with room for one more model, all three fit.
+        creatures.area(display -> display == 101 || display == 102);
+        var second = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, gpu, Cancellation.NONE);
+        require(second.models() == 3 && second.bytes() == gpu && second.displays().size() == 3,
+                "Displays the area draws cost nothing: " + second.models() + " " + second.bytes());
+        creatures.area(display -> false);
+        var third = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, gpu, Cancellation.NONE);
+        require(third.models() == 1 && third.capped(WorldTileCreatures.Cap.AREA_BYTES) == 2,
+                "Without them the allowance holds one model");
     }
 
     private static void cachesPerRevisionAndRetriesFailures() {

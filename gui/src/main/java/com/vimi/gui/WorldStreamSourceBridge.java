@@ -396,6 +396,13 @@ final class WorldStreamSourceBridge {
                 Consumer<KeptBuildings> keep) {
             return prepare(source, scope, tile, cancellation, objectFormats, creatureBytes);
         }
+
+        /**
+         * The displays the resident tiles' creatures already draw, which the next tile's creatures
+         * add at no cost against {@code creatureBytes} (#773 shares their GPU data). A preparer
+         * without creatures ignores it.
+         */
+        default void creatureArea(java.util.function.LongPredicate charged) {}
     }
 
     /**
@@ -474,6 +481,11 @@ final class WorldStreamSourceBridge {
             public ExteriorCopy prepare(WorldTerrainStreaming source, WorldTerrainStreaming.Scope scope,
                     WorldFormats.Tile tile, Cancellation cancellation, int formats, long creatureBytes) {
                 return prepare(source, scope, tile, cancellation, formats, creatureBytes, null, null);
+            }
+
+            @Override
+            public void creatureArea(java.util.function.LongPredicate charged) {
+                creatures.area(charged);
             }
 
             @Override
