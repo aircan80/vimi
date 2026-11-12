@@ -57,7 +57,7 @@ each recently opened build, the newest compatible prepared snapshot holding each
 dataset is kept, and so is any snapshot downloaded or prepared by hand this session.
 These are kept on top of the ten. A build counts as opened when a workspace opens
 it, a preparation job starts for it, or its NPC, quest or location sources are
-read; the last 32 are remembered across restarts. Only that newest compatible
+read; the 32 most recently used are remembered across restarts. Only that newest compatible
 snapshot per dataset is protected: older compatible commits of the same builds, which
 the NPCs page also tries, survive only while they rank within the ten. Removing a snapshot first closes what the
 repository holds open for it, then renames its folder atomically to a trash name (a
