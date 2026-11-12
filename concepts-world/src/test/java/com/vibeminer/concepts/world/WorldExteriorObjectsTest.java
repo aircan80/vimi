@@ -3933,6 +3933,93 @@ class WorldExteriorObjectsTest {
         }
     }
 
+    /** Everything a set carries, flattened: models, meshes, images, placements and counts. */
+    private static String fingerprint(WorldExteriorObjects.TileObjects set) {
+        var out = new StringBuilder();
+        for (var model : set.models()) {
+            out.append("M ").append(model.rootId()).append(' ').append(model.doodad()).append('\n');
+            for (var mesh : model.meshes()) {
+                var v = mesh.vertices();
+                var vertices = new float[v.remaining()];
+                v.get(vertices);
+                out.append(" mesh ")
+                        .append(mesh.groupId())
+                        .append(' ')
+                        .append(mesh.groupFlags())
+                        .append(' ')
+                        .append(Arrays.toString(vertices))
+                        .append(' ')
+                        .append(Arrays.toString(colours(mesh)));
+                var i = mesh.indices();
+                var indices = new int[i.remaining()];
+                i.get(indices);
+                out.append(' ')
+                        .append(Arrays.toString(indices))
+                        .append(' ')
+                        .append(mesh.ranges())
+                        .append('\n');
+            }
+        }
+        for (var image : set.images()) {
+            var d = image.data();
+            var bytes = new byte[d.remaining()];
+            d.get(bytes);
+            out.append("I ")
+                    .append(image.id())
+                    .append(' ')
+                    .append(image.width())
+                    .append('x')
+                    .append(image.height())
+                    .append(' ')
+                    .append(image.format())
+                    .append(' ')
+                    .append(Arrays.hashCode(bytes))
+                    .append(' ')
+                    .append(bytes.length)
+                    .append('\n');
+        }
+        for (var p : set.placements()) {
+            out.append("P ").append(p).append('\n');
+        }
+        for (var count : WorldExteriorObjects.Count.values()) {
+            out.append(count).append('=').append(set.count(count)).append('\n');
+        }
+        return out.toString();
+    }
+
+    @Test
+    void aSetBuiltFromKeptModelBuildsIsTheSetBuiltWithoutThem() {
+        var doodads = new ArrayList<Mddf>();
+        for (int i = 0; i < 5; i++) {
+            doodads.add(Mddf.of(MODEL, 1000 + i, 0x40));
+        }
+        var records = List.of(Modf.of(ROOT, 1, 0x8));
+        String without;
+        try (var f = new Fixture(records)) {
+            putModel(f, MODEL, model());
+            f.files.sources.put(4L, obj0(records, doodads));
+            try (var set = f.run()) {
+                assertEquals(5, set.count(WorldExteriorObjects.Count.DOODAD_DRAWN));
+                without = fingerprint(set);
+            }
+        }
+        var cache = new WorldSourceCache(1 << 20);
+        try (var f = new Fixture(records, new WorldTerrainTextureSourceTest.Files(), cache)) {
+            putModel(f, MODEL, model());
+            f.files.sources.put(4L, obj0(records, doodads));
+            try (var first = f.run()) {
+                assertEquals(without, fingerprint(first), "the build that is kept");
+            }
+            assertNotNull(cache.parsed(WorldExteriorObjects.buildKey(MODEL)), "kept");
+            int reads = f.files.opens.get(MODEL).get();
+            try (var second = f.run()) {
+                assertEquals(without, fingerprint(second), "the build that is reused");
+            }
+            // The model is still read (its bytes come from the kept file), its build reused.
+            assertEquals(reads, f.files.opens.get(MODEL).get());
+        }
+    }
+
     private static void putModel(Fixture f, long id, byte[] bytes) {
         f.files.sources.put(id, bytes);
         f.files.sources.put(SKIN, skin());

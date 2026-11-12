@@ -268,6 +268,18 @@ public final class WorldExteriorObjects {
     }
 
     /**
+     * The session cache's namespace for built doodad models, and its revision: a change to what
+     * {@code copyModel} builds, to the Stand weights or to the model limits takes a new revision.
+     */
+    static final String MODEL_BUILD = "objects.m2-build";
+
+    static final int MODEL_BUILD_REVISION = 1;
+
+    static WorldSourceCache.Key buildKey(long id) {
+        return new WorldSourceCache.Key(MODEL_BUILD, MODEL_BUILD_REVISION, id);
+    }
+
+    /**
      * A doodad model's texture weights (transparency tracks) at the static Stand sample, in track
      * order, NaN for a track whose value is not decided ({@link M2StandWeights}); null when the
      * model declares none or its Stand cannot be read, which leaves every batch drawn as before.
@@ -1688,6 +1700,7 @@ public final class WorldExteriorObjects {
                             admission ->
                                     new Builder(
                                                     admission,
+                                                    engine.sources(),
                                                     modelReader,
                                                     detail,
                                                     retainLimit,
@@ -2061,6 +2074,10 @@ public final class WorldExteriorObjects {
 
     private static final class Builder {
         private final WorldStreamScopes.TileAdmission admission;
+
+        /** The session's source cache, which keeps built doodad models ({@link ModelBuild}). */
+        private final WorldSourceCache sourceCache;
+
         private final Cancellation token;
         private final int[] counts = new int[Count.values().length];
         private final List<Model> models = new ArrayList<>();
@@ -2277,11 +2294,13 @@ public final class WorldExteriorObjects {
 
         Builder(
                 WorldStreamScopes.TileAdmission admission,
+                WorldSourceCache sourceCache,
                 ModelReader modelReader,
                 ImageDetail detail,
                 long retainLimit,
                 Interiors interiors,
                 int compressedFormats) {
+            this.sourceCache = Objects.requireNonNull(sourceCache);
             this.compressedFormats = compressedFormats;
             this.interiors = interiors != Interiors.NONE;
             this.deferInteriors = interiors == Interiors.OPEN_WORLD;
@@ -5728,61 +5747,151 @@ public final class WorldExteriorObjects {
         }
 
         /**
+         * A doodad model's build for the session cache: the content keys of the model and skin it
+         * was built from (none without a skin), the mesh {@link #copyModel} made, which nothing
+         * changes afterwards, and the counts it charged.
+         */
+        private record ModelBuild(
+                String modelKey, long skinId, String skinKey, PendingMesh pending, int[] local) {}
+
+        /** The build kept for model {@code id} when it was made from the same model bytes. */
+        private ModelBuild reusableBuild(long id, String modelKey) {
+            if (modelReader != ModelReader.STANDARD) {
+                return null; // a test reader's builds are its own
+            }
+            var kept = sourceCache.parsed(buildKey(id));
+            return kept instanceof ModelBuild build
+                            && build.modelKey().equals(modelKey)
+                            && (build.local() == null || build.local().length == counts.length)
+                    ? build
+                    : null;
+        }
+
+        private void keepBuild(long id, ModelBuild build) {
+            if (modelReader != ModelReader.STANDARD) {
+                return;
+            }
+            long bytes = 256;
+            var pending = build.pending();
+            if (pending != null && pending != ALL_BILLBOARD) {
+                bytes +=
+                        pending.vertices().length * 4L
+                                + pending.colours().length * 4L
+                                + pending.indices().length * 4L
+                                + pending.ranges().size() * 48L;
+            }
+            sourceCache.putParsed(buildKey(id), build, bytes);
+        }
+
+        /**
          * Reads one doodad model: the M2, its first SKIN and the texture1 of each admitted batch.
          * Static bind pose only; colour, transparency and UV animation tracks are not evaluated.
          */
         private RootState readModel(long id) {
             modelsRead++;
-            M2Types.Model model;
             var input = derived(id, WorldStreamScopes.DerivedKind.M2_MODEL);
             if (input == null) {
                 count(Count.MODEL_UNAVAILABLE);
                 return RootState.FAILED;
             }
-            long parsing = WorldStageTimings.start();
-            float[] weights;
+            byte[] modelBytes;
+            String modelKey;
             try (input) {
-                byte[] raw = input.bytes();
-                model = await(modelReader.read(id, raw, token));
-                WorldStageTimings.stop("objects.m2.modelParse", parsing);
-                long sampling = WorldStageTimings.start();
-                weights = standWeights(raw, model, token);
-                WorldStageTimings.stop("objects.m2.standWeights", sampling);
-            } catch (ModelFormatException malformed) {
-                count(modelOutcome(malformed));
-                return RootState.FAILED;
-            } catch (RuntimeException failure) {
-                return readerFailed(failure);
+                modelBytes = input.bytes();
+                modelKey = input.contentKey();
             }
-            if (model.skinFileDataIds().isEmpty() || model.skinFileDataIds().getFirst() <= 0) {
+            // A build another tile made from the same model and skin bytes is reused: the reads
+            // still happen (they bind the sources and count against the read profile), only the
+            // parse and the build are skipped. The result is the one this tile would build.
+            var reusable = reusableBuild(id, modelKey);
+            if (reusable != null && reusable.skinId() <= 0) {
                 count(Count.MODEL_UNSUPPORTED);
                 return RootState.FAILED;
             }
-            long skinId = model.skinFileDataIds().getFirst();
-            M2Types.Skin skin;
+            M2Types.Model model = null;
+            float[] weights = null;
+            long skinId;
+            if (reusable != null) {
+                skinId = reusable.skinId();
+            } else {
+                long parsing = WorldStageTimings.start();
+                try {
+                    model = await(modelReader.read(id, modelBytes, token));
+                    WorldStageTimings.stop("objects.m2.modelParse", parsing);
+                    long sampling = WorldStageTimings.start();
+                    weights = standWeights(modelBytes, model, token);
+                    WorldStageTimings.stop("objects.m2.standWeights", sampling);
+                } catch (ModelFormatException malformed) {
+                    count(modelOutcome(malformed));
+                    return RootState.FAILED;
+                } catch (RuntimeException failure) {
+                    return readerFailed(failure);
+                }
+                if (model.skinFileDataIds().isEmpty() || model.skinFileDataIds().getFirst() <= 0) {
+                    keepBuild(id, new ModelBuild(modelKey, 0, null, null, null));
+                    count(Count.MODEL_UNSUPPORTED);
+                    return RootState.FAILED;
+                }
+                skinId = model.skinFileDataIds().getFirst();
+            }
             var skinInput = derived(skinId, WorldStreamScopes.DerivedKind.M2_SKIN);
             if (skinInput == null) {
                 count(Count.MODEL_UNAVAILABLE);
                 return RootState.FAILED;
             }
-            long skinning = WorldStageTimings.start();
+            byte[] skinBytes;
+            String skinKey;
             try (skinInput) {
-                byte[] raw = skinInput.bytes();
-                skin = await(M2SkinReader.read(AssetSource.bytes(raw), model, MODEL_LIMITS, token));
-                WorldStageTimings.stop("objects.m2.skinParse", skinning);
-            } catch (ModelFormatException malformed) {
-                count(modelOutcome(malformed));
-                return RootState.FAILED;
-            } catch (RuntimeException failure) {
-                return readerFailed(failure);
+                skinBytes = skinInput.bytes();
+                skinKey = skinInput.contentKey();
             }
-            int[] local = new int[counts.length];
-            PendingMesh pending;
-            try {
-                pending = copyModel(id, skinId, model, skin, weights, local, token);
-            } catch (RuntimeException failure) {
-                return readerFailed(failure);
+            ModelBuild build;
+            if (reusable != null && skinKey.equals(reusable.skinKey())) {
+                WorldStageTimings.add("objects.m2.buildReused", 1);
+                build = reusable;
+            } else {
+                if (model == null) {
+                    long parsing = WorldStageTimings.start();
+                    try {
+                        model = await(modelReader.read(id, modelBytes, token));
+                        WorldStageTimings.stop("objects.m2.modelParse", parsing);
+                        weights = standWeights(modelBytes, model, token);
+                    } catch (ModelFormatException malformed) {
+                        count(modelOutcome(malformed));
+                        return RootState.FAILED;
+                    } catch (RuntimeException failure) {
+                        return readerFailed(failure);
+                    }
+                }
+                M2Types.Skin skin;
+                long skinning = WorldStageTimings.start();
+                try {
+                    skin =
+                            await(
+                                    M2SkinReader.read(
+                                            AssetSource.bytes(skinBytes),
+                                            model,
+                                            MODEL_LIMITS,
+                                            token));
+                    WorldStageTimings.stop("objects.m2.skinParse", skinning);
+                } catch (ModelFormatException malformed) {
+                    count(modelOutcome(malformed));
+                    return RootState.FAILED;
+                } catch (RuntimeException failure) {
+                    return readerFailed(failure);
+                }
+                int[] built = new int[counts.length];
+                PendingMesh made;
+                try {
+                    made = copyModel(id, skinId, model, skin, weights, built, token);
+                } catch (RuntimeException failure) {
+                    return readerFailed(failure);
+                }
+                build = new ModelBuild(modelKey, skinId, skinKey, made, built);
+                keepBuild(id, build);
             }
+            int[] local = build.local().clone();
+            PendingMesh pending = build.pending();
             if (pending == ALL_BILLBOARD) {
                 mergeLocal(local);
                 count(Count.MODEL_ALL_BILLBOARD);
