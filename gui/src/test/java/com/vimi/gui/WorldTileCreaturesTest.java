@@ -894,6 +894,11 @@ public final class WorldTileCreaturesTest {
         var near = creatures.append(builder, 0, TILE, Cancellation.NONE);
         require(near.drawn() == 2 && near.animated() == 2 && builder.build().animatedModels() == 1,
                 "Near the camera the cached model gets its idle: " + near.animated());
+        creatures.camera(() -> null);
+        require(!creatures.nearCamera(-100, -100), "Without a camera yet nothing is near");
+        var none = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(none.drawn() == 2 && none.animated() == 0, "Before the camera is placed nothing carries its idle");
+        creatures.camera(() -> at[0]);
         require(WorldTileCreatures.IDLE_DISTANCE > 100 && creatures.nearCamera(-100 + WorldTileCreatures.IDLE_DISTANCE - 1, -100)
                 && !creatures.nearCamera(-100 + WorldTileCreatures.IDLE_DISTANCE + 1, -100),
                 "The idle distance is the animation radius plus one tile");

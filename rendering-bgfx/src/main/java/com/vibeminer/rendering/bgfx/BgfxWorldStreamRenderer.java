@@ -3951,6 +3951,12 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         return total;
     }
 
+    /** GPU bytes all object sets, textures, the body and poses reserve now (measurement). */
+    long objectsReserved() {
+        requireOwner();
+        return reservedObjectBytes();
+    }
+
     /** GPU bytes all resident sets' animation poses hold (#384). */
     private long poseBytes() {
         long total = 0;
