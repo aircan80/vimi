@@ -1938,11 +1938,11 @@ public final class WorldStreamTransport {
          * which the files themselves do not need yet.
          */
         private void tallyAssets(WorldStreamObjectsFile.Data data) {
-            if (!WorldStageTimings.enabled()) {
+            long digesting = WorldStageTimings.start();
+            var tally = WorldStreamObjectAssets.tallyIfMeasuring(assets, data);
+            if (tally == null) {
                 return;
             }
-            long digesting = WorldStageTimings.start();
-            var tally = assets.record(WorldStreamObjectAssets.of(data));
             WorldStageTimings.stop("objects.assets.digest", digesting);
             WorldStageTimings.add("objects.assets.models", tally.models());
             WorldStageTimings.add("objects.assets.newModels", tally.newModels());
