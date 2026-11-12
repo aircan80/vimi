@@ -1008,6 +1008,9 @@ public final class WorldStreamSourceControllerTest {
         long each = WorldTileCreatures.AREA_BYTES / 8;
         int empty = fixture.tiles.get(1).y(), still = fixture.tiles.get(2).y();
         var asked = new java.util.concurrent.ConcurrentHashMap<Integer, List<Long>>();
+        // The last tile's creature pass is held until every other delivery is in, as on a slow
+        // runner: the controller must still come back to it once it is idle.
+        var lastHeld = new java.util.concurrent.CountDownLatch(1);
         var preparer = new WorldStreamSourceBridge.ExteriorPreparer() {
             @Override
             public WorldStreamSourceBridge.ExteriorCopy prepare(
@@ -1015,6 +1018,13 @@ public final class WorldStreamSourceControllerTest {
                     com.vibeminer.concepts.world.WorldTerrainStreaming.Scope scope,
                     com.vibeminer.formats.world.WorldFormats.Tile tile,
                     com.vibeminer.access.Cancellation cancellation, int formats, long creatureBytes) {
+                if (tile.y() == still && creatureBytes != BUILDINGS_ONLY) {
+                    try {
+                        lastHeld.await();
+                    } catch (InterruptedException error) {
+                        throw new AssertionError(error);
+                    }
+                }
                 asked.computeIfAbsent(tile.y(), key -> new java.util.concurrent.CopyOnWriteArrayList<>())
                         .add(creatureBytes);
                 boolean buildings = tile.y() != empty;
@@ -1038,6 +1048,14 @@ public final class WorldStreamSourceControllerTest {
             fixture.camera(1);
             fixture.controller.neighborhood(fixture.tiles.subList(0, 3));
             fixture.untilPresented(() -> fixture.objectLines().size() == 4);
+            check(asked.getOrDefault(still, List.of()).size() == 1,
+                    "The last tile's creature pass is still held: " + asked);
+            lastHeld.countDown();
+            // The tile whose creatures draw nothing sends no second set: its creature pass is
+            // waited for as a preparation, not as a delivery line.
+            fixture.untilPresented(() -> fixture.tiles.subList(0, 3).stream().allMatch(
+                            t -> asked.getOrDefault(t.y(), List.of()).size() == 2)
+                    && !fixture.controller.loadingObjects());
             var lines = fixture.objectLines();
             check(lines.subList(0, 2).stream().allMatch(line -> !line.contains("REPLACE") && line.endsWith(" ATTACHED"))
                     && !lines.subList(0, 2).contains(empty + " ATTACHED"),
@@ -2949,14 +2967,20 @@ public final class WorldStreamSourceControllerTest {
                     return -1;
                 }
             };
-            fixture.until(() -> sent.getAsLong() == 1);
+            // The clock moves only once the refusal has set its retry time, so the backoff is
+            // measured from the refusal however late its reply arrives.
+            fixture.until(() -> sent.getAsLong() == 1 && fixture.controller.bodyRetryAt() != 0);
             for (int i = 0; i < 40; i++) fixture.pump();
             check(sent.getAsLong() == 1 && fixture.controller.bodyDrawn() == -1,
                     "A refused body is not drawn and not sent again at once: " + sent.getAsLong());
+            check(fixture.controller.bodyRetryAt() - fixture.clock.get() == 2_000_000_000L,
+                    "The first retry waits 2 s");
             fixture.clock.addAndGet(2_000_000_000L);
-            fixture.until(() -> sent.getAsLong() == 2);
+            fixture.until(() -> sent.getAsLong() == 2 && fixture.controller.bodyRetryAt() > fixture.clock.get());
             for (int i = 0; i < 40; i++) fixture.pump();
             check(sent.getAsLong() == 2, "Then once more after 2 s: " + sent.getAsLong());
+            check(fixture.controller.bodyRetryAt() - fixture.clock.get() == 4_000_000_000L,
+                    "The second retry waits 4 s");
             // The child takes it this time.
             size.set(96);
             fixture.clock.addAndGet(4_000_000_000L);
