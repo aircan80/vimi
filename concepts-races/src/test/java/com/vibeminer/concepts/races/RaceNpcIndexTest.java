@@ -497,6 +497,36 @@ final class RaceNpcIndexTest {
                 RaceNpcIndex.code(loader, List.of("com/vibeminer/concepts/races/RaceNpcIndex")),
                 "other code, another digest");
         assertNull(RaceNpcIndex.code(loader, List.of("com/vibeminer/concepts/races/NoSuchClass")));
+        // A jar without folder entries, as a packaging change might produce, still lists them.
+        var jar = java.nio.file.Files.createTempFile("races", ".jar");
+        try {
+            var classes =
+                    java.nio.file.Path.of(
+                                    RaceNpcIndex.class.getResource("RaceNpcIndex.class").toURI())
+                            .getParent();
+            try (var out =
+                            new java.util.jar.JarOutputStream(
+                                    java.nio.file.Files.newOutputStream(jar));
+                    var listing = java.nio.file.Files.list(classes)) {
+                for (var file : listing.sorted().toList()) {
+                    out.putNextEntry(
+                            new java.util.jar.JarEntry(
+                                    "com/vibeminer/concepts/races/" + file.getFileName()));
+                    out.write(java.nio.file.Files.readAllBytes(file));
+                    out.closeEntry();
+                }
+            }
+            try (var packaged =
+                    new java.net.URLClassLoader(new java.net.URL[] {jar.toUri().toURL()}, null)) {
+                assertNull(
+                        packaged.getResource("com/vibeminer/concepts/races/"), "no folder entry");
+                var races = List.of("com/vibeminer/concepts/races/");
+                assertNotNull(RaceNpcIndex.code(packaged, races));
+                assertEquals(RaceNpcIndex.code(loader, races), RaceNpcIndex.code(packaged, races));
+            }
+        } finally {
+            java.nio.file.Files.deleteIfExists(jar);
+        }
         // Anonymous and nested classes are part of it: the digest moves with any of them.
         var all = RaceNpcIndex.code(loader, List.of("com/vibeminer/concepts/races/RaceNpcIndex"));
         var outer =
@@ -552,7 +582,8 @@ final class RaceNpcIndexTest {
                 missing == null
                         ? List.of()
                         : List.of(new com.vibeminer.files.FileTypes.FileHole(0, 8, missing)),
-                missing == null ? List.of() : List.of(missing));
+                // A decoded stream names every key the file is encrypted with, present or not.
+                List.of("ABCDEF0123456789"));
         return files;
     }
 

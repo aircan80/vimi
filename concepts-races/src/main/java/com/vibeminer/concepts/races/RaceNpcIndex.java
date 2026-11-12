@@ -403,7 +403,15 @@ final class RaceNpcIndex {
             return " open " + open.state();
         }
         try (var stream = open.stream()) {
-            return " lacks " + stream.chunkKeys();
+            // The holes name the keys still missing; chunkKeys of a decoded stream lists every key
+            // the file is encrypted with, present or not.
+            return " lacks "
+                    + stream.holes().stream()
+                            .map(FileTypes.FileHole::keyName)
+                            .filter(java.util.Objects::nonNull)
+                            .distinct()
+                            .sorted()
+                            .toList();
         }
     }
 
@@ -742,16 +750,22 @@ final class RaceNpcIndex {
      */
     static final String CODE = code(RaceNpcIndex.class.getClassLoader(), CODE_PREFIXES);
 
+    /**
+     * The digest of the class files under {@code prefixes}. Each prefix names a class file (or a
+     * package folder whose classes all count), and its folder or jar is found from a class file it
+     * names, so a jar without folder entries is listed too.
+     */
     static String code(ClassLoader loader, List<String> prefixes) {
         try {
             var classes = new TreeMap<String, byte[]>();
             for (String prefix : prefixes) {
-                int slash = prefix.lastIndexOf('/');
-                String directory = prefix.substring(0, slash + 1);
-                var found = loader.getResources(directory);
-                while (found.hasMoreElements()) {
-                    collect(found.nextElement(), directory, prefix, classes);
+                String directory = prefix.substring(0, prefix.lastIndexOf('/') + 1);
+                String anchor = anchor(prefix);
+                var location = loader.getResource(anchor);
+                if (location == null) {
+                    return null;
                 }
+                collect(location, anchor, directory, prefix, classes);
             }
             if (classes.isEmpty()) {
                 return null;
@@ -767,15 +781,26 @@ final class RaceNpcIndex {
         }
     }
 
-    /** The class files of one directory resource (a folder or a jar entry) starting with prefix. */
+    /** A class file that locates a prefix: the class it names, or this class for its package. */
+    private static String anchor(String prefix) {
+        return prefix.endsWith("/")
+                ? prefix + RaceNpcIndex.class.getSimpleName() + ".class"
+                : prefix + ".class";
+    }
+
+    /** The class files beside {@code anchor} (in its folder or its jar) starting with prefix. */
     private static void collect(
-            java.net.URL location, String directory, String prefix, Map<String, byte[]> out)
+            java.net.URL anchor,
+            String anchorName,
+            String directory,
+            String prefix,
+            Map<String, byte[]> out)
             throws IOException {
-        switch (location.getProtocol()) {
+        switch (anchor.getProtocol()) {
             case "file" -> {
                 java.nio.file.Path folder;
                 try {
-                    folder = java.nio.file.Path.of(location.toURI());
+                    folder = java.nio.file.Path.of(anchor.toURI()).getParent();
                 } catch (java.net.URISyntaxException invalid) {
                     throw new IOException(invalid);
                 }
@@ -789,7 +814,7 @@ final class RaceNpcIndex {
                 }
             }
             case "jar" -> {
-                var connection = (java.net.JarURLConnection) location.openConnection();
+                var connection = (java.net.JarURLConnection) anchor.openConnection();
                 connection.setUseCaches(false);
                 try (var jar = connection.getJarFile()) {
                     var entries = jar.entries();
@@ -806,7 +831,7 @@ final class RaceNpcIndex {
                     }
                 }
             }
-            default -> throw new IOException("Unlisted class location " + location);
+            default -> throw new IOException("Unlisted class location for " + anchorName);
         }
     }
 
