@@ -13,8 +13,8 @@ import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
 /**
- * Attaches the recorded sky (#177-2a) to World cameras, behind {@code
- * -Dvimi.world.sky=recorded} until the owner check. Lookups are throttled by distance, map and
+ * Attaches the recorded sky, fog and light (#177) to World cameras. On by default; {@code
+ * -Dvimi.world.sky=fixed} keeps the explorer's own sky, fog and light. Lookups are throttled by distance, map and
  * time; between them the last sky rides along, so a coalesced camera never loses it. Until the
  * light tables are loaded, or if they fail to load, cameras carry no sky and the renderer keeps
  * the explorer's own.
@@ -71,9 +71,14 @@ final class WorldSkyFeed {
         this.nanos = Objects.requireNonNull(nanos);
     }
 
-    /** True when {@code -Dvimi.world.sky=recorded}. */
+    /** True unless {@code -Dvimi.world.sky=fixed}. */
     static boolean enabled() {
-        return "recorded".equals(System.getProperty(PROPERTY));
+        return enabled(System.getProperty(PROPERTY));
+    }
+
+    /** Whether {@code property} asks for the recorded sky: anything but {@code fixed}. */
+    static boolean enabled(String property) {
+        return property == null || !"fixed".equalsIgnoreCase(property.strip());
     }
 
     /**

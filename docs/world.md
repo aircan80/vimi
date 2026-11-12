@@ -63,8 +63,11 @@ perform bounded metadata lookup without table/file I/O or full catalog scans.
 ## Sky and fog lights
 
 `WorldSky` works out sky colours and distance fog for a map position and time of
-day from the Light, LightParams, LightData and Map tables. The renderer doesn't
-use it yet; until it does, the explorer keeps its fixed sky and fog colours.
+day from the Light, LightParams, LightData and Map tables. The World view uses it by
+default: the camera's sky, distance fog, and the direct and ambient light that terrain,
+buildings and creatures share follow the recorded values at the camera, at the local time
+(`-Dvimi.world.sky.time=HH:MM` pins a time). `-Dvimi.world.sky=fixed` keeps the explorer's own
+fixed sky, fog and light. The light's direction stays fixed: LightData records colours only.
 
 The reader accepts only the reviewed layouts of these tables, and only fields
 whose names the definitions mark as verified:
