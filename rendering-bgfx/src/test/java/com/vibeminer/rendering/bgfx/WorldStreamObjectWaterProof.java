@@ -98,7 +98,8 @@ final class WorldStreamObjectWaterProof {
 
     @SuppressWarnings("try")
     static String run(Path base) throws Exception {
-        Path directory = Files.createDirectories(base.resolve("object-water"));
+        // A fresh directory each run: an earlier run's packet would refuse the new one.
+        Path directory = Files.createTempDirectory(Files.createDirectories(base), "object-water-");
         var session = new WorldStreamEnvelope.Session(NONCE, WorldStreamNativeProof.SCOPE, 1, true);
         var lease = new WorldStreamState.Lease(0, 1, 1);
         var exterior = scene();
