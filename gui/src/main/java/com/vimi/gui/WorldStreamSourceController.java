@@ -1789,7 +1789,11 @@ final class WorldStreamSourceController {
                     try {
                         return exteriorPreparer.prepare(
                                 lane, owner, tile, work.cancellation, formats, creatureBytes, work.reuse,
-                                creaturesLater && !work.creaturesPass ? kept -> work.kept = kept : null);
+                                creaturesLater && !work.creaturesPass ? kept -> {
+                                    // A session closing meanwhile no longer looks at this pass.
+                                    if (closing) kept.close();
+                                    else work.kept = kept;
+                                } : null);
                     } finally {
                         WorldStageTimings.stop(work.cancellation.isCanceled()
                                 ? "parent.objects.prepareCanceled" : timing, preparing);
@@ -2548,6 +2552,14 @@ final class WorldStreamSourceController {
         for (var kept : keptBuildings.values()) kept.close();
         keptBuildings.clear();
         keptBuildingsBytes = 0;
+        // What the pass in flight took or kept goes with the session too.
+        var running = exterior;
+        if (running != null) {
+            if (running.reuse != null) running.reuse.close();
+            if (running.kept != null) running.kept.close();
+            running.reuse = null;
+            running.kept = null;
+        }
         creatureBudget.clear();
         exterior = null;
         if (exteriorWorker != null) exteriorWorker.shutdown();

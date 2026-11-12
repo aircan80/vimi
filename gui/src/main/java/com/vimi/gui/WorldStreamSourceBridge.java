@@ -403,9 +403,23 @@ final class WorldStreamSourceBridge {
 
         private KeptBuildings(WorldExteriorObjects.TileObjects set, ObjectSet objects, String note,
                 ExteriorSummary summary) {
-            this(set, objects, note, summary,
-                    4L * set.pixels() + 32L * set.vertices() + 4L * set.indices() + 256L * set.placements().size(),
-                    set::close);
+            this(set, objects, note, summary, estimate(set), set::close);
+        }
+
+        /**
+         * About what a prepared set holds: its images' texels, its vertices (with their colours),
+         * indices, building liquids and placements.
+         */
+        static long estimate(WorldExteriorObjects.TileObjects set) {
+            long bytes = 4L * set.pixels() + 32L * set.vertices() + 4L * set.indices()
+                    + 256L * set.placements().size();
+            for (var model : set.models()) {
+                for (var mesh : model.meshes()) {
+                    bytes += 4L * mesh.colours().capacity();
+                    if (mesh.liquid() != null) bytes += mesh.liquid().retainedBytes();
+                }
+            }
+            return bytes;
         }
 
         private KeptBuildings(WorldExteriorObjects.TileObjects set, ObjectSet objects, String note,
@@ -423,7 +437,7 @@ final class WorldStreamSourceBridge {
             return new KeptBuildings(null, null, "test", ExteriorSummary.NONE, bytes, closed);
         }
 
-        /** About what the kept set holds: its images' texels, its vertices, indices and placements. */
+        /** About what the kept set holds ({@link #estimate}). */
         long bytes() {
             return bytes;
         }
