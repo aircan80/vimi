@@ -329,4 +329,81 @@ class WalkControllerTest {
         assertNotNull(corner);
         assertEquals(Math.sqrt(50) - .5, corner.t() * Math.sqrt(200), 1e-6);
     }
+
+    @Test
+    void theSameTimeInDifferentFrameSplitsGivesTheSamePath() {
+        var world = new TriangleWorld().floor(-100, -100, 2, 100, 0).ramp(2, -100, 100, 0, 30, 40);
+        var a = standing(world, 0, 0, 1);
+        var b = standing(world, 0, 0, 1);
+        var in = input(1, 1, 0, .3, false);
+        for (int i = 0; i < 120; i++) {
+            a.step(in, DT, world);
+        }
+        // The same two seconds in uneven frames: 7 ms, 23 ms, 41 ms, repeating.
+        double[] frames = {.007, .023, .041};
+        double total = 0;
+        for (int i = 0; total + 1e-12 < 2 - .041; i++) {
+            b.step(in, frames[i % 3], world);
+            total += frames[i % 3];
+        }
+        b.step(in, 2 - total, world);
+        assertEquals(a.x(), b.x(), 1e-9);
+        assertEquals(a.y(), b.y(), 1e-9);
+        assertEquals(a.z(), b.z(), 1e-9);
+    }
+
+    @Test
+    void fastFlightNeverPassesAThinWallFromEitherSide() {
+        // One two-sided quad, no thickness, and 400 yd/s: about 6.7 yd per step.
+        var world = new TriangleWorld().wallX(0, -50, 50, -50, 50);
+        for (int side : new int[] {-1, 1}) {
+            var body = new WalkController();
+            body.mode(WalkController.Mode.FLY);
+            body.place(side * 20, 0, 0, 0, world);
+            var toward = new WalkController.Input(1, 0, 0, side > 0 ? Math.PI : 0, 0, false, 400);
+            run(body, toward, 1, world);
+            assertTrue(
+                    side * body.x() >= MovementParity.DEFAULT_RADIUS - .02,
+                    "stays on its side " + side + ": " + body.x());
+        }
+    }
+
+    @Test
+    void groundAtExactlyTheSlopeLimitIsWalkable() {
+        double limit = MovementParity.SLOPE_LIMIT_DEGREES;
+        var world = new TriangleWorld().floor(-50, -50, 2, 50, 0).ramp(2, -50, 50, 0, limit, 40);
+        var body = standing(world, 0, 0, 1);
+        run(body, input(1, 0, 0, 0, false), 2, world);
+        assertTrue(body.x() > 6, "walks up the limit slope: " + body.x());
+        var steeper =
+                new TriangleWorld().floor(-50, -50, 2, 50, 0).ramp(2, -50, 50, 0, limit + .5, 40);
+        body = standing(steeper, 0, 0, 1);
+        run(body, input(1, 0, 0, 0, false), 2, steeper);
+        assertTrue(body.x() < 3, "half a degree steeper is a wall: " + body.x());
+    }
+
+    @Test
+    void aBodyStartingInsideACornerIsPushedOutAndCannotPassTheWalls() {
+        // Walls along x = 0 and y = 0 meeting in a corner; the body starts overlapping both.
+        var world =
+                new TriangleWorld()
+                        .floor(-50, -50, 50, 50, 0)
+                        .wallX(0, -50, 50, -1, 20)
+                        .quad(
+                                new double[] {-50, 0, -1},
+                                new double[] {50, 0, -1},
+                                new double[] {50, 0, 20},
+                                new double[] {-50, 0, 20});
+        var body = new WalkController();
+        body.place(-.2, -.2, .01, 5, world);
+        run(body, IDLE, .1, world);
+        assertTrue(
+                body.x() <= -MovementParity.DEFAULT_RADIUS + .02
+                        && body.y() <= -MovementParity.DEFAULT_RADIUS + .02,
+                "pushed out of both walls: " + body.x() + ", " + body.y());
+        run(body, input(1, 0, 0, Math.PI / 4, false), 2, world);
+        assertTrue(
+                body.x() < 0 && body.y() < 0,
+                "never through the corner: " + body.x() + ", " + body.y());
+    }
 }
