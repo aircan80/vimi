@@ -549,6 +549,18 @@ tasks.register('nativeGpuWorldStreamObjectsProof', JavaExec) {
     args layout.buildDirectory.dir('native-world-stream-objects').get().asFile.absolutePath
 }
 
+tasks.register('nativeGpuWorldStreamObjectReferencesProof', JavaExec) {
+    group = 'verification'
+    description = 'Proves late objects files naming assets by digest draw the same pixels as inline ones, and recover from MISSING.'
+    dependsOn testClasses, tasks.named('verifyWorldStreamShaders'), tasks.named('verifyWorldWmoShaders'), tasks.named('verifyShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.WorldStreamObjectReferencesProof'
+    systemProperty 'vimi.worldProof.backend', providers.gradleProperty('worldProofBackend').getOrElse('vulkan')
+    timeout = java.time.Duration.ofMinutes(2)
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args layout.buildDirectory.dir('native-world-stream-object-references').get().asFile.absolutePath
+}
+
 // Appearance proof (#379): authored World scenes rendered by the real helper and compared with
 // per-backend reference images. -PappearanceBackend=VULKAN|D3D11 (default VULKAN);
 // -PappearanceUpdate=true rewrites the references instead of comparing (docs/world-appearance-tests.md).

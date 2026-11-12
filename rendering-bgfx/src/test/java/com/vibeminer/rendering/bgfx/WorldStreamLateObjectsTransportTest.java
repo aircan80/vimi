@@ -780,7 +780,10 @@ class WorldStreamLateObjectsTransportTest {
                                 + " "
                                 + late.lease().generation()
                                 + " "
-                                + outcome);
+                                + outcome
+                                + " "
+                                + late.epoch()
+                                + " 0 0 0 0 0000000000000000");
             } catch (Exception error) {
                 throw new AssertionError(error);
             }

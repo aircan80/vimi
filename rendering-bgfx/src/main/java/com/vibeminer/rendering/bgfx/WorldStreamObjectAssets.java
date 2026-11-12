@@ -81,7 +81,8 @@ final class WorldStreamObjectAssets {
             long[] id =
                     WorldStreamPackedObjects.identity(
                             hasher.digest, format, width, height, data.pixels, from, stored);
-            assets.add(new Asset(Kind.IMAGE, new Digest(id[0], id[1]), stored));
+            // The payload: format, width and height, then the chain (imagePayload).
+            assets.add(new Asset(Kind.IMAGE, new Digest(id[0], id[1]), 12L + stored));
             from += stored;
         }
         return assets;

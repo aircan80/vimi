@@ -328,6 +328,17 @@ final class WorldStreamParentState {
      */
     synchronized WorldStreamControl.LateObjects lateObjects(
             Resident member, int length, String sha) {
+        return lateObjects(member, length, sha, 0, 0, null);
+    }
+
+    /**
+     * As above, for a file that may name assets by digest (#380 stage 4): the parent's asset epoch,
+     * and the asset pack's length and digest (0 and null without one). After a {@code MISSING}
+     * reply the same resident may be published once more ({@link #lateObjectsGaveUp} when it is
+     * not).
+     */
+    synchronized WorldStreamControl.LateObjects lateObjects(
+            Resident member, int length, String sha, long epoch, int packLength, String packSha) {
         require(session.exteriorObjects(), "Late objects outside session profile");
         require(!closed && hello, "Late objects after session end");
         require(member != null && member.owner == owner, "Foreign late objects resident");
@@ -336,9 +347,11 @@ final class WorldStreamParentState {
                 member.objects == 0
                         && member.lateRequested
                         && !member.lateSent
-                        && member.late == null,
+                        && (member.late == null
+                                || member.late == WorldStreamStatus.LateOutcome.MISSING),
                 "Unadmitted or duplicate resident objects");
         member.lateSent = true;
+        member.late = null;
         if (generations[member.lease.slot()] != member.lease.generation()
                 || !active.contains(member)) {
             member.late = WorldStreamStatus.LateOutcome.DROPPED;
@@ -351,9 +364,27 @@ final class WorldStreamParentState {
                         member.lease,
                         length,
                         sha,
-                        member.lateHeld);
+                        member.lateHeld,
+                        epoch,
+                        packLength,
+                        packSha);
         objectsTarget = member;
         return command;
+    }
+
+    /**
+     * A resident answered {@code MISSING} is not sent again (its resend was answered {@code
+     * MISSING} too, or could not be written): it records FAILED, like a child failure.
+     */
+    synchronized void lateObjectsGaveUp(Resident member) {
+        require(
+                member != null
+                        && member.owner == owner
+                        && objectsTarget == null
+                        && member.late == WorldStreamStatus.LateOutcome.MISSING,
+                "Late objects give-up without MISSING");
+        member.lateSent = true;
+        member.late = WorldStreamStatus.LateOutcome.FAILED;
     }
 
     /**
@@ -447,7 +478,8 @@ final class WorldStreamParentState {
                         && member.owner == owner
                         && member.lateRequested
                         && !member.lateSent
-                        && member.late == null,
+                        && (member.late == null
+                                || member.late == WorldStreamStatus.LateOutcome.MISSING),
                 "Late objects failure without admission");
         member.late =
                 generations[member.lease.slot()] != member.lease.generation()
@@ -671,6 +703,10 @@ final class WorldStreamParentState {
                             && objectsTarget.lease.equals(value.lease()),
                     "Unmatched late objects outcome");
             objectsTarget.late = value.outcome();
+            if (value.outcome() == WorldStreamStatus.LateOutcome.MISSING) {
+                // Nothing attached: the same command may go once more, with the assets.
+                objectsTarget.lateSent = false;
+            }
             if (value.outcome() == WorldStreamStatus.LateOutcome.ATTACHED) {
                 if (objectsTarget.lateHeld) {
                     // The replaced set was destroyed: room it held may let a refused set fit.

@@ -242,6 +242,126 @@ final class WorldStreamLateObjectsChildTest {
                                 session, directory, command, 7, 19, () -> false));
     }
 
+    @Test
+    void referencedObjectsDecodeFromTheStoreAndPackAndNameWhatIsMissing() throws Exception {
+        var session = new WorldStreamEnvelope.Session(NONCE, SCOPE, 1, true);
+        var lease = new WorldStreamState.Lease(3, 5, 8);
+        var data = data(WorldStreamObjectsFileTest.small());
+        var store = new WorldStreamAssetStore<Object>();
+        var mirror = new WorldStreamAssetStore<Void>();
+        // The inline file, as without references.
+        var inline =
+                WorldStreamObjectsFile.write(
+                        directory,
+                        new WorldStreamObjectsFile.Identity(NONCE, SCOPE, 41, lease, 7, 19),
+                        data,
+                        () -> false);
+        // First file: the mirror is empty, so the pack carries every asset it names.
+        var first = WorldStreamAssetPlan.of(data, mirror);
+        assertEquals(1, first.references.models().length);
+        assertEquals(2, first.references.images().length);
+        assertEquals(3, first.payloads.size());
+        var command = referenced(lease, 42, data, first, 0);
+        assertTrue(command.hasPack());
+        try (var expected =
+                        WorldStreamSession.decodeLateObjects(
+                                session,
+                                directory,
+                                new WorldStreamControl.LateObjects(
+                                        NONCE, 41, lease, inline.length(), inline.sha256()),
+                                7,
+                                19,
+                                () -> false);
+                var packed =
+                        WorldStreamSession.decodeLateObjects(
+                                session, directory, command, 7, 19, () -> false, 0xE, store)) {
+            assertSamePacked(expected, packed);
+        }
+        follow(mirror, first);
+        assertTrue(store.report().applied());
+        assertEquals(3, store.size());
+        assertTrue(mirror.report().holdsAs(store.report()));
+
+        // Second file of the same assets: nothing to send, every asset comes from the store.
+        var second = WorldStreamAssetPlan.of(data, mirror);
+        assertTrue(second.payloads.isEmpty());
+        var again = referenced(lease, 43, data, second, 0);
+        assertFalse(again.hasPack());
+        try (var packed =
+                WorldStreamSession.decodeLateObjects(
+                        session, directory, again, 7, 19, () -> false, 0xE, store)) {
+            assertEquals(2, packed.placementCount());
+        }
+        follow(mirror, second);
+        assertTrue(mirror.report().holdsAs(store.report()));
+
+        // A new epoch empties the store first: the same file now names three missing assets.
+        var fresh =
+                new WorldStreamControl.LateObjects(
+                        NONCE, 43, lease, again.length(), again.sha256(), false, 1, 0, null);
+        var missing =
+                assertThrows(
+                        WorldStreamObjectsFile.MissingAssets.class,
+                        () ->
+                                WorldStreamSession.decodeLateObjects(
+                                        session, directory, fresh, 7, 19, () -> false, 0xE, store));
+        assertEquals(3, missing.missing.size());
+        assertEquals(new WorldStreamAssetStore.Report(1, false, 0, 0, 0, 0), store.report());
+    }
+
+    /** Writes {@code data}'s file with {@code plan}'s references and its pack, if any. */
+    private WorldStreamControl.LateObjects referenced(
+            WorldStreamState.Lease lease,
+            long tx,
+            WorldStreamObjectsFile.Data data,
+            WorldStreamAssetPlan plan,
+            long epoch)
+            throws IOException {
+        var identity = new WorldStreamObjectsFile.Identity(NONCE, SCOPE, tx, lease, 7, 19);
+        var file =
+                WorldStreamObjectsFile.write(
+                        directory, identity, data, plan.references, () -> false);
+        if (plan.payloads.isEmpty()) {
+            return new WorldStreamControl.LateObjects(
+                    NONCE, tx, lease, file.length(), file.sha256(), false, epoch, 0, null);
+        }
+        var pack = WorldStreamAssetPack.write(directory, identity, plan.payloads, () -> false);
+        return new WorldStreamControl.LateObjects(
+                NONCE,
+                tx,
+                lease,
+                file.length(),
+                file.sha256(),
+                false,
+                epoch,
+                pack.length(),
+                pack.sha256());
+    }
+
+    /** The parent's side of an applied file. */
+    private static void follow(WorldStreamAssetStore<Void> mirror, WorldStreamAssetPlan plan) {
+        var received =
+                new java.util.HashMap<
+                        WorldStreamObjectAssets.Digest, WorldStreamAssetStore.Received<Void>>();
+        for (var p : plan.payloads) {
+            received.put(p.digest(), new WorldStreamAssetStore.Received<>(p.bytes().length, null));
+        }
+        mirror.begin();
+        mirror.apply(WorldStreamAssetStore.order(plan.references), received);
+    }
+
+    private static void assertSamePacked(
+            WorldStreamPackedObjects expected, WorldStreamPackedObjects actual) {
+        assertEquals(expected.vertices, actual.vertices);
+        assertEquals(expected.indices, actual.indices);
+        assertEquals(expected.pixels, actual.pixels);
+        assertTrue(java.util.Arrays.equals(expected.meshes, actual.meshes));
+        assertTrue(java.util.Arrays.equals(expected.ranges, actual.ranges));
+        assertTrue(java.util.Arrays.equals(expected.images, actual.images));
+        assertTrue(java.util.Arrays.equals(expected.placements, actual.placements));
+        assertTrue(java.util.Arrays.equals(expected.modelKeys, actual.modelKeys));
+    }
+
     static WorldStreamObjectsFile.Data data(WorldStreamTileWriter.Exterior exterior)
             throws Exception {
         var field = WorldStreamTileWriter.Exterior.class.getDeclaredField("data");

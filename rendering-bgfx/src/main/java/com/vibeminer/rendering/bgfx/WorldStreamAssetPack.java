@@ -54,11 +54,21 @@ final class WorldStreamAssetPack {
 
     private static final int ENTRY_HEAD = 4 + 16 + 4;
 
-    /** A read pack: its decoded models and images by digest, in pack order. */
+    /**
+     * A read pack: its decoded models and images by digest, and every entry's payload length (the
+     * bytes the helper's asset store charges it, {@link WorldStreamAssetStore}).
+     */
     record Pack(
             Map<WorldStreamObjectAssets.Digest, WorldStreamObjectAssets.ModelPart> models,
-            Map<WorldStreamObjectAssets.Digest, WorldStreamObjectAssets.ImagePart> images) {
-        static final Pack EMPTY = new Pack(Map.of(), Map.of());
+            Map<WorldStreamObjectAssets.Digest, WorldStreamObjectAssets.ImagePart> images,
+            Map<WorldStreamObjectAssets.Digest, Integer> sizes) {
+        static final Pack EMPTY = new Pack(Map.of(), Map.of(), Map.of());
+
+        Pack(
+                Map<WorldStreamObjectAssets.Digest, WorldStreamObjectAssets.ModelPart> models,
+                Map<WorldStreamObjectAssets.Digest, WorldStreamObjectAssets.ImagePart> images) {
+            this(models, images, Map.of());
+        }
     }
 
     static String basename(long transaction) {
@@ -193,6 +203,7 @@ final class WorldStreamAssetPack {
             var images =
                     new LinkedHashMap<
                             WorldStreamObjectAssets.Digest, WorldStreamObjectAssets.ImagePart>();
+            var sizes = new LinkedHashMap<WorldStreamObjectAssets.Digest, Integer>();
             long left = reference.length() - HEADER_BYTES, payloadLeft = payloadBytes;
             for (int e = 0; e < entries; e++) {
                 check(canceled);
@@ -224,6 +235,7 @@ final class WorldStreamAssetPack {
                 require(
                         !models.containsKey(named) && !images.containsKey(named),
                         "Asset pack digests repeat");
+                sizes.put(named, size);
                 if (kind == WorldStreamObjectAssets.Kind.MODEL.ordinal()) {
                     models.put(named, WorldStreamObjectAssets.decodeModel(payload));
                 } else {
@@ -235,7 +247,7 @@ final class WorldStreamAssetPack {
                     || !HexFormat.of().formatHex(digest.digest()).equals(reference.sha256())) {
                 throw new IOException("Asset pack bytes or digest differ");
             }
-            return new Pack(Map.copyOf(models), Map.copyOf(images));
+            return new Pack(Map.copyOf(models), Map.copyOf(images), Map.copyOf(sizes));
         } catch (EOFException truncated) {
             throw new IOException("Truncated asset pack", truncated);
         } catch (IllegalArgumentException invalid) {

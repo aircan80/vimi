@@ -236,7 +236,10 @@ public final class AuthoredWorldControllerChild {
                                     + " "
                                     + late.lease().generation()
                                     + " "
-                                    + outcome;
+                                    + outcome
+                                    + " "
+                                    + late.epoch()
+                                    + " 0 0 0 0 0000000000000000";
                     var holdObjects = directory.getParent().resolve("authored-hold-objects");
                     if (Files.exists(holdObjects)) {
                         // Decided now, replied later: commits keep flowing while it is held.

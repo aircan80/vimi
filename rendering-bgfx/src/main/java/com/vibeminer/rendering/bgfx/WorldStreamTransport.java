@@ -497,6 +497,12 @@ public final class WorldStreamTransport {
         FAILED
     }
 
+    /**
+     * System property: {@code true} makes late objects files name doodad models and images by
+     * digest and send each asset once per session (#380 stage 4). Off by default.
+     */
+    public static final String OBJECT_REFERENCES_PROPERTY = "vimi.world.objectReferences";
+
     /** Terminal outcome of {@link Session#attachObjects}; terrain never depends on it. */
     public enum ObjectsOutcome {
         /** Attached to the resident's still active slot generation; drawn with its terrain. */
@@ -1199,6 +1205,7 @@ public final class WorldStreamTransport {
             final CompletableFuture<ObjectsOutcome> result = new CompletableFuture<>();
             boolean advertised;
             WorldStreamStatus.LateOutcome reply;
+            WorldStreamStatus.ObjectsDone done;
 
             ObjectsOperation(Resident resident, WorldStreamObjectsFile.Data data) {
                 this.resident = resident;
@@ -1954,93 +1961,309 @@ public final class WorldStreamTransport {
             WorldStageTimings.add("objects.assets.newImageBytes", tally.newImageBytes());
         }
 
+        /**
+         * Whether late objects files name doodad models and images by digest (#380 stage 4),
+         * sending each asset once per session: {@value #OBJECT_REFERENCES_PROPERTY}, off unless
+         * {@code true}. Read for each delivery.
+         */
+        private volatile boolean objectReferences = Boolean.getBoolean(OBJECT_REFERENCES_PROPERTY);
+
+        /**
+         * The parent's mirror of this session's child asset store ({@link WorldStreamAssetStore}):
+         * it lives and dies with this session and its nonce, and a new session starts empty.
+         * Confined to the objects worker, which delivers one late objects command at a time.
+         */
+        private final WorldStreamAssetStore<Void> assetMirror = new WorldStreamAssetStore<>();
+
+        /** Late objects asset counts of this session (#380 stage 4); under {@link #lock}. */
+        private long referencedFiles, sentPacks, packBytes, objectsFileBytes, missingReplies;
+
+        private long mirrorResets, assetsEvicted;
+
+        /** Delivery counts of the objects asset protocol (#380 stage 4), for proofs and probes. */
+        public record ObjectAssets(
+                long referencedFiles,
+                long sentPacks,
+                long packBytes,
+                long objectsFileBytes,
+                long missingReplies,
+                long mirrorResets,
+                long assetsEvicted,
+                int mirrorEntries,
+                long mirrorBytes) {}
+
+        public ObjectAssets objectAssets() {
+            synchronized (lock) {
+                return new ObjectAssets(
+                        referencedFiles,
+                        sentPacks,
+                        packBytes,
+                        objectsFileBytes,
+                        missingReplies,
+                        mirrorResets,
+                        assetsEvicted,
+                        assetMirror.size(),
+                        assetMirror.bytes());
+            }
+        }
+
+        /** Proof seam: turns {@link #OBJECT_REFERENCES_PROPERTY}'s switch for later deliveries. */
+        void objectReferencesForProof(boolean on) {
+            objectReferences = on;
+        }
+
+        /**
+         * Proof seam: the mirror takes every doodad model and image of {@code exterior} as held,
+         * though the child was never sent them, so the next file naming them is answered {@code
+         * MISSING}. Only while no late objects delivery runs.
+         */
+        void assumeAssetsHeldForProof(WorldStreamTileWriter.Exterior exterior) {
+            synchronized (lock) {
+                if (objectsOperation != null) {
+                    throw new IllegalStateException("Late objects delivery in flight");
+                }
+                var plan = WorldStreamAssetPlan.of(exterior.data(), assetMirror);
+                var received =
+                        new java.util.HashMap<
+                                WorldStreamObjectAssets.Digest,
+                                WorldStreamAssetStore.Received<Void>>();
+                plan.bytes.forEach(
+                        (d, b) -> received.put(d, new WorldStreamAssetStore.Received<>(b, null)));
+                assetMirror.begin();
+                assetMirror.apply(WorldStreamAssetStore.order(plan.references), received);
+            }
+        }
+
+        /** Starts a new asset epoch: the mirror empties now, the child's store on its next file. */
+        private void resetAssetMirror() {
+            synchronized (lock) {
+                assetMirror.reset(assetMirror.epoch() + 1);
+                mirrorResets++;
+            }
+        }
+
+        /**
+         * Follows the child's reply in the mirror: a file the child applied is applied the same
+         * way, and any difference from what the child reports holding starts a new epoch.
+         */
+        private void followAssets(
+                WorldStreamStatus.ObjectsDone done,
+                WorldStreamObjectsFile.References references,
+                java.util.List<WorldStreamObjectAssets.Payload> sent) {
+            var report = done.assets();
+            if (!report.applied()) {
+                return;
+            }
+            synchronized (lock) {
+                var received =
+                        new java.util.HashMap<
+                                WorldStreamObjectAssets.Digest,
+                                WorldStreamAssetStore.Received<Void>>();
+                for (var p : sent) {
+                    received.put(
+                            p.digest(),
+                            new WorldStreamAssetStore.Received<>(p.bytes().length, null));
+                }
+                boolean same;
+                try {
+                    assetMirror.begin();
+                    int evicted =
+                            assetMirror.apply(WorldStreamAssetStore.order(references), received);
+                    assetsEvicted += report.evicted();
+                    same = evicted == report.evicted() && assetMirror.report().holdsAs(report);
+                } catch (IllegalArgumentException | IllegalStateException differs) {
+                    same = false;
+                }
+                WorldStageTimings.add("objects.refs.evicted", report.evicted());
+                if (!same) {
+                    assetMirror.reset(assetMirror.epoch() + 1);
+                    mirrorResets++;
+                    WorldStageTimings.add("objects.refs.mirrorResets", 1);
+                }
+            }
+        }
+
         private void deliverObjects(
                 ObjectsOperation operation, WorldStreamLaunchOwner.Handle handle) throws Exception {
             var metadata = operation.resident.metadata;
             var directory = handle.files().directory();
             java.util.function.BooleanSupplier stop = () -> closing || handle.stopping();
+            var identity =
+                    new WorldStreamObjectsFile.Identity(
+                            descriptor.nonce(),
+                            descriptor.scope(),
+                            metadata.transaction,
+                            metadata.lease,
+                            metadata.x,
+                            metadata.y);
             ObjectsOutcome outcome = null;
-            boolean written = false;
+            boolean written = false, packWritten = false;
             Throwable fatal = null;
             try {
-                WorldStreamObjectsFile.Reference reference = null;
-                if (!stop.getAsBoolean()) {
-                    try {
-                        reference =
-                                WorldStreamObjectsFile.write(
-                                        directory,
-                                        new WorldStreamObjectsFile.Identity(
-                                                descriptor.nonce(),
-                                                descriptor.scope(),
-                                                metadata.transaction,
-                                                metadata.lease,
-                                                metadata.x,
-                                                metadata.y),
-                                        operation.data,
-                                        stop);
-                        written = true;
-                        tallyAssets(operation.data);
-                    } catch (IOException | RuntimeException failed) {
-                        // The writer removes its own partial file. Only these objects fail, and
-                        // the resident records it like a child FAILED, or DROPPED once retired.
-                        if (!stop.getAsBoolean()) {
-                            objectsWriteFailed(failed);
-                        }
-                        synchronized (lock) {
+                // A file naming assets is sent at most twice: after MISSING, once more inline in a
+                // new asset epoch, which names nothing and so cannot be MISSING again.
+                for (int attempt = 0; attempt < 2 && outcome == null; attempt++) {
+                    WorldStreamAssetPlan plan = null;
+                    WorldStreamObjectsFile.Reference reference = null, pack = null;
+                    if (!stop.getAsBoolean()) {
+                        try {
+                            if (attempt == 0 && objectReferences) {
+                                long digesting = WorldStageTimings.start();
+                                plan = WorldStreamAssetPlan.of(operation.data, assetMirror);
+                                WorldStageTimings.stop("objects.refs.plan", digesting);
+                                if (WorldStreamAssetPack.length(plan.payloads)
+                                        > WorldStreamObjectsFile.MAX_BYTES) {
+                                    plan = null; // inline instead: it always fits
+                                }
+                            }
+                            reference =
+                                    WorldStreamObjectsFile.write(
+                                            directory,
+                                            identity,
+                                            operation.data,
+                                            plan == null
+                                                    ? WorldStreamObjectsFile.References.NONE
+                                                    : plan.references,
+                                            stop);
+                            written = true;
+                            if (plan != null && !plan.payloads.isEmpty()) {
+                                pack =
+                                        WorldStreamAssetPack.write(
+                                                directory, identity, plan.payloads, stop);
+                                packWritten = true;
+                            }
+                            if (attempt == 0) {
+                                tallyAssets(operation.data);
+                            }
+                            synchronized (lock) {
+                                objectsFileBytes += reference.length();
+                                if (plan != null) {
+                                    referencedFiles++;
+                                    if (pack != null) {
+                                        sentPacks++;
+                                        packBytes += pack.length();
+                                    }
+                                }
+                            }
+                            WorldStageTimings.add("objects.refs.fileBytes", reference.length());
+                            WorldStageTimings.add(
+                                    "objects.refs.packBytes", pack == null ? 0 : pack.length());
+                        } catch (IOException | RuntimeException failed) {
+                            // The writers remove their own partial files. Only these objects fail,
+                            // and the resident records it like a child FAILED, or DROPPED once
+                            // retired.
                             if (!stop.getAsBoolean()) {
-                                outcome =
-                                        ObjectsOutcome.valueOf(
-                                                state.lateObjectsFailed(metadata).name());
+                                objectsWriteFailed(failed);
                             }
-                        }
-                    }
-                }
-                if (reference != null) {
-                    synchronized (lock) {
-                        if (!stop.getAsBoolean()) {
-                            // Admitted synchronously; only retirement can have happened since.
-                            var command =
-                                    state.lateObjects(
-                                            metadata, reference.length(), reference.sha256());
-                            if (command == null) {
-                                outcome = ObjectsOutcome.DROPPED;
-                            } else {
-                                var probe = beforeObjectsEnqueue;
-                                if (probe != null) {
-                                    probe.accept(handle);
-                                }
-                                // The owner may begin stopping outside this lock after the check
-                                // above. A refused command was never sent: withdraw it, so the
-                                // file is deleted at once and the stop cancels the future, the
-                                // same as a stop seen before publishing.
-                                operation.advertised = enqueueCommand(command);
-                                if (!operation.advertised) {
-                                    state.lateObjectsUnsent(metadata);
+                            reference = null;
+                            synchronized (lock) {
+                                if (!stop.getAsBoolean()) {
+                                    outcome =
+                                            ObjectsOutcome.valueOf(
+                                                    state.lateObjectsFailed(metadata).name());
                                 }
                             }
                         }
                     }
-                }
-                if (operation.advertised) {
-                    // The child may read the file until its reply, or until it has actually
-                    // exited and its statuses drained.
-                    synchronized (lock) {
-                        while (operation.reply == null && !(actualExit && statusesDrained)) {
-                            lock.wait(20);
+                    if (reference != null) {
+                        synchronized (lock) {
+                            // A resend's reply is matched afresh.
+                            operation.advertised = false;
+                            operation.reply = null;
+                            operation.done = null;
+                            if (!stop.getAsBoolean()) {
+                                // Admitted synchronously; only retirement can have happened since.
+                                var command =
+                                        state.lateObjects(
+                                                metadata,
+                                                reference.length(),
+                                                reference.sha256(),
+                                                assetMirror.epoch(),
+                                                pack == null ? 0 : pack.length(),
+                                                pack == null ? null : pack.sha256());
+                                if (command == null) {
+                                    outcome = ObjectsOutcome.DROPPED;
+                                } else {
+                                    var probe = beforeObjectsEnqueue;
+                                    if (probe != null) {
+                                        probe.accept(handle);
+                                    }
+                                    // The owner may begin stopping outside this lock after the
+                                    // check above. A refused command was never sent: withdraw it,
+                                    // so the file is deleted at once and the stop cancels the
+                                    // future, the same as a stop seen before publishing.
+                                    operation.advertised = enqueueCommand(command);
+                                    if (!operation.advertised) {
+                                        state.lateObjectsUnsent(metadata);
+                                    }
+                                }
+                            }
                         }
-                        if (operation.reply != null) {
-                            outcome = ObjectsOutcome.valueOf(operation.reply.name());
+                    }
+                    WorldStreamStatus.ObjectsDone done = null;
+                    if (operation.advertised) {
+                        // The child may read the files until its reply, or until it has actually
+                        // exited and its statuses drained.
+                        synchronized (lock) {
+                            while (operation.reply == null && !(actualExit && statusesDrained)) {
+                                lock.wait(20);
+                            }
+                            done = operation.done;
                         }
+                    }
+                    if (done != null) {
+                        followAssets(
+                                done,
+                                plan == null
+                                        ? WorldStreamObjectsFile.References.NONE
+                                        : plan.references,
+                                plan == null ? java.util.List.of() : plan.payloads);
+                        if (done.outcome() != WorldStreamStatus.LateOutcome.MISSING) {
+                            outcome = ObjectsOutcome.valueOf(done.outcome().name());
+                        } else {
+                            synchronized (lock) {
+                                missingReplies++;
+                            }
+                            WorldStageTimings.add("objects.refs.missing", 1);
+                            resetAssetMirror();
+                            if (attempt == 1) {
+                                synchronized (lock) {
+                                    state.lateObjectsGaveUp(metadata);
+                                }
+                                outcome = ObjectsOutcome.FAILED;
+                            }
+                        }
+                    }
+                    // This attempt's files are done with: its reply came, or none will.
+                    if (written) {
+                        java.nio.file.Files.deleteIfExists(
+                                directory.resolve(
+                                        WorldStreamObjectsFile.basename(metadata.transaction)));
+                        written = false;
+                    }
+                    if (packWritten) {
+                        java.nio.file.Files.deleteIfExists(
+                                directory.resolve(
+                                        WorldStreamAssetPack.basename(metadata.transaction)));
+                        packWritten = false;
+                    }
+                    if (done == null) {
+                        break;
                     }
                 }
             } catch (Throwable failed) {
                 fatal = failed;
             } finally {
-                if (written) {
+                for (var leftover :
+                        new String[] {
+                            written ? WorldStreamObjectsFile.basename(metadata.transaction) : null,
+                            packWritten ? WorldStreamAssetPack.basename(metadata.transaction) : null
+                        }) {
+                    if (leftover == null) {
+                        continue;
+                    }
                     try {
-                        java.nio.file.Files.deleteIfExists(
-                                directory.resolve(
-                                        WorldStreamObjectsFile.basename(metadata.transaction)));
+                        java.nio.file.Files.deleteIfExists(directory.resolve(leftover));
                     } catch (Throwable cleanup) {
                         if (fatal == null) {
                             fatal = cleanup;
@@ -3027,6 +3250,7 @@ public final class WorldStreamTransport {
                                             "Late objects outcome correlation");
                                 }
                                 operation.reply = outcome;
+                                operation.done = (WorldStreamStatus.ObjectsDone) message;
                                 retireReliable();
                                 lock.notifyAll();
                             }
