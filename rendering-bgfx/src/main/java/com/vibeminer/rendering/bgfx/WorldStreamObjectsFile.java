@@ -28,6 +28,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
 import java.util.function.BooleanSupplier;
@@ -67,7 +68,10 @@ final class WorldStreamObjectsFile {
     // (#384): an animation section after the portal tables ({@link Animations}), whose entry count
     // and byte length follow at header bytes 172-179. Version 11: a liquid section after the
     // animations ({@link Liquids}, building water), its entry count and byte length at 180-187.
-    static final int VERSION = 11, HEADER_BYTES = 256;
+    // Version 13 (#380 stage 4): models and images may be named by asset digest instead of carried
+    // ({@link References}); their counts at header bytes 200-207, the reference section right
+    // after the header, and their payloads come from an asset pack ({@link WorldStreamAssetPack}).
+    static final int VERSION = 13, HEADER_BYTES = 256;
     // The tables are the sums of the producer's pools (ExteriorObjectLimits): opaque buildings,
     // their cutout and blended surfaces, and doodads. Creature models share whatever room remains.
     static final int MAX_MODELS = ExteriorObjectLimits.MODELS;
@@ -1109,6 +1113,135 @@ final class WorldStreamObjectsFile {
         }
     }
 
+    /**
+     * Models and images a file names by asset digest instead of carrying (#380 stage 4): model and
+     * image indices ascending and unique, each with its asset's digest. A referenced model's meshes
+     * keep their table rows and draw ranges, which are the tile's own; their vertices, colours and
+     * indices, the model's portal set tables, animation entry and liquids come from its asset. A
+     * referenced image keeps its table row; its chain comes from its asset.
+     */
+    record References(
+            int[] models,
+            WorldStreamObjectAssets.Digest[] modelDigests,
+            int[] images,
+            WorldStreamObjectAssets.Digest[] imageDigests) {
+        static final References NONE =
+                new References(
+                        new int[0],
+                        new WorldStreamObjectAssets.Digest[0],
+                        new int[0],
+                        new WorldStreamObjectAssets.Digest[0]);
+
+        References {
+            models = models.clone();
+            modelDigests = modelDigests.clone();
+            images = images.clone();
+            imageDigests = imageDigests.clone();
+            require(
+                    models.length == modelDigests.length
+                            && images.length == imageDigests.length
+                            && models.length <= MAX_MODELS
+                            && images.length <= MAX_IMAGES,
+                    "Reference counts");
+            for (int i = 0; i < models.length; i++) {
+                require(i == 0 || models[i] > models[i - 1], "Referenced models ascend");
+                require(models[i] >= 0 && modelDigests[i] != null, "Referenced model");
+            }
+            for (int i = 0; i < images.length; i++) {
+                require(i == 0 || images[i] > images[i - 1], "Referenced images ascend");
+                require(images[i] >= 0 && imageDigests[i] != null, "Referenced image");
+            }
+        }
+
+        int count() {
+            return models.length + images.length;
+        }
+
+        /** The reference section's bytes: per entry its index and digest. */
+        int bytes() {
+            return count() * REFERENCE_BYTES;
+        }
+
+        boolean model(int m) {
+            return Arrays.binarySearch(models, m) >= 0;
+        }
+
+        boolean image(int i) {
+            return Arrays.binarySearch(images, i) >= 0;
+        }
+    }
+
+    /** One portal set's slices of a set's tables (portal sets in table order). */
+    static final class PortalSlices {
+        private final Data data;
+        private final int[] groupAt, portalAt, vertexAt, refAt;
+
+        PortalSlices(Data data) {
+            this.data = data;
+            int n = data.portalSetCount();
+            groupAt = new int[n + 1];
+            portalAt = new int[n + 1];
+            vertexAt = new int[n + 1];
+            refAt = new int[n + 1];
+            for (int s = 0; s < n; s++) {
+                int at = s * PORTAL_SET_INTS;
+                groupAt[s + 1] = groupAt[s] + data.portalSets[at + 1];
+                portalAt[s + 1] = portalAt[s] + data.portalSets[at + 2];
+                vertexAt[s + 1] = vertexAt[s] + data.portalSets[at + 3];
+                refAt[s + 1] = refAt[s] + data.portalSets[at + 4];
+            }
+        }
+
+        int[] groups(int s) {
+            return Arrays.copyOfRange(
+                    data.portalGroups,
+                    groupAt[s] * PORTAL_GROUP_INTS,
+                    groupAt[s + 1] * PORTAL_GROUP_INTS);
+        }
+
+        float[] boxes(int s) {
+            return Arrays.copyOfRange(
+                    data.portalBoxes,
+                    groupAt[s] * PORTAL_BOX_FLOATS,
+                    groupAt[s + 1] * PORTAL_BOX_FLOATS);
+        }
+
+        int[] vertexCounts(int s) {
+            return Arrays.copyOfRange(data.portalVertexCounts, portalAt[s], portalAt[s + 1]);
+        }
+
+        float[] planes(int s) {
+            return Arrays.copyOfRange(
+                    data.portalPlanes,
+                    portalAt[s] * PORTAL_PLANE_FLOATS,
+                    portalAt[s + 1] * PORTAL_PLANE_FLOATS);
+        }
+
+        float[] vertices(int s) {
+            return Arrays.copyOfRange(data.portalVertices, vertexAt[s] * 3, vertexAt[s + 1] * 3);
+        }
+
+        int[] refs(int s) {
+            return Arrays.copyOfRange(
+                    data.portalRefs, refAt[s] * PORTAL_REF_INTS, refAt[s + 1] * PORTAL_REF_INTS);
+        }
+    }
+
+    /** A reference entry: an index and a 128-bit digest. */
+    static final int REFERENCE_BYTES = 4 + 16;
+
+    /** An objects file named assets its asset pack did not hold. */
+    static final class MissingAssets extends IOException {
+        private static final long serialVersionUID = 1L;
+
+        final transient List<WorldStreamObjectAssets.Digest> missing;
+
+        MissingAssets(List<WorldStreamObjectAssets.Digest> missing) {
+            super("Objects file names " + missing.size() + " assets the pack does not hold");
+            this.missing = List.copyOf(missing);
+        }
+    }
+
     /** Exact identity of the one terrain tile this file belongs to. */
     record Identity(
             WorldStreamState.Nonce nonce,
@@ -1223,21 +1356,114 @@ final class WorldStreamObjectsFile {
     /** CREATE_NEW publication of {@code tile-<txn>.wso} in directory; never replaces a file. */
     static Reference write(Path directory, Identity identity, Data data, BooleanSupplier canceled)
             throws IOException {
+        return write(directory, identity, data, References.NONE, canceled);
+    }
+
+    /**
+     * Writes {@code data} naming {@code references}' models and images by digest instead of
+     * carrying them; a reader given their assets reads back exactly {@code data}.
+     */
+    static Reference write(
+            Path directory,
+            Identity identity,
+            Data data,
+            References references,
+            BooleanSupplier canceled)
+            throws IOException {
         long started = WorldStageTimings.start();
         try {
-            return writeTimed(directory, identity, data, canceled);
+            return writeTimed(directory, identity, data, references, canceled);
         } finally {
             WorldStageTimings.stop("objectsFile.write.total", started);
         }
     }
 
+    /** The file length of {@code data} written with {@code references}. */
+    static long fileLength(Data data, References references) {
+        if (references.count() == 0) {
+            return data.bytes();
+        }
+        long omitted = 0;
+        for (int m : references.models) {
+            int first = data.models[m * 2], count = data.models[m * 2 + 1];
+            for (int mesh = first; mesh < first + count; mesh++) {
+                omitted += data.meshes[mesh * 6 + 1] * (VERTEX_FLOATS * 4L + 4);
+            }
+        }
+        long indices = 0;
+        for (int mesh = 0; mesh < data.meshCount(); mesh++) {
+            if (!references.model(owner(data, mesh))) {
+                indices += data.meshes[mesh * 6 + 3];
+            }
+        }
+        omitted += (data.indexCount() + 1L) / 2 * 4 - (indices + 1) / 2 * 4;
+        for (int i : references.images) {
+            omitted +=
+                    ObjectTextureFormats.chainBytes(
+                            data.images[i * IMAGE_INTS + 2],
+                            data.images[i * IMAGE_INTS],
+                            data.images[i * IMAGE_INTS + 1]);
+        }
+        for (int set = 0; set < data.portalSetCount(); set++) {
+            int at = set * PORTAL_SET_INTS;
+            if (references.model(data.portalSets[at])) {
+                omitted +=
+                        portalLength(
+                                0,
+                                data.portalSets[at + 1],
+                                data.portalSets[at + 2],
+                                data.portalSets[at + 3],
+                                data.portalSets[at + 4]);
+            }
+        }
+        var animations = data.animations;
+        for (int i = 0; i < animations.count(); i++) {
+            if (references.model(animations.models[i])) {
+                omitted +=
+                        Animations.entryBytes(
+                                animations.sources[i].length, animations.animations[i].length);
+            }
+        }
+        var liquids = data.liquids;
+        for (int i = 0; i < liquids.count(); i++) {
+            if (references.model(owner(data, liquids.meshes[i]))) {
+                omitted += Liquids.entryBytes(liquids.grids[i * 2], liquids.grids[i * 2 + 1]);
+            }
+        }
+        return data.bytes() - omitted + references.bytes();
+    }
+
+    /** The model that holds mesh {@code mesh}. */
+    static int owner(Data data, int mesh) {
+        for (int m = 0; m < data.modelCount(); m++) {
+            int first = data.models[m * 2];
+            if (mesh >= first && mesh < first + data.models[m * 2 + 1]) {
+                return m;
+            }
+        }
+        throw new IllegalArgumentException("Mesh without a model");
+    }
+
     private static Reference writeTimed(
-            Path directory, Identity identity, Data data, BooleanSupplier canceled)
+            Path directory,
+            Identity identity,
+            Data data,
+            References references,
+            BooleanSupplier canceled)
             throws IOException {
         Objects.requireNonNull(directory);
         Objects.requireNonNull(identity);
         Objects.requireNonNull(data);
+        Objects.requireNonNull(references);
         Objects.requireNonNull(canceled);
+        for (int m : references.models) {
+            require(m < data.modelCount(), "Referenced model");
+        }
+        for (int i : references.images) {
+            require(i < data.imageCount(), "Referenced image");
+        }
+        long length = fileLength(data, references);
+        require(length <= MAX_BYTES, "Objects file length");
         check(canceled);
         Path target = directory.resolve(basename(identity.transaction()));
         Path part = directory.resolve(basename(identity.transaction()) + ".part");
@@ -1257,7 +1483,17 @@ final class WorldStreamObjectsFile {
                                         new BufferedOutputStream(
                                                 Channels.newOutputStream(channel), SCRATCH),
                                         digest));
-                output.write(encodeHeader(identity, data));
+                output.write(encodeHeader(identity, data, references, length));
+                for (int r = 0; r < references.models.length; r++) {
+                    output.writeInt(Integer.reverseBytes(references.models[r]));
+                    output.writeLong(Long.reverseBytes(references.modelDigests[r].high()));
+                    output.writeLong(Long.reverseBytes(references.modelDigests[r].low()));
+                }
+                for (int r = 0; r < references.images.length; r++) {
+                    output.writeInt(Integer.reverseBytes(references.images[r]));
+                    output.writeLong(Long.reverseBytes(references.imageDigests[r].high()));
+                    output.writeLong(Long.reverseBytes(references.imageDigests[r].low()));
+                }
                 for (int value : data.models) {
                     output.writeInt(Integer.reverseBytes(value));
                 }
@@ -1282,44 +1518,101 @@ final class WorldStreamObjectsFile {
                 for (int value : data.images) {
                     output.writeInt(Integer.reverseBytes(value));
                 }
-                for (int i = 0; i < data.vertices.length; i++) {
-                    if ((i & 4095) == 0) {
-                        check(canceled);
+                // Carried meshes only, in mesh order: their vertices, then colours, then indices.
+                boolean[] carried = new boolean[data.meshCount()];
+                int carriedIndices = 0;
+                for (int mesh = 0; mesh < carried.length; mesh++) {
+                    carried[mesh] = !references.model(owner(data, mesh));
+                    if (carried[mesh]) {
+                        carriedIndices += data.meshes[mesh * 6 + 3];
                     }
-                    output.writeInt(
-                            Integer.reverseBytes(Float.floatToRawIntBits(data.vertices[i])));
                 }
-                for (int i = 0; i < data.colours.length; i++) {
-                    if ((i & 4095) == 0) {
-                        check(canceled);
+                for (int mesh = 0; mesh < carried.length; mesh++) {
+                    if (!carried[mesh]) {
+                        continue;
                     }
-                    output.writeInt(Integer.reverseBytes(data.colours[i]));
-                }
-                for (int i = 0; i < data.indices.length; i++) {
-                    if ((i & 4095) == 0) {
-                        check(canceled);
+                    check(canceled);
+                    int first = data.meshes[mesh * 6] * VERTEX_FLOATS;
+                    int end = first + data.meshes[mesh * 6 + 1] * VERTEX_FLOATS;
+                    for (int i = first; i < end; i++) {
+                        output.writeInt(
+                                Integer.reverseBytes(Float.floatToRawIntBits(data.vertices[i])));
                     }
-                    output.writeShort(Short.reverseBytes(data.indices[i]));
                 }
-                if ((data.indices.length & 1) != 0) {
+                for (int mesh = 0; mesh < carried.length; mesh++) {
+                    if (!carried[mesh]) {
+                        continue;
+                    }
+                    int first = data.meshes[mesh * 6];
+                    for (int i = first; i < first + data.meshes[mesh * 6 + 1]; i++) {
+                        output.writeInt(Integer.reverseBytes(data.colours[i]));
+                    }
+                }
+                for (int mesh = 0; mesh < carried.length; mesh++) {
+                    if (!carried[mesh]) {
+                        continue;
+                    }
+                    int first = data.meshes[mesh * 6 + 2];
+                    for (int i = first; i < first + data.meshes[mesh * 6 + 3]; i++) {
+                        output.writeShort(Short.reverseBytes(data.indices[i]));
+                    }
+                }
+                if ((carriedIndices & 1) != 0) {
                     output.writeShort(0);
                 }
-                for (int at = 0; at < data.pixels.length; at += SCRATCH) {
-                    check(canceled);
-                    output.write(data.pixels, at, Math.min(SCRATCH, data.pixels.length - at));
+                int from = 0;
+                for (int image = 0; image < data.imageCount(); image++) {
+                    int stored =
+                            ObjectTextureFormats.chainBytes(
+                                    data.images[image * IMAGE_INTS + 2],
+                                    data.images[image * IMAGE_INTS],
+                                    data.images[image * IMAGE_INTS + 1]);
+                    if (!references.image(image)) {
+                        check(canceled);
+                        output.write(data.pixels, from, stored);
+                    }
+                    from += stored;
                 }
                 check(canceled);
-                for (int[] table :
-                        new int[][] {data.meshGroups, data.portalSets, data.portalGroups}) {
-                    writeInts(output, table);
+                writeInts(output, data.meshGroups);
+                writeInts(output, data.portalSets);
+                // Each array of the carried portal sets only, in set order.
+                var sets = new PortalSlices(data);
+                for (int set = 0; set < data.portalSetCount(); set++) {
+                    if (!references.model(data.portalSets[set * PORTAL_SET_INTS])) {
+                        writeInts(output, sets.groups(set));
+                    }
                 }
-                writeFloats(output, data.portalBoxes);
-                writeInts(output, data.portalVertexCounts);
-                writeFloats(output, data.portalPlanes);
-                writeFloats(output, data.portalVertices);
-                writeInts(output, data.portalRefs);
+                for (int set = 0; set < data.portalSetCount(); set++) {
+                    if (!references.model(data.portalSets[set * PORTAL_SET_INTS])) {
+                        writeFloats(output, sets.boxes(set));
+                    }
+                }
+                for (int set = 0; set < data.portalSetCount(); set++) {
+                    if (!references.model(data.portalSets[set * PORTAL_SET_INTS])) {
+                        writeInts(output, sets.vertexCounts(set));
+                    }
+                }
+                for (int set = 0; set < data.portalSetCount(); set++) {
+                    if (!references.model(data.portalSets[set * PORTAL_SET_INTS])) {
+                        writeFloats(output, sets.planes(set));
+                    }
+                }
+                for (int set = 0; set < data.portalSetCount(); set++) {
+                    if (!references.model(data.portalSets[set * PORTAL_SET_INTS])) {
+                        writeFloats(output, sets.vertices(set));
+                    }
+                }
+                for (int set = 0; set < data.portalSetCount(); set++) {
+                    if (!references.model(data.portalSets[set * PORTAL_SET_INTS])) {
+                        writeInts(output, sets.refs(set));
+                    }
+                }
                 var animations = data.animations;
                 for (int i = 0; i < animations.count(); i++) {
+                    if (references.model(animations.models[i])) {
+                        continue;
+                    }
                     check(canceled);
                     output.writeInt(Integer.reverseBytes(animations.models[i]));
                     output.writeInt(Integer.reverseBytes(animations.sources[i].length));
@@ -1332,6 +1625,9 @@ final class WorldStreamObjectsFile {
                 }
                 var liquids = data.liquids;
                 for (int i = 0; i < liquids.count(); i++) {
+                    if (references.model(owner(data, liquids.meshes[i]))) {
+                        continue;
+                    }
                     check(canceled);
                     for (int v :
                             new int[] {
@@ -1351,10 +1647,10 @@ final class WorldStreamObjectsFile {
                     }
                 }
                 output.flush();
-                if (channel.size() != data.bytes()) {
+                if (channel.size() != length) {
                     throw new IOException("Objects file length differs");
                 }
-                WorldStageTimings.add("objectsFile.write.bytes", data.bytes());
+                WorldStageTimings.add("objectsFile.write.bytes", length);
                 // No fsync, as for tile files: a session-private scratch file the child reads back
                 // and the parent deletes, which no restart reuses. A torn or short file fails the
                 // exact length and full digest on read. A flush to disk only added latency, which
@@ -1366,7 +1662,8 @@ final class WorldStreamObjectsFile {
             }
             Files.move(part, target, StandardCopyOption.ATOMIC_MOVE);
             published = true;
-            return new Reference(data.bytes(), HexFormat.of().formatHex(digest.digest()));
+            return new Reference(
+                    Math.toIntExact(length), HexFormat.of().formatHex(digest.digest()));
         } finally {
             if (created && !published) {
                 Files.deleteIfExists(part);
@@ -1377,17 +1674,36 @@ final class WorldStreamObjectsFile {
     /** Reads and fully validates one objects file bound to exactly this tile and reference. */
     static Data read(Path path, Identity identity, Reference reference, BooleanSupplier canceled)
             throws IOException {
+        return read(path, identity, reference, WorldStreamAssetPack.Pack.EMPTY, canceled);
+    }
+
+    /**
+     * As above, taking the models and images the file names by digest from {@code assets}; {@link
+     * MissingAssets} when it names one {@code assets} does not hold.
+     */
+    static Data read(
+            Path path,
+            Identity identity,
+            Reference reference,
+            WorldStreamAssetPack.Pack assets,
+            BooleanSupplier canceled)
+            throws IOException {
         long started = WorldStageTimings.start();
         try {
-            return readTimed(path, identity, reference, canceled);
+            return readTimed(path, identity, reference, assets, canceled);
         } finally {
             WorldStageTimings.stop("child.objectsFile.read", started);
         }
     }
 
     private static Data readTimed(
-            Path path, Identity identity, Reference reference, BooleanSupplier canceled)
+            Path path,
+            Identity identity,
+            Reference reference,
+            WorldStreamAssetPack.Pack assets,
+            BooleanSupplier canceled)
             throws IOException {
+        Objects.requireNonNull(assets);
         Objects.requireNonNull(identity);
         Objects.requireNonNull(reference);
         Objects.requireNonNull(canceled);
@@ -1431,8 +1747,16 @@ final class WorldStreamObjectsFile {
                             && in.getLong(104) == identity.lease().serial(),
                     "Objects header identity");
             for (int i = 188; i < HEADER_BYTES; i++) {
-                require(head[i] == 0, "Reserved objects bytes");
+                require(i >= 200 && i < 208 || head[i] == 0, "Reserved objects bytes");
             }
+            int referencedModels = in.getInt(200), referencedImages = in.getInt(204);
+            require(
+                    referencedModels >= 0
+                            && referencedModels <= MAX_MODELS
+                            && referencedImages >= 0
+                            && referencedImages <= MAX_IMAGES,
+                    "Objects reference counts");
+            int referenceBytes = (referencedModels + referencedImages) * REFERENCE_BYTES;
             int liquidCount = in.getInt(180), liquidBytes = in.getInt(184);
             require(
                     liquidCount >= 0
@@ -1504,8 +1828,74 @@ final class WorldStreamObjectsFile {
                                                     portalRefs)
                                             + animationBytes
                                             + liquidBytes
+                                            + referenceBytes
+                                    >= reference.length(),
+                    "Objects header counts");
+            // Every byte is carried without references; with them the file is shorter by what
+            // the assets carry, checked exactly as the body is read.
+            require(
+                    referenceBytes > 0
+                            || (long)
+                                                    length(
+                                                            models,
+                                                            meshes,
+                                                            ranges,
+                                                            placements,
+                                                            images,
+                                                            vertices,
+                                                            indices,
+                                                            imageBytes)
+                                            + portalLength(
+                                                    portalSets,
+                                                    portalGroups,
+                                                    portals,
+                                                    portalVertices,
+                                                    portalRefs)
+                                            + animationBytes
+                                            + liquidBytes
                                     == reference.length(),
                     "Objects header counts");
+            var refModels = new int[referencedModels];
+            var refModelDigests = new WorldStreamObjectAssets.Digest[referencedModels];
+            for (int r = 0; r < referencedModels; r++) {
+                refModels[r] = Integer.reverseBytes(input.readInt());
+                refModelDigests[r] =
+                        new WorldStreamObjectAssets.Digest(
+                                Long.reverseBytes(input.readLong()),
+                                Long.reverseBytes(input.readLong()));
+            }
+            var refImages = new int[referencedImages];
+            var refImageDigests = new WorldStreamObjectAssets.Digest[referencedImages];
+            for (int r = 0; r < referencedImages; r++) {
+                refImages[r] = Integer.reverseBytes(input.readInt());
+                refImageDigests[r] =
+                        new WorldStreamObjectAssets.Digest(
+                                Long.reverseBytes(input.readLong()),
+                                Long.reverseBytes(input.readLong()));
+            }
+            var references = new References(refModels, refModelDigests, refImages, refImageDigests);
+            var missing = new java.util.ArrayList<WorldStreamObjectAssets.Digest>();
+            var modelParts = new WorldStreamObjectAssets.ModelPart[models];
+            var imageParts = new WorldStreamObjectAssets.ImagePart[images];
+            for (int r = 0; r < referencedModels; r++) {
+                require(refModels[r] < models, "Referenced model");
+                var part = assets.models().get(refModelDigests[r]);
+                if (part == null) {
+                    missing.add(refModelDigests[r]);
+                }
+                modelParts[refModels[r]] = part;
+            }
+            for (int r = 0; r < referencedImages; r++) {
+                require(refImages[r] < images, "Referenced image");
+                var part = assets.images().get(refImageDigests[r]);
+                if (part == null) {
+                    missing.add(refImageDigests[r]);
+                }
+                imageParts[refImages[r]] = part;
+            }
+            if (!missing.isEmpty()) {
+                throw new MissingAssets(missing);
+            }
             // Bounded by the counts above before any body allocation.
             int[] modelTable = ints(input, models * 2);
             int[] meshTable = ints(input, meshes * 6);
@@ -1527,52 +1917,236 @@ final class WorldStreamObjectsFile {
                 }
             }
             int[] imageTable = ints(input, images * IMAGE_INTS);
+            // Each mesh's model, with every model's meshes inside the mesh table and in order.
+            int[] owners = new int[meshes];
+            Arrays.fill(owners, -1);
+            for (int m = 0; m < models; m++) {
+                int first = modelTable[m * 2], count = modelTable[m * 2 + 1];
+                require(first >= 0 && count >= 0 && (long) first + count <= meshes, "Model meshes");
+                for (int mesh = first; mesh < first + count; mesh++) {
+                    require(owners[mesh] < 0, "Model meshes");
+                    owners[mesh] = m;
+                }
+                var part = modelParts[m];
+                require(part == null || part.meshes().size() == count, "Referenced model meshes");
+            }
+            // Meshes cover the vertex and index blocks in order, so carried ones read in turn.
+            int vertexAt = 0, indexAt = 0;
+            for (int mesh = 0; mesh < meshes; mesh++) {
+                int at = mesh * 6;
+                require(
+                        owners[mesh] >= 0
+                                && meshTable[at] == vertexAt
+                                && meshTable[at + 1] >= 0
+                                && meshTable[at + 2] == indexAt
+                                && meshTable[at + 3] >= 0,
+                        "Mesh table");
+                vertexAt += meshTable[at + 1];
+                indexAt += meshTable[at + 3];
+                require(vertexAt <= vertices && indexAt <= indices, "Mesh table");
+                var part = referencedMesh(modelParts, modelTable, owners, mesh);
+                require(
+                        part == null
+                                || part.vertexCount() == meshTable[at + 1]
+                                        && part.indices().length == meshTable[at + 3],
+                        "Referenced mesh counts");
+            }
+            require(vertexAt == vertices && indexAt == indices, "Mesh table");
             float[] vertexData = new float[vertices * VERTEX_FLOATS];
-            for (int i = 0; i < vertexData.length; i++) {
-                if ((i & 4095) == 0) {
-                    check(canceled);
-                }
-                vertexData[i] = Float.intBitsToFloat(Integer.reverseBytes(input.readInt()));
-            }
             int[] colourData = new int[vertices];
-            for (int i = 0; i < colourData.length; i++) {
-                if ((i & 4095) == 0) {
-                    check(canceled);
-                }
-                colourData[i] = Integer.reverseBytes(input.readInt());
-            }
             short[] indexData = new short[indices];
-            for (int i = 0; i < indexData.length; i++) {
-                if ((i & 4095) == 0) {
-                    check(canceled);
+            int carriedIndices = 0;
+            for (int mesh = 0; mesh < meshes; mesh++) {
+                check(canceled);
+                int at = mesh * 6;
+                var part = referencedMesh(modelParts, modelTable, owners, mesh);
+                if (part != null) {
+                    System.arraycopy(
+                            part.vertices(),
+                            0,
+                            vertexData,
+                            meshTable[at] * VERTEX_FLOATS,
+                            part.vertices().length);
+                    continue;
                 }
-                indexData[i] = Short.reverseBytes(input.readShort());
+                carriedIndices += meshTable[at + 3];
+                int end = (meshTable[at] + meshTable[at + 1]) * VERTEX_FLOATS;
+                for (int i = meshTable[at] * VERTEX_FLOATS; i < end; i++) {
+                    vertexData[i] = Float.intBitsToFloat(Integer.reverseBytes(input.readInt()));
+                }
             }
-            if ((indices & 1) != 0) {
+            for (int mesh = 0; mesh < meshes; mesh++) {
+                int at = mesh * 6;
+                var part = referencedMesh(modelParts, modelTable, owners, mesh);
+                if (part != null) {
+                    System.arraycopy(
+                            part.colours(), 0, colourData, meshTable[at], part.colours().length);
+                    continue;
+                }
+                for (int i = meshTable[at]; i < meshTable[at] + meshTable[at + 1]; i++) {
+                    colourData[i] = Integer.reverseBytes(input.readInt());
+                }
+            }
+            for (int mesh = 0; mesh < meshes; mesh++) {
+                int at = mesh * 6;
+                var part = referencedMesh(modelParts, modelTable, owners, mesh);
+                if (part != null) {
+                    System.arraycopy(
+                            part.indices(), 0, indexData, meshTable[at + 2], part.indices().length);
+                    continue;
+                }
+                for (int i = meshTable[at + 2]; i < meshTable[at + 2] + meshTable[at + 3]; i++) {
+                    indexData[i] = Short.reverseBytes(input.readShort());
+                }
+            }
+            if ((carriedIndices & 1) != 0) {
                 require(input.readShort() == 0, "Index padding");
             }
             byte[] pixelData = new byte[imageBytes];
-            for (int at = 0; at < pixelData.length; at += SCRATCH) {
+            int pixelAt = 0;
+            for (int image = 0; image < images; image++) {
                 check(canceled);
-                input.readFully(pixelData, at, Math.min(SCRATCH, pixelData.length - at));
+                int width = imageTable[image * IMAGE_INTS],
+                        height = imageTable[image * IMAGE_INTS + 1];
+                int format = imageTable[image * IMAGE_INTS + 2];
+                require(
+                        ObjectTextureFormats.valid(format)
+                                && width >= 1
+                                && width <= MAX_IMAGE_SIDE
+                                && height >= 1
+                                && height <= MAX_IMAGE_SIDE,
+                        "Image table");
+                int stored = ObjectTextureFormats.chainBytes(format, width, height);
+                require((long) pixelAt + stored <= imageBytes, "Image bytes");
+                var part = imageParts[image];
+                if (part != null) {
+                    require(
+                            part.format() == format
+                                    && part.width() == width
+                                    && part.height() == height
+                                    && part.chain().length == stored,
+                            "Referenced image");
+                    System.arraycopy(part.chain(), 0, pixelData, pixelAt, stored);
+                } else {
+                    input.readFully(pixelData, pixelAt, stored);
+                }
+                pixelAt += stored;
             }
+            require(pixelAt == imageBytes, "Image bytes");
             check(canceled);
             int[] meshGroupData = ints(input, meshes);
+            for (int mesh = 0; mesh < meshes; mesh++) {
+                var part = referencedMesh(modelParts, modelTable, owners, mesh);
+                require(
+                        part == null || part.group() == meshGroupData[mesh],
+                        "Referenced mesh group");
+            }
             int[] portalSetData = ints(input, portalSets * PORTAL_SET_INTS);
-            int[] portalGroupData = ints(input, portalGroups * PORTAL_GROUP_INTS);
-            float[] portalBoxData = floats(input, portalGroups * PORTAL_BOX_FLOATS);
-            int[] portalVertexCountData = ints(input, portals);
-            float[] portalPlaneData = floats(input, portals * PORTAL_PLANE_FLOATS);
-            float[] portalVertexData = floats(input, portalVertices * 3);
-            int[] portalRefData = ints(input, portalRefs * PORTAL_REF_INTS);
-            int[] animatedModels = new int[animated];
-            int[][] animationSources = new int[animated][];
-            byte[][] animationData = new byte[animated][];
+            int[] groupAt = new int[portalSets + 1], portalAt = new int[portalSets + 1];
+            int[] vertexOf = new int[portalSets + 1], refAt = new int[portalSets + 1];
+            boolean[] setOf = new boolean[models];
+            for (int set = 0; set < portalSets; set++) {
+                int at = set * PORTAL_SET_INTS;
+                int model = portalSetData[at];
+                require(model >= 0 && model < models, "Portal set model");
+                for (int k = 1; k < PORTAL_SET_INTS; k++) {
+                    require(portalSetData[at + k] >= 0, "Portal set counts");
+                }
+                groupAt[set + 1] = groupAt[set] + portalSetData[at + 1];
+                portalAt[set + 1] = portalAt[set] + portalSetData[at + 2];
+                vertexOf[set + 1] = vertexOf[set] + portalSetData[at + 3];
+                refAt[set + 1] = refAt[set] + portalSetData[at + 4];
+                var part = modelParts[model];
+                if (part != null) {
+                    var p = part.portals();
+                    require(
+                            p != null
+                                    && p.groups().length
+                                            == portalSetData[at + 1] * PORTAL_GROUP_INTS
+                                    && p.vertexCounts().length == portalSetData[at + 2]
+                                    && p.vertices().length == portalSetData[at + 3] * 3
+                                    && p.refs().length == portalSetData[at + 4] * PORTAL_REF_INTS,
+                            "Referenced portal set");
+                }
+                setOf[model] = true;
+            }
+            require(
+                    groupAt[portalSets] == portalGroups
+                            && portalAt[portalSets] == portals
+                            && vertexOf[portalSets] == portalVertices
+                            && refAt[portalSets] == portalRefs,
+                    "Portal set counts");
+            for (int m = 0; m < models; m++) {
+                require(
+                        modelParts[m] == null || (modelParts[m].portals() != null) == setOf[m],
+                        "Referenced portal set");
+            }
+            int[] portalGroupData = new int[portalGroups * PORTAL_GROUP_INTS];
+            float[] portalBoxData = new float[portalGroups * PORTAL_BOX_FLOATS];
+            int[] portalVertexCountData = new int[portals];
+            float[] portalPlaneData = new float[portals * PORTAL_PLANE_FLOATS];
+            float[] portalVertexData = new float[portalVertices * 3];
+            int[] portalRefData = new int[portalRefs * PORTAL_REF_INTS];
+            for (int set = 0; set < portalSets; set++) {
+                var part = modelParts[portalSetData[set * PORTAL_SET_INTS]];
+                fill(
+                        input,
+                        part == null ? null : part.portals().groups(),
+                        portalGroupData,
+                        groupAt[set] * PORTAL_GROUP_INTS,
+                        groupAt[set + 1] * PORTAL_GROUP_INTS);
+            }
+            for (int set = 0; set < portalSets; set++) {
+                var part = modelParts[portalSetData[set * PORTAL_SET_INTS]];
+                fill(
+                        input,
+                        part == null ? null : part.portals().boxes(),
+                        portalBoxData,
+                        groupAt[set] * PORTAL_BOX_FLOATS,
+                        groupAt[set + 1] * PORTAL_BOX_FLOATS);
+            }
+            for (int set = 0; set < portalSets; set++) {
+                var part = modelParts[portalSetData[set * PORTAL_SET_INTS]];
+                fill(
+                        input,
+                        part == null ? null : part.portals().vertexCounts(),
+                        portalVertexCountData,
+                        portalAt[set],
+                        portalAt[set + 1]);
+            }
+            for (int set = 0; set < portalSets; set++) {
+                var part = modelParts[portalSetData[set * PORTAL_SET_INTS]];
+                fill(
+                        input,
+                        part == null ? null : part.portals().planes(),
+                        portalPlaneData,
+                        portalAt[set] * PORTAL_PLANE_FLOATS,
+                        portalAt[set + 1] * PORTAL_PLANE_FLOATS);
+            }
+            for (int set = 0; set < portalSets; set++) {
+                var part = modelParts[portalSetData[set * PORTAL_SET_INTS]];
+                fill(
+                        input,
+                        part == null ? null : part.portals().vertices(),
+                        portalVertexData,
+                        vertexOf[set] * 3,
+                        vertexOf[set + 1] * 3);
+            }
+            for (int set = 0; set < portalSets; set++) {
+                var part = modelParts[portalSetData[set * PORTAL_SET_INTS]];
+                fill(
+                        input,
+                        part == null ? null : part.portals().refs(),
+                        portalRefData,
+                        refAt[set] * PORTAL_REF_INTS,
+                        refAt[set + 1] * PORTAL_REF_INTS);
+            }
+            var animationList = new java.util.TreeMap<Integer, Object[]>();
             long animationLeft = animationBytes;
             for (int i = 0; i < animated; i++) {
                 check(canceled);
                 require(animationLeft >= 12, "Animation entry bounds");
-                animatedModels[i] = Integer.reverseBytes(input.readInt());
+                int model = Integer.reverseBytes(input.readInt());
                 int count = Integer.reverseBytes(input.readInt());
                 int length = Integer.reverseBytes(input.readInt());
                 require(
@@ -1583,26 +2157,48 @@ final class WorldStreamObjectsFile {
                                 && Animations.entryBytes(count, length) <= animationLeft,
                         "Animation entry bounds");
                 animationLeft -= Animations.entryBytes(count, length);
-                animationSources[i] = ints(input, count);
-                animationData[i] = new byte[length];
-                input.readFully(animationData[i]);
+                int[] sources = ints(input, count);
+                byte[] bytes = new byte[length];
+                input.readFully(bytes);
                 for (int pad = length; pad % 4 != 0; pad++) {
                     require(input.readByte() == 0, "Animation padding");
                 }
+                require(
+                        animationList.put(model, new Object[] {sources, bytes}) == null,
+                        "Animated models ascend");
             }
             require(animationLeft == 0, "Animation section length");
-            int[] liquidMeshes = new int[liquidCount], liquidKinds = new int[liquidCount];
-            int[] liquidColours = new int[liquidCount], liquidGrids = new int[liquidCount * 2];
-            float[] liquidCorners = new float[liquidCount * 3];
-            float[][] liquidHeights = new float[liquidCount][];
-            byte[][] liquidLive = new byte[liquidCount][];
+            for (int m = 0; m < models; m++) {
+                var part = modelParts[m];
+                if (part != null && part.animationSources() != null) {
+                    require(
+                            animationList.put(
+                                            m,
+                                            new Object[] {
+                                                part.animationSources(), part.animation()
+                                            })
+                                    == null,
+                            "Animated models ascend");
+                }
+            }
+            int[] animatedModels = new int[animationList.size()];
+            int[][] animationSources = new int[animatedModels.length][];
+            byte[][] animationData = new byte[animatedModels.length][];
+            int a = 0;
+            for (var entry : animationList.entrySet()) {
+                animatedModels[a] = entry.getKey();
+                animationSources[a] = (int[]) entry.getValue()[0];
+                animationData[a] = (byte[]) entry.getValue()[1];
+                a++;
+            }
+            var liquidList = new java.util.TreeMap<Integer, Object[]>();
             long liquidLeft = liquidBytes;
             for (int i = 0; i < liquidCount; i++) {
                 check(canceled);
                 require(liquidLeft >= 32, "Liquid entry bounds");
-                liquidMeshes[i] = Integer.reverseBytes(input.readInt());
-                liquidKinds[i] = Integer.reverseBytes(input.readInt());
-                liquidColours[i] = Integer.reverseBytes(input.readInt());
+                int mesh = Integer.reverseBytes(input.readInt());
+                int kind = Integer.reverseBytes(input.readInt());
+                int colour = Integer.reverseBytes(input.readInt());
                 int xv = Integer.reverseBytes(input.readInt());
                 int yv = Integer.reverseBytes(input.readInt());
                 require(
@@ -1613,18 +2209,66 @@ final class WorldStreamObjectsFile {
                                 && Liquids.entryBytes(xv, yv) <= liquidLeft,
                         "Liquid entry bounds");
                 liquidLeft -= Liquids.entryBytes(xv, yv);
-                liquidGrids[i * 2] = xv;
-                liquidGrids[i * 2 + 1] = yv;
                 float[] corner = floats(input, 3);
-                System.arraycopy(corner, 0, liquidCorners, i * 3, 3);
-                liquidHeights[i] = floats(input, xv * yv);
-                liquidLive[i] = new byte[(xv - 1) * (yv - 1)];
-                input.readFully(liquidLive[i]);
-                for (int pad = liquidLive[i].length; pad % 4 != 0; pad++) {
+                float[] heights = floats(input, xv * yv);
+                byte[] live = new byte[(xv - 1) * (yv - 1)];
+                input.readFully(live);
+                for (int pad = live.length; pad % 4 != 0; pad++) {
                     require(input.readByte() == 0, "Liquid padding");
                 }
+                require(
+                        liquidList.put(
+                                        mesh,
+                                        new Object[] {
+                                            new int[] {kind, colour, xv, yv}, corner, heights, live
+                                        })
+                                == null,
+                        "Liquid meshes ascend");
             }
             require(liquidLeft == 0, "Liquid section length");
+            for (int m = 0; m < models; m++) {
+                var part = modelParts[m];
+                if (part == null) {
+                    continue;
+                }
+                for (var lp : part.liquids()) {
+                    require(
+                            liquidList.put(
+                                            modelTable[m * 2] + lp.mesh(),
+                                            new Object[] {
+                                                new int[] {
+                                                    lp.kind(),
+                                                    lp.colour(),
+                                                    lp.xVertices(),
+                                                    lp.yVertices()
+                                                },
+                                                lp.corner(),
+                                                lp.heights(),
+                                                lp.live()
+                                            })
+                                    == null,
+                            "Liquid meshes ascend");
+                }
+            }
+            int n = liquidList.size();
+            int[] liquidMeshes = new int[n], liquidKinds = new int[n];
+            int[] liquidColours = new int[n], liquidGrids = new int[n * 2];
+            float[] liquidCorners = new float[n * 3];
+            float[][] liquidHeights = new float[n][];
+            byte[][] liquidLive = new byte[n][];
+            int l = 0;
+            for (var entry : liquidList.entrySet()) {
+                int[] headInts = (int[]) entry.getValue()[0];
+                liquidMeshes[l] = entry.getKey();
+                liquidKinds[l] = headInts[0];
+                liquidColours[l] = headInts[1];
+                liquidGrids[l * 2] = headInts[2];
+                liquidGrids[l * 2 + 1] = headInts[3];
+                System.arraycopy((float[]) entry.getValue()[1], 0, liquidCorners, l * 3, 3);
+                liquidHeights[l] = (float[]) entry.getValue()[2];
+                liquidLive[l] = (byte[]) entry.getValue()[3];
+                l++;
+            }
             check(canceled);
             if (input.read() != -1
                     || channel.size() != reference.length()
@@ -1673,9 +2317,66 @@ final class WorldStreamObjectsFile {
         }
     }
 
-    private static byte[] encodeHeader(Identity identity, Data data) {
+    /** The asset mesh of a referenced model's mesh, or null for a carried mesh. */
+    private static WorldStreamObjectAssets.MeshPart referencedMesh(
+            WorldStreamObjectAssets.ModelPart[] parts, int[] modelTable, int[] owners, int mesh) {
+        var part = parts[owners[mesh]];
+        return part == null ? null : part.meshes().get(mesh - modelTable[owners[mesh] * 2]);
+    }
+
+    /** Fills {@code target[from, to)} from {@code asset}, or from the stream without one. */
+    private static void fill(DataInputStream input, int[] asset, int[] target, int from, int to)
+            throws IOException {
+        if (asset != null) {
+            System.arraycopy(asset, 0, target, from, to - from);
+            return;
+        }
+        for (int i = from; i < to; i++) {
+            target[i] = Integer.reverseBytes(input.readInt());
+        }
+    }
+
+    private static void fill(DataInputStream input, float[] asset, float[] target, int from, int to)
+            throws IOException {
+        if (asset != null) {
+            require(asset.length == to - from, "Referenced portal set");
+            System.arraycopy(asset, 0, target, from, to - from);
+            return;
+        }
+        for (int i = from; i < to; i++) {
+            target[i] = Float.intBitsToFloat(Integer.reverseBytes(input.readInt()));
+        }
+    }
+
+    /**
+     * The header: logical counts of {@code data} (every model, mesh, vertex, index, image byte and
+     * portal table row, carried or referenced), the animation and liquid sections as written (the
+     * carried models' entries), and the reference counts at 200-207.
+     */
+    private static byte[] encodeHeader(
+            Identity identity, Data data, References references, long length) {
+        int animated = 0, animationBytes = 0, liquidCount = 0, liquidBytes = 0;
+        for (int i = 0; i < data.animations.count(); i++) {
+            if (!references.model(data.animations.models[i])) {
+                animated++;
+                animationBytes +=
+                        (int)
+                                Animations.entryBytes(
+                                        data.animations.sources[i].length,
+                                        data.animations.animations[i].length);
+            }
+        }
+        for (int i = 0; i < data.liquids.count(); i++) {
+            if (!references.model(owner(data, data.liquids.meshes[i]))) {
+                liquidCount++;
+                liquidBytes +=
+                        (int)
+                                Liquids.entryBytes(
+                                        data.liquids.grids[i * 2], data.liquids.grids[i * 2 + 1]);
+            }
+        }
         var out = ByteBuffer.allocate(HEADER_BYTES).order(ByteOrder.LITTLE_ENDIAN);
-        out.put(MAGIC).putInt(VERSION).putInt(HEADER_BYTES).putLong(data.bytes());
+        out.put(MAGIC).putInt(VERSION).putInt(HEADER_BYTES).putLong(length);
         out.putLong(identity.nonce().high()).putLong(identity.nonce().low());
         out.put(HexFormat.of().parseHex(identity.scope())).putLong(identity.transaction());
         out.putLong(identity.lease().generation()).putInt(identity.lease().slot());
@@ -1687,8 +2388,9 @@ final class WorldStreamObjectsFile {
         out.putInt(data.portalSetCount()).putInt(data.portalGroupCount());
         out.putInt(data.portalCount()).putInt(data.portalVertexCount());
         out.putInt(data.portalRefCount());
-        out.putInt(data.animations.count()).putInt(data.animations.bytes());
-        out.putInt(data.liquids.count()).putInt(data.liquids.bytes());
+        out.putInt(animated).putInt(animationBytes);
+        out.putInt(liquidCount).putInt(liquidBytes);
+        out.putInt(200, references.models.length).putInt(204, references.images.length);
         return out.array();
     }
 
