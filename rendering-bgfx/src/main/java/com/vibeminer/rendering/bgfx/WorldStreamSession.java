@@ -56,6 +56,11 @@ final class WorldStreamSession {
                     Thread.ofVirtual().name("world-v2-horizon-decoder").factory());
     private CompletableFuture<HorizonDecoded> horizonDecoding;
 
+    /** How often the owner loop tells the parent it still runs. */
+    static final long HEARTBEAT_NANOS = 1_000_000_000L;
+
+    private long lastBeat = System.nanoTime(), beats;
+
     private record HorizonDecoded(
             com.vibeminer.formats.world.WorldLowRes.LowRes lowRes, Throwable error) {}
 
@@ -237,6 +242,12 @@ final class WorldStreamSession {
                     if (owner.advance()) {
                         // Wake the parent's frame reader; the mapping write already completed.
                         status.framePublished(owner.publishedSequence());
+                    }
+                    // The heartbeat comes from this loop itself, so it stops when the loop is
+                    // stuck (in an upload step, a commit or a driver call) and the parent notices.
+                    if (now - lastBeat >= HEARTBEAT_NANOS) {
+                        lastBeat = now;
+                        status.alive(++beats);
                     }
                     if (window != null
                             && owner.presentedCamera() > 0
