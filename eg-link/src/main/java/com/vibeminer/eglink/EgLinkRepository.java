@@ -415,14 +415,20 @@ public final class EgLinkRepository implements AutoCloseable {
 
     /**
      * Closes everything this repository holds open for snapshot {@code id} and forgets answers it
-     * remembered from it, before the snapshot's files are deleted. Lookups open and close their
-     * database per call today, so nothing is held; a pooled handle or per-snapshot cache must be
-     * closed and dropped here.
+     * remembered from it ({@link #forget}), before the snapshot's files are deleted: Windows
+     * refuses to delete an open SQLite file.
      */
-    private void release(String id) {
+    private void release(String id) throws IOException {
         var seam = releaseForTest;
         if (seam != null) {
             seam.accept(id);
+        }
+        try {
+            forget(id);
+        } catch (IOException | RuntimeException failure) {
+            throw failure;
+        } catch (Exception failure) {
+            throw new IOException("Could not close snapshot " + id, failure);
         }
     }
 

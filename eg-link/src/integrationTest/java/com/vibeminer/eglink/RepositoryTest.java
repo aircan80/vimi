@@ -561,6 +561,38 @@ final class RepositoryTest {
     }
 
     @Test
+    void pruningASnapshotWithAnOpenPooledHandleClosesItAndDeletesCleanly() throws Exception {
+        var source = new Source();
+        var builds = new HashMap<String, Object>();
+        try (var repository = crowded(source, builds)) {
+            String oldest = idOf(repository.snapshots(Cancellation.NONE).join(), "1.60.1.70100");
+            // A lookup leaves the snapshot's database open in the pool and remembers its answer.
+            assertTrue(
+                    repository
+                            .creatureDisplays(oldest, "enUS", 197, Cancellation.NONE)
+                            .join()
+                            .isPresent());
+            assertEquals(1, repository.openSnapshotCount().join());
+            var synced = repository.sync(progress -> {}, Cancellation.NONE).join();
+            assertTrue(synced.issues().isEmpty(), synced.issues().toString());
+            assertEquals(0, repository.openSnapshotCount().join(), "the pooled handle is closed");
+            assertFalse(Files.exists(folder.resolve("sources").resolve(oldest)));
+            try (var listed = Files.list(folder.resolve("derived"))) {
+                assertFalse(
+                        listed.anyMatch(path -> path.getFileName().toString().startsWith(oldest)),
+                        "its database and journal files are deleted");
+            }
+            // The remembered answer went with it: the lookup no longer finds the snapshot.
+            assertThrows(
+                    CompletionException.class,
+                    () ->
+                            repository
+                                    .creatureDisplays(oldest, "enUS", 197, Cancellation.NONE)
+                                    .join());
+        }
+    }
+
+    @Test
     void aRemovalInterruptedAfterTheTrashRenameLeavesNoHalfSnapshot() throws Exception {
         var source = new Source();
         var builds = new HashMap<String, Object>();
