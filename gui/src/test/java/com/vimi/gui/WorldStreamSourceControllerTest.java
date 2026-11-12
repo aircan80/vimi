@@ -1026,13 +1026,18 @@ public final class WorldStreamSourceControllerTest {
                     com.vibeminer.access.Cancellation cancellation, int formats, long creatureBytes) {
                 if (tile.y() == still && creatureBytes != BUILDINGS_ONLY) {
                     lastEntered.set(true);
+                    // Held until released, but never past its own cancellation: a closing
+                    // controller waits for this preparation to drain, as for a real one.
                     try {
-                        if (!lastHeld.await(30, java.util.concurrent.TimeUnit.SECONDS))
-                            throw new AssertionError("The last tile's creature pass was never released");
+                        while (!lastHeld.await(10, java.util.concurrent.TimeUnit.MILLISECONDS))
+                            cancellation.check();
                     } catch (InterruptedException error) {
                         throw new AssertionError(error);
                     }
                 }
+                // A pass canceled meanwhile (preempted on a slow host) ends as a real one does and
+                // is not counted: the controller prepares that tile again.
+                cancellation.check();
                 asked.computeIfAbsent(tile.y(), key -> new java.util.concurrent.CopyOnWriteArrayList<>())
                         .add(creatureBytes);
                 boolean buildings = tile.y() != empty;
@@ -1057,8 +1062,10 @@ public final class WorldStreamSourceControllerTest {
             fixture.controller.neighborhood(fixture.tiles.subList(0, 3));
             // Every other delivery is in and the controller has already started the last tile's
             // creature pass, which is held: it is still loading, and that pass has asked nothing.
-            fixture.untilPresented(() -> fixture.objectLines().size() == 4 && lastEntered.get());
-            check(fixture.controller.loadingObjects() && asked.getOrDefault(still, List.of()).size() == 1,
+            // (A pass canceled meanwhile is prepared again, so wait for one that is held now.)
+            fixture.untilPresented(() -> fixture.objectLines().size() == 4 && lastEntered.get()
+                    && fixture.controller.loadingObjects());
+            check(asked.getOrDefault(still, List.of()).size() == 1,
                     "The last tile's creature pass started and is held: " + asked);
             lastHeld.countDown();
             // The tile whose creatures draw nothing sends no second set: its creature pass is
@@ -1080,9 +1087,17 @@ public final class WorldStreamSourceControllerTest {
                         "Each tile was prepared buildings only, then with creatures: " + asked);
             fixture.untilPresented(() -> fixture.controller.snapshot().detail().contains("6 static creature models"));
             check(fixture.objectLines().size() == 4, "Nothing delivered twice: " + fixture.objectLines());
-        } finally {
-            fixture.close();
+        } catch (Throwable failure) {
+            // Whatever failed, the held pass is released so close drains, and close never hides it.
+            lastHeld.countDown();
+            try {
+                fixture.close();
+            } catch (Throwable closing) {
+                failure.addSuppressed(closing);
+            }
+            throw failure;
         }
+        fixture.close();
     }
 
     /**
