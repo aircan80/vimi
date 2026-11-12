@@ -887,6 +887,30 @@ final class RaceNpcAppearanceTest {
     }
 
     /**
+     * #104: a player preview whose whole-body base skin layer cannot be decoded is refused for
+     * every profile, never drawn with a black body; an NPC (whose bake covers the body) is not
+     * affected by this rule.
+     */
+    @Test
+    void aPlayerBodyWithoutItsBaseSkinIsRefusedNotDrawnBlack() throws Exception {
+        var variant = new RaceMediaTypes.Variant(3, 0, 1, 1, 1234);
+        // The model and skin, but not layer file 100 (the whole-body base).
+        var files =
+                new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
+                        .add(1234, "1".repeat(32), withSkeleton(false))
+                        .add(900, "2".repeat(32), golden("authored-274.skin"))
+                        .add(555, "5".repeat(32), skeletonFile(0x20));
+        var generated = new com.vibeminer.generated.MemoryGeneratedStore();
+        var key = RaceAppearance.appearanceKey("missing-base", false);
+        var result = render(files, variant, false, generated, key);
+        assertEquals(null, result.appearance());
+        assertEquals(
+                "The base skin texture is unavailable; no incomplete body is presented.",
+                result.message());
+        assertFalse(saved(generated, key));
+    }
+
+    /**
      * #499: a player preview whose model facts cannot be read whole says it is incomplete and why,
      * and is not saved. Where its draws need the facts it is not drawn and says the model is not
      * stored whole (not a lasting refusal); the complete preview says nothing of the kind.
@@ -971,6 +995,118 @@ final class RaceNpcAppearanceTest {
                                                 && issue.endsWith("this preview is not saved.")),
                 preview.issues().toString());
         assertFalse(saved(generated, key));
+    }
+
+    /**
+     * #104: a reviewed single-stage diffuse draw whose texture the model names itself (type 0, its
+     * TXID file) samples that file in a player preview; without the file it keeps neutral shading
+     * and says so. Such a preview is not saved, as the file is not among the composite's sources.
+     */
+    @Test
+    void aPlayerPreviewDrawsATextureTheModelNamesItself() throws Exception {
+        var variant = new RaceMediaTypes.Variant(3, 0, 1, 1, 1234);
+        var key = RaceAppearance.appearanceKey("hardcoded", false);
+        // The authored model's texture 0 is type 0, file 700 (TXID).
+        var files =
+                new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
+                        .add(1234, "1".repeat(32), golden("authored-274.m2"))
+                        .add(900, "2".repeat(32), golden("authored-274.skin"))
+                        .add(100, "3".repeat(32), bake())
+                        .add(700, "7".repeat(32), bake());
+        var generated = new com.vibeminer.generated.MemoryGeneratedStore();
+        var drawn = render(files, variant, false, generated, key);
+        assertTrue(drawn.appearance() != null, drawn.message());
+        assertEquals(
+                2, drawn.appearance().textures().size(), "the canvas and the model's own file");
+        assertTrue(
+                drawn.issues()
+                        .contains(
+                                "Texture files the model names itself: [700]; this preview is not saved."),
+                drawn.issues().toString());
+        assertFalse(saved(generated, key));
+        // Without file 700 the draw keeps neutral shading, which here is the whole model.
+        var missing =
+                new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
+                        .add(1234, "1".repeat(32), golden("authored-274.m2"))
+                        .add(900, "2".repeat(32), golden("authored-274.skin"))
+                        .add(100, "3".repeat(32), bake());
+        var refused =
+                render(
+                        missing,
+                        variant,
+                        false,
+                        new com.vibeminer.generated.MemoryGeneratedStore(),
+                        key);
+        assertEquals(null, refused.appearance());
+        assertTrue(
+                refused.issues().stream()
+                        .anyMatch(
+                                issue ->
+                                        issue.startsWith(
+                                                RaceAppearance.INCOMPLETE + "texture #700")),
+                refused.issues().toString());
+        // An NPC is unchanged: no texture the model names is sampled for it.
+        var npc =
+                render(
+                        new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
+                                .add(1234, "1".repeat(32), golden("authored-274.m2"))
+                                .add(900, "2".repeat(32), golden("authored-274.skin"))
+                                .add(100, "3".repeat(32), bake())
+                                .add(700, "7".repeat(32), bake()),
+                        variant,
+                        true,
+                        new com.vibeminer.generated.MemoryGeneratedStore(),
+                        RaceAppearance.appearanceKey("hardcoded", true));
+        assertTrue(
+                npc.issues().stream()
+                        .noneMatch(issue -> issue.startsWith("Texture files the model names")),
+                npc.issues().toString());
+    }
+
+    /**
+     * #104: a player composite saved before textures the model names itself were sampled (those
+     * surfaces neutral) is never restored: the player key names the change. NPC keys are unchanged.
+     */
+    @Test
+    void aPlayerCompositeSavedBeforeModelNamedTexturesIsNotRestored() throws Exception {
+        String identity = "race-static-appearance-v2\nsample";
+        var before =
+                com.vibeminer.generated.GeneratedKey.hash(
+                        (identity
+                                        + RaceAppearance.SKELETON_WEIGHTS_IDENTITY
+                                        + RaceAppearance.ASSUMED_WEIGHTS_IDENTITY)
+                                .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        assertFalse(before.equals(RaceAppearance.appearanceKey(identity, false)));
+        assertEquals(
+                com.vibeminer.generated.GeneratedKey.hash(
+                        (identity + RaceAppearance.SKELETON_WEIGHTS_IDENTITY)
+                                .getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+                RaceAppearance.appearanceKey(identity, true),
+                "an NPC key is unchanged");
+        // A new preview renders under the new key and samples the model-named texture.
+        var generated = new com.vibeminer.generated.MemoryGeneratedStore();
+        var variant = new RaceMediaTypes.Variant(3, 0, 1, 1, 1234);
+        var key = RaceAppearance.appearanceKey("stale", false);
+        var oldKey =
+                com.vibeminer.generated.GeneratedKey.hash(
+                        ("stale"
+                                        + RaceAppearance.SKELETON_WEIGHTS_IDENTITY
+                                        + RaceAppearance.ASSUMED_WEIGHTS_IDENTITY)
+                                .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        assertFalse(oldKey.equals(key));
+        var fresh =
+                render(
+                        new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
+                                .add(1234, "1".repeat(32), golden("authored-274.m2"))
+                                .add(900, "2".repeat(32), golden("authored-274.skin"))
+                                .add(100, "3".repeat(32), bake())
+                                .add(700, "7".repeat(32), bake()),
+                        variant,
+                        false,
+                        generated,
+                        key);
+        assertTrue(fresh.appearance() != null && !fresh.restored(), fresh.message());
+        assertEquals(2, fresh.appearance().textures().size(), "the model-named texture is sampled");
     }
 
     @Test

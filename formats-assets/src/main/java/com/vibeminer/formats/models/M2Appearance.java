@@ -507,8 +507,19 @@ public final class M2Appearance {
             int animated = 0;
             for (int s = 0; s < stages; s++) {
                 int transform = model.textureTransforms().get(b.textureTransformComboIndex() + s);
-                if (transform == 65535 || transform >= transformTracks) {
+                if (transform == 65535) {
                     continue;
+                }
+                if (transform >= transformTracks) {
+                    // An entry past the declared tracks: what the client does with it is not
+                    // documented, so the batch is declined rather than drawn untransformed.
+                    decline =
+                            new Decline(
+                                    Refusal.TEXTURE_TRANSFORM,
+                                    i,
+                                    ordinals[s],
+                                    "UV-transform entry names no declared track.");
+                    break;
                 }
                 if (profile.stages().get(s) == Coordinate.ENV) {
                     animated++;

@@ -54,9 +54,7 @@ public final class M2SkinReader {
         Core core = core(source, model, limits, true, validateRig, token);
         List<Batch> batches = new ArrayList<>();
         List<ShadowBatch> shadows = new ArrayList<>();
-        long colors = count(model, "colors"),
-                weights = count(model, "weights"),
-                transforms = count(model, "transforms");
+        long colors = count(model, "colors"), weights = count(model, "weights");
         boolean shaderPicks =
                 model.isChunked()
                         && (model.version() == 272 || model.version() == 274)
@@ -110,14 +108,12 @@ public final class M2SkinReader {
                                         "INVALID",
                                         "A texture combo identifies no declared model texture.");
                             }
-                            int transform =
-                                    model.textureTransforms()
-                                            .get(b.textureTransformComboIndex() + n);
-                            if (transform != 65535 && transform >= transforms) {
-                                throw error(
-                                        "INVALID",
-                                        "A UV-transform combo identifies no declared channel.");
-                            }
+                            // A UV-transform entry past the declared tracks names no track:
+                            // recorded as it is, not a broken skin. Shipped character models do
+                            // this (Cliffside Wylderdrake 4252337 and Flourishing Whimsydrake
+                            // 5228774 on 70862 declare no texture transforms, yet their lookup
+                            // holds a 0); consumers check entries against the declared count
+                            // (#104).
                         }
                         int weight = model.textureWeights().get(b.textureWeightComboIndex());
                         if (weight != 65535 && weight >= weights) {
