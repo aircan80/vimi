@@ -303,6 +303,17 @@ public final class DataSourcesService {
         return egLink.creatureDisplays(snapshot.id(), locale, npcId, token).join();
     }
 
+    /**
+     * Several NPCs' observed displays in {@code snapshot} at once (remembered answers return at
+     * once), for views that resolve many NPCs, such as the World. Reads local data only.
+     */
+    public java.util.Map<Long, java.util.Optional<com.vibeminer.eglink.EgLinkTypes.CreatureDisplays>> npcDisplays(
+            com.vibeminer.eglink.EgLinkTypes.Snapshot snapshot, String locale,
+            java.util.Collection<Long> npcIds, com.vibeminer.network.Cancellation token) {
+        if (egLink == null || snapshot == null) return java.util.Map.of();
+        return egLink.creatureDisplays(snapshot.id(), locale, npcIds, token).join();
+    }
+
     /** Local prepared snapshots only, frozen for one NPC catalogue load. */
     public List<com.vibeminer.concepts.npcs.NpcCatalog.Input> npcInputs(BuildInfo build, String locale) {
         opened(build);
