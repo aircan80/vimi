@@ -1,7 +1,5 @@
 *.tsv text eol=lf
 *.json text eol=lf
-*.cs text eol=lf
-*.csproj text eol=lf
 *.db2 -text
 *.bin -text
 *.m2 -text

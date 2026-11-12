@@ -44,9 +44,8 @@ retention rule. Global/provider owners cover data without a WoW build.
 ## Durable metadata and recovery
 
 The new mixed library has pack kind/application identity **2** and versioned
-metadata. Legacy CDN/generated kinds **0/1** and their C# compatibility path remain
-unchanged. Original C# tools do not open the new mixed-kind library; the old stores
-are preserved for rollback. SQLite 3.35+ is required for catalog queries.
+metadata. Legacy CDN/generated kinds **0/1** keep their format. Original C# tools do
+not open the new mixed-kind library; the old stores are preserved for rollback. SQLite 3.35+ is required for catalog queries.
 
 Unlike a disposable legacy index, the unified database contains authoritative owner
 and status intent. A damaged or missing established unified index is refused rather

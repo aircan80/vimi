@@ -1,8 +1,6 @@
 *.java text eol=lf
 *.gradle text eol=lf
 *.md text eol=lf
-*.cs text eol=lf
-*.csproj text eol=lf
 *.json text eol=lf
 *.txt text eol=lf
 *.tsv text eol=lf

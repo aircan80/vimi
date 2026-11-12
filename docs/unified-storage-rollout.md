@@ -102,11 +102,10 @@ enable ownership-based deletion while this transitional state is unresolved.
 
 ## Preservation and migration
 
-A new backend is a new disk format. The original format-1 specification promises
-byte-identical Java/C# pack interoperability; choosing SQLite does not silently
-change that specification. Keep `ObjectStore`, `DiskGeneratedStore`, format docs
-and cross-language tests for legacy data. Document any eventual retirement of direct
-C# compatibility separately. No dual-format writer should target the same folder.
+A new backend is a new disk format; choosing SQLite does not silently change the
+format-1 specification. Keep `ObjectStore`, `DiskGeneratedStore` and format docs for
+legacy data. C# compatibility is not a goal (owner decision, 2026-11-05), and #274
+removed the cross-language tests. No dual-format writer should target the same folder.
 
 Migration must retain user intent before optionally discarding downloadable cache:
 

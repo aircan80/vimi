@@ -194,8 +194,7 @@ exports, backups and OS/JVM reports, rather than only uninstalling the program.
 ## Build/release traffic and candidate features
 
 Gradle/Maven, JDK/OpenJFX/LWJGL/native tool downloads, CI OS package managers,
-GitHub release uploads and developer C# NuGet/reference-checkout access are build
-and distribution activities. They are separate from normal desktop content
+and GitHub release uploads are build and distribution activities. They are separate from normal desktop content
 requests. Provenance URLs inside bundled definition or runtime manifests are not,
 by themselves, evidence that the installed app downloads executable dependencies
 at startup. See the [security review](security-review.md) for supply-chain gaps.
