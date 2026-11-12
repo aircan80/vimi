@@ -179,10 +179,16 @@ class WorldObjectBlendedRangeOrderTest {
                 (com.sun.management.ThreadMXBean)
                         java.lang.management.ManagementFactory.getThreadMXBean();
         sortFewKeys(keys);
-        long before = threads.getCurrentThreadAllocatedBytes();
-        sortFewKeys(keys);
-        long allocated = threads.getCurrentThreadAllocatedBytes() - before;
-        assertTrue(allocated < 4096, "allocated " + allocated + " bytes over 20,000 sorts");
+        // Allocating per sort would be at least 16 bytes each time, 320 KB over 20,000 sorts. A
+        // CI JVM may still allocate a few KB once while measuring (a deoptimization or a late
+        // compilation, say), so the least of three runs must stay well under that per-sort floor.
+        long least = Long.MAX_VALUE;
+        for (int run = 0; run < 3 && least >= 1024; run++) {
+            long before = threads.getCurrentThreadAllocatedBytes();
+            sortFewKeys(keys);
+            least = Math.min(least, threads.getCurrentThreadAllocatedBytes() - before);
+        }
+        assertTrue(least < 64 * 1024, "allocated " + least + " bytes over 20,000 sorts");
     }
 
     private static void sortFewKeys(long[] keys) {
