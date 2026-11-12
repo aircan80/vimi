@@ -111,7 +111,8 @@ swimming uses it. The older MCLQ chunk liquid is not read; flying ignores
 water.
 
 Real data (build 70862, `-Pprobe.mode=swim -Pprobe.objects=true`, Stormwind
-48,30): the 3 x 3 has 3 building liquids (20 records across tiles), all water.
+48,30): the 3 x 3 has 3 building liquids (20 records across tiles): the canals
+(LiquidType 1344, kind other) and two pools (LiquidType 13, water).
 The canals are one liquid (LiquidType 1344) over 404 x 592 yd at 95.47, with no
 terrain liquid under the points probed: a body over the canal swims in all four
 headings and stays in, stopped by the quay walls after 26 to 35 of the 38 yd it
