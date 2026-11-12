@@ -2030,4 +2030,37 @@ final class RaceAppearancePlanTest {
             raw.closeAsync().join();
         }
     }
+
+    /**
+     * #104: only canvases a layer draws on are composed, so only they count against the memory
+     * bound. The vehicle layout on 70862 (189) declares four 2048x1024 canvases plus two small ones
+     * (8,413,184 pixels, just over the bound); its samples draw on two or three of them.
+     */
+    @Test
+    void onlyCanvasesALayerDrawsOnCountAgainstTheMemoryBound() {
+        var canvases =
+                java.util.List.of(
+                        new RaceAppearancePlan.Canvas(1, 2048, 1024),
+                        new RaceAppearancePlan.Canvas(7, 128, 128),
+                        new RaceAppearancePlan.Canvas(9, 128, 64),
+                        new RaceAppearancePlan.Canvas(10, 2048, 1024),
+                        new RaceAppearancePlan.Canvas(25, 2048, 1024),
+                        new RaceAppearancePlan.Canvas(26, 2048, 1024));
+        var sampled = java.util.List.of(layer(1, 0), layer(1, 1), layer(10, 2));
+        org.junit.jupiter.api.Assertions.assertEquals(
+                2L * 2048 * 1024, RaceAppearancePlan.composedPixels(canvases, sampled));
+        var every = new java.util.ArrayList<RaceAppearancePlan.Layer>();
+        for (var canvas : canvases) {
+            every.add(layer(canvas.type(), every.size()));
+        }
+        long all = RaceAppearancePlan.composedPixels(canvases, every);
+        org.junit.jupiter.api.Assertions.assertEquals(8_413_184L, all);
+        org.junit.jupiter.api.Assertions.assertTrue(all > RaceAppearancePlan.MAX_CANVAS_PIXELS);
+        org.junit.jupiter.api.Assertions.assertEquals(
+                0L, RaceAppearancePlan.composedPixels(canvases, java.util.List.of()));
+    }
+
+    private static RaceAppearancePlan.Layer layer(int type, int order) {
+        return new RaceAppearancePlan.Layer(type, 1000 + order, 0, 0, 16, 16, 1, order, "test");
+    }
 }
