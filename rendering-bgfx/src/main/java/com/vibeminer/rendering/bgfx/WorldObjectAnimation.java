@@ -157,11 +157,30 @@ final class WorldObjectAnimation {
      * clock stepped down to {@link #STEP_MILLIS}, offset by the phase's share of the loop.
      */
     static long millis(long clock, long duration, int phase) {
+        return millis(clock, duration, phase, 0);
+    }
+
+    /**
+     * As above, with the pose's steps falling {@code offset} ms (0 to {@link #STEP_MILLIS}) earlier
+     * than the clock's, so poses do not all step, and re-skin, in the same frame.
+     */
+    static long millis(long clock, long duration, int phase, long offset) {
         if (duration <= 0) {
             return 0;
         }
-        long stepped = Math.max(0, clock) / STEP_MILLIS * STEP_MILLIS;
+        long shifted = Math.max(0, clock) + offset;
+        long stepped = shifted / STEP_MILLIS * STEP_MILLIS - offset;
         return Math.floorMod(stepped + duration * phase / PHASES, duration);
+    }
+
+    /**
+     * The step offset of model {@code model}'s phase {@code phase} pose: phases a quarter step
+     * apart, models spread within the quarter, so at 60 frames a second about one pose in 2.4 steps
+     * per frame instead of every pose every 2.4 frames.
+     */
+    static long stepOffset(int model, int phase) {
+        long quarter = STEP_MILLIS / PHASES;
+        return phase * quarter + Math.floorMod(model * 7L, quarter);
     }
 
     /**
