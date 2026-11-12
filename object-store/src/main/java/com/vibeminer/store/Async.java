@@ -44,6 +44,28 @@ final class Async {
                 new ThreadPoolExecutor.AbortPolicy());
     }
 
+    /**
+     * Takes every task still waiting in the queue of {@code pool}, which must be shut down, so the
+     * caller can fail them without running their work. Tasks are removed through the pool, never by
+     * draining its queue directly: a worker that finished a task after the shutdown saw a queued
+     * task, so it went to wait for one, and draining the queue under it would leave it waiting
+     * forever and the pool never terminating. {@link ThreadPoolExecutor#remove} and {@link
+     * ThreadPoolExecutor#purge} let the pool wake such a worker once its queue is empty.
+     */
+    static java.util.List<Runnable> takeWaiting(ThreadPoolExecutor pool) {
+        if (!pool.isShutdown()) {
+            throw new IllegalStateException("Shut the pool down first");
+        }
+        var waiting = new java.util.ArrayList<Runnable>();
+        for (Runnable task : pool.getQueue().toArray(new Runnable[0])) {
+            if (pool.remove(task)) {
+                waiting.add(task);
+            }
+        }
+        pool.purge(); // Wakes an idle worker even when nothing was left to remove.
+        return waiting;
+    }
+
     interface Work<T> {
         T run() throws Exception;
     }
