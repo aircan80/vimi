@@ -1398,6 +1398,8 @@ class WorldTerrainTextureSourceTest {
 
     @Test
     void splattingInputsRideTheAtlasOnlyWhenEnabledAndWideChunksKeepTheAtlas() throws Exception {
+        // Restored after each pass: the default is on, and later tests rely on it.
+        boolean saved = WorldTerrainTextureSource.splat;
         for (boolean enabled : new boolean[] {false, true}) {
             var files = new Files();
             files.sources.put(3L, eightLayers());
@@ -1428,7 +1430,7 @@ class WorldTerrainTextureSourceTest {
                             });
                 }
             } finally {
-                WorldTerrainTextureSource.splat = false;
+                WorldTerrainTextureSource.splat = saved;
                 source.closeAsync().get(5, TimeUnit.SECONDS);
                 pool.closeAsync().get(5, TimeUnit.SECONDS);
             }

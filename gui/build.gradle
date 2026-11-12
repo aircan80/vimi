@@ -780,6 +780,8 @@ tasks.register('worldStreamSourceBridgeTest', JavaExec) {
     dependsOn testClasses
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.vimi.gui.WorldStreamSourceBridgeTest'
+    // Splatting is on by default; this run keeps the off path covered end to end.
+    systemProperty 'vimi.world.splat', 'false'
 }
 check.dependsOn worldStreamSourceBridgeTest
 
