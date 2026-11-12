@@ -108,12 +108,24 @@ terrain-matching fog, opaque texture). A spawn is drawn only when all of these h
 | Appearance | `ExtendedDisplayInfoID` is 0 (character appearance is not evaluated) | character appearance not evaluated |
 | Visibility | `CreatureGeosetDataID` is 0 and every section is geoset 0 | surface visibility unresolved |
 | Surfaces | at least one section with an opaque diffuse material and a texture. Alpha-keyed, additive, environment-mapped, unbound and rigid-card sections are left out | no opaque textured surface |
-| Budget | at most 256 placements, 48 preview loads and 64 models per tile, with the models' textures within 12 MiB per tile, at most 32,768 vertices per model, and the shared objects file profile left over after buildings (64 placements, 24 models, 64 images, 1 Mi pixels, 4,096 draws per tile) | over the tile budget |
+| Budget | at most 256 placements, 48 preview loads and 64 models per tile, with the models' textures within 12 MiB per tile and all resident tiles' creature models within a 40 MiB share of the objects budget, at most 32,768 vertices per model, and the shared objects file profile left over after buildings (64 placements, 24 models, 64 images, 1 Mi pixels, 4,096 draws per tile) | over the tile budget |
 
 Selection goes nearest to the tile centre first, so it never depends on the camera. Models
 are added whole or not at all. Once a tile has no placement or draw room left, the remaining
-spawns are counted as over budget without any lookup. Buildings keep their budget first. A
-creature problem never costs a tile its buildings or terrain:
+spawns are counted as over budget without any lookup. Buildings keep their budget first.
+Which models are over budget depends on what is cached: a model converted on an earlier tile
+is added without a preview load, so a warm pass can draw models a cold pass counted as over
+the preview budget.
+
+Creatures share each tile's objects set with its buildings. So that they never push buildings
+out of the session's objects budget (212 MiB; the densest Far window reserves about 161 MiB
+for buildings), all resident tiles' creature models together stay within a 40 MiB share
+(`WorldTileCreatures.AREA_BYTES`): each tile gets what the resident tiles' creatures leave,
+nearest tiles first, and a retired tile gives its share back. A tile prepared while the share
+was used up keeps fewer creatures until it streams in again. A set that carries creatures and
+is refused for budget anyway is offered again at once without them.
+
+A creature problem never costs a tile its buildings or terrain:
 
 - a thrown failure, a closed or retired creature source, or a canceled component future (any
   cancellation that is not the tile's own) is reported as a creature failure;
@@ -156,8 +168,11 @@ lookups and up to 48 preview loads.
 - A tile's objects are prepared once per residency. A tile that was already resident when the
   spawn source or creature data changed keeps its objects until it streams out and back in.
 - The marker overlay and the creature source each load their own copy of the spawn index.
-- With creatures on, building delivery waits for each tile's creature work. There is no time
-  or lookup budget per tile yet.
+- With creatures on, building delivery waits for each tile's creature work, including up to
+  48 conversions on a cold tile. On build 70862 with every NPC given a display, buildings
+  settled in 89 s instead of 26 s on a cold Far fill around Stormwind. There is no time or
+  lookup budget per tile yet; drawing creatures in a separate late step after the buildings is
+  a follow-up.
 - How many spawns qualify, and how long preparation takes, on a real client is **not yet
   measured**.
 - Game objects (`kind=object`) are not shown. Phase, patrol paths, respawn and faction

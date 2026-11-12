@@ -72,7 +72,9 @@ final class WorldTileCreatures implements AutoCloseable {
      * {@value #TILE_PLACEMENTS} are drawn. Distinct models are bounded by their texture bytes
      * ({@link #TILE_TEXTURE_BYTES}), with {@value #TILE_MODELS} as a hard ceiling, and at most
      * {@value #TILE_PREVIEWS} new displays are converted per tile so one tile cannot stall the
-     * rest. Creatures are opt-in, so this memory is spent only when the user enables them.
+     * rest. Models converted on an earlier tile are added without a preview load, so what is
+     * capped depends on the cache: a warm pass can draw models a cold pass capped. Creatures are
+     * opt-in, so this memory is spent only when the user enables them.
      */
     static final int TILE_MODELS = 64, TILE_PLACEMENTS = 256, TILE_PREVIEWS = 48;
 
@@ -82,6 +84,17 @@ final class WorldTileCreatures implements AutoCloseable {
      * holds about 18.7 MB of images in all, and buildings draw first.
      */
     static final long TILE_TEXTURE_BYTES = 12L << 20;
+
+    /**
+     * The objects budget share all resident tiles' creatures may hold together ({@link
+     * #gpuBytes}). Creatures share each tile's objects set with its buildings, and the session's
+     * object budget is 212 MiB; the densest Far window measured reserves about 161 MiB for
+     * buildings alone, so creatures stay within what that leaves and never push buildings out.
+     * Unbounded, the creatures of a Far window around Goldshire (EG Link display fallback, 70862)
+     * added about 37 MB; with this share the window's peak stays near 137 MB. Tiles nearest the
+     * camera are prepared first, so they get the share first.
+     */
+    static final long AREA_BYTES = 40L << 20;
 
     /** Whole-model ceiling so one creature never takes a building tile's budget. */
     static final int MODEL_VERTICES = 32_768, MODEL_INDICES = 98_304;
@@ -140,16 +153,18 @@ final class WorldTileCreatures implements AutoCloseable {
     /** One tile's creature outcome; immutable. */
     static final class Summary {
         static final Summary NONE = new Summary(new int[Count.values().length], 0, 0, 0, NpcCounts.NONE, null,
-                List.of());
+                List.of(), 0);
 
         private final int[] counts;
         private final int models, restPosed, billboardsLeftOut;
         private final NpcCounts npcs;
         private final String note;
         private final List<WorldObjectPicks.Creature> placed;
+        private final long bytes;
 
         private Summary(int[] counts, int models, int restPosed, int billboardsLeftOut, NpcCounts npcs,
-                String note, List<WorldObjectPicks.Creature> placed) {
+                String note, List<WorldObjectPicks.Creature> placed, long bytes) {
+            this.bytes = bytes;
             this.counts = counts.clone();
             this.models = models;
             this.restPosed = restPosed;
@@ -159,9 +174,16 @@ final class WorldTileCreatures implements AutoCloseable {
             this.placed = List.copyOf(placed);
         }
 
+        /** Only drawn placements: {@code drawn} of {@code models} models adding {@code bytes}. */
+        static Summary drawn(int drawn, int models, long bytes) {
+            var counts = new int[Count.values().length];
+            counts[Count.DRAWN.ordinal()] = drawn;
+            return new Summary(counts, models, 0, 0, NpcCounts.NONE, null, List.of(), bytes);
+        }
+
         static Summary failed(String note) {
             return new Summary(new int[Count.values().length], 0, 0, 0, NpcCounts.NONE,
-                    Objects.requireNonNull(note), List.of());
+                    Objects.requireNonNull(note), List.of(), 0);
         }
 
         /** Drawn humanoid NPC placements and what their items left undrawn (#385). */
@@ -204,6 +226,11 @@ final class WorldTileCreatures implements AutoCloseable {
             return models;
         }
 
+        /** The bytes the tile's creature models add to its objects set ({@link #gpuBytes}). */
+        long bytes() {
+            return bytes;
+        }
+
         /**
          * One tile's drawn creatures in the order their placements were appended; empty for a sum
          * or a failure.
@@ -222,7 +249,7 @@ final class WorldTileCreatures implements AutoCloseable {
             for (int i = 0; i < sum.length; i++) sum[i] += other.counts[i];
             return new Summary(sum, models + other.models, restPosed + other.restPosed,
                     billboardsLeftOut + other.billboardsLeftOut, npcs.plus(other.npcs),
-                    note != null ? note : other.note, List.of());
+                    note != null ? note : other.note, List.of(), bytes + other.bytes);
         }
     }
 
@@ -396,7 +423,7 @@ final class WorldTileCreatures implements AutoCloseable {
     private final Previews previews;
     private final Npcs npcs;
     private final Map<Long, Chosen> choices = lru(CHOICE_CACHE);
-    private final Map<Long, Converted> models = byteBounded(MODEL_CACHE_BYTES);
+    private final ModelCache models = new ModelCache(MODEL_CACHE_BYTES);
     private Object cachedRevision;
     private CompletableFuture<WorldSpawns.Index> index;
     private long indexFailedAt;
@@ -429,37 +456,72 @@ final class WorldTileCreatures implements AutoCloseable {
         this.previews = Objects.requireNonNull(previews);
     }
 
-    /** An access-ordered map that drops its eldest models past {@code limit} bytes. */
-    static Map<Long, Converted> byteBounded(long limit) {
-        return new LinkedHashMap<>(64, .75f, true) {
-            private long bytes;
+    /**
+     * Converted models by display, least recently used dropped first past {@code limit} bytes
+     * ({@link #bytes}). Not a {@link Map}: only these operations exist, so every change is counted.
+     * The newest entry is kept even when it alone is larger than the limit. Not synchronized; the
+     * owner guards it.
+     */
+    static final class ModelCache {
+        private final long limit;
+        private final LinkedHashMap<Long, Converted> entries = new LinkedHashMap<>(64, .75f, true);
+        private long bytes;
 
-            @Override
-            public Converted put(Long key, Converted value) {
-                var before = super.put(key, value);
-                bytes += bytes(value) - (before == null ? 0 : bytes(before));
-                var eldest = entrySet().iterator();
-                while (bytes > limit && size() > 1 && eldest.hasNext()) {
-                    var entry = eldest.next();
-                    bytes -= bytes(entry.getValue());
-                    eldest.remove();
-                }
-                return before;
-            }
+        ModelCache(long limit) {
+            if (limit < 1) throw new IllegalArgumentException("Model cache limit");
+            this.limit = limit;
+        }
 
-            @Override
-            public Converted remove(Object key) {
-                var before = super.remove(key);
-                if (before != null) bytes -= bytes(before);
-                return before;
-            }
+        Converted get(long display) {
+            return entries.get(display);
+        }
 
-            @Override
-            public void clear() {
-                super.clear();
-                bytes = 0;
+        boolean contains(long display) {
+            return entries.containsKey(display);
+        }
+
+        void put(long display, Converted converted) {
+            Objects.requireNonNull(converted);
+            var before = entries.put(display, converted);
+            bytes += WorldTileCreatures.bytes(converted) - (before == null ? 0 : WorldTileCreatures.bytes(before));
+            var eldest = entries.values().iterator();
+            while (bytes > limit && entries.size() > 1) {
+                bytes -= WorldTileCreatures.bytes(eldest.next());
+                eldest.remove();
             }
-        };
+        }
+
+        void remove(long display) {
+            var before = entries.remove(display);
+            if (before != null) bytes -= WorldTileCreatures.bytes(before);
+        }
+
+        void clear() {
+            entries.clear();
+            bytes = 0;
+        }
+
+        int size() {
+            return entries.size();
+        }
+
+        long totalBytes() {
+            return bytes;
+        }
+    }
+
+    /** The remembered conversion of a display, or null (tests). */
+    synchronized Converted cached(long display) {
+        return models.get(display);
+    }
+
+    /**
+     * The GPU bytes one model adds to a tile's objects set: its RGBA8 texture chains, its vertices
+     * as the renderer packs them (the objects file's 32-byte vertex and a 4-byte colour) and its
+     * 16-bit indices.
+     */
+    static long gpuBytes(Model m) {
+        return m.pixels() * 4 + (long) m.vertexCount() * 36 + (long) m.indices().length * 2;
     }
 
     /** The bytes one remembered conversion holds; a refusal holds next to none. */
@@ -571,6 +633,17 @@ final class WorldTileCreatures implements AutoCloseable {
      */
     Summary append(WorldStreamTileWriter.Exterior.Builder builder, long mapId, WorldFormats.Tile tile,
             Cancellation token) {
+        return append(builder, mapId, tile, Long.MAX_VALUE, token);
+    }
+
+    /**
+     * As above, adding models only while their {@link #gpuBytes} stay within {@code allowance}: the
+     * part of {@link #AREA_BYTES} the resident tiles' creatures leave (see
+     * {@code WorldStreamSourceController}). The models past it are counted as capped.
+     */
+    Summary append(WorldStreamTileWriter.Exterior.Builder builder, long mapId, WorldFormats.Tile tile,
+            long allowance, Cancellation token) {
+        if (allowance < 0) throw new IllegalArgumentException("Creature allowance");
         Objects.requireNonNull(builder);
         Objects.requireNonNull(tile);
         Objects.requireNonNull(token);
@@ -597,7 +670,7 @@ final class WorldTileCreatures implements AutoCloseable {
         var added = new HashMap<Long, Integer>();
         var placed = new java.util.ArrayList<WorldObjectPicks.Creature>();
         int placements = 0, previewsTried = 0;
-        long textureBytes = 0;
+        long textureBytes = 0, setBytes = 0;
         // Displays whose preview was busy, or whose NPC appearance cannot be read yet, on this
         // tile: not asked again for every later spawn.
         var busyDisplays = new HashMap<Long, Count>();
@@ -670,6 +743,7 @@ final class WorldTileCreatures implements AutoCloseable {
                 var m = converted.model();
                 if (added.size() == TILE_MODELS
                         || textureBytes + m.pixels() * 4 > TILE_TEXTURE_BYTES
+                        || gpuBytes(m) > allowance - setBytes
                         || m.ranges().length / 3 > builder.drawRoom()
                         || !builder.fits(m.images().size(), m.pixels(), 1, m.vertexCount(), m.indices().length,
                                 m.ranges().length / 3)) {
@@ -678,6 +752,7 @@ final class WorldTileCreatures implements AutoCloseable {
                 }
                 model = add(builder, m);
                 textureBytes += m.pixels() * 4;
+                setBytes += gpuBytes(m);
                 added.put(display, model);
                 if (m.restPose() != null) restModels.add(model);
                 if (m.billboardTriangles() > 0) billboardModels.add(model);
@@ -701,7 +776,7 @@ final class WorldTileCreatures implements AutoCloseable {
             counts[Count.DRAWN.ordinal()]++;
         }
         return new Summary(counts, added.size(), restPosed, billboardsLeftOut, npcCounts, nearby.omitted() == 0 ? null
-                : nearby.omitted() + " nearby points beyond the query limit were not considered", placed);
+                : nearby.omitted() + " nearby points beyond the query limit were not considered", placed, setBytes);
     }
 
     /**

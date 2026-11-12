@@ -58,6 +58,8 @@ public final class WorldTileCreaturesTest {
         conversionChecksVertexValuesAndLightsMissingNormals();
         distinctModelsStopAtTheTileTextureBudget();
         theModelCacheIsBoundedByBytes();
+        tooLargeModelsAreSkippedAndSmallerOnesStillFit();
+        onlyNpcConversionsUseTheNpcSide();
         npcImagesUseTheSmallerSide();
         BridgeAssembly.run();
         System.out.println("WorldTileCreaturesTest passed");
@@ -940,24 +942,91 @@ public final class WorldTileCreaturesTest {
         require(each > model.model().pixels() * 4, "A model's bytes count its texture chains and mesh");
         var refusal = WorldTileCreatures.Converted.refused(WorldTileCreatures.Count.MODEL_UNAVAILABLE, "no");
         require(WorldTileCreatures.bytes(refusal) < 1024, "A remembered refusal costs next to nothing");
-        var cache = WorldTileCreatures.byteBounded(each * 3);
+        var cache = new WorldTileCreatures.ModelCache(each * 3);
         for (long key = 1; key <= 3; key++) cache.put(key, model);
+        require(cache.totalBytes() == each * 3, "Every put is counted");
         cache.get(1L);
         cache.put(4L, model);
-        require(cache.size() == 3 && cache.containsKey(1L) && !cache.containsKey(2L),
+        require(cache.size() == 3 && cache.contains(1L) && !cache.contains(2L) && cache.totalBytes() == each * 3,
                 "Past its byte bound the least recently used model is dropped");
+        cache.put(4L, refusal);
+        require(cache.totalBytes() == each * 2 + WorldTileCreatures.bytes(refusal),
+                "Replacing an entry counts the difference");
         cache.remove(3L);
-        cache.put(5L, model);
-        require(cache.size() == 3 && cache.containsKey(4L), "A removed model gives its bytes back");
+        cache.remove(3L);
+        require(cache.size() == 2 && cache.totalBytes() == each + WorldTileCreatures.bytes(refusal),
+                "A removed model gives its bytes back once");
         for (long key = 10; key < 1000; key++) cache.put(key, refusal);
-        require(cache.containsKey(5L), "Refusals do not push models out by count");
-        var tiny = WorldTileCreatures.byteBounded(1);
+        require(cache.contains(1L), "Refusals do not push models out by count");
+        var tiny = new WorldTileCreatures.ModelCache(1);
         tiny.put(1L, model);
         require(tiny.size() == 1, "One model larger than the bound is still remembered");
+        tiny.put(2L, model);
+        require(tiny.size() == 1 && tiny.contains(2L) && tiny.totalBytes() == each, "The newest one is kept");
         tiny.clear();
-        tiny.put(2L, refusal);
-        tiny.put(3L, refusal);
-        require(tiny.size() == 1, "Clearing resets the byte count");
+        require(tiny.size() == 0 && tiny.totalBytes() == 0, "Clearing resets the byte count");
+    }
+
+    /**
+     * The greedy walk skips a model that no longer fits the tile's texture budget and still adds a
+     * later, smaller one; the allowance from the area share bounds the models' bytes the same way.
+     */
+    private static void tooLargeModelsAreSkippedAndSmallerOnesStillFit() {
+        var big = textured(256);
+        var small = textured(1);
+        long perBig = WorldTileCreatures.surfaces(big, Set.of(0), new int[0], false, Cancellation.NONE)
+                .model().pixels() * 4;
+        long perSmall = WorldTileCreatures.surfaces(small, Set.of(0), new int[0], false, Cancellation.NONE)
+                .model().pixels() * 4;
+        long fit = WorldTileCreatures.TILE_TEXTURE_BYTES / perBig;
+        int bigs = (int) fit + 2, smalls = 3;
+        require(WorldTileCreatures.TILE_TEXTURE_BYTES - fit * perBig >= smalls * perSmall,
+                "The fixture leaves room for the small models");
+        // Spawns are taken nearest the tile centre first: the big displays, then the small ones.
+        var rows = new ArrayList<Map<String, Object>>();
+        for (int i = 0; i < bigs + smalls; i++) rows.add(WorldSpawnOverlayTest.spawn(i + 1, 1, -100 - i, -100, 10.0));
+        var creatures = new WorldTileCreatures(token -> index(rows), () -> "r1",
+                (npc, token) -> qualified((int) (100 + npc), null),
+                (display, token) -> preview(display, 0L, 0L, display - 100 <= bigs ? big : small));
+        var summary = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(summary.models() == fit + smalls && summary.count(WorldTileCreatures.Count.CAPPED) == bigs - fit,
+                "Big models past the budget are skipped, the later small ones are added: " + summary.models());
+        // The same walk under an allowance of three big models' bytes.
+        long gpu = WorldTileCreatures.gpuBytes(WorldTileCreatures.surfaces(big, Set.of(0), new int[0], false,
+                Cancellation.NONE).model());
+        var shared = new WorldTileCreatures(token -> index(rows), () -> "r1",
+                (npc, token) -> qualified((int) (100 + npc), null),
+                (display, token) -> preview(display, 0L, 0L, display - 100 <= bigs ? big : small));
+        var allowed = shared.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, gpu * 3 + 4096, Cancellation.NONE);
+        require(allowed.models() == 3 + smalls && allowed.bytes() <= gpu * 3 + 4096 && allowed.bytes() >= gpu * 3,
+                "Models stop at the allowance and its bytes are reported: " + allowed.models() + " " + allowed.bytes());
+        var none = shared.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, 0, Cancellation.NONE);
+        require(none.drawn() == 0 && none.bytes() == 0
+                        && none.count(WorldTileCreatures.Count.CAPPED) == bigs + smalls,
+                "Without an allowance no creature is added");
+    }
+
+    /** Only humanoid NPC appearances are reduced to the NPC side; other creatures keep theirs. */
+    private static void onlyNpcConversionsUseTheNpcSide() {
+        var big = textured(512);
+        WorldTileCreatures.Npcs npcs = (extended, token) -> new com.vibeminer.concepts.races.RaceNpcs.Appearance(
+                new com.vibeminer.concepts.races.RaceAppearanceTypes.Result(
+                        com.vibeminer.concepts.races.RaceTypes.State.READY, big, Set.of(0), List.of(), List.of(),
+                        false, null), 0, 0, null, false);
+        var creatures = new WorldTileCreatures(token -> index(List.of(
+                WorldSpawnOverlayTest.spawn(1, 1, -100, -100, 10.0),
+                WorldSpawnOverlayTest.spawn(2, 1, -110, -110, 12.0))), () -> "r1",
+                (npc, token) -> qualified((int) (6 + npc), null),
+                // Display 7 is a creature, display 8 a humanoid NPC (extended display 80).
+                (display, token) -> preview(display, display == 8 ? 80L : 0L, 0L, big), npcs);
+        var summary = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(summary.drawn() == 2, "Both are drawn: " + summary.drawn());
+        var creature = creatures.cached(7).model();
+        var npc = creatures.cached(8).model();
+        require(creature.npc() == null && creature.images().stream().allMatch(i -> i.width() == WorldTileCreatures.IMAGE_SIDE),
+                "A creature keeps the World image side");
+        require(npc.npc() != null && npc.images().stream().allMatch(i -> i.width() == WorldTileCreatures.NPC_IMAGE_SIDE),
+                "A humanoid NPC is reduced to the NPC side");
     }
 
     private static void npcImagesUseTheSmallerSide() {
