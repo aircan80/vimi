@@ -208,6 +208,35 @@ final class WorldStreamBodyDraw implements AutoCloseable {
         return instance;
     }
 
+    /** Texture handles this body holds. */
+    int handles() {
+        return textures.length;
+    }
+
+    /** GPU bytes this body holds. */
+    long bytes() {
+        return gpuBytes(body);
+    }
+
+    /** Texture handles a body holds: one per image. */
+    static int handles(WorldStreamBodyFile.Body body) {
+        return body.images().size();
+    }
+
+    /**
+     * GPU bytes a body holds: its vertex buffer in the objects' layout, its 16-bit indices and
+     * every image's full mip chain.
+     */
+    static long gpuBytes(WorldStreamBodyFile.Body body) {
+        long bytes =
+                (long) body.vertexCount() * WorldStreamPackedObjects.GPU_VERTEX_BYTES
+                        + (long) body.indices().length * 2;
+        for (var image : body.images()) {
+            bytes += image.rgba().length;
+        }
+        return bytes;
+    }
+
     /** Vertex uploads so far (a new pose each). */
     long uploads() {
         return uploads;

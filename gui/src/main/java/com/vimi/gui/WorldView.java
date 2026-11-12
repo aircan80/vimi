@@ -182,6 +182,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
     // The walking body: its display models, its built model once asked for, and the component.
     private java.util.function.Supplier<com.vibeminer.concepts.models.BuildDisplayModels> bodyDisplays;
     private CompletableFuture<WorldBodyModel.Built> bodyModel;
+    // Set on the first switch into a body mode: the body is built and sent only from then on.
+    private boolean bodyWanted;
     private volatile com.vibeminer.concepts.models.BuildDisplayModels bodyComponent;
     private WorldSpawnOverlay.Picked inspectedSpawn;
     private String inspectedMap;
@@ -241,6 +243,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             return WorldExplorerInput.wheelReady(terrainScene != null, streamingMode, streaming != null);
         }
         @Override public boolean fastCadence() { return streamingMode || gpu != null && gpu.ready(); }
+        @Override public boolean idleFrames() { return viewport.isFocused() && viewportActive(); }
         @Override public void groundStatus(ExplorerMotion.Ground ground) { WorldView.this.groundStatus(ground); }
         @Override public void toggleWalk() {
             walkMode.setSelected(!walkMode.isSelected());
@@ -1608,7 +1611,14 @@ final class WorldView extends BorderPane implements AutoCloseable {
         input.motion(mode, smoothMotion.isSelected());
         bodyMode = null;
         if (mode == WorldExplorerInput.Mode.FREE) groundStatus(ExplorerMotion.Ground.FREE);
-        else bodyStatus(mode, input.body().body().status());
+        else {
+            bodyStatus(mode, input.body().body().status());
+            // Built and sent lazily: only once someone walks or flies.
+            if (!bodyWanted) {
+                bodyWanted = true;
+                sendBody();
+            }
+        }
         if (explorer) focusViewport();
     }
 
@@ -3533,7 +3543,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 public CompletableFuture<Void> closeAsync() { return owner.closeAsync(); }
             };
         }, streamingEvents, Platform::runLater, System::nanoTime, preparer, distance.residents());
-        if (bodyDisplays != null) streaming.body(() -> bodyModel().thenApply(WorldBodyModel.Built::file));
+        if (bodyWanted) sendBody();
         if (nativeStream) {
             var controller = streaming;
             controller.onPresented(revision -> nativePresented(controller, revision));
@@ -4222,6 +4232,16 @@ final class WorldView extends BorderPane implements AutoCloseable {
             if (built.capsule() != null) input.body().body().shape(built.capsule());
         }));
         return bodyModel;
+    }
+
+    /**
+     * Hands the walking body to the current streaming session (once per session; the controller
+     * ignores a repeat). The body is built on the first call.
+     */
+    private void sendBody() {
+        var controller = streaming;
+        if (bodyDisplays == null || controller == null) return;
+        controller.body(() -> bodyModel().thenApply(WorldBodyModel.Built::file));
     }
 
     /** The drawn body's pose for this frame, or null without a body or in the free camera. */

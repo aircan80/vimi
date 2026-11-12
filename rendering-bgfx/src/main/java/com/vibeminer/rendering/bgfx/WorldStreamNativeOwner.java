@@ -931,6 +931,12 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         renderer.body(body);
     }
 
+    /** Texture handles object sets and the body hold (proofs). */
+    int objectTexturesHeld() {
+        requireOpen();
+        return renderer.objectTexturesHeld();
+    }
+
     /** Object submits of the walking body in the last drawn frame (proofs). */
     int bodySubmits() {
         requireOpen();

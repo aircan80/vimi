@@ -82,7 +82,29 @@ final class WorldStreamBodyProof {
                 owner.advance();
             }
             owner.commit(0, 1, List.of(lease));
+            // The body counts toward the objects' accounting: refused when its bytes do not fit,
+            // and its texture handles held once attached.
+            int heldBefore = owner.objectTexturesHeld();
+            owner.objectBudgetForProof(WorldStreamBodyDraw.gpuBytes(body) - 1);
+            boolean refused = false;
+            try {
+                owner.attachBody(body);
+            } catch (java.io.IOException expected) {
+                refused = true;
+            }
+            check(refused, "a body over the objects' budget is refused");
+            check(owner.objectTexturesHeld() == heldBefore, "a refused body holds nothing");
+            owner.objectBudgetForProof(session.objectBudgetBytes());
             owner.attachBody(body);
+            check(
+                    owner.objectTexturesHeld() == heldBefore + body.images().size(),
+                    "the body's textures count as held object textures");
+            System.out.println(
+                    "BODY accounting: "
+                            + body.images().size()
+                            + " texture handles and "
+                            + WorldStreamBodyDraw.gpuBytes(body)
+                            + " bytes charged to the objects");
             var shooter = new Shooter(owner, reader);
             double yaw = .5;
             var follow = new FollowCamera();

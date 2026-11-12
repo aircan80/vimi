@@ -69,6 +69,14 @@ final class WorldExplorerInput {
             return CollisionWorld.terrain(ground());
         }
 
+        /**
+         * Whether a drawn body standing still may request frames for its idle animation: the view
+         * is shown and has the keyboard focus.
+         */
+        default boolean idleFrames() {
+            return true;
+        }
+
         /** What the body is doing, after every body pulse. */
         default void bodyStatus(Mode mode, WalkController.Status status) {}
 
@@ -168,6 +176,9 @@ final class WorldExplorerInput {
     /** Wheel dolly per notch, as seconds of travel at the current speed. */
     static final double DOLLY_SECONDS = .25;
 
+    /** A drawn body's idle animation, while nothing moves: about 12 frames a second. */
+    static final long IDLE_CADENCE_NANOS = 80_000_000;
+
     static final long FAST_CADENCE_NANOS = 16_000_000,
             SLOW_CADENCE_NANOS = 100_000_000,
             NEARBY_NANOS = 100_000_000;
@@ -225,8 +236,9 @@ final class WorldExplorerInput {
     }
 
     /**
-     * The drawn body's animation clock; with one, body modes also request frames at the movement
-     * cadence while the body stands, so its idle plays.
+     * The drawn body's animation clock; with one, body modes also request frames at {@link
+     * #IDLE_CADENCE_NANOS} while the body stands, so its idle plays, except in first person or
+     * while the view is not focused.
      */
     void animator(com.vibeminer.rendering.world.BodyAnimator next) {
         animator = next;
@@ -617,8 +629,10 @@ final class WorldExplorerInput {
         long cadence = host.fastCadence() ? FAST_CADENCE_NANOS : SLOW_CADENCE_NANOS;
         if (!stepped.moved()) {
             if (looked) frame();
-            else if (animator != null && now - lastRender > cadence) {
-                // The body's idle keeps playing while nothing moves.
+            else if (animator != null && !body.camera().firstPerson() && host.idleFrames()
+                    && now - lastRender > IDLE_CADENCE_NANOS) {
+                // The body's idle keeps playing while nothing moves, at a slower cadence; not in
+                // first person (the body is hidden) or while the view is not focused.
                 lastRender = now;
                 frame();
             } else showFinal();

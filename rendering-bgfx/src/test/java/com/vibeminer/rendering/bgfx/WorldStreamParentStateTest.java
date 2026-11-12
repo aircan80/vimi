@@ -391,4 +391,29 @@ class WorldStreamParentStateTest {
         // Before the session hello there is no horizon to send.
         assertNull(new WorldStreamParentState(SESSION).horizon(4096, "a".repeat(64)));
     }
+
+    @Test
+    void oneBodyPerSessionAndUnsolicitedOrRepeatedAnswersAreIgnored() {
+        var state = ready();
+        assertEquals(
+                WorldStreamParentState.Change.IGNORED,
+                state.status(
+                        new WorldStreamStatus.BodyDone(NONCE, WorldStreamStatus.BodyOutcome.DRAWN)),
+                "an answer before any BODY_MODEL");
+        var command = state.body(4096, "a".repeat(64));
+        assertNotNull(command);
+        assertEquals(4096, command.length());
+        assertNull(state.body(4096, "a".repeat(64)), "one body per session");
+        assertEquals(
+                WorldStreamParentState.Change.BODY,
+                state.status(
+                        new WorldStreamStatus.BodyDone(
+                                NONCE, WorldStreamStatus.BodyOutcome.FAILED)));
+        assertEquals(
+                WorldStreamParentState.Change.IGNORED,
+                state.status(
+                        new WorldStreamStatus.BodyDone(NONCE, WorldStreamStatus.BodyOutcome.DRAWN)),
+                "a repeated answer");
+        assertNull(new WorldStreamParentState(SESSION).body(4096, "a".repeat(64)));
+    }
 }

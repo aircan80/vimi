@@ -196,18 +196,24 @@ The drawn body's data:
 
 ## Drawn body (murloc)
 
-- `WorldBodyModel` builds the body once per World view, on a worker: the
+- `WorldBodyModel` builds the body on a worker the first time the view enters
+  walk or fly mode (never when only the free camera is used), once per World
+  view: the
   display's World binding converted exactly as the World converts creatures
   (`WorldTileCreatures.convert`, which also reports the rest vertex behind each
   model vertex), its sequences and its size, packed as one body file
   (`WorldStreamBodyFile`: model, vertex map, scale, and each animation's
   `PreviewAnimation.write` record). The capsule takes the recorded size.
-- The stream controller hands the file to the World child once per session,
-  after the first visible tile, as file `body-1.wsb` and command `BODY_MODEL`;
+- From then on the stream controller hands the file to the World child once
+  per session (again after a restart), after the first visible tile, as file
+  `body-1.wsb` and command `BODY_MODEL`;
   the child checks length, digest and every count and reference, builds the
   index buffer, textures and a dynamic vertex buffer in the objects' layout,
   and answers one `BODY_DONE` (`DRAWN` or `FAILED`; a failure only means no
-  body).
+  body). The body is charged to the objects' accounting like an object set: its
+  texture handles count against the object handle limit (#658) and its buffer
+  and texture bytes against the objects budget (#660), from attach until the
+  session closes; a body that does not fit is refused (`FAILED`).
 - Each camera line in a body mode carries a `BODY` tail: the feet in
   thousandths of a yard, the yaw in ten-thousandths of a radian, the sequence,
   its clock in milliseconds and a hidden flag (first person). The longest
@@ -216,14 +222,18 @@ The drawn body's data:
   sequence's `Skinner`, gathers positions and normals through the vertex map
   into the dynamic vertex buffer and draws the body's ranges with the objects'
   program, materials and states under one instance row (yaw about +Z, scale,
-  feet relative to the camera). Opaque and cutout ranges draw with the objects,
-  blended and additive ones after the blended objects. Nothing is allocated on
+  feet relative to the camera). Opaque and cutout ranges draw with the objects.
+  Its blended and additive ranges draw after all object blended ranges, in
+  file order, not sorted with them by distance (the body is near the camera,
+  so this is usually right; a blended object between the camera and the body
+  would draw under it). Nothing is allocated on
   the Java heap per frame; a repeated pose is not uploaded again.
 - `BodyAnimator` keeps the clock: the sequence from `BodyAnimation.choose`, its
   clock at `BodyAnimation.rate`, restarted on a change of sequence; without
   WalkBackwards (the murloc has none) backpedalling plays the walk in reverse.
-  A standing body keeps requesting frames at the movement cadence so its idle
-  plays.
+  A standing body keeps requesting frames at about 12 a second so its idle
+  plays; none in first person (the body is hidden) or while the view is not
+  focused.
 - Proofs: `nativeGpuWorldStreamBodyProof` draws a body (an authored one, or
   `-PbodyFile=body-441.wsb` from the probe) standing, walking and running from
   the follow camera and from the side at four times each, and checks that it

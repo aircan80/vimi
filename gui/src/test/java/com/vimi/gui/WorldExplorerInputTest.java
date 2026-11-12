@@ -87,6 +87,8 @@ public final class WorldExplorerInputTest {
         @Override public TerrainGround ground() { return TerrainGround.empty(); }
         @Override public boolean wheelReady() { return wheelReady; }
         @Override public boolean fastCadence() { return fast; }
+        boolean idle = true;
+        @Override public boolean idleFrames() { return idle; }
         @Override public void groundStatus(ExplorerMotion.Ground ground) { calls.add("ground:" + ground); }
         @Override public void toggleWalk() { toggles++; }
         int flyToggles;
@@ -1106,9 +1108,23 @@ public final class WorldExplorerInputTest {
         long t = 1_000_000_000L;
         input.pulse(t);
         long before = host.count("frame");
-        for (int i = 0; i < 30; i++) input.pulse(t += 5_000_000L);
-        require(host.count("frame") - before >= 5, "Standing still keeps framing the idle: " + host.calls);
+        // 400 ms of 5 ms pulses: the idle cadence (80 ms) frames about five times, not 25.
+        for (int i = 0; i < 80; i++) input.pulse(t += 5_000_000L);
+        long idleFrames = host.count("frame") - before;
+        require(idleFrames >= 4 && idleFrames <= 6, "Standing still frames the idle slowly: " + idleFrames);
         require(animator.sequence() == 0 && animator.millis() > 100, "Stand plays: " + animator.millis());
+        // Unfocused, or in first person (the body is hidden), standing still frames nothing.
+        host.idle = false;
+        before = host.count("frame");
+        for (int i = 0; i < 80; i++) input.pulse(t += 5_000_000L);
+        require(host.count("frame") == before, "No idle frames while unfocused: " + host.calls);
+        host.idle = true;
+        input.body().camera().distance(0);
+        for (int i = 0; i < 4; i++) input.pulse(t += 5_000_000L);
+        before = host.count("frame");
+        for (int i = 0; i < 80; i++) input.pulse(t += 5_000_000L);
+        require(host.count("frame") == before, "No idle frames in first person: " + host.calls);
+        input.body().camera().distance(MovementParity.CAMERA_START_DISTANCE);
         input.keyPressed(KeyCode.W);
         for (int i = 0; i < 10; i++) input.pulse(t += 16_666_667L);
         require(animator.sequence() == 5, "Running forward plays Run: " + animator.sequence());

@@ -1883,6 +1883,22 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         if (wmoProgram == INVALID) {
             throw new IOException("The body needs the objects pass");
         }
+        // The body is charged to the objects' accounting like an object set (#658, #660): its
+        // handles and bytes count against the same limits, and object sets see them as held.
+        int handles = WorldStreamBodyDraw.handles(value);
+        long bytes = WorldStreamBodyDraw.gpuBytes(value);
+        int heldNow = reservedObjectTextures() - (body == null ? 0 : body.handles());
+        long reservedNow = reservedObjectBytes() - (body == null ? 0 : body.bytes());
+        if (!objectsFit(objectBudget, reservedNow, bytes)
+                || !objectTexturesFit(objectTextureLimit, heldNow, handles)
+                || !objectTexturesFit(liveTextureRoom(), 0, handles)) {
+            throw new IOException(
+                    "The body does not fit the objects' budget: "
+                            + handles
+                            + " textures, "
+                            + bytes
+                            + " bytes");
+        }
         WorldStreamBodyDraw built;
         try (var layout = objectLayout()) {
             built = new WorldStreamBodyDraw(value, layout);
@@ -2532,6 +2548,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     /**
      * The walking body's opaque and cutout ranges ({@code sorted} false), or its blended then
      * additive ones, under its one instance row; with the objects' program, materials and states.
+     * The sorted ranges draw after every object's blended ranges, in file order: they are not
+     * sorted by distance with the objects' (#552), so a blended object between the camera and the
+     * body draws under the body's blended ranges.
      */
     private void drawBody(ObjectFrame frame, TerrainScene.Origin origin, boolean sorted) {
         var model = body.body;
@@ -3484,7 +3503,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
 
     /** Texture handles object sets hold: each shared texture once, created or reserved. */
     private int reservedObjectTextures() {
-        return objectTextures.entries();
+        return objectTextures.entries() + (body == null ? 0 : body.handles());
     }
 
     /** Image references resident and building object sets hold; owner thread only. */
@@ -3511,7 +3530,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 (upload == null || upload.objects == null || upload.objects.building == null
                                 ? 0
                                 : upload.objects.building.reserved)
-                        + objectTextures.reservedBytes();
+                        + objectTextures.reservedBytes()
+                        + (body == null ? 0 : body.bytes());
         if (late != null && late.build.building != null) {
             total += late.build.building.reserved;
         }

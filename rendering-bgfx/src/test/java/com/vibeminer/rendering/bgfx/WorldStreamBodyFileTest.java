@@ -126,4 +126,56 @@ class WorldStreamBodyFileTest {
         WorldStreamBodyDraw.gather(model, sources, positions, null, out);
         assertEquals(1, out.getFloat(20), "the model's own normal without skinned ones");
     }
+
+    @Test
+    void theBodyIsChargedItsHandlesAndBytes() {
+        var body = WorldStreamBodyProof.authored();
+        assertEquals(1, WorldStreamBodyDraw.handles(body));
+        assertEquals(
+                (long) body.vertexCount() * WorldStreamPackedObjects.GPU_VERTEX_BYTES
+                        + body.indices().length * 2L
+                        + body.images().getFirst().rgba().length,
+                WorldStreamBodyDraw.gpuBytes(body));
+    }
+
+    @Test
+    void theChildRefusesABodyFileThatIsNotTheOneAnnounced(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path directory) throws Exception {
+        byte[] good = WorldStreamBodyFile.encode(WorldStreamBodyProof.authored());
+        var file = directory.resolve(WorldStreamControl.BodyModel.BASENAME);
+        java.nio.file.Files.write(file, good);
+        var right =
+                new WorldStreamControl.BodyModel(
+                        new WorldStreamState.Nonce(5, 6), good.length, sha(good));
+        assertEquals(
+                48, WorldStreamSession.decodeBody(directory, right, () -> false).vertexCount());
+        var wrongDigest =
+                new WorldStreamControl.BodyModel(right.nonce(), good.length, "0".repeat(64));
+        assertThrows(
+                IOException.class,
+                () -> WorldStreamSession.decodeBody(directory, wrongDigest, () -> false));
+        var wrongLength =
+                new WorldStreamControl.BodyModel(right.nonce(), good.length - 1, sha(good));
+        assertThrows(
+                IOException.class,
+                () -> WorldStreamSession.decodeBody(directory, wrongLength, () -> false));
+        // A corrupt file with a matching digest still fails the body file's own checks.
+        byte[] corrupt = good.clone();
+        ByteBuffer.wrap(corrupt).putInt(4, 0);
+        java.nio.file.Files.write(file, corrupt);
+        var announced =
+                new WorldStreamControl.BodyModel(right.nonce(), corrupt.length, sha(corrupt));
+        assertThrows(
+                IOException.class,
+                () -> WorldStreamSession.decodeBody(directory, announced, () -> false));
+        java.nio.file.Files.delete(file);
+        assertThrows(
+                IOException.class,
+                () -> WorldStreamSession.decodeBody(directory, announced, () -> false));
+    }
+
+    private static String sha(byte[] bytes) throws Exception {
+        return java.util.HexFormat.of()
+                .formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes));
+    }
 }

@@ -84,6 +84,7 @@ final class WorldStreamBodySessionProof {
                 WorldStreamSessionProof.require(
                         child.waitFor(10, TimeUnit.SECONDS) && child.exitValue() == 0,
                         "Child failed clean close");
+                failedBody(Path.of(args[0]));
                 System.out.println(
                         "WORLD_BODY_SESSION_PASS pid="
                                 + child.pid()
@@ -97,6 +98,79 @@ final class WorldStreamBodySessionProof {
                     child.waitFor(10, TimeUnit.SECONDS);
                 }
             }
+        }
+    }
+
+    /**
+     * A second session sent a body file that passes its digest but not the body file's checks: the
+     * child answers {@code BODY_DONE 1 FAILED} and keeps drawing frames for posed cameras.
+     */
+    @SuppressWarnings("try")
+    private static void failedBody(Path parent) throws Exception {
+        Path directory = Files.createTempDirectory(parent, "body-failed-");
+        var nonce = WorldStreamSessionProof.NONCE;
+        var session =
+                new WorldStreamEnvelope.Session(nonce, WorldStreamSessionProof.SCOPE, 1, true);
+        var pose = new WorldStreamTransport.Body(-120, -260, 10, Math.PI, 4, 200, false);
+        long saved = sequence;
+        sequence = 0;
+        try (var frames =
+                        WorldFrameFileV2.create(
+                                directory.resolve("frames"), nonce, WorldStreamSessionProof.SCOPE);
+                var reader =
+                        WorldFrameFileV2.open(
+                                directory.resolve("frames"),
+                                nonce,
+                                WorldStreamSessionProof.SCOPE)) {
+            var child = WorldStreamSessionProof.launch(directory, session);
+            Thread.ofVirtual()
+                    .start(
+                            () -> {
+                                try {
+                                    child.getErrorStream().transferTo(System.err);
+                                } catch (Exception ignored) {
+                                    // Echo only.
+                                }
+                            });
+            try {
+                var statuses = new WorldStreamSessionProof.Statuses(child);
+                statuses.await("SESSION ");
+                statuses.await("CREDIT ");
+                var first = statuses.credit.get();
+                WorldStreamSessionProof.send(child, camera(nonce, 1, pose));
+                WorldStreamSessionProof.packet(directory, 1, first, 180);
+                WorldStreamSessionProof.offer(child, directory, 1, first);
+                statuses.await("STAGED 1 ");
+                WorldStreamSessionProof.commit(child, directory, 2, 0, first);
+                statuses.await("COMMITTED 2 0 1");
+                frame(reader, 1, 400, 250);
+                byte[] file = WorldStreamBodyFile.encode(WorldStreamBodyProof.authored());
+                java.nio.ByteBuffer.wrap(file).putInt(4, 0); // no vertices
+                Files.write(directory.resolve(WorldStreamControl.BodyModel.BASENAME), file);
+                String sha =
+                        java.util.HexFormat.of()
+                                .formatHex(
+                                        java.security.MessageDigest.getInstance("SHA-256")
+                                                .digest(file));
+                WorldStreamSessionProof.send(
+                        child, new WorldStreamControl.BodyModel(nonce, file.length, sha));
+                statuses.await("BODY_DONE 1 FAILED");
+                WorldStreamSessionProof.send(child, camera(nonce, 2, pose));
+                frame(reader, 2, 400, 250);
+                WorldStreamSessionProof.send(child, new WorldStreamControl.Close(nonce));
+                statuses.await("CLOSED");
+                WorldStreamSessionProof.require(
+                        child.waitFor(10, TimeUnit.SECONDS) && child.exitValue() == 0,
+                        "Child failed clean close after a failed body");
+                System.out.println("WORLD_BODY_SESSION_FAILED_BODY_PASS pid=" + child.pid());
+            } finally {
+                if (child.isAlive()) {
+                    child.destroyForcibly();
+                    child.waitFor(10, TimeUnit.SECONDS);
+                }
+            }
+        } finally {
+            sequence = saved;
         }
     }
 
