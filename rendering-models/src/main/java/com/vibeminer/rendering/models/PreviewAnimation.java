@@ -491,6 +491,37 @@ public final class PreviewAnimation {
         return rest.length / 3;
     }
 
+    /**
+     * This animation over a larger rest surface that begins with this one's: its first vertices
+     * keep their influences, and each further vertex follows one bone ({@code extraBones}, one per
+     * added vertex) with full weight, as a rigid attached item does. Null when {@code mesh} does
+     * not begin with this animation's rest surface or a bone is outside the skeleton.
+     */
+    public PreviewAnimation withRigidVertices(PreviewMesh mesh, float[] normals, int[] extraBones) {
+        int base = rest.length / 3;
+        int vertices = mesh.positions.length / 3;
+        if (vertices != base + extraBones.length
+                || normals.length != vertices * 3
+                || !Arrays.equals(mesh.positions, 0, rest.length, rest, 0, rest.length)
+                || !Arrays.equals(
+                        normals, 0, restNormals.length, restNormals, 0, restNormals.length)) {
+            return null;
+        }
+        int[] bonesOut = Arrays.copyOf(influenceBones, vertices * 4);
+        int[] weightsOut = Arrays.copyOf(influenceWeights, vertices * 4);
+        for (int i = 0; i < extraBones.length; i++) {
+            int bone = extraBones[i];
+            if (bone < 0 || bone >= bones.size()) {
+                return null;
+            }
+            int at = (base + i) * 4;
+            bonesOut[at] = bone;
+            weightsOut[at] = 255;
+        }
+        return new PreviewAnimation(
+                label, durationMillis, globalMillis, bones, mesh, normals, bonesOut, weightsOut);
+    }
+
     /** True only for the exact rest surface these influences were prepared for. */
     public boolean matches(PreviewMesh mesh) {
         return mesh != null && Arrays.equals(mesh.positions, rest);

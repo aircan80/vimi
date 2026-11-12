@@ -130,25 +130,21 @@ final class NpcsView extends ProviderBrowser<NpcCatalog.Npc> {
             model.setAppearance(outcome.appearance(), outcome.visibleParts(), false);
             previewStatus.setText("Untextured model · " + outcome.reason());
         }
-        Long idleDisplay = outcome.idleDisplay();
-        var models = displayModels();
-        if (idleDisplay == null || models == null) {
-            model.animationUnavailable(outcome.kind() == NpcPreviews.Kind.HUMANOID
-                    ? "Idle animation is not evaluated for character appearances here." : null);
-            return;
-        }
-        models.idle(idleDisplay, token).whenComplete((idle, failure) ->
-                javafx.application.Platform.runLater(() -> {
+        java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                    try {
+                        return previews.idle(outcome, token);
+                    } catch (Exception failure) {
+                        throw new java.util.concurrent.CompletionException(failure);
+                    }
+                }, previewWorker)
+                .whenComplete((idle, failure) -> javafx.application.Platform.runLater(() -> {
                     if (request != previewGeneration) return;
                     if (failure != null || idle == null) {
                         model.animationUnavailable(null);
-                        return;
-                    }
-                    switch (idle.state()) {
-                        case AVAILABLE -> model.setAnimation(idle.animation(), idle.message());
-                        case UNSUPPORTED -> model.animationUnavailable(
-                                "Idle animation unavailable: " + idle.message());
-                        case UNAVAILABLE -> model.animationUnavailable(null);
+                    } else if (idle.animation() != null) {
+                        model.setAnimation(idle.animation(), idle.message());
+                    } else {
+                        model.animationUnavailable(idle.message());
                     }
                 }));
     }
