@@ -335,6 +335,16 @@ final class WorldTileCreatures implements AutoCloseable {
         default List<DisplayModelTypes.Idle> stands(long displayId, Cancellation token) throws Exception {
             return List.of(idle(displayId, token), worldIdle(displayId, token));
         }
+
+        /**
+         * The display's table relationships without its model ({@link
+         * BuildDisplayModels#reference}), so a humanoid NPC's display is known without reading
+         * the character model its preview would load; null when a source cannot tell cheaply,
+         * and the preview answers instead.
+         */
+        default DisplayModelTypes.Reference reference(long displayId, Cancellation token) throws Exception {
+            return null;
+        }
     }
 
     /**
@@ -583,6 +593,12 @@ final class WorldTileCreatures implements AutoCloseable {
         }
 
         @Override
+        public DisplayModelTypes.Reference reference(long displayId, Cancellation token) {
+            var models = component();
+            return models == null ? null : models.reference(displayId, token).join();
+        }
+
+        @Override
         public DisplayModelTypes.Idle idle(long displayId, Cancellation token) {
             var models = component();
             return models == null ? DisplayModelTypes.Idle.unavailable("Model files are not open")
@@ -806,11 +822,20 @@ final class WorldTileCreatures implements AutoCloseable {
     private Converted load(long display, Cancellation token) {
         Converted converted;
         try {
-            var preview = previews.preview(display, token);
+            // A humanoid NPC's display draws its race appearance: its preview (the character model,
+            // read whole) is not needed, only its extended display info.
+            var reference = previews.reference(display, token);
             token.check();
-            var extended = preview == null || preview.reference() == null ? null
-                    : preview.reference().extendedDisplayInfoId();
-            converted = extended != null && extended > 0 ? npc(extended, token) : stand(display, preview, token);
+            Long extended = reference == null ? null : reference.extendedDisplayInfoId();
+            if (extended != null && extended > 0) {
+                converted = npc(extended, token);
+            } else {
+                var preview = previews.preview(display, token);
+                token.check();
+                extended = preview == null || preview.reference() == null ? null
+                        : preview.reference().extendedDisplayInfoId();
+                converted = extended != null && extended > 0 ? npc(extended, token) : stand(display, preview, token);
+            }
         } catch (Exception failed) {
             // Only this tile's cancellation propagates; a closed or retired component is a failure.
             token.check();

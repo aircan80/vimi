@@ -85,8 +85,8 @@ public final class DataSourcesService {
     /** The library's builds, for the EG Link snapshots pruning must keep; set by the application. */
     private volatile java.util.function.Supplier<java.util.Collection<BuildKey>> libraryBuilds = List::of;
     /**
-     * Builds opened recently, in the order first seen: a workspace opened them, or their NPC,
-     * quest or location sources were read. Persisted (the last {@link #OPENED_BUILDS}), so a
+     * Builds opened recently, least recently used first: a workspace or job opened them, or their
+     * NPC, quest or location sources were read. Persisted (the last {@link #OPENED_BUILDS}), so a
      * recently used build that was never saved keeps its EG Link snapshots across restarts.
      */
     private final java.util.Set<BuildKey> openedBuilds = java.util.Collections.synchronizedSet(new java.util.LinkedHashSet<>());
@@ -852,22 +852,28 @@ public final class DataSourcesService {
 
     /**
      * Records that {@code build} was opened (a workspace or job opened it, or its sources were
-     * read), so EG Link pruning keeps the snapshots it reads. Persists only when the set changes.
+     * read), so EG Link pruning keeps the snapshots it reads. The list is most recently used last:
+     * opening a build already listed moves it to the end. Persists only when the order changes.
      */
     void opened(BuildInfo build) {
         if (build == null || build.product() == null || build.version() == null
                 || build.product().contains("\t") || build.product().contains("\n")
                 || build.version().contains("\t") || build.version().contains("\n")) return;
-        String value;
+        var key = new BuildKey(build.product(), build.version());
         synchronized (openedBuilds) {
-            if (!openedBuilds.add(new BuildKey(build.product(), build.version()))) return;
+            BuildKey last = null;
+            for (var held : openedBuilds) last = held;
+            if (key.equals(last)) return; // already the most recent: nothing changes
+            openedBuilds.remove(key);
+            openedBuilds.add(key);
             while (openedBuilds.size() > OPENED_BUILDS) openedBuilds.remove(openedBuilds.iterator().next());
-            value = String.join("\n", openedBuilds.stream().map(k -> k.product() + "\t" + k.version()).toList());
+            String value = String.join("\n", openedBuilds.stream().map(k -> k.product() + "\t" + k.version()).toList());
+            // Queued under the lock, so writes reach the preferences in the order they were made.
+            submit(() -> preferences.put(OPENED_KEY, value));
         }
-        submit(() -> preferences.put(OPENED_KEY, value));
     }
 
-    /** The builds recorded as opened, oldest first (tests). */
+    /** The builds recorded as opened, least recently used first (tests). */
     List<BuildKey> openedBuilds() {
         synchronized (openedBuilds) { return List.copyOf(openedBuilds); }
     }
