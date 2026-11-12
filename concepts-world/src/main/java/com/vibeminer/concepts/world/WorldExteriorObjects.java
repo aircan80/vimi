@@ -361,8 +361,8 @@ public final class WorldExteriorObjects {
      */
     private static final int SET_DOODAD_ADMITTED = 0x1 | 0x2 | 0x4 | 0x8 | 0x10;
 
-    // MODD 0x2 selects interior rather than exterior lighting; vimi lights every set doodad as
-    // exterior (BASIC profile, fixed light), so the flag is admitted but not honoured.
+    // MODD 0x2, 0x4, 0x8 and 0x10 take part in a set doodad's interior light when an interior
+    // group lists it (doodadLight); 0x4 keeps it in the World light.
 
     /**
      * Whether texture1 of a batch is sampled with UV0: the batch's shader ID and texture count name
@@ -792,6 +792,30 @@ public final class WorldExteriorObjects {
          */
         SET_DOODAD_GROUPS_SHARED,
         /**
+         * Set doodads lit by their interior light ({@link #doodadLight}). Not an outcome bucket.
+         */
+        DOODAD_INTERIOR_LIGHT,
+        /**
+         * Set doodads of an interior group left in the World light: MODD 0x4, whose MOLT light is
+         * not read. Not an outcome bucket.
+         */
+        DOODAD_LIGHT_UNSUPPORTED,
+        /**
+         * Of {@link #DOODAD_INTERIOR_LIGHT}: MODD 0x8 doodads, whose ambient is their raw colour.
+         * Not an outcome bucket.
+         */
+        DOODAD_LIGHT_AMBIENT_OVERRIDE,
+        /**
+         * Of {@link #DOODAD_INTERIOR_LIGHT}: MODD 0x2 doodads whose colour alpha names a MOLT
+         * light, lit toward their group's centre instead. Not an outcome bucket.
+         */
+        DOODAD_LIGHT_MOLT_IGNORED,
+        /**
+         * Set doodads an interior group lists in a building without a portal set, left in the World
+         * light (the group's flags and box are not kept). Not an outcome bucket.
+         */
+        DOODAD_LIGHT_NO_GROUP,
+        /**
          * Doodad models read beyond the {@link #MAX_MODELS} cap from the interior allowance ({@link
          * #MAX_INTERIOR_MODELS}), for set doodads tied to an interior group: every read, whatever
          * its outcome, as each spends a slot. Not an outcome bucket.
@@ -968,16 +992,60 @@ public final class WorldExteriorObjects {
             double cos,
             double sin,
             Rotation rotation,
-            int portalGroup) {
+            int portalGroup,
+            DoodadLight light) {
         /**
          * {@code portalGroup}: for a set doodad tied to one interior group, that group's ordinal in
          * its building's portal set (the building is the BUILDING placement with the same {@code
-         * uniqueId}), drawn only while a walk of that set reaches the group; otherwise -1.
+         * uniqueId}), drawn only while a walk of that set reaches the group; otherwise -1. {@code
+         * light}: the interior light of a set doodad an interior group lists ({@link DoodadLight}),
+         * or null for the World light.
          */
         public Placement {
             if (portalGroup < -1 || portalGroup >= 0 && kind != Kind.SET_DOODAD) {
                 throw new IllegalArgumentException("Placement portal group");
             }
+            if (light != null && kind != Kind.SET_DOODAD) {
+                throw new IllegalArgumentException("Placement light");
+            }
+        }
+
+        /** A placement lit by the World light. */
+        public Placement(
+                Kind kind,
+                int ordinal,
+                long uniqueId,
+                long rootId,
+                int model,
+                int flags,
+                int doodadSet,
+                int nameSet,
+                double x,
+                double y,
+                double z,
+                double scale,
+                double cos,
+                double sin,
+                Rotation rotation,
+                int portalGroup) {
+            this(
+                    kind,
+                    ordinal,
+                    uniqueId,
+                    rootId,
+                    model,
+                    flags,
+                    doodadSet,
+                    nameSet,
+                    x,
+                    y,
+                    z,
+                    scale,
+                    cos,
+                    sin,
+                    rotation,
+                    portalGroup,
+                    null);
         }
 
         /** A placement tied to no portal group. */
@@ -1001,6 +1069,145 @@ public final class WorldExteriorObjects {
                     kind, ordinal, uniqueId, rootId, model, flags, doodadSet, nameSet, x, y, z,
                     scale, cos, sin, rotation, -1);
         }
+    }
+
+    /**
+     * The interior light of a set doodad: the World shader's own light with these values in place
+     * of the World's, lighting the doodad as {@code ambient + direct * max(0, n . toward)}, colours
+     * 0..1 and {@code toward} a unit vector toward the light in native axes.
+     */
+    public record DoodadLight(
+            float ambientR,
+            float ambientG,
+            float ambientB,
+            float directR,
+            float directG,
+            float directB,
+            float towardX,
+            float towardY,
+            float towardZ) {
+        public DoodadLight {
+            for (float c : new float[] {ambientR, ambientG, ambientB, directR, directG, directB}) {
+                if (!(c >= 0 && c <= 1)) {
+                    throw new IllegalArgumentException("Doodad light colour");
+                }
+            }
+            double length = Math.sqrt(towardX * towardX + towardY * towardY + towardZ * towardZ);
+            if (!(Math.abs(length - 1) < 1e-3)) {
+                throw new IllegalArgumentException("Doodad light direction");
+            }
+        }
+    }
+
+    /**
+     * The client's default interior light direction, toward the light (its stored "from light"
+     * vector is (-0.30822, -0.30822, -0.9); WebWowViewerCpp commonLightFunctions.slang).
+     */
+    static final double[] INTERIOR_TOWARD = unit(0.30822, 0.30822, 0.9);
+
+    private static double[] unit(double x, double y, double z) {
+        double length = Math.sqrt(x * x + y * y + z * z);
+        return new double[] {x / length, y / length, z / length};
+    }
+
+    /** MODD flags of the interior doodad light rules ({@link #doodadLight}). */
+    static final int MODD_INTERIOR = 0x2, MODD_LIGHT_4 = 0x4, MODD_LIGHT_8 = 0x8, MODD_MDDI = 0x10;
+
+    /**
+     * The interior light of a set doodad an interior-lit group lists, from the open-source
+     * WebWowViewerCpp ({@code WmoObject::applyLightingParamsToDoodad}, {@code applyColorFromMOLT}):
+     *
+     * <ul>
+     *   <li>MODD 0x2: ambient the building's ambient; direct the MODD colour, or with MODD 0x10 the
+     *       colour plus that ambient, normalized to 1; toward the light from the doodad to its
+     *       group's centre ({@code groupToward}).
+     *   <li>Otherwise: ambient the MODD colour (with 0x10, plus the building ambient, normalized),
+     *       scaled down so its largest channel is at most 0x60; direct the same colour scaled up so
+     *       its largest channel is at least 0x70; toward the light the default interior direction.
+     *   <li>MODD 0x8 overrides the ambient with the raw MODD colour, uncapped, which also takes the
+     *       building ambient's place in the 0x10 sums; the direct light follows the rules above.
+     * </ul>
+     *
+     * <p>Null, keeping the World light, when MODD 0x4 is set: it takes a MOLT light, not read here.
+     * The MDDI multiplier is taken as 1 (its value is not read; the client uses at least 1).
+     *
+     * @param colour MODD colour as stored (B, G, R, A bytes of a little-endian u32)
+     * @param ambient MOHD ambColor as stored
+     */
+    static DoodadLight doodadLight(int flags, int colour, long ambient, double[] groupToward) {
+        if ((flags & MODD_LIGHT_4) != 0) {
+            return null;
+        }
+        float[] c = rgb(colour);
+        boolean override = (flags & MODD_LIGHT_8) != 0;
+        // 0x8 replaces the building's ambients with the colour before anything reads them.
+        float[] a = override ? c : rgb((int) ambient);
+        boolean mddi = (flags & MODD_MDDI) != 0;
+        if ((flags & MODD_INTERIOR) != 0) {
+            float[] direct = mddi ? sumNormalized(c, a) : c;
+            double[] toward = groupToward == null ? INTERIOR_TOWARD : groupToward;
+            return light(a, direct, toward);
+        }
+        float[] base = mddi ? sumNormalized(c, a) : c;
+        return light(override ? c : limitBelow(base, 0x60), raiseTo(base, 0x70), INTERIOR_TOWARD);
+    }
+
+    private static DoodadLight light(float[] ambient, float[] direct, double[] toward) {
+        return new DoodadLight(
+                ambient[0],
+                ambient[1],
+                ambient[2],
+                direct[0],
+                direct[1],
+                direct[2],
+                (float) toward[0],
+                (float) toward[1],
+                (float) toward[2]);
+    }
+
+    /** R, G, B in 0..1 of a CImVector (B, G, R, A bytes of a little-endian u32). */
+    static float[] rgb(int bgra) {
+        return new float[] {
+            (bgra >> 16 & 0xff) / 255f, (bgra >> 8 & 0xff) / 255f, (bgra & 0xff) / 255f
+        };
+    }
+
+    /** {@code addDirectColorAndAmbient}: the sum, divided by its largest channel when over 1. */
+    static float[] sumNormalized(float[] a, float[] b) {
+        float[] sum = {a[0] + b[0], a[1] + b[1], a[2] + b[2]};
+        float max = Math.max(sum[0], Math.max(sum[1], sum[2]));
+        if (max > 1) {
+            for (int i = 0; i < 3; i++) {
+                sum[i] /= max;
+            }
+        }
+        for (int i = 0; i < 3; i++) {
+            sum[i] = Math.min(sum[i], 1);
+        }
+        return sum;
+    }
+
+    /** {@code fixAmbient1}: scaled down so the largest channel is at most {@code limit}/255. */
+    static float[] limitBelow(float[] c, int limit) {
+        float max = Math.max(c[0], Math.max(c[1], c[2]));
+        float cap = limit / 255f;
+        if (max > cap) {
+            return new float[] {c[0] * cap / max, c[1] * cap / max, c[2] * cap / max};
+        }
+        return c.clone();
+    }
+
+    /**
+     * {@code fixDirectColor}: scaled up so the largest channel is at least {@code limit}/255. The
+     * port raises the HSV value, which scales every channel by the same factor; black stays black.
+     */
+    static float[] raiseTo(float[] c, int limit) {
+        float max = Math.max(c[0], Math.max(c[1], c[2]));
+        float floor = limit / 255f;
+        if (max > 1e-5f && max < floor) {
+            return new float[] {c[0] * floor / max, c[1] * floor / max, c[2] * floor / max};
+        }
+        return c.clone();
     }
 
     /**
@@ -2201,6 +2408,9 @@ public final class WorldExteriorObjects {
 
         /** Every root this tile decided to draw by group, drawn or not, for its set doodads. */
         private final Map<Long, WmoFormats.Root> byGroupRootFacts = new HashMap<>();
+
+        /** MOHD ambColor of each root read, for its set doodads' interior light. */
+        private final Map<Long, Long> rootAmbients = new HashMap<>();
 
         /**
          * Buildings drawn by group, and placements of such roots this tile draws no group of
@@ -3674,7 +3884,8 @@ public final class WorldExteriorObjects {
                                 transform.cos(),
                                 transform.sin(),
                                 rotation,
-                                -1));
+                                -1,
+                                null));
             }
             placeQueued();
         }
@@ -3831,6 +4042,7 @@ public final class WorldExteriorObjects {
             // 37115 MODD placement matrix; wow.export 4474fa4 WMORenderer.js:400-466).
             var rotation = building.rotation().times(Rotation.quaternion(qx, qy, qz, qw));
             int group = portalGroup(building, declared, ordinal);
+            var light = interiorLight(building, declared, ordinal, def, x, y, z);
             // A root drawn by group: this tile reads only its own groups, so another tile's group
             // might also list the doodad. Tie it only to the interior whose box placed it here.
             if (filter != null && group != filter.insideGroup) {
@@ -3851,7 +4063,70 @@ public final class WorldExteriorObjects {
                             building.cos(),
                             building.sin(),
                             rotation,
-                            group));
+                            group,
+                            light));
+        }
+
+        /**
+         * The interior light of a set doodad ({@link #doodadLight}) when the one group that lists
+         * it (MODR) is lit as an interior: MOGI 0x2000 without exterior 0x8 or exterior lit 0x40,
+         * as the client lights a doodad from an interior group. Null otherwise, or when the
+         * building has no portal set (its group flags and boxes are not kept).
+         *
+         * <p>Two deviations from the client, both kept deterministic. A doodad several groups list
+         * keeps the World light: the client lights it from whichever of them loads it first. And
+         * the MODD 0x2 direction starts at the placement's origin, where the client starts it at
+         * the doodad's bounding-box centre (the model is not read yet when the light is decided).
+         */
+        private DoodadLight interiorLight(
+                Placement building,
+                WmoFormats.Doodads declared,
+                int ordinal,
+                WmoFormats.DoodadDefinition def,
+                double x,
+                double y,
+                double z) {
+            var groups = doodadGroups.get(declared);
+            int g = groups != null && ordinal < groups.length ? groups[ordinal] : -1;
+            Long ambient = rootAmbients.get(building.rootId());
+            if (g < 0 || building.model() < 0 || ambient == null) {
+                return null;
+            }
+            var set = models.get(building.model()).portals();
+            if (set == null || g >= set.groups().size()) {
+                count(Count.DOODAD_LIGHT_NO_GROUP);
+                return null;
+            }
+            var group = set.groups().get(g);
+            if ((group.flags() & INTERIOR) == 0
+                    || (group.flags() & (EXTERIOR | EXTERIOR_LIT)) != 0) {
+                return null;
+            }
+            double[] toward = null;
+            if ((def.flags() & MODD_INTERIOR) != 0) {
+                double[] m = building.rotation().rowMajor();
+                double s = building.scale();
+                double a = (group.minX() + group.maxX()) / 2;
+                double b = (group.minY() + group.maxY()) / 2;
+                double c = (group.minZ() + group.maxZ()) / 2;
+                double dx = building.x() + s * (m[0] * a + m[1] * b + m[2] * c) - x;
+                double dy = building.y() + s * (m[3] * a + m[4] * b + m[5] * c) - y;
+                double dz = building.z() + s * (m[6] * a + m[7] * b + m[8] * c) - z;
+                double length = Math.sqrt(dx * dx + dy * dy + dz * dz);
+                if (length > 1e-6) {
+                    toward = new double[] {dx / length, dy / length, dz / length};
+                }
+                if ((def.colour() >>> 24) != 255) {
+                    // The client starts this light at the MOLT light the alpha names.
+                    count(Count.DOODAD_LIGHT_MOLT_IGNORED);
+                }
+            }
+            var light = doodadLight(def.flags(), def.colour(), ambient, toward);
+            count(light == null ? Count.DOODAD_LIGHT_UNSUPPORTED : Count.DOODAD_INTERIOR_LIGHT);
+            if (light != null && (def.flags() & MODD_LIGHT_8) != 0) {
+                count(Count.DOODAD_LIGHT_AMBIENT_OVERRIDE);
+            }
+            return light;
         }
 
         /**
@@ -3873,7 +4148,8 @@ public final class WorldExteriorObjects {
                 double cos,
                 double sin,
                 Rotation rotation,
-                int portalGroup) {}
+                int portalGroup,
+                DoodadLight light) {}
 
         /**
          * Places the doodads the pass queued, in order, after hinting their model reads (and each
@@ -3899,7 +4175,8 @@ public final class WorldExteriorObjects {
                                     q.cos(),
                                     q.sin(),
                                     q.rotation(),
-                                    q.portalGroup());
+                                    q.portalGroup(),
+                                    q.light());
                     if (q.kind() == Kind.DOODAD) {
                         count(
                                 switch (outcome) {
@@ -4054,7 +4331,8 @@ public final class WorldExteriorObjects {
                 double cos,
                 double sin,
                 Rotation rotation,
-                int portalGroup) {
+                int portalGroup,
+                DoodadLight light) {
             if (doodads >= MAX_DOODADS) {
                 count(Count.DOODAD_CAP_PLACEMENTS);
                 return RootState.CAPPED;
@@ -4108,7 +4386,8 @@ public final class WorldExteriorObjects {
                             cos,
                             sin,
                             rotation,
-                            portalGroup));
+                            portalGroup,
+                            light));
             return RootState.DRAWN;
         }
 
@@ -4544,6 +4823,7 @@ public final class WorldExteriorObjects {
             long parsing = WorldStageTimings.start();
             try (input) {
                 root = WmoFormats.root(input.bytes(), ROOT_LIMITS, token::isCanceled);
+                rootAmbients.put(rootId, root.header().ambientColor());
                 WorldStageTimings.stop("objects.wmo.rootParse", parsing);
             } catch (IllegalArgumentException malformed) {
                 count(Count.ROOT_FAILED);

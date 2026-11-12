@@ -47,6 +47,18 @@ final class WorldStreamPackedObjects implements AutoCloseable {
     final int[] placementParents, placementGroups;
 
     /**
+     * Per placement: its index in {@link #lights}, or -1 for the World light. Equal lights share
+     * one index, so placements of one model and one light draw as one instanced group.
+     */
+    final int[] placementLights;
+
+    /**
+     * Distinct placement lights, {@link WorldStreamObjectsFile.Lights#FLOATS} floats each (see
+     * {@link WorldStreamObjectsFile.Lights}).
+     */
+    final float[] lights;
+
+    /**
      * Per model: the traversal of its portal set, or null without one (#383 step 3a). Built here on
      * the decoder worker from the validated tables; the renderer does not cull with it yet.
      */
@@ -141,6 +153,29 @@ final class WorldStreamPackedObjects implements AutoCloseable {
         meshGroups = data.meshGroups.clone();
         placementParents = data.placementParents.clone();
         placementGroups = data.placementGroups.clone();
+        placementLights = new int[data.placementCount()];
+        java.util.Arrays.fill(placementLights, -1);
+        var distinct = new java.util.LinkedHashMap<java.util.List<Float>, Integer>();
+        int floats = WorldStreamObjectsFile.Lights.FLOATS;
+        for (int i = 0; i < data.lights.count(); i++) {
+            var key = new java.util.ArrayList<Float>(floats);
+            for (int f = 0; f < floats; f++) {
+                key.add(data.lights.values[i * floats + f]);
+            }
+            Integer index = distinct.get(key);
+            if (index == null) {
+                index = distinct.size();
+                distinct.put(key, index);
+            }
+            placementLights[data.lights.placements[i]] = index;
+        }
+        lights = new float[distinct.size() * floats];
+        int at = 0;
+        for (var key : distinct.keySet()) {
+            for (float v : key) {
+                lights[at++] = v;
+            }
+        }
         animations = new ObjectAnimation[data.modelCount()];
         int refused = 0;
         for (int i = 0; i < data.animations.count(); i++) {
