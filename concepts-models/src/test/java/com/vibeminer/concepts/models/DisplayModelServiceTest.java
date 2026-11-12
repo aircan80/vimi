@@ -153,6 +153,9 @@ class DisplayModelServiceTest {
             assertTrue(
                     preview.message().contains("Unreviewed display table shape"),
                     preview.message());
+            // The World's reference answers null, so it falls back to that stated refusal.
+            org.junit.jupiter.api.Assertions.assertNull(
+                    service.reference(5, Cancellation.NONE).get());
         } finally {
             service.closeAsync().get();
         }

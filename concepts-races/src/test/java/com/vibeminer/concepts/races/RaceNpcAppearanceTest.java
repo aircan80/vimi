@@ -312,7 +312,7 @@ final class RaceNpcAppearanceTest {
     }
 
     /** {@code tables} with every row of {@code table} answering {@code outcome}. */
-    private static com.vibeminer.formats.tables.BuildTables answer(
+    static com.vibeminer.formats.tables.BuildTables answer(
             com.vibeminer.formats.tables.BuildTables tables,
             String table,
             TableTypes.RowOutcome outcome,
@@ -509,7 +509,7 @@ final class RaceNpcAppearanceTest {
      * 1234, not stored) and NPC 50: Orc male warrior, bake material 4900 (file 4242), choice 70 ->
      * 72 and boots (slot 6, display 600).
      */
-    private static List<MemoryTables.FakeTable> npcFixture() {
+    static List<MemoryTables.FakeTable> npcFixture() {
         var seed = new ArrayList<>(fixture());
         replace(
                 seed,
@@ -737,7 +737,7 @@ final class RaceNpcAppearanceTest {
     // --- The model file: retry what cannot be read yet, never draw it partly ---
 
     /** A 4 x 4 single-level BC1 BLP2 of one colour: a bake that decodes. */
-    private static byte[] bake() {
+    static byte[] bake() {
         var b = java.nio.ByteBuffer.allocate(148 + 8).order(java.nio.ByteOrder.LITTLE_ENDIAN);
         b.put(new byte[] {'B', 'L', 'P', '2'}).putInt(1);
         b.put((byte) 2).put((byte) 0).put((byte) 0).put((byte) 1);
@@ -803,7 +803,7 @@ final class RaceNpcAppearanceTest {
         assertTrue(asked.retry(), String.valueOf(asked));
     }
 
-    private static byte[] golden(String name) throws Exception {
+    static byte[] golden(String name) throws Exception {
         try (var in = RaceNpcAppearanceTest.class.getResourceAsStream("/golden/" + name)) {
             return in.readAllBytes();
         }
@@ -931,7 +931,7 @@ final class RaceNpcAppearanceTest {
      * The authored model with its one draw bound to a texture-weight track of one full-opacity key,
      * on a sequence whose keys are stored outside the model ({@code external}) or in it.
      */
-    private static byte[] withWeight(boolean external) throws Exception {
+    static byte[] withWeight(boolean external) throws Exception {
         return withWeight(external, 32767);
     }
 

@@ -827,11 +827,30 @@ public final class WorldMeasurementProbe {
      */
     static final class ChoiceReasons implements WorldTileCreatures.Chooser {
         final WorldTileCreatures.Chooser inner;
-        final Map<Long, String> reasons = new ConcurrentHashMap<>();
-        final Map<String, String> examples = new ConcurrentHashMap<>();
+        final Map<Long, String> reasons;
+        final Map<String, String> examples;
 
         ChoiceReasons(WorldTileCreatures.Chooser inner) {
+            this(inner, new ConcurrentHashMap<>(), new ConcurrentHashMap<>());
+        }
+
+        private ChoiceReasons(WorldTileCreatures.Chooser inner, Map<Long, String> reasons,
+                Map<String, String> examples) {
             this.inner = inner;
+            this.reasons = reasons;
+            this.examples = examples;
+        }
+
+        @Override
+        public Object revision() {
+            return inner.revision();
+        }
+
+        /** The World's per-tile batch, still counted here. */
+        @Override
+        public WorldTileCreatures.Chooser forNpcs(java.util.Collection<Long> npcIds, Cancellation token)
+                throws Exception {
+            return new ChoiceReasons(inner.forNpcs(npcIds, token), reasons, examples);
         }
 
         @Override
@@ -873,6 +892,13 @@ public final class WorldMeasurementProbe {
 
         DisplayCensus(WorldTileCreatures.Previews inner) {
             this.inner = inner;
+        }
+
+        /** As the World asks: a humanoid NPC's display is known without its preview. */
+        @Override
+        public com.vibeminer.concepts.models.DisplayModelTypes.Reference reference(
+                long displayId, Cancellation token) throws Exception {
+            return inner.reference(displayId, token);
         }
 
         @Override
@@ -1481,7 +1507,9 @@ public final class WorldMeasurementProbe {
             say("PROBE creatures: lookup warmup issues " + measured.warmup());
 
             var npcs = new NpcAnswers(WorldTileCreatures.npcs(measured::races));
-            var choices = new ChoiceReasons(WorldTileCreatures.chooser(measured::creatures));
+            // The World's chooser: the client record, then EG Link's observed displays.
+            var choices = new ChoiceReasons(new WorldNpcDisplays(measured::creatures,
+                    NpcPreviews.egLinkBatch(sources, build, "enUS"), build.version()));
             var displays =
                     new DisplayCensus(
                             new WorldTileCreatures.DisplayPreviews(opened::displays, () -> "probe"));
@@ -1787,7 +1815,7 @@ public final class WorldMeasurementProbe {
             // carry portal sets the renderer culls with.
             var interiors = probeInteriors(map);
             WorldStreamSourceBridge.ExteriorPreparer preparer =
-                    (source, scope, tile, cancellation, formats) ->
+                    (source, scope, tile, cancellation, formats, creatureBytes) ->
                             WorldStreamSourceBridge.prepareExterior(
                                     source,
                                     scope,

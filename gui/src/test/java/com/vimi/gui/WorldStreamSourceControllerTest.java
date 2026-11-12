@@ -83,6 +83,7 @@ public final class WorldStreamSourceControllerTest {
         terrainNeverWaitsForBlockedObjectPreparation();
         lateObjectsAttachAfterTerrainAndReportBuildings();
         budgetRefusedObjectsRetryAfterAReleaseOnly();
+        creaturesShareTheirBytesAndYieldToBuildings();
         lateObjectFailuresStayIsolatedFromTerrain();
         lateObjectsCompletingAfterRetirementAreIgnored();
         refusedInitialQualificationRetriesOnItsDeadline();
@@ -811,7 +812,7 @@ public final class WorldStreamSourceControllerTest {
         var preempted = new java.util.concurrent.atomic.AtomicInteger();
         var blocked = new java.util.concurrent.atomic.AtomicBoolean();
         var early = new java.util.concurrent.atomic.AtomicBoolean();
-        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation, formats) -> {
+        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation, formats, creatureBytes) -> {
             // The child logs each commit before acknowledging it.
             if (fixture.commitLines().isEmpty()) early.set(true);
             entered.incrementAndGet();
@@ -855,7 +856,7 @@ public final class WorldStreamSourceControllerTest {
         var fixture = new Fixture(new AuthoredTerrainSource.Files(), 3);
         fixture.exteriors = true;
         var prepared = new java.util.concurrent.ConcurrentLinkedQueue<Integer>();
-        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation, formats) -> {
+        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation, formats, creatureBytes) -> {
             prepared.add(tile.y());
             return new WorldStreamSourceBridge.ExteriorCopy(building(), 1, false, "authored")
                     .withPicks(tile, java.util.List.of(WorldObjectPicksTest.building(
@@ -897,7 +898,7 @@ public final class WorldStreamSourceControllerTest {
         var fixture = new Fixture(new AuthoredTerrainSource.Files(), 6);
         fixture.exteriors = true;
         fixture.residents = 4;
-        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation, formats) ->
+        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation, formats, creatureBytes) ->
                 new WorldStreamSourceBridge.ExteriorCopy(building(), 1, false, "authored");
         Path budget = fixture.directory.resolve("authored-budget-objects");
         int refusedY = fixture.tiles.get(3).y();
@@ -943,11 +944,56 @@ public final class WorldStreamSourceControllerTest {
         }
     }
 
+    /**
+     * Each tile's creatures get what the resident tiles' creatures leave of the area share, and a
+     * set refused for budget while it carries creatures is offered again at once without them.
+     */
+    private static void creaturesShareTheirBytesAndYieldToBuildings() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 6);
+        fixture.exteriors = true;
+        fixture.residents = 4;
+        long each = WorldTileCreatures.AREA_BYTES / 4;
+        var asked = new java.util.concurrent.ConcurrentHashMap<Integer, List<Long>>();
+        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation, formats, creatureBytes) -> {
+            asked.computeIfAbsent(tile.y(), key -> new java.util.concurrent.CopyOnWriteArrayList<>()).add(creatureBytes);
+            var creatures = creatureBytes >= each ? WorldTileCreatures.Summary.drawn(3, 1, each)
+                    : WorldTileCreatures.Summary.NONE;
+            return new WorldStreamSourceBridge.ExteriorCopy(building(), 1, false, "authored", creatures);
+        };
+        Path budget = fixture.directory.resolve("authored-budget-objects");
+        int refusedY = fixture.tiles.get(3).y();
+        try {
+            fixture.start(fixture.gpu::start, () -> {}, preparer);
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 3));
+            fixture.untilPresented(() -> fixture.objectLines().stream()
+                    .filter(line -> line.endsWith(" ATTACHED")).count() == 3);
+            var first = new ArrayList<Long>();
+            for (var tile : fixture.tiles.subList(0, 3)) first.add(asked.get(tile.y()).getFirst());
+            java.util.Collections.sort(first);
+            check(first.equals(List.of(WorldTileCreatures.AREA_BYTES - 2 * each,
+                            WorldTileCreatures.AREA_BYTES - each, WorldTileCreatures.AREA_BYTES)),
+                    "Each tile gets what the attached creatures leave: " + first);
+            Files.writeString(budget, "full");
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 4));
+            fixture.untilPresented(() -> fixture.objectLines().stream()
+                    .filter(line -> line.startsWith(refusedY + " ") && line.endsWith(" BUDGET")).count() == 2);
+            check(asked.get(refusedY).equals(List.of(each, 0L)),
+                    "Refused with creatures, offered again at once without them: " + asked.get(refusedY));
+            for (int i = 0; i < 50; i++) { fixture.pump(); Thread.sleep(2); }
+            check(asked.get(refusedY).size() == 2,
+                    "Refused without creatures, it waits for a release as before: " + asked.get(refusedY));
+        } finally {
+            fixture.close();
+        }
+    }
+
     /** Throwing preparers and failed child uploads cost only the buildings. */
     private static void lateObjectFailuresStayIsolatedFromTerrain() throws Exception {
         var fixture = new Fixture(new AuthoredTerrainSource.Files(), 2);
         fixture.exteriors = true;
-        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation, formats) -> {
+        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation, formats, creatureBytes) -> {
             if (tile.y() == 19) throw new IllegalStateException("authored preparation failure");
             return new WorldStreamSourceBridge.ExteriorCopy(building(), 1, false, "authored");
         };
@@ -978,7 +1024,7 @@ public final class WorldStreamSourceControllerTest {
         var fixture = new Fixture(new AuthoredTerrainSource.Files(), 10);
         fixture.exteriors = true;
         // Only the first tile has buildings, so the only delivery is the one that goes stale.
-        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation, formats) ->
+        WorldStreamSourceBridge.ExteriorPreparer preparer = (source, scope, tile, cancellation, formats, creatureBytes) ->
                 tile.y() == 19
                         ? new WorldStreamSourceBridge.ExteriorCopy(building(), 1, false, "authored")
                         : new WorldStreamSourceBridge.ExteriorCopy(null, 0, false, "none");
@@ -3085,7 +3131,7 @@ public final class WorldStreamSourceControllerTest {
         }
 
         void start(WorldStreamSourceController.GpuStarter starter, Runnable beforeController) {
-            start(starter, beforeController, (source, scope, tile, cancellation, formats) -> WorldStreamSourceBridge.prepareExterior(source, scope, tile, cancellation));
+            start(starter, beforeController, (source, scope, tile, cancellation, formats, creatureBytes) -> WorldStreamSourceBridge.prepareExterior(source, scope, tile, cancellation));
         }
 
         void start(WorldStreamSourceController.GpuStarter starter, Runnable beforeController,

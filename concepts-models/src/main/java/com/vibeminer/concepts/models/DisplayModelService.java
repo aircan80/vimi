@@ -119,6 +119,27 @@ public final class DisplayModelService implements BuildDisplayModels {
         return submit(token, request -> load(displayId, true, request));
     }
 
+    /**
+     * Reads the display's table relationships on the worker, without its model. A table shape
+     * outside the reviewed profile answers null, so the caller asks {@link #worldPreview}, which
+     * states that refusal; busy and closed handles still propagate as transient.
+     */
+    @Override
+    public CompletableFuture<DisplayModelTypes.Reference> reference(
+            long displayId, Cancellation token) {
+        checkDisplay(displayId);
+        return submit(
+                token,
+                request -> {
+                    try {
+                        return resolve(displayId, request, new ArrayList<>());
+                    } catch (IllegalArgumentException unreviewed) {
+                        request.check();
+                        return null;
+                    }
+                });
+    }
+
     @Override
     public CompletableFuture<DisplayModelTypes.Idle> idle(long displayId, Cancellation token) {
         checkDisplay(displayId);

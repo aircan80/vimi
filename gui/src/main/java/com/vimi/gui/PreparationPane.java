@@ -273,7 +273,10 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
                     world.attachCreatures(new WorldTileCreatures(
                             token -> sources.worldSpawns(job.build(), token),
                             () -> java.util.List.of(sources.worldSpawnsKey(job.build()), work.revision()),
-                            WorldTileCreatures.chooser(work::creaturesHandle),
+                            new WorldNpcDisplays(work::creaturesHandle,
+                                    NpcPreviews.egLinkBatch(sources, job.build(), job.locale()),
+                                    NpcPreviews.egLinkRevision(sources, job.build(), job.locale()),
+                                    job.build().version()),
                             new WorldTileCreatures.DisplayPreviews(() -> {
                                 var tables = work.tablesHandle();
                                 var files = work.filesHandle();

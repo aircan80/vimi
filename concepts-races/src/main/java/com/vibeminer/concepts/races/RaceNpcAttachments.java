@@ -51,14 +51,20 @@ final class RaceNpcAttachments {
 
     /**
      * What was attached; {@code notes} are the page facts. Not {@code complete} when an item or its
-     * texture cannot be read yet: the result is shown but not saved or remembered.
+     * texture cannot be read yet: the result is shown but not saved or remembered. {@code files}
+     * are the item model, skin and texture files read for it, found or not.
      */
     record Attached(
             MeshAppearance appearance,
             Set<Integer> visible,
             int items,
             List<String> notes,
-            boolean complete) {}
+            boolean complete,
+            Set<Long> files) {
+        Attached {
+            files = Set.copyOf(files);
+        }
+    }
 
     /** One model to place: its resource, texture resource, attachment and position index. */
     record Piece(int slot, long resource, long material, int attachment, int position) {}
@@ -214,7 +220,8 @@ final class RaceNpcAttachments {
         }
         var hidden = hiddenGroups(service, items, raceId, sex, token, issues);
         if (pieces.isEmpty()) {
-            return new Attached(base, visible(parts, hidden, base.mesh()), 0, notes, true);
+            return new Attached(
+                    base, visible(parts, hidden, base.mesh()), 0, notes, true, Set.of());
         }
         float[] basePositions = base.mesh().positions();
         var positions = new java.util.ArrayList<float[]>();
@@ -233,6 +240,7 @@ final class RaceNpcAttachments {
         boolean complete = true, partial = false;
         boolean environment = false;
         var leftOut = new TreeMap<String, Integer>();
+        var read = new java.util.TreeSet<Long>();
         var models = new BuildModels(files);
         var images = new BlpImages(generated);
         for (var piece : pieces) {
@@ -277,19 +285,23 @@ final class RaceNpcAttachments {
                     if (file == null) {
                         refusal = "no model file for this race and sex";
                     } else {
-                        var read = models.readModel(FileTypes.FileRef.id(file), token).join();
-                        if (read.state() != BuildModelTypes.ReadState.READ
-                                || read.model() == null) {
-                            complete &= !RaceAppearance.retryable(read.state());
-                            refusal = "its model is " + read.state();
+                        read.add(file);
+                        var model = models.readModel(FileTypes.FileRef.id(file), token).join();
+                        if (model.state() != BuildModelTypes.ReadState.READ
+                                || model.model() == null) {
+                            complete &= !RaceAppearance.retryable(model.state());
+                            refusal = "its model is " + model.state();
                         } else {
-                            var drawn = RaceAppearance.drawSurface(models, read, token);
+                            var drawn = RaceAppearance.drawSurface(models, model, token);
+                            if (drawn.skin() != null && drawn.skin().fileDataId() != null) {
+                                read.add(drawn.skin().fileDataId());
+                            }
                             if (drawn.surface() == null) {
                                 complete &= !RaceAppearance.retryable(drawn.skin().state());
                                 refusal = "its surface is " + drawn.skin().state();
                             } else {
                                 var item = drawn.surface();
-                                var m = read.model();
+                                var m = model.model();
                                 // The item texture, or a file the model names, per texture slot.
                                 var bound =
                                         new ArrayList<int[]>(); // {section, textureIndex, flags,
@@ -344,6 +356,7 @@ final class RaceNpcAttachments {
                                     }
                                     Integer index = byFile.get(textureFile);
                                     if (index == null) {
+                                        read.add(textureFile);
                                         var decoded =
                                                 images.decodeLargestWithin(
                                                                 files,
@@ -455,11 +468,13 @@ final class RaceNpcAttachments {
             notes.add(SURFACES_LEFT_OUT);
         }
         if (attached == 0) {
-            return new Attached(base, visible(parts, hidden, base.mesh()), 0, notes, complete);
+            return new Attached(
+                    base, visible(parts, hidden, base.mesh()), 0, notes, complete, read);
         }
         var mesh = new PreviewMesh(concat(positions), concatInts(indices), meshParts);
         var appearance = new MeshAppearance(mesh, concat(uvs), concat(normals), surfaces, textures);
-        return new Attached(appearance, visible(parts, hidden, mesh), attached, notes, complete);
+        return new Attached(
+                appearance, visible(parts, hidden, mesh), attached, notes, complete, read);
     }
 
     private static void note(List<String> issues, String text) {

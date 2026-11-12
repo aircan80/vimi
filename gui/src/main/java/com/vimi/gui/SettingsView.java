@@ -156,8 +156,9 @@ final class SettingsView extends BorderPane {
                         + " · https://creativecommons.org/licenses/by/4.0/",
                 "Source: " + attribution.upstream(),
                 "Ships with the application and is verified against its notice's hash when it"
-                        + " loads. A newer history comes with an application update; nothing is"
-                        + " downloaded.");
+                        + " loads. The NPCs page uses it after the client Creature record and any"
+                        + " downloaded EG Link data. A newer history comes with an application"
+                        + " update; nothing is downloaded.");
     }
 
     /** Attribution for third-party data that ships with the application (not a data source). */

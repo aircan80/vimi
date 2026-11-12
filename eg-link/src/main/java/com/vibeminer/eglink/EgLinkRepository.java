@@ -29,6 +29,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
@@ -41,9 +42,14 @@ import java.util.function.Consumer;
  */
 public final class EgLinkRepository implements AutoCloseable {
     public static final int MAX_FILE_BYTES = 16 << 20, MAX_SNAPSHOT_BYTES = 64 << 20;
+
+    /** Snapshots each product keeps after a sync, by default ({@link #retainedOrder}). */
+    public static final int RETAINED_SNAPSHOTS = 10;
+
     private static final int APPLICATION_ID = 0x45474c31;
     private final Path root;
     private final EgLinkClient client;
+    private final int retained;
     private final ThreadPoolExecutor worker =
             new ThreadPoolExecutor(
                     1,
@@ -57,6 +63,15 @@ public final class EgLinkRepository implements AutoCloseable {
     private CompletableFuture<Void> closed;
 
     public EgLinkRepository(Path directory, EgLinkClient client) throws IOException {
+        this(directory, client, RETAINED_SNAPSHOTS);
+    }
+
+    /** As above, keeping at most {@code retained} snapshots per product after each sync. */
+    public EgLinkRepository(Path directory, EgLinkClient client, int retained) throws IOException {
+        if (retained < 1 || retained > 1024) {
+            throw new IllegalArgumentException("Retained EG Link snapshots must be 1 to 1024");
+        }
+        this.retained = retained;
         this.root = directory.toAbsolutePath().normalize();
         this.client = java.util.Objects.requireNonNull(client);
         Files.createDirectories(root.resolve("sources"));
@@ -133,15 +148,33 @@ public final class EgLinkRepository implements AutoCloseable {
 
     /**
      * Updates latest advertised build per product and every distinct installed product/build.
-     * Unchanged prepared snapshots are verified/reused; historical builds are never bulk fetched.
-     * Partial failures are returned as issues while completed snapshots remain available.
+     * Unchanged prepared snapshots are verified/reused: the same commit, or a prepared snapshot of
+     * the same product and build whose datasets declare the same records, sources and collection
+     * dates (a later commit that left the build alone). Historical builds are never bulk fetched.
+     * Partial failures are returned as issues while completed snapshots remain available. Then each
+     * product keeps its {@code retained} snapshots in {@link #retainedOrder} and the rest are
+     * deleted.
      */
     public CompletableFuture<EgLinkTypes.Sync> sync(
             Consumer<Progress> progress, Cancellation token) {
+        return sync(progress, snapshots -> Set.of(), token);
+    }
+
+    /**
+     * As {@link #sync(Consumer, Cancellation)}; {@code keep} names, from the snapshots held after
+     * the downloads, the ones pruning must never delete (the snapshot an opened or library build
+     * reads, one a user chose). They are kept on top of the retained count.
+     */
+    public CompletableFuture<EgLinkTypes.Sync> sync(
+            Consumer<Progress> progress,
+            java.util.function.Function<List<Snapshot>, Set<String>> keep,
+            Cancellation token) {
+        java.util.Objects.requireNonNull(keep);
         return call(
                 token,
                 () -> {
                     progress.accept(new Progress("Checking EG Link GitHub commit", 0, 1));
+                    purgeTrash();
                     Catalog catalog = checkNow(token);
                     List<Snapshot> installed = local(token);
                     var targets = new LinkedHashMap<String, Build>();
@@ -158,14 +191,15 @@ public final class EgLinkRepository implements AutoCloseable {
                                                 : before);
                     }
                     var issues = new ArrayList<String>();
+                    var warnings = new ArrayList<String>();
                     for (Snapshot snapshot : installed) {
                         String key = snapshot.build().product() + "/" + snapshot.build().version();
                         Build current = advertised.get(key);
                         if (current != null) {
                             targets.put(key, current);
-                        } else if (!issues.contains(
+                        } else if (!warnings.contains(
                                 "No longer advertised: " + key + "; local data retained")) {
-                            issues.add("No longer advertised: " + key + "; local data retained");
+                            warnings.add("No longer advertised: " + key + "; local data retained");
                         }
                     }
                     latest.values()
@@ -181,6 +215,13 @@ public final class EgLinkRepository implements AutoCloseable {
                         boolean retained =
                                 Files.exists(source(sourceId), LinkOption.NOFOLLOW_LINKS);
                         String label = build.product() + " " + build.version();
+                        Snapshot unchanged = unchanged(installed, build, sourceId);
+                        if (unchanged != null) {
+                            reused++;
+                            progress.accept(
+                                    new Progress("EG Link " + label + " is unchanged", 1, 1));
+                            continue;
+                        }
                         try {
                             downloadNow(
                                     build,
@@ -236,8 +277,197 @@ public final class EgLinkRepository implements AutoCloseable {
                                                     : cause.getMessage()));
                         }
                     }
-                    return new EgLinkTypes.Sync(local(token), downloaded, prepared, reused, issues);
+                    var held = local(token);
+                    Set<String> kept;
+                    try {
+                        kept = Set.copyOf(keep.apply(held));
+                    } catch (RuntimeException failure) {
+                        // Without knowing what is in use, nothing is pruned this time.
+                        kept = null;
+                        warnings.add("Older snapshots were kept: " + failure.getMessage());
+                    }
+                    int pruned = kept == null ? 0 : prune(held, kept, warnings, token);
+                    if (pruned > 0) {
+                        progress.accept(
+                                new Progress(
+                                        "Removed " + pruned + " older EG Link snapshots", 1, 1));
+                    }
+                    return new EgLinkTypes.Sync(
+                            local(token), downloaded, prepared, reused, issues, warnings);
                 });
+    }
+
+    /**
+     * A prepared snapshot of another commit with the same product, build and declared datasets as
+     * {@code build}, or null. The index declares no per-dataset digest, only record and source
+     * counts and the collection date, so a build whose content changed while all three stayed the
+     * same would keep its earlier snapshot until one of them changes. Upstream bumps the collection
+     * date whenever it collects again, so the risk is a same-day correction.
+     */
+    private static Snapshot unchanged(List<Snapshot> installed, Build build, String sourceId) {
+        return installed.stream()
+                .filter(
+                        value ->
+                                !value.id().equals(sourceId)
+                                        && value.problem() == null
+                                        && value.indexedRecords() != null
+                                        && value.build().product().equals(build.product())
+                                        && value.build().version().equals(build.version())
+                                        && value.build().datasets().equals(build.datasets()))
+                .findFirst()
+                .orElse(null);
+    }
+
+    /**
+     * The order in which one product's snapshots are kept: first the newest commit of each build,
+     * newest build first, then the older commits of every build, most recently downloaded first. A
+     * later commit of a build supersedes an earlier one, so distinct builds (which record different
+     * NPCs) outlast repeated commits of the latest build.
+     */
+    static List<Snapshot> retainedOrder(List<Snapshot> snapshots) {
+        var newestFirst = new ArrayList<>(snapshots);
+        newestFirst.sort(
+                Comparator.comparing(
+                                (Snapshot value) -> value.build().version(),
+                                EgLinkRepository::compareVersions)
+                        .reversed()
+                        .thenComparing(Snapshot::downloadedAt, Comparator.reverseOrder())
+                        .thenComparing(Snapshot::id));
+        var heads = new ArrayList<Snapshot>();
+        var rest = new ArrayList<Snapshot>();
+        var seen = new java.util.HashSet<String>();
+        for (Snapshot value : newestFirst) {
+            (seen.add(value.build().version()) ? heads : rest).add(value);
+        }
+        rest.sort(
+                Comparator.comparing(Snapshot::downloadedAt, Comparator.reverseOrder())
+                        .thenComparing(Snapshot::id));
+        heads.addAll(rest);
+        return heads;
+    }
+
+    /**
+     * Deletes each product's snapshots beyond the retained count, except those in {@code keep}; the
+     * number deleted. A snapshot that cannot be removed now (a file another process holds open, as
+     * Windows refuses to delete it) is a warning, never a sync failure: it stays listed and is
+     * tried again at the next sync.
+     */
+    private int prune(
+            List<Snapshot> snapshots, Set<String> keep, List<String> issues, Cancellation token)
+            throws IOException {
+        var byProduct = new LinkedHashMap<String, List<Snapshot>>();
+        for (Snapshot value : snapshots) {
+            byProduct.computeIfAbsent(value.build().product(), key -> new ArrayList<>()).add(value);
+        }
+        int pruned = 0;
+        for (var product : byProduct.values()) {
+            var order = retainedOrder(product);
+            for (Snapshot value : order.subList(Math.min(retained, order.size()), order.size())) {
+                token.check();
+                if (keep.contains(value.id())) {
+                    continue;
+                }
+                try {
+                    removeSnapshot(value.id());
+                    pruned++;
+                } catch (IOException | RuntimeException failure) {
+                    issues.add(
+                            "Could not remove older snapshot "
+                                    + value.build().product()
+                                    + " "
+                                    + value.build().version()
+                                    + " now; it is tried again at the next sync ("
+                                    + (failure.getMessage() == null
+                                            ? failure.getClass().getSimpleName()
+                                            : failure.getMessage())
+                                    + ")");
+                }
+            }
+        }
+        return pruned;
+    }
+
+    /** Test seam: told each snapshot moved to the trash, before its files are deleted. */
+    static volatile Consumer<String> trashedForTest;
+
+    /**
+     * Removes one snapshot. Its open handles and remembered answers go first ({@link #release});
+     * then its folder moves atomically to a trash name, so a crash never leaves a listed snapshot
+     * without its manifest; then its database and the trash are deleted. Leftover trash is purged
+     * at the next sync.
+     */
+    private void removeSnapshot(String id) throws IOException {
+        release(id);
+        Path folder = source(id);
+        Path trash = root.resolve("sources").resolve(".trash-" + id + "-" + System.nanoTime());
+        Files.move(folder, trash, StandardCopyOption.ATOMIC_MOVE);
+        var seam = trashedForTest;
+        if (seam != null) {
+            seam.accept(id);
+        }
+        Path db = database(id);
+        Files.deleteIfExists(db);
+        Files.deleteIfExists(Path.of(db + "-wal"));
+        Files.deleteIfExists(Path.of(db + "-shm"));
+        remove(trash);
+    }
+
+    /** Test seam: run by {@link #release} before a snapshot is removed. */
+    static volatile Consumer<String> releaseForTest;
+
+    /**
+     * Closes everything this repository holds open for snapshot {@code id} and forgets answers it
+     * remembered from it ({@link #forget}), before the snapshot's files are deleted: Windows
+     * refuses to delete an open SQLite file.
+     */
+    private void release(String id) throws IOException {
+        var seam = releaseForTest;
+        if (seam != null) {
+            seam.accept(id);
+        }
+        try {
+            forget(id);
+        } catch (IOException | RuntimeException failure) {
+            throw failure;
+        } catch (Exception failure) {
+            throw new IOException("Could not close snapshot " + id, failure);
+        }
+    }
+
+    /**
+     * Deletes trash a crash left behind, and prepared databases whose snapshot folder is gone. Best
+     * effort: what cannot go now is tried again at the next sync.
+     */
+    private void purgeTrash() {
+        try (var paths = Files.list(root.resolve("sources"))) {
+            for (Path path :
+                    paths.filter(p -> p.getFileName().toString().startsWith(".trash-")).toList()) {
+                try {
+                    remove(path);
+                } catch (IOException failure) {
+                    // Left for the next sync.
+                }
+            }
+        } catch (IOException failure) {
+            // Left for the next sync.
+        }
+        try (var paths = Files.list(root.resolve("derived"))) {
+            for (Path path : paths.toList()) {
+                String name = path.getFileName().toString();
+                String id = name.replaceFirst("\\.sqlite(-wal|-shm)?$", "");
+                if (id.matches("[0-9a-f]{64}")
+                        && !id.equals(name)
+                        && !Files.exists(source(id), LinkOption.NOFOLLOW_LINKS)) {
+                    try {
+                        Files.deleteIfExists(path);
+                    } catch (IOException failure) {
+                        // Left for the next sync.
+                    }
+                }
+            }
+        } catch (IOException failure) {
+            // Left for the next sync.
+        }
     }
 
     public static Catalog parseIndex(String revision, Instant checkedAt, byte[] bytes)
