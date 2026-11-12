@@ -77,6 +77,46 @@ class PreviewAnimationTest {
     }
 
     @Test
+    void aSubsetSkinsItsVerticesAsTheWholeSurfaceDoes() throws Exception {
+        var root = new Bone(-1, 0, 0, 0, null, constant(4, 0, 0, S, S), null, false);
+        var child = new Bone(0, 1, 0, 0, constant(3, 0, 0, 1), null, null, false);
+        var rest = mesh(2, 0, 0, 1, 1, 0, 2, 0, 0);
+        int[] bones = {1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0};
+        int[] weights = {255, 0, 0, 0, 255, 0, 0, 0, 128, 127, 0, 0};
+        var whole =
+                new PreviewAnimation(
+                        "Stand",
+                        1000,
+                        new long[0],
+                        List.of(root, child),
+                        rest,
+                        new float[0],
+                        bones,
+                        weights);
+        var subset = whole.subset(new int[] {2, 0});
+        assertEquals(2, subset.vertexCount());
+        assertEquals(whole.durationMillis(), subset.durationMillis());
+        float[] all = new float[9], some = new float[6];
+        whole.skin(250, all, null);
+        subset.skin(250, some, null);
+        for (int i = 0; i < 3; i++) {
+            assertEquals(all[6 + i], some[i], 1e-6f);
+            assertEquals(all[i], some[3 + i], 1e-6f);
+        }
+        // It serializes like any animation.
+        var out = new java.io.ByteArrayOutputStream();
+        subset.write(new java.io.DataOutputStream(out));
+        assertEquals(
+                2,
+                PreviewAnimation.read(
+                                new java.io.DataInputStream(
+                                        new java.io.ByteArrayInputStream(out.toByteArray())))
+                        .vertexCount());
+        assertThrows(IllegalArgumentException.class, () -> whole.subset(new int[] {3}));
+        assertThrows(IllegalArgumentException.class, () -> whole.subset(new int[0]));
+    }
+
+    @Test
     void rigsBeyondAnEightBitIndexEvaluateOnlyBonesThatMoveVertices() {
         // 300 bones: a translating root, bone 299 under it moving vertex 1, and 298 bones that
         // move nothing (one of them keyed, and pivoted away from its rest place if evaluated).

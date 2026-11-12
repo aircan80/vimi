@@ -215,6 +215,11 @@ public final class WorldStreamTileWriter {
             return data.bytes();
         }
 
+        /** Models whose idle animation the child may play (#384). */
+        public int animatedModels() {
+            return data.animations.count();
+        }
+
         WorldStreamObjectsFile.Data data() {
             return data;
         }
@@ -421,6 +426,38 @@ public final class WorldStreamTileWriter {
                 imageBytes += count;
                 decodedBytes += decoded;
                 return images.size() - 1;
+            }
+
+            private final java.util.TreeMap<Integer, Object[]> animated = new java.util.TreeMap<>();
+
+            /**
+             * Marks model {@code model} as animated (#384): the child may re-skin its vertices with
+             * {@code animation} ({@link com.vibeminer.rendering.models.PreviewAnimation#write}
+             * bytes), whose rest surface vertex {@code sources[v]} each model vertex {@code v} is
+             * gathered from. Checked against the model when the set is built.
+             */
+            public void animate(int model, int[] sources, byte[] animation) {
+                open();
+                if (model < 0 || model >= models.size()) {
+                    throw new IllegalArgumentException("No such exterior model");
+                }
+                if (animated.size() == WorldStreamObjectsFile.MAX_ANIMATED
+                        && !animated.containsKey(model)) {
+                    throw new IllegalArgumentException("Animated models exceed file profile");
+                }
+                animated.put(model, new Object[] {sources.clone(), animation.clone()});
+            }
+
+            /** The vertices of all of model {@code model}'s meshes added so far. */
+            public int modelVertices(int model) {
+                if (model < 0 || model >= models.size()) {
+                    throw new IllegalArgumentException("No such exterior model");
+                }
+                int first = models.get(model)[0], count = models.get(model)[1], sum = 0;
+                for (int m = first; m < first + count; m++) {
+                    sum += meshes.get(m)[1];
+                }
+                return sum;
             }
 
             /** Starts a new shared model; returns its index. Following meshes belong to it. */
@@ -724,27 +761,42 @@ public final class WorldStreamTileWriter {
                 }
                 return new Exterior(
                         new WorldStreamObjectsFile.Data(
-                                modelTable,
-                                meshTable,
-                                rangeTable,
-                                models,
-                                transforms,
-                                imageTable,
-                                vertexData,
-                                colourData,
-                                indexData,
-                                pixelData,
-                                compressedFormats,
-                                meshGroupData,
-                                setData,
-                                groupData,
-                                boxData,
-                                vertexCountData,
-                                planeData,
-                                portalVertexData,
-                                refData,
-                                parents,
-                                tiedGroups));
+                                        modelTable,
+                                        meshTable,
+                                        rangeTable,
+                                        models,
+                                        transforms,
+                                        imageTable,
+                                        vertexData,
+                                        colourData,
+                                        indexData,
+                                        pixelData,
+                                        compressedFormats,
+                                        meshGroupData,
+                                        setData,
+                                        groupData,
+                                        boxData,
+                                        vertexCountData,
+                                        planeData,
+                                        portalVertexData,
+                                        refData,
+                                        parents,
+                                        tiedGroups)
+                                .withAnimations(animations()));
+            }
+
+            private WorldStreamObjectsFile.Animations animations() {
+                var models = new int[animated.size()];
+                var sources = new int[models.length][];
+                var data = new byte[models.length][];
+                int i = 0;
+                for (var entry : animated.entrySet()) {
+                    models[i] = entry.getKey();
+                    sources[i] = (int[]) entry.getValue()[0];
+                    data[i] = (byte[]) entry.getValue()[1];
+                    i++;
+                }
+                return new WorldStreamObjectsFile.Animations(models, sources, data);
             }
 
             private void open() {

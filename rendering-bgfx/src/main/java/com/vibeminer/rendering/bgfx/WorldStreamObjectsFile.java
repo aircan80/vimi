@@ -48,8 +48,10 @@ import java.util.function.BooleanSupplier;
  * set (model, groups, portals, vertices, references), per group (MOGP flags, first reference,
  * reference count), the group boxes (six floats), per portal its vertex count, the portal planes
  * (four floats), the portal vertices (three floats) and per reference (portal, group, side), every
- * index relative to its set. Every count, offset, index and float is validated; reserved bytes must
- * be zero.
+ * index relative to its set. Then the animation section of #384 ({@link Animations}): per entry its
+ * model, vertex count and animation byte length, the rest vertex of each of the model's vertices,
+ * and the animation's bytes padded to four. Every count, offset, index and float is validated;
+ * reserved bytes must be zero.
  */
 final class WorldStreamObjectsFile {
     // Version 5 (#367): range classes add ADDITIVE and the UNLIT flag, on #420's version 4.
@@ -59,8 +61,10 @@ final class WorldStreamObjectsFile {
     // 3a): mesh group ordinals and the portal tables of building roots on instance maps, whose
     // counts follow at header bytes 152-171. Version 8 (#383): the INTERIOR_LIGHT range flag, an
     // interior group lit by its vertex colours (its raw MOCV) instead of the sun. Version 9: the
-    // placement's formerly reserved int is its portal tie ({@link #tie}), zero for none.
-    static final int VERSION = 9, HEADER_BYTES = 256;
+    // placement's formerly reserved int is its portal tie ({@link #tie}), zero for none. Version 10
+    // (#384): an animation section after the portal tables ({@link Animations}), whose entry count
+    // and byte length follow at header bytes 172-179.
+    static final int VERSION = 10, HEADER_BYTES = 256;
     // The tables are the sums of the producer's pools (ExteriorObjectLimits): opaque buildings,
     // their cutout and blended surfaces, and doodads. Creature models share whatever room remains.
     static final int MAX_MODELS = ExteriorObjectLimits.MODELS;
@@ -166,6 +170,19 @@ final class WorldStreamObjectsFile {
     static final int VERTEX_FLOATS = 8, VERTEX_BYTES = 32, COLOUR_BYTES = 4;
 
     /**
+     * Animated models per tile (#384): creature models with an idle sequence. A tile draws at most
+     * 64 creature models, so this bounds every one of them.
+     */
+    static final int MAX_ANIMATED = 64;
+
+    /**
+     * Bytes of the animation section per tile and per entry. An entry is one model's rest-vertex
+     * map (four bytes per vertex) and its serialized idle animation (bones, keys, the rest surface
+     * and its influences); busy town tiles measured well under these.
+     */
+    static final int MAX_ANIMATION_BYTES = 16 << 20, MAX_ENTRY_ANIMATION_BYTES = 6 << 20;
+
+    /**
      * The file ceiling: every table at its cap ({@link #length}, with the mesh group column) plus
      * the portal tables at theirs ({@link #portalLength}), rounded up to the next MiB. With the
      * #308 pools, #375's vertex colours, #383's portal tables, the large and interior allowances of
@@ -188,7 +205,8 @@ final class WorldStreamObjectsFile {
                                     WmoPortalSet.MAX_TILE_GROUPS,
                                     WmoPortalSet.MAX_TILE_PORTALS,
                                     WmoPortalSet.MAX_TILE_VERTICES,
-                                    WmoPortalSet.MAX_TILE_REFS));
+                                    WmoPortalSet.MAX_TILE_REFS)
+                            + MAX_ANIMATION_BYTES);
 
     private static int ceilingMiB(int bytes) {
         return (bytes + (1 << 20) - 1) >>> 20 << 20;
@@ -197,6 +215,64 @@ final class WorldStreamObjectsFile {
     static final double MAX_SCALE = 64;
     private static final int SCRATCH = 64 << 10;
     private static final byte[] MAGIC = "VIMIWSO1".getBytes(StandardCharsets.US_ASCII);
+
+    /**
+     * Animated models of one object set (#384): per entry a model whose vertices the child may
+     * re-skin, the rest vertex of each of that model's vertices (in mesh order) in its animation's
+     * rest surface, and the animation as {@link
+     * com.vibeminer.rendering.models.PreviewAnimation#write} bytes. Models ascend and are unique.
+     * The animation bytes are parsed only by the child's packing worker; this class checks bounds.
+     */
+    static final class Animations {
+        static final Animations NONE = new Animations(new int[0], new int[0][], new byte[0][]);
+
+        final int[] models;
+        final int[][] sources;
+        final byte[][] animations;
+
+        Animations(int[] models, int[][] sources, byte[][] animations) {
+            this.models = Objects.requireNonNull(models);
+            this.sources = Objects.requireNonNull(sources);
+            this.animations = Objects.requireNonNull(animations);
+            require(
+                    models.length <= MAX_ANIMATED
+                            && sources.length == models.length
+                            && animations.length == models.length,
+                    "Animation counts");
+            long bytes = 0;
+            for (int i = 0; i < models.length; i++) {
+                require(i == 0 || models[i] > models[i - 1], "Animated models ascend");
+                require(
+                        sources[i] != null
+                                && animations[i] != null
+                                && animations[i].length >= 1
+                                && animations[i].length <= MAX_ENTRY_ANIMATION_BYTES,
+                        "Animation entry");
+                for (int source : sources[i]) {
+                    require(source >= 0 && source < MAX_MESH_VERTICES, "Animation source");
+                }
+                bytes += entryBytes(sources[i].length, animations[i].length);
+            }
+            require(bytes <= MAX_ANIMATION_BYTES, "Animation section bytes");
+        }
+
+        int count() {
+            return models.length;
+        }
+
+        /** The section's bytes in the file. */
+        int bytes() {
+            long bytes = 0;
+            for (int i = 0; i < models.length; i++) {
+                bytes += entryBytes(sources[i].length, animations[i].length);
+            }
+            return (int) bytes;
+        }
+
+        static long entryBytes(int vertices, int animationBytes) {
+            return 12L + vertices * 4L + (animationBytes + 3L) / 4 * 4;
+        }
+    }
 
     /** Validated immutable object set. Arrays are owned; accessors never expose them mutable. */
     static final class Data {
@@ -269,6 +345,9 @@ final class WorldStreamObjectsFile {
         final int[] placementGroups;
 
         final int draws;
+
+        /** Animated models (#384); {@link Animations#NONE} without any. */
+        final Animations animations;
 
         /**
          * Compressed formats this file charges at their stored size (bit per {@link
@@ -423,7 +502,57 @@ final class WorldStreamObjectsFile {
             this.portalRefs = Objects.requireNonNull(portalRefs);
             this.placementParents = Objects.requireNonNull(placementParents);
             this.placementGroups = Objects.requireNonNull(placementGroups);
+            this.animations = Animations.NONE;
             draws = validate();
+        }
+
+        private Data(Data base, Animations animations) {
+            compressedFormats = base.compressedFormats;
+            models = base.models;
+            meshes = base.meshes;
+            ranges = base.ranges;
+            placementModels = base.placementModels;
+            placements = base.placements;
+            images = base.images;
+            vertices = base.vertices;
+            colours = base.colours;
+            indices = base.indices;
+            pixels = base.pixels;
+            meshGroups = base.meshGroups;
+            portalSets = base.portalSets;
+            portalGroups = base.portalGroups;
+            portalBoxes = base.portalBoxes;
+            portalVertexCounts = base.portalVertexCounts;
+            portalPlanes = base.portalPlanes;
+            portalVertices = base.portalVertices;
+            portalRefs = base.portalRefs;
+            placementParents = base.placementParents;
+            placementGroups = base.placementGroups;
+            draws = base.draws;
+            this.animations = Objects.requireNonNull(animations);
+            for (int i = 0; i < animations.count(); i++) {
+                int model = animations.models[i];
+                require(model >= 0 && model < modelCount(), "Animated model");
+                require(
+                        animations.sources[i].length == modelVertices(model),
+                        "Animation sources differ from the model's vertices");
+            }
+        }
+
+        /** The same set with {@code animations} (#384), checked against its models. */
+        Data withAnimations(Animations animations) {
+            return animations.count() == 0 && this.animations.count() == 0
+                    ? this
+                    : new Data(this, animations);
+        }
+
+        /** Vertices of all of a model's meshes. */
+        int modelVertices(int model) {
+            int first = models[model * 2], count = models[model * 2 + 1], sum = 0;
+            for (int m = first; m < first + count; m++) {
+                sum += meshes[m * 6 + 1];
+            }
+            return sum;
         }
 
         private static int[] unset(int meshes) {
@@ -563,7 +692,8 @@ final class WorldStreamObjectsFile {
                                     portalGroupCount(),
                                     portalCount(),
                                     portalVertexCount(),
-                                    portalRefCount());
+                                    portalRefCount())
+                            + animations.bytes();
             return bytes > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) bytes;
         }
 
@@ -1047,6 +1177,18 @@ final class WorldStreamObjectsFile {
                 writeFloats(output, data.portalPlanes);
                 writeFloats(output, data.portalVertices);
                 writeInts(output, data.portalRefs);
+                var animations = data.animations;
+                for (int i = 0; i < animations.count(); i++) {
+                    check(canceled);
+                    output.writeInt(Integer.reverseBytes(animations.models[i]));
+                    output.writeInt(Integer.reverseBytes(animations.sources[i].length));
+                    output.writeInt(Integer.reverseBytes(animations.animations[i].length));
+                    writeInts(output, animations.sources[i]);
+                    output.write(animations.animations[i]);
+                    for (int pad = animations.animations[i].length; pad % 4 != 0; pad++) {
+                        output.writeByte(0);
+                    }
+                }
                 output.flush();
                 if (channel.size() != data.bytes()) {
                     throw new IOException("Objects file length differs");
@@ -1127,9 +1269,17 @@ final class WorldStreamObjectsFile {
                             && in.getInt(100) == 0
                             && in.getLong(104) == identity.lease().serial(),
                     "Objects header identity");
-            for (int i = 172; i < HEADER_BYTES; i++) {
+            for (int i = 180; i < HEADER_BYTES; i++) {
                 require(head[i] == 0, "Reserved objects bytes");
             }
+            int animated = in.getInt(172), animationBytes = in.getInt(176);
+            require(
+                    animated >= 0
+                            && animated <= MAX_ANIMATED
+                            && animationBytes >= 0
+                            && animationBytes <= MAX_ANIMATION_BYTES
+                            && (animated == 0) == (animationBytes == 0),
+                    "Objects animation counts");
             int portalSets = in.getInt(152), portalGroups = in.getInt(156);
             int portals = in.getInt(160), portalVertices = in.getInt(164);
             int portalRefs = in.getInt(168);
@@ -1183,6 +1333,7 @@ final class WorldStreamObjectsFile {
                                                     portals,
                                                     portalVertices,
                                                     portalRefs)
+                                            + animationBytes
                                     == reference.length(),
                     "Objects header counts");
             // Bounded by the counts above before any body allocation.
@@ -1244,6 +1395,32 @@ final class WorldStreamObjectsFile {
             float[] portalPlaneData = floats(input, portals * PORTAL_PLANE_FLOATS);
             float[] portalVertexData = floats(input, portalVertices * 3);
             int[] portalRefData = ints(input, portalRefs * PORTAL_REF_INTS);
+            int[] animatedModels = new int[animated];
+            int[][] animationSources = new int[animated][];
+            byte[][] animationData = new byte[animated][];
+            long animationLeft = animationBytes;
+            for (int i = 0; i < animated; i++) {
+                check(canceled);
+                require(animationLeft >= 12, "Animation entry bounds");
+                animatedModels[i] = Integer.reverseBytes(input.readInt());
+                int count = Integer.reverseBytes(input.readInt());
+                int length = Integer.reverseBytes(input.readInt());
+                require(
+                        count >= 0
+                                && count <= MAX_VERTICES
+                                && length >= 1
+                                && length <= MAX_ENTRY_ANIMATION_BYTES
+                                && Animations.entryBytes(count, length) <= animationLeft,
+                        "Animation entry bounds");
+                animationLeft -= Animations.entryBytes(count, length);
+                animationSources[i] = ints(input, count);
+                animationData[i] = new byte[length];
+                input.readFully(animationData[i]);
+                for (int pad = length; pad % 4 != 0; pad++) {
+                    require(input.readByte() == 0, "Animation padding");
+                }
+            }
+            require(animationLeft == 0, "Animation section length");
             check(canceled);
             if (input.read() != -1
                     || channel.size() != reference.length()
@@ -1274,7 +1451,8 @@ final class WorldStreamObjectsFile {
                             parents,
                             tiedGroups);
             require(data.draws == draws, "Object draw count");
-            return data;
+            return data.withAnimations(
+                    new Animations(animatedModels, animationSources, animationData));
         } catch (EOFException truncated) {
             throw new IOException("Truncated objects file", truncated);
         } catch (IllegalArgumentException invalid) {
@@ -1296,6 +1474,7 @@ final class WorldStreamObjectsFile {
         out.putInt(data.portalSetCount()).putInt(data.portalGroupCount());
         out.putInt(data.portalCount()).putInt(data.portalVertexCount());
         out.putInt(data.portalRefCount());
+        out.putInt(data.animations.count()).putInt(data.animations.bytes());
         return out.array();
     }
 
