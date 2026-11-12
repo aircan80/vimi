@@ -87,6 +87,7 @@ public final class WorldStreamSourceControllerTest {
         creaturesShareTheirBytesAndYieldToBuildings();
         buildingsComeFirstAndCreaturesReplaceThemLater();
         refusedCreatureReplacementKeepsTheBuildings();
+        newBuildingsPreemptACreaturePassThatThenResumes();
         lateObjectFailuresStayIsolatedFromTerrain();
         lateObjectsCompletingAfterRetirementAreIgnored();
         refusedInitialQualificationRetriesOnItsDeadline();
@@ -1048,6 +1049,67 @@ public final class WorldStreamSourceControllerTest {
                         "Each tile was prepared buildings only, then with creatures: " + asked);
             fixture.untilPresented(() -> fixture.controller.snapshot().detail().contains("6 static creature models"));
             check(fixture.objectLines().size() == 4, "Nothing delivered twice: " + fixture.objectLines());
+        } finally {
+            fixture.close();
+        }
+    }
+
+    /**
+     * A creature pass still preparing gives way to a newly wanted tile's buildings: they start
+     * without waiting for it, and the preempted pass is prepared again afterwards and attaches.
+     */
+    private static void newBuildingsPreemptACreaturePassThatThenResumes() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 3);
+        fixture.exteriors = true;
+        int first = fixture.tiles.get(0).y(), added = fixture.tiles.get(2).y();
+        var creatureCalls = new java.util.concurrent.ConcurrentHashMap<Integer, java.util.concurrent.atomic.AtomicInteger>();
+        var blocked = new java.util.concurrent.atomic.AtomicBoolean();
+        var preparer = new WorldStreamSourceBridge.ExteriorPreparer() {
+            @Override
+            public WorldStreamSourceBridge.ExteriorCopy prepare(
+                    com.vibeminer.concepts.world.WorldTerrainStreaming source,
+                    com.vibeminer.concepts.world.WorldTerrainStreaming.Scope scope,
+                    com.vibeminer.formats.world.WorldFormats.Tile tile,
+                    com.vibeminer.access.Cancellation cancellation, int formats, long creatureBytes) {
+                if (creatureBytes == BUILDINGS_ONLY)
+                    return new WorldStreamSourceBridge.ExteriorCopy(building(), 1, false, "authored");
+                int call = creatureCalls.computeIfAbsent(tile.y(),
+                        key -> new java.util.concurrent.atomic.AtomicInteger()).incrementAndGet();
+                if (tile.y() == first && call == 1) {
+                    // A long conversion: runs until something cancels it.
+                    blocked.set(true);
+                    try {
+                        while (!cancellation.isCanceled()) Thread.sleep(1);
+                    } catch (InterruptedException error) {
+                        throw new AssertionError(error);
+                    } finally {
+                        blocked.set(false);
+                    }
+                    cancellation.check();
+                }
+                return new WorldStreamSourceBridge.ExteriorCopy(building(), 1, false, "authored",
+                        WorldTileCreatures.Summary.drawn(2, 1, 1 << 20));
+            }
+
+            @Override
+            public boolean appendsCreatures() {
+                return true;
+            }
+        };
+        try {
+            fixture.start(fixture.gpu::start, () -> {}, preparer);
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 2));
+            fixture.untilPresented(blocked::get);
+            check(fixture.objectLines().size() == 2, "Both tiles' buildings came first: " + fixture.objectLines());
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 3));
+            fixture.untilPresented(() -> fixture.objectLines().contains(added + " ATTACHED"));
+            check(fixture.objectLines().indexOf(added + " ATTACHED") == 2,
+                    "The new tile's buildings did not wait for the creature pass: " + fixture.objectLines());
+            fixture.untilPresented(() -> fixture.objectLines().contains(first + " REPLACE ATTACHED"));
+            check(creatureCalls.get(first).get() == 2,
+                    "The preempted creature pass was prepared again: " + creatureCalls);
         } finally {
             fixture.close();
         }

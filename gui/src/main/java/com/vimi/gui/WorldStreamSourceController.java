@@ -270,6 +270,9 @@ final class WorldStreamSourceController {
     private final java.util.Set<Entry> creaturesPending =
             java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private final IdentityHashMap<Entry, Long> creatureBudget = new IdentityHashMap<>();
+    // Creature passes canceled for buildings since one last ran to its end (worker-owned).
+    private int creaturePreemptions;
+    static final int CREATURE_PREEMPTIONS = 3;
     private Events events;
     private final Consumer<Runnable> fxPost;
     private final LongSupplier clock;
@@ -1606,14 +1609,14 @@ final class WorldStreamSourceController {
     }
 
     private void startExterior(List<WorldFormats.Tile> wanted) {
-        if (exterior != null || closing || session == null || !session.exteriorObjects()) return;
+        if (closing || session == null || !session.exteriorObjects()) return;
+        if (exterior != null) {
+            preemptCreaturesFor(wanted);
+            return;
+        }
         for (var tile : wanted) {
             for (var entry : current) {
-                if (!same(tile, entry.resident())
-                        || exteriorTried.contains(entry)
-                        || budgetDeferred(entry)
-                        || entry.resident().exteriorObjects()
-                                != WorldStreamTransport.ExteriorObjects.NONE) continue;
+                if (!buildingsWanted(tile, entry)) continue;
                 var work = new Exterior(entry);
                 long creatureBytes = creaturesLater ? WorldStreamSourceBridge.ExteriorPreparer.BUILDINGS_ONLY
                         : creaturesShed.contains(entry) ? 0 : creatureAllowance();
@@ -1635,6 +1638,39 @@ final class WorldStreamSourceController {
                     continue;
                 }
                 prepare(new Exterior(entry, true), tile, creatureAllowance(), "parent.objects.prepareCreatures");
+                return;
+            }
+        }
+    }
+
+    /** Whether {@code entry} is {@code tile}'s resident and its buildings are still to be offered. */
+    private boolean buildingsWanted(WorldFormats.Tile tile, Entry entry) {
+        return same(tile, entry.resident())
+                && !exteriorTried.contains(entry)
+                && !budgetDeferred(entry)
+                && entry.resident().exteriorObjects() == WorldStreamTransport.ExteriorObjects.NONE;
+    }
+
+    /**
+     * A creature pass still preparing gives way to a wanted tile's buildings, so a long creature
+     * conversion never holds back buildings the camera just reached; its tile stays pending and
+     * is prepared again once no buildings are. So that constant movement cannot starve creatures,
+     * a pass is preempted at most {@link #CREATURE_PREEMPTIONS} times in a row; then one runs to
+     * its end.
+     */
+    private void preemptCreaturesFor(List<WorldFormats.Tile> wanted) {
+        var work = exterior;
+        if (!work.creaturesPass
+                || work.prepared == null
+                || work.prepared.isDone()
+                || work.cancellation.isCanceled()
+                || creaturePreemptions >= CREATURE_PREEMPTIONS) return;
+        for (var tile : wanted) {
+            for (var entry : current) {
+                if (!buildingsWanted(tile, entry)) continue;
+                creaturePreemptions++;
+                WorldStageTimings.add("parent.objects.creaturesPreempted", 1);
+                work.cancellation.cancel();
                 return;
             }
         }
@@ -1725,6 +1761,8 @@ final class WorldStreamSourceController {
                 return;
             }
             work.prepared = null;
+            // A creature pass ran to its end: the next one may give way to buildings again.
+            if (work.creaturesPass) creaturePreemptions = 0;
             if (work.creaturesPass && (copy.exterior() == null || copy.failed() || copy.creatures().drawn() == 0)) {
                 // Nothing to add to what is drawn (or the buildings failed this time): the drawn
                 // set stays, and the tile's creature counts are recorded as they are.
