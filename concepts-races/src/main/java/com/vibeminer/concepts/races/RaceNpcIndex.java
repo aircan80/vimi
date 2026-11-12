@@ -278,6 +278,55 @@ final class RaceNpcIndex {
         return taken;
     }
 
+    /**
+     * The tables this handle read so far, by name, for an entry written now; null when the handle
+     * read none, too many, or made a call that names no single table.
+     */
+    List<TableTypes.Ref> touchedTables() {
+        if (untracked) {
+            return null;
+        }
+        var refs = new ArrayList<>(touched);
+        refs.sort(java.util.Comparator.comparing(RaceNpcIndex::name));
+        return refs.isEmpty() || refs.size() > MAX_LIST ? null : refs;
+    }
+
+    /** The digest of {@code refs}' fingerprints as this handle takes them, or null. */
+    byte[] tablesDigest(List<TableTypes.Ref> refs, Cancellation token) {
+        var taken = new java.util.HashMap<TableTypes.Ref, String>();
+        for (var ref : refs) {
+            String fingerprint = known(ref, token);
+            if (fingerprint == null) {
+                return null;
+            }
+            taken.put(ref, fingerprint);
+        }
+        return digest(refs, taken, token);
+    }
+
+    /** Whether every source still states as recorded ({@link #source}). */
+    boolean sourcesUnchanged(Map<Long, String> sources, Cancellation token) {
+        for (var source : sources.entrySet()) {
+            if (!source.getValue().equals(source(source.getKey(), token))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** {@code known} content keys as {@link #source} states them, for an entry written now. */
+    Map<Long, String> sourcesNow(Map<Long, String> known, Cancellation token) {
+        return sources(known, token);
+    }
+
+    GeneratedStore generated() {
+        return generated;
+    }
+
+    BuildFiles files() {
+        return files;
+    }
+
     /** The digest of {@code refs}' fingerprints, or null when one cannot be taken. */
     private byte[] digest(
             List<TableTypes.Ref> refs, Map<TableTypes.Ref, String> taken, Cancellation token) {
@@ -703,7 +752,7 @@ final class RaceNpcIndex {
         }
     }
 
-    private static int count(DataInputStream in) throws IOException {
+    static int count(DataInputStream in) throws IOException {
         int count = in.readInt();
         if (count < 0 || count > MAX_LIST) {
             throw new IOException("Entry list out of bounds");
@@ -711,13 +760,13 @@ final class RaceNpcIndex {
         return count;
     }
 
-    private static void text(DataOutputStream out, String text) throws IOException {
+    static void text(DataOutputStream out, String text) throws IOException {
         byte[] utf8 = text.getBytes(StandardCharsets.UTF_8);
         out.writeInt(utf8.length);
         out.write(utf8);
     }
 
-    private static String text(DataInputStream in) throws IOException {
+    static String text(DataInputStream in) throws IOException {
         int length = in.readInt();
         if (length < 0 || length > 65536) {
             throw new IOException("Entry text out of bounds");

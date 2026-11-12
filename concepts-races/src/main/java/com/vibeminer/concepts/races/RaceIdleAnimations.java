@@ -41,9 +41,17 @@ final class RaceIdleAnimations {
     static final int MAX_CACHED_ANIMATIONS = 4;
     private final RaceMedia media;
     private final BuildFiles files;
+    // Stands kept across sessions (#175); null without a generated store.
+    private final RaceNpcIdleIndex index;
 
-    /** A complete result and the content keys of the skeleton and SKIN it was built from. */
-    private record Cached(RaceMediaTypes.Idle result, Map<Long, String> sourceKeys) {}
+    /**
+     * A complete result, the content keys of the skeleton and SKIN it was built from, and the
+     * model's attachment points with their bones.
+     */
+    private record Cached(
+            RaceMediaTypes.Idle result,
+            Map<Long, String> sourceKeys,
+            Map<Integer, Integer> attachments) {}
 
     private final Map<String, Cached> cached =
             new LinkedHashMap<>(16, 0.75f, true) {
@@ -78,26 +86,61 @@ final class RaceIdleAnimations {
     }
 
     RaceIdleAnimations(RaceMedia media, BuildFiles files) {
+        this(media, files, null);
+    }
+
+    RaceIdleAnimations(RaceMedia media, BuildFiles files, RaceNpcIdleIndex index) {
         this.media = media;
         this.files = files;
+        this.index = index;
     }
 
     RaceMediaTypes.Idle assess(long raceId, long chrModelId, Cancellation token) {
+        return standAssessment(raceId, chrModelId, token).result();
+    }
+
+    /**
+     * A Stand assessment and the files it was built from: the model, skeleton and SKIN with the
+     * content keys read. {@code complete} when every source was read and none changed meanwhile, so
+     * the result may be kept beyond this handle. {@code attachments} are the model's attachment
+     * points and their bones, null when the model was not read.
+     */
+    record StandAssessment(
+            RaceMediaTypes.Idle result,
+            Map<Long, String> sources,
+            boolean complete,
+            Map<Integer, Integer> attachments) {
+        StandAssessment {
+            sources = Map.copyOf(sources);
+            attachments = attachments == null ? null : Map.copyOf(attachments);
+        }
+
+        static StandAssessment partial(RaceMediaTypes.Idle result) {
+            return new StandAssessment(result, Map.of(), false, null);
+        }
+    }
+
+    StandAssessment standAssessment(long raceId, long chrModelId, Cancellation token) {
         var variant =
                 media.variants(raceId, token).variants().stream()
                         .filter(value -> value.chrModelId() == chrModelId)
                         .findFirst()
                         .orElse(null);
         if (variant == null) {
-            return RaceMediaTypes.Idle.unavailable(null, "The selected race model is unavailable.");
+            return StandAssessment.partial(
+                    RaceMediaTypes.Idle.unavailable(
+                            null, "The selected race model is unavailable."));
         }
         if (files == null) {
-            return RaceMediaTypes.Idle.unavailable(
-                    variant, "Build files are unavailable for this workspace.");
+            return StandAssessment.partial(
+                    RaceMediaTypes.Idle.unavailable(
+                            variant, "Build files are unavailable for this workspace."));
         }
         var stat = files.stat(FileTypes.FileRef.id(variant.modelFileDataId()), token).join();
         if (stat.state() != FileTypes.FileLookupState.FOUND || stat.file() == null) {
-            return RaceMediaTypes.Idle.unavailable(variant, "Model file is " + stat.state() + ".");
+            return StandAssessment.partial(
+                    RaceMediaTypes.Idle.unavailable(
+                            variant, "Model file is " + stat.state() + "."));
         }
         // The bone-file fact depends on the ChrModel, so one M2 shared by two ChrModels is two
         // entries.
@@ -110,15 +153,33 @@ final class RaceIdleAnimations {
         var hit = cached.get(key);
         if (hit != null && unchanged(hit.sourceKeys(), token)) {
             var known = hit.result();
-            return new RaceMediaTypes.Idle(
-                    known.state(),
-                    variant,
-                    known.animation(),
-                    known.reasons(),
-                    known.facts(),
-                    known.message());
+            return new StandAssessment(
+                    new RaceMediaTypes.Idle(
+                            known.state(),
+                            variant,
+                            known.animation(),
+                            known.reasons(),
+                            known.facts(),
+                            known.message()),
+                    withModel(hit.sourceKeys(), variant, stat.file().contentKey()),
+                    true,
+                    hit.attachments());
         }
         cached.remove(key);
+        // Kept by an earlier session: no model, skeleton or SKIN read.
+        var stored =
+                index == null
+                        ? null
+                        : index.stand(
+                                variant.chrModelId(),
+                                variant.modelFileDataId(),
+                                stat.file().contentKey(),
+                                token);
+        if (stored != null) {
+            var result = stored.result(variant);
+            cache(key, new Cached(result, stored.sources(), stored.attachments()));
+            return new StandAssessment(result, stored.sources(), true, stored.attachments());
+        }
         var models = new BuildModels(files);
         var reused = sources.get(key);
         var read =
@@ -127,15 +188,23 @@ final class RaceIdleAnimations {
                         : models.readModel(FileTypes.FileRef.id(variant.modelFileDataId()), token)
                                 .join();
         if (read.state() != BuildModelTypes.ReadState.READ || read.model() == null) {
-            return RaceMediaTypes.Idle.unavailable(
-                    variant,
-                    read.message() == null ? "Model is " + read.state() + "." : read.message());
+            return StandAssessment.partial(
+                    RaceMediaTypes.Idle.unavailable(
+                            variant,
+                            read.message() == null
+                                    ? "Model is " + read.state() + "."
+                                    : read.message()));
         }
         if (read.file() == null || !key.endsWith("\n" + read.file().contentKey())) {
-            return RaceMediaTypes.Idle.unavailable(
-                    variant, "The model file changed while it was assessed.");
+            return StandAssessment.partial(
+                    RaceMediaTypes.Idle.unavailable(
+                            variant, "The model file changed while it was assessed."));
         }
         var model = read.model();
+        var attachments = new java.util.HashMap<Integer, Integer>();
+        for (var point : model.attachments()) {
+            attachments.putIfAbsent(point.id(), point.bone());
+        }
         var sourceKeys = new TreeMap<Long, String>();
         long skeleton = model.skeletonFileDataId();
         boolean modelBones = !model.bones().isEmpty();
@@ -282,11 +351,12 @@ final class RaceIdleAnimations {
         // The Stand, bone and SKIN reads reopen files; a model replaced meanwhile is not reported.
         var after = files.stat(FileTypes.FileRef.id(variant.modelFileDataId()), token).join();
         if (after.file() == null || !key.endsWith("\n" + after.file().contentKey())) {
-            return RaceMediaTypes.Idle.unavailable(
-                    variant, "The model file changed while it was assessed.");
+            return StandAssessment.partial(
+                    RaceMediaTypes.Idle.unavailable(
+                            variant, "The model file changed while it was assessed."));
         }
         if (unread != null) {
-            return RaceMediaTypes.Idle.unavailable(variant, unread);
+            return StandAssessment.partial(RaceMediaTypes.Idle.unavailable(variant, unread));
         }
         var result =
                 animation != null
@@ -308,10 +378,34 @@ final class RaceIdleAnimations {
                                 reasons,
                                 facts,
                                 String.join(" ", reasons));
-        if (complete && unchanged(sourceKeys, token)) {
-            cache(key, new Cached(result, Map.copyOf(sourceKeys)));
+        boolean kept = complete && unchanged(sourceKeys, token);
+        var withModel = withModel(sourceKeys, variant, stat.file().contentKey());
+        if (kept) {
+            cache(key, new Cached(result, Map.copyOf(sourceKeys), Map.copyOf(attachments)));
+            if (index != null) {
+                index.writeStand(
+                        variant.chrModelId(),
+                        variant.modelFileDataId(),
+                        stat.file().contentKey(),
+                        new RaceNpcIdleIndex.Stand(
+                                result.state(),
+                                result.reasons(),
+                                result.facts(),
+                                result.message(),
+                                result.animation(),
+                                attachments,
+                                withModel),
+                        token);
+            }
         }
-        return result;
+        return new StandAssessment(result, withModel, kept, attachments);
+    }
+
+    private static Map<Long, String> withModel(
+            Map<Long, String> sources, RaceMediaTypes.Variant variant, String modelKey) {
+        var out = new TreeMap<>(sources);
+        out.put(variant.modelFileDataId(), modelKey);
+        return out;
     }
 
     private static String skinName(Long fileDataId) {
