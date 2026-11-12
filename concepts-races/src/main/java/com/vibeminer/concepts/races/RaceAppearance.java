@@ -631,19 +631,7 @@ final class RaceAppearance {
                     continue;
                 }
                 decodedPixels += imagePixels;
-                byte[] rgba = image.rgba();
-                int[] argb = new int[image.width() * image.height()];
-                for (int i = 0; i < argb.length; i++) {
-                    if ((i & 16383) == 0) {
-                        token.check();
-                    }
-                    argb[i] =
-                            (rgba[i * 4 + 3] & 255) << 24
-                                    | (rgba[i * 4] & 255) << 16
-                                    | (rgba[i * 4 + 1] & 255) << 8
-                                    | (rgba[i * 4 + 2] & 255);
-                }
-                decoded.put(fid, new MeshAppearance.Texture(image.width(), image.height(), argb));
+                decoded.put(fid, argbTexture(image, token));
             }
             // A player body whose whole-body base skin layer could not be decoded would be drawn
             // black where the skin goes: refused, never presented incomplete. The Night Elf
@@ -796,6 +784,9 @@ final class RaceAppearance {
             }
             var bindings = new ArrayList<MeshAppearance.Surface>();
             var seen = new java.util.HashSet<Integer>();
+            // Textures the model names itself, by file, as decoded for this preview (null: not).
+            var hardcoded = new HashMap<Long, Integer>();
+            boolean unsaved = false;
             boolean assumeExternal = assumesExternalWeights(plan);
             boolean assumedWeights = false;
             boolean environmentNotDrawn = false;
@@ -843,6 +834,52 @@ final class RaceAppearance {
                 }
                 var texture = m.textures().get(m.textureCombos().get(batch.textureComboIndex()));
                 Integer mapped = textureTypes.get((int) texture.type());
+                // A texture the model names itself (type 0, its TXID file): the same reviewed
+                // single-stage diffuse draw, sampled from that file rather than a composed canvas
+                // (#104). A player preview only; an NPC (a World creature) is unchanged.
+                if (texture.type() == 0
+                        && textureTypes.get(0) == null
+                        && !plan.npc()
+                        && !firstStage
+                        && texture.fileDataId() != null
+                        && texture.fileDataId() > 0
+                        && !seen.contains(batch.sectionIndex())) {
+                    mapped = hardcoded.get(texture.fileDataId());
+                    if (mapped == null && !hardcoded.containsKey(texture.fileDataId())) {
+                        var own =
+                                images.decodeLargestWithin(
+                                                files,
+                                                FileTypes.FileRef.id(texture.fileDataId()),
+                                                2048,
+                                                token)
+                                        .join();
+                        var image = own.image();
+                        long pixels = image == null ? 0 : (long) image.width() * image.height();
+                        if (image == null || pixels > 8_388_608L - decodedPixels) {
+                            complete = false;
+                            note(
+                                    issues,
+                                    INCOMPLETE
+                                            + "texture #"
+                                            + texture.fileDataId()
+                                            + " the model names is "
+                                            + (image == null
+                                                    ? own.state()
+                                                    : "over the texture budget")
+                                            + ", so its surfaces keep neutral shading; this preview"
+                                            + " is not saved.");
+                            hardcoded.put(texture.fileDataId(), null);
+                        } else {
+                            decodedPixels += pixels;
+                            mapped = textures.size();
+                            textures.add(argbTexture(image, token));
+                            hardcoded.put(texture.fileDataId(), mapped);
+                            // A file named by the model is not among the saved composite's
+                            // sources: such a preview is shown but not saved or remembered.
+                            unsaved = true;
+                        }
+                    }
+                }
                 if (mapped == null || !seen.add(batch.sectionIndex())) {
                     continue;
                 }
@@ -851,6 +888,17 @@ final class RaceAppearance {
                 if (weight != 65535 && !facts.staticWeights().get(weight)) {
                     assumedWeights = true;
                 }
+            }
+            if (hardcoded.values().stream().anyMatch(java.util.Objects::nonNull)) {
+                note(
+                        issues,
+                        "Texture files the model names itself: "
+                                + hardcoded.entrySet().stream()
+                                        .filter(entry -> entry.getValue() != null)
+                                        .map(java.util.Map.Entry::getKey)
+                                        .sorted()
+                                        .toList()
+                                + "; this preview is not saved.");
             }
             if (bindings.isEmpty()) {
                 // Without the model's facts its draws could not be checked: not a lasting fact.
@@ -903,7 +951,7 @@ final class RaceAppearance {
             if (complete && prepared.npc() != null && index != null) {
                 index.attachments(key, attachedFiles, token);
             }
-            if (complete) {
+            if (complete && !unsaved) {
                 save(
                         key,
                         base.variant().modelFileDataId(),
@@ -918,7 +966,7 @@ final class RaceAppearance {
                         issues);
             }
             var result = result(appearance, visible, plan, issues, false);
-            if (complete) {
+            if (complete && !unsaved) {
                 token.check();
                 remember(prepared, result, skeletonId, skeletonContent);
                 index(prepared, result, skeletonId, skeletonContent, attachedFiles, token);
@@ -981,6 +1029,24 @@ final class RaceAppearance {
                 + " whole.";
     }
 
+    /** A decoded RGBA image as a mesh texture (ARGB). */
+    private static MeshAppearance.Texture argbTexture(
+            com.vibeminer.formats.images.Blp2Types.Image image, Cancellation token) {
+        byte[] rgba = image.rgba();
+        int[] argb = new int[image.width() * image.height()];
+        for (int i = 0; i < argb.length; i++) {
+            if ((i & 16383) == 0) {
+                token.check();
+            }
+            argb[i] =
+                    (rgba[i * 4 + 3] & 255) << 24
+                            | (rgba[i * 4] & 255) << 16
+                            | (rgba[i * 4 + 1] & 255) << 8
+                            | (rgba[i * 4 + 2] & 255);
+        }
+        return new MeshAppearance.Texture(image.width(), image.height(), argb);
+    }
+
     /** The NPC page facts every NPC appearance carries. */
     static final String WEAPONS_NOT_DRAWN = "Weapons are server-side and not drawn.";
 
@@ -1003,9 +1069,20 @@ final class RaceAppearance {
      */
     static GeneratedKey appearanceKey(String identity, boolean npc) {
         return GeneratedKey.hash(
-                (identity + SKELETON_WEIGHTS_IDENTITY + (npc ? "" : ASSUMED_WEIGHTS_IDENTITY))
+                (identity
+                                + SKELETON_WEIGHTS_IDENTITY
+                                + (npc
+                                        ? ""
+                                        : ASSUMED_WEIGHTS_IDENTITY + MODEL_NAMED_TEXTURES_IDENTITY))
                         .getBytes(StandardCharsets.UTF_8));
     }
+
+    /**
+     * Names, in a player composite's key, that a draw of a texture the model names itself (type 0)
+     * is sampled from that file: composites saved before, with those surfaces neutral, are never
+     * restored (#104). NPC composites never sample one, so their keys are unchanged.
+     */
+    static final String MODEL_NAMED_TEXTURES_IDENTITY = "\nmodel-named-textures-v1";
 
     /**
      * Names the weight proof read through the model's external skeleton, in every composite's key:
