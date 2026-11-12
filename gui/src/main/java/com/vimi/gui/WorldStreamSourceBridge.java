@@ -368,6 +368,70 @@ final class WorldStreamSourceBridge {
                 Cancellation cancellation,
                 int objectFormats,
                 long creatureBytes);
+
+        /**
+         * As above, reusing buildings an earlier pass of this tile kept ({@code reuse}, not closed
+         * here), or handing the prepared buildings to {@code keep} instead of dropping them (it then
+         * owns them). A preparer that cannot keep buildings ignores both.
+         */
+        default ExteriorCopy prepare(
+                WorldTerrainStreaming source,
+                WorldTerrainStreaming.Scope scope,
+                WorldFormats.Tile tile,
+                Cancellation cancellation,
+                int objectFormats,
+                long creatureBytes,
+                KeptBuildings reuse,
+                Consumer<KeptBuildings> keep) {
+            return prepare(source, scope, tile, cancellation, objectFormats, creatureBytes);
+        }
+    }
+
+    /**
+     * A tile's prepared buildings, kept from its buildings pass for its creature pass, so the
+     * creature pass does not read and prepare them again (#175). It holds the decoded set: its
+     * owner bounds what it keeps by {@link #bytes()} and closes it once done.
+     */
+    static final class KeptBuildings implements AutoCloseable {
+        private final WorldExteriorObjects.TileObjects set;
+        private final ObjectSet objects;
+        private final String note;
+        private final ExteriorSummary summary;
+        private final long bytes;
+
+        private final Runnable closed;
+
+        private KeptBuildings(WorldExteriorObjects.TileObjects set, ObjectSet objects, String note,
+                ExteriorSummary summary) {
+            this(set, objects, note, summary,
+                    4L * set.pixels() + 32L * set.vertices() + 4L * set.indices() + 256L * set.placements().size(),
+                    set::close);
+        }
+
+        private KeptBuildings(WorldExteriorObjects.TileObjects set, ObjectSet objects, String note,
+                ExteriorSummary summary, long bytes, Runnable closed) {
+            this.set = set;
+            this.objects = objects;
+            this.note = note;
+            this.summary = summary;
+            this.bytes = bytes;
+            this.closed = closed;
+        }
+
+        /** Kept buildings standing for {@code bytes}, whose closing runs {@code closed} (tests). */
+        static KeptBuildings forTest(long bytes, Runnable closed) {
+            return new KeptBuildings(null, null, "test", ExteriorSummary.NONE, bytes, closed);
+        }
+
+        /** About what the kept set holds: its images' texels, its vertices, indices and placements. */
+        long bytes() {
+            return bytes;
+        }
+
+        @Override
+        public void close() {
+            closed.run();
+        }
     }
 
     /**
@@ -384,10 +448,17 @@ final class WorldStreamSourceBridge {
             @Override
             public ExteriorCopy prepare(WorldTerrainStreaming source, WorldTerrainStreaming.Scope scope,
                     WorldFormats.Tile tile, Cancellation cancellation, int formats, long creatureBytes) {
+                return prepare(source, scope, tile, cancellation, formats, creatureBytes, null, null);
+            }
+
+            @Override
+            public ExteriorCopy prepare(WorldTerrainStreaming source, WorldTerrainStreaming.Scope scope,
+                    WorldFormats.Tile tile, Cancellation cancellation, int formats, long creatureBytes,
+                    KeptBuildings reuse, Consumer<KeptBuildings> keep) {
                 return prepareExterior(source, scope, tile, cancellation,
                         creatureBytes == BUILDINGS_ONLY ? null
                                 : (builder, owned, token) -> creatures.append(builder, mapId, owned, creatureBytes, token),
-                        detail, interiors, formats);
+                        detail, interiors, formats, reuse, keep);
             }
 
             @Override
@@ -491,7 +562,36 @@ final class WorldStreamSourceBridge {
             WorldExteriorObjects.ImageDetail detail,
             WorldExteriorObjects.Interiors interiors,
             int objectFormats) {
+        return prepareExterior(source, scope, tile, cancellation, creatures, detail, interiors, objectFormats,
+                null, null);
+    }
+
+    /**
+     * As above, reusing buildings this tile's earlier pass kept ({@code reuse}, left open for its
+     * owner) instead of preparing them again, or, with {@code keep}, handing buildings that
+     * prepared without failure to it instead of closing them.
+     */
+    static ExteriorCopy prepareExterior(
+            WorldTerrainStreaming source,
+            WorldTerrainStreaming.Scope scope,
+            WorldFormats.Tile tile,
+            Cancellation cancellation,
+            CreatureAppender creatures,
+            WorldExteriorObjects.ImageDetail detail,
+            WorldExteriorObjects.Interiors interiors,
+            int objectFormats,
+            KeptBuildings reuse,
+            Consumer<KeptBuildings> keep) {
+        if (reuse != null) {
+            long copying = WorldStageTimings.start();
+            try {
+                return finish(reuse.objects, false, reuse.note, reuse.summary, tile, cancellation, creatures);
+            } finally {
+                WorldStageTimings.stop("objects.bridge.copyAndCreatures", copying);
+            }
+        }
         WorldExteriorObjects.TileObjects set = null;
+        boolean kept = false;
         try {
             boolean failed = false;
             String note;
@@ -518,13 +618,18 @@ final class WorldStreamSourceBridge {
             }
             long copying = WorldStageTimings.start();
             try {
-                return finish(failed ? null : ObjectSet.of(set), failed, note, summary, tile,
-                        cancellation, creatures);
+                var objects = failed ? null : ObjectSet.of(set);
+                var copy = finish(objects, failed, note, summary, tile, cancellation, creatures);
+                if (keep != null && !failed) {
+                    keep.accept(new KeptBuildings(set, objects, note, summary));
+                    kept = true;
+                }
+                return copy;
             } finally {
                 WorldStageTimings.stop("objects.bridge.copyAndCreatures", copying);
             }
         } finally {
-            if (set != null) set.close();
+            if (set != null && !kept) set.close();
         }
     }
 

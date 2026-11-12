@@ -87,6 +87,7 @@ public final class WorldStreamSourceControllerTest {
         budgetRefusedObjectsRetryAfterAReleaseOnly();
         creaturesShareTheirBytesAndYieldToBuildings();
         buildingsComeFirstAndCreaturesReplaceThemLater();
+        creaturePassesReuseTheBuildingsTheirBuildingsPassKept();
         refusedCreatureReplacementKeepsTheBuildings();
         newBuildingsPreemptACreaturePassThatThenResumes();
         loadedTileBuildingsPreemptACreaturePass();
@@ -1269,6 +1270,76 @@ public final class WorldStreamSourceControllerTest {
         } finally {
             fixture.close();
         }
+    }
+
+    /**
+     * A tile's creature pass reuses the buildings its buildings pass kept instead of preparing them
+     * again; kept buildings are bounded by bytes (a tile over the bound prepares again) and are
+     * closed once its creature pass has used them, or when the tile retires or the session closes.
+     */
+    private static void creaturePassesReuseTheBuildingsTheirBuildingsPassKept() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 4);
+        fixture.exteriors = true;
+        // Each tile keeps 40 MiB: the second one kept would pass the 64 MiB bound.
+        long each = 40L << 20;
+        check(WorldStreamSourceController.KEPT_BUILDINGS_BYTES == 64L << 20, "64 MiB bound");
+        var kept = new java.util.concurrent.atomic.AtomicInteger();
+        var closed = new java.util.concurrent.atomic.AtomicInteger();
+        var reused = new java.util.concurrent.ConcurrentHashMap<Integer, Boolean>();
+        var preparer = new WorldStreamSourceBridge.ExteriorPreparer() {
+            @Override
+            public WorldStreamSourceBridge.ExteriorCopy prepare(
+                    com.vibeminer.concepts.world.WorldTerrainStreaming source,
+                    com.vibeminer.concepts.world.WorldTerrainStreaming.Scope scope,
+                    com.vibeminer.formats.world.WorldFormats.Tile tile,
+                    com.vibeminer.access.Cancellation cancellation, int formats, long creatureBytes) {
+                throw new AssertionError("The keeping form is used");
+            }
+
+            @Override
+            public WorldStreamSourceBridge.ExteriorCopy prepare(
+                    com.vibeminer.concepts.world.WorldTerrainStreaming source,
+                    com.vibeminer.concepts.world.WorldTerrainStreaming.Scope scope,
+                    com.vibeminer.formats.world.WorldFormats.Tile tile,
+                    com.vibeminer.access.Cancellation cancellation, int formats, long creatureBytes,
+                    WorldStreamSourceBridge.KeptBuildings reuse,
+                    java.util.function.Consumer<WorldStreamSourceBridge.KeptBuildings> keep) {
+                if (creatureBytes == BUILDINGS_ONLY) {
+                    check(reuse == null && keep != null, "A buildings pass may keep, never reuse");
+                    kept.incrementAndGet();
+                    keep.accept(WorldStreamSourceBridge.KeptBuildings.forTest(each, closed::incrementAndGet));
+                    return new WorldStreamSourceBridge.ExteriorCopy(building(), 1, false, "authored");
+                }
+                check(keep == null, "A creature pass keeps nothing");
+                reused.put(tile.y(), reuse != null);
+                return new WorldStreamSourceBridge.ExteriorCopy(building(), 1, false, "authored",
+                        WorldTileCreatures.Summary.drawn(1, 1, 1 << 20));
+            }
+
+            @Override
+            public boolean appendsCreatures() {
+                return true;
+            }
+        };
+        try {
+            fixture.start(fixture.gpu::start, () -> {}, preparer);
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 2));
+            fixture.untilPresented(() -> reused.size() == 2 && !fixture.controller.loadingObjects());
+            int first = fixture.tiles.get(0).y(), second = fixture.tiles.get(1).y();
+            check(reused.get(first) && !reused.get(second),
+                    "The first tile's creature pass reused its buildings; the second, past the bound, prepared"
+                            + " them again: " + reused);
+            check(kept.get() == 2 && closed.get() == 2,
+                    "Both kept sets were closed (one at once, one after its creature pass): " + closed);
+            // A tile that retires before its creature pass closes what it kept.
+            fixture.controller.neighborhood(fixture.tiles.subList(2, 4));
+            fixture.untilPresented(() -> reused.size() == 4 && !fixture.controller.loadingObjects());
+        } finally {
+            fixture.close();
+        }
+        check(closed.get() == kept.get(), "Every kept set was closed by the end: " + closed + " of " + kept);
     }
 
     /** A replacement refused for budget leaves the drawn buildings and is not offered again at once. */
