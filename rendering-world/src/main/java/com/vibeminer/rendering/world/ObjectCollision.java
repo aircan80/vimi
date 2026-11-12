@@ -74,8 +74,8 @@ public final class ObjectCollision {
 
     private record Placed(Mesh mesh, double[] m, double[] inverse, double[] box) {}
 
-    private ObjectCollision(List<Placement> placements) {
-        placed = new Placed[placements.size()];
+    private ObjectCollision(List<Placed> placements) {
+        placed = placements.toArray(Placed[]::new);
         double x0 = Double.MAX_VALUE,
                 y0 = Double.MAX_VALUE,
                 x1 = -Double.MAX_VALUE,
@@ -84,7 +84,6 @@ public final class ObjectCollision {
                 java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<Mesh, Boolean>());
         long total = 0;
         for (int i = 0; i < placed.length; i++) {
-            placed[i] = place(placements.get(i));
             var b = placed[i].box();
             x0 = Math.min(x0, b[0]);
             y0 = Math.min(y0, b[1]);
@@ -144,11 +143,52 @@ public final class ObjectCollision {
 
     /** The placements, the first of each key only (a building listed by two tiles counts once). */
     public static ObjectCollision of(List<Placement> placements) {
-        var seen = new HashSet<Object>();
-        var kept = new ArrayList<Placement>();
+        return merge(List.of(prepare(placements)));
+    }
+
+    /**
+     * Placements with their world transforms and boxes worked out once, ready to {@link #merge}
+     * again and again without transforming any triangle a second time. Immutable.
+     */
+    public static final class Prepared {
+        private final List<Object> keys;
+        private final List<Placed> placed;
+
+        private Prepared(List<Object> keys, List<Placed> placed) {
+            this.keys = keys;
+            this.placed = placed;
+        }
+
+        public int placements() {
+            return placed.size();
+        }
+    }
+
+    /**
+     * Works out every placement's transform and world box (the costly part); see {@link Prepared}.
+     */
+    public static Prepared prepare(List<Placement> placements) {
+        var keys = new ArrayList<Object>();
+        var placed = new ArrayList<Placed>();
         for (var p : Objects.requireNonNull(placements)) {
-            if (seen.add(p.key())) {
-                kept.add(p);
+            keys.add(p.key());
+            placed.add(place(p));
+        }
+        return new Prepared(List.copyOf(keys), List.copyOf(placed));
+    }
+
+    /**
+     * One collision set from prepared parts: only the grid is built here. The first placement of
+     * each key is kept, so a building two tiles list counts once.
+     */
+    public static ObjectCollision merge(List<Prepared> parts) {
+        var seen = new HashSet<Object>();
+        var kept = new ArrayList<Placed>();
+        for (var part : Objects.requireNonNull(parts)) {
+            for (int i = 0; i < part.keys.size(); i++) {
+                if (seen.add(part.keys.get(i))) {
+                    kept.add(part.placed.get(i));
+                }
             }
         }
         return kept.isEmpty() ? EMPTY : new ObjectCollision(kept);

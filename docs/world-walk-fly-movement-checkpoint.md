@@ -106,9 +106,14 @@ recorded tile within one tile of the camera (whatever the view distance),
 
 Parsed roots, groups and models are shared in a 96 MiB cache. The whole 3×3
 around Stormwind measured 35 MiB on 70862 (Ironforge and Orgrimmar 19 MiB).
-Tiles are read one at a time on their own worker, merged into one
-`ObjectCollision` (a 32-yard grid of placements, de-duplicated when two tiles
-list the same building) and handed to the body. Until a tile's buildings are
+Tiles are read one at a time on their own worker. Each tile's placements get
+their world transforms and boxes once, when read; merging the nine parts into
+one `ObjectCollision` (a 32-yard grid, de-duplicated when two tiles list the
+same building) only builds the grid. Parts farther than one tile are dropped.
+A tile whose read failed, or that found a source it could not read yet, is read
+again after 15 seconds; unreadable sources are never remembered as missing.
+Tiles the map does not record (open sea, the map edge) have nothing to wait
+for. Until a tile's buildings are
 read, the body still walks on its terrain and the status line says the
 buildings there are still loading: loading warns, it does not stop the body.
 

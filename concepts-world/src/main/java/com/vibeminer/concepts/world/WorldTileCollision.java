@@ -52,15 +52,35 @@ public final class WorldTileCollision {
                     4,
                     4L << 20);
 
-    /** One tile's placements, what was left out by reason, and the bytes they reference. */
+    /**
+     * One tile's placements and what was left out by reason. {@code complete} is false when a
+     * source could not be read now (not malformed or empty): reading the tile again later may find
+     * more.
+     */
     public record Part(
             int tileX,
             int tileY,
             List<ObjectCollision.Placement> placements,
-            Map<String, Integer> skipped) {
+            Map<String, Integer> skipped,
+            boolean complete) {
         public Part {
             placements = List.copyOf(placements);
             skipped = Map.copyOf(skipped);
+        }
+    }
+
+    /** Raw file bytes by FileDataID; throws {@link Unreadable} when a source cannot be read now. */
+    @FunctionalInterface
+    interface Source {
+        byte[] read(long fileDataId, Cancellation token);
+    }
+
+    /** A source that cannot be read now (missing locally, a network or I/O failure). */
+    static final class Unreadable extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+
+        Unreadable(String message, Throwable cause) {
+            super(message, cause);
         }
     }
 
@@ -68,12 +88,38 @@ public final class WorldTileCollision {
 
     private static final Object MISSING = new Object();
 
-    private final BuildFiles files;
+    private final Source source;
+    private final long budget;
     private final LinkedHashMap<Long, Object> cache = new LinkedHashMap<>(256, .75f, true);
     private long cached;
 
     WorldTileCollision(BuildFiles files) {
-        this.files = Objects.requireNonNull(files);
+        this(files(Objects.requireNonNull(files)), CACHE_BYTES);
+    }
+
+    /** A reader over any source, with its own cache budget in bytes (tests). */
+    WorldTileCollision(Source source, long budget) {
+        this.source = Objects.requireNonNull(source);
+        this.budget = budget;
+    }
+
+    /** The build's files; any failure other than cancellation reads as unreadable for now. */
+    private static Source files(BuildFiles files) {
+        return (id, token) -> {
+            try {
+                return WorldFileBytes.read(files, FileTypes.FileRef.id(id), token, false).bytes();
+            } catch (java.util.concurrent.CancellationException canceled) {
+                throw canceled;
+            } catch (RuntimeException failure) {
+                token.check();
+                throw new Unreadable(String.valueOf(failure.getMessage()), failure);
+            }
+        };
+    }
+
+    /** Sources the shared cache holds now. */
+    synchronized int cachedEntries() {
+        return cache.size();
     }
 
     /** Bytes the shared cache holds now. */
@@ -89,14 +135,14 @@ public final class WorldTileCollision {
         var placements = new ArrayList<ObjectCollision.Placement>();
         byte[] obj0 = read(tile.obj0Id(), token, skipped, "obj0");
         if (obj0 == null) {
-            return new Part(tile.x(), tile.y(), placements, skipped);
+            return part(tile, placements, skipped);
         }
         WorldPlacements.Metadata recorded;
         try {
             recorded = WorldPlacements.readObj0(obj0, token::isCanceled);
         } catch (IllegalArgumentException malformed) {
             skipped.merge("obj0 malformed", 1, Integer::sum);
-            return new Part(tile.x(), tile.y(), placements, skipped);
+            return part(tile, placements, skipped);
         }
         for (var building : recorded.worldObjects()) {
             token.check();
@@ -106,7 +152,16 @@ public final class WorldTileCollision {
             token.check();
             doodad(doodad, placements, skipped, token);
         }
-        return new Part(tile.x(), tile.y(), placements, skipped);
+        return part(tile, placements, skipped);
+    }
+
+    private static Part part(
+            WorldFormats.Tile tile,
+            List<ObjectCollision.Placement> placements,
+            Map<String, Integer> skipped) {
+        boolean complete =
+                skipped.keySet().stream().noneMatch(reason -> reason.endsWith(" unreadable"));
+        return new Part(tile.x(), tile.y(), placements, skipped, complete);
     }
 
     private void building(
@@ -276,27 +331,30 @@ public final class WorldTileCollision {
     private Root root(long id, Cancellation token, Map<String, Integer> skipped) {
         var known = cached(id);
         if (known == MISSING) {
-            skipped.merge("building unreadable", 1, Integer::sum);
+            skipped.merge("building root malformed", 1, Integer::sum);
             return null;
         }
         if (known instanceof Root root) {
             return root;
         }
         byte[] bytes = read(id, token, skipped, "building root");
-        Root root = null;
-        if (bytes != null) {
-            try {
-                var parsed = WmoFormats.root(bytes, ROOT_LIMITS, token::isCanceled);
-                int count = (int) Math.min(parsed.header().groupCount(), parsed.gfidCount());
-                long[] groups = new long[count];
-                for (int g = 0; g < count; g++) {
-                    groups[g] = parsed.gfid(g);
-                }
-                root = new Root(groups, parsed.doodads());
-            } catch (IllegalArgumentException malformed) {
-                skipped.merge("building root malformed", 1, Integer::sum);
-            }
+        if (bytes == null) {
+            // Unreadable now: not remembered, so a later read tries again.
+            return null;
         }
+        Root root = null;
+        try {
+            var parsed = WmoFormats.root(bytes, ROOT_LIMITS, token::isCanceled);
+            int count = (int) Math.min(parsed.header().groupCount(), parsed.gfidCount());
+            long[] groups = new long[count];
+            for (int g = 0; g < count; g++) {
+                groups[g] = parsed.gfid(g);
+            }
+            root = new Root(groups, parsed.doodads());
+        } catch (IllegalArgumentException malformed) {
+            skipped.merge("building root malformed", 1, Integer::sum);
+        }
+
         remember(
                 id,
                 root == null ? MISSING : root,
@@ -320,17 +378,20 @@ public final class WorldTileCollision {
             return mesh;
         }
         byte[] bytes = read(id, token, skipped, "building group");
-        WmoMesh mesh = null;
-        if (bytes != null) {
-            try {
-                var parsed = WmoCollision.read(bytes, token::isCanceled);
-                if (parsed.solidTriangles() > 0) {
-                    mesh = new WmoMesh(parsed);
-                }
-            } catch (IllegalArgumentException malformed) {
-                skipped.merge("building group malformed", 1, Integer::sum);
-            }
+        if (bytes == null) {
+            // Unreadable now: not remembered, so a later read tries again.
+            return null;
         }
+        WmoMesh mesh = null;
+        try {
+            var parsed = WmoCollision.read(bytes, token::isCanceled);
+            if (parsed.solidTriangles() > 0) {
+                mesh = new WmoMesh(parsed);
+            }
+        } catch (IllegalArgumentException malformed) {
+            skipped.merge("building group malformed", 1, Integer::sum);
+        }
+
         remember(id, mesh == null ? MISSING : mesh, mesh == null ? 64 : mesh.bytes());
         return mesh;
     }
@@ -344,17 +405,20 @@ public final class WorldTileCollision {
             return mesh;
         }
         byte[] bytes = read(id, token, skipped, "doodad model");
-        M2Mesh mesh = null;
-        if (bytes != null) {
-            try {
-                var parsed = M2Collision.read(bytes);
-                if (parsed.triangles() > 0) {
-                    mesh = new M2Mesh(parsed);
-                }
-            } catch (IllegalArgumentException malformed) {
-                skipped.merge("doodad model malformed", 1, Integer::sum);
-            }
+        if (bytes == null) {
+            // Unreadable now: not remembered, so a later read tries again.
+            return null;
         }
+        M2Mesh mesh = null;
+        try {
+            var parsed = M2Collision.read(bytes);
+            if (parsed.triangles() > 0) {
+                mesh = new M2Mesh(parsed);
+            }
+        } catch (IllegalArgumentException malformed) {
+            skipped.merge("doodad model malformed", 1, Integer::sum);
+        }
+
         remember(id, mesh == null ? MISSING : mesh, mesh == null ? 64 : mesh.bytes());
         return mesh;
     }
@@ -370,7 +434,7 @@ public final class WorldTileCollision {
         }
         cached += bytes;
         var it = cache.entrySet().iterator();
-        while (cached > CACHE_BYTES && it.hasNext()) {
+        while (cached > budget && it.hasNext()) {
             var eldest = it.next();
             if (eldest.getKey() == id) {
                 continue;
@@ -388,9 +452,8 @@ public final class WorldTileCollision {
             return null;
         }
         try {
-            return WorldFileBytes.read(files, FileTypes.FileRef.id(id), token, false).bytes();
-        } catch (RuntimeException unreadable) {
-            token.check();
+            return source.read(id, token);
+        } catch (Unreadable unreadable) {
             skipped.merge(kind + " unreadable", 1, Integer::sum);
             return null;
         }

@@ -22,6 +22,7 @@ class ObjectCollisionTest {
             6, 3, 0, 4, 3, 4, 7
         };
         int queries;
+        int positions;
 
         @Override
         public int triangles() {
@@ -35,6 +36,7 @@ class ObjectCollisionTest {
 
         @Override
         public float position(int vertex, int axis) {
+            positions++;
             return V[vertex * 3 + axis];
         }
 
@@ -179,5 +181,24 @@ class ObjectCollisionTest {
         body = WalkControllerTest.standing(world, 0, 0, 1);
         WalkControllerTest.run(body, WalkControllerTest.input(1, 0, 0, Math.PI, false), 2, world);
         assertEquals(-4 + MovementParity.DEFAULT_RADIUS, body.x(), .05, "stopped by the block");
+    }
+
+    @Test
+    void preparedPartsMergeWithoutTransformingAgain() {
+        var mesh = new Cube();
+        var a =
+                ObjectCollision.prepare(
+                        List.of(new ObjectCollision.Placement("a", mesh, IDENTITY, 1, 0, 0, 0)));
+        var b =
+                ObjectCollision.prepare(
+                        List.of(
+                                new ObjectCollision.Placement("a", mesh, IDENTITY, 1, 0, 0, 0),
+                                new ObjectCollision.Placement("b", mesh, IDENTITY, 1, 40, 0, 0)));
+        int after = mesh.positions;
+        var merged = ObjectCollision.merge(List.of(a, b));
+        ObjectCollision.merge(List.of(b, a));
+        assertEquals(after, mesh.positions, "merging reuses the prepared boxes");
+        assertEquals(2, merged.placements(), "the shared key counts once");
+        assertEquals(41, merged.bounds()[3], 1e-9);
     }
 }
