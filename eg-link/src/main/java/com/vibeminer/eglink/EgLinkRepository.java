@@ -609,7 +609,16 @@ public final class EgLinkRepository implements AutoCloseable {
     public CompletableFuture<Optional<EgLinkTypes.CreatureDisplays>> creatureDisplays(
             String source, String locale, long creatureId, Cancellation token) {
         return creatureDisplays(source, locale, List.of(creatureId), token)
-                .thenApply(found -> found.get(creatureId));
+                .thenApply(
+                        found -> {
+                            var answer = found.get(creatureId);
+                            if (answer.isPresent() && answer.get().malformed()) {
+                                // One creature asked for: its malformed record is an error.
+                                throw new java.util.concurrent.CompletionException(
+                                        new IOException(answer.get().problem()));
+                            }
+                            return answer;
+                        });
     }
 
     /** The most remembered creature display lookups (one per snapshot, locale and creature). */
@@ -622,7 +631,9 @@ public final class EgLinkRepository implements AutoCloseable {
      * As {@link #creatureDisplays(String, String, long, Cancellation)} for several creatures at
      * once: remembered answers return at once, the rest are read in one task through the snapshot's
      * open read-only database. A prepared snapshot never changes (its ID is its content), so
-     * answers, absences included, are remembered (bounded).
+     * answers, absences included, are remembered (bounded). A record whose displays are malformed
+     * is answered as recorded but unreadable ({@link EgLinkTypes.CreatureDisplays#malformed}), so
+     * it never fails the rest of the batch.
      */
     public CompletableFuture<Map<Long, Optional<EgLinkTypes.CreatureDisplays>>> creatureDisplays(
             String source,
@@ -635,14 +646,20 @@ public final class EgLinkRepository implements AutoCloseable {
             }
         }
         String dataset = "creature_details." + bounded(locale, 8);
+        synchronized (this) {
+            if (closing) {
+                return CompletableFuture.failedFuture(
+                        new IllegalStateException("EG Link repository is closed"));
+            }
+        }
         var found = new LinkedHashMap<Long, Optional<EgLinkTypes.CreatureDisplays>>();
-        var missing = new java.util.ArrayList<Long>();
+        var missing = new java.util.LinkedHashSet<Long>();
         synchronized (displayCache) {
             for (long id : creatureIds) {
                 var hit = displayCache.get(source + "|" + dataset + "|" + id);
                 if (hit != null) {
                     found.put(id, hit);
-                } else if (!missing.contains(id)) {
+                } else {
                     missing.add(id);
                 }
             }
@@ -653,7 +670,7 @@ public final class EgLinkRepository implements AutoCloseable {
         return call(
                 token,
                 () -> {
-                    var read = readDisplays(source, dataset, missing, token);
+                    var read = readDisplays(source, dataset, List.copyOf(missing), token);
                     synchronized (displayCache) {
                         read.forEach(
                                 (id, value) ->
@@ -669,6 +686,11 @@ public final class EgLinkRepository implements AutoCloseable {
     private record OpenSnapshot(DerivedSqliteConnection connection, Build build) {}
 
     private final Map<String, OpenSnapshot> openSnapshots = new LinkedHashMap<>();
+
+    /** Tests: how many snapshot databases are open now (read on the worker). */
+    CompletableFuture<Integer> openSnapshotCount() {
+        return call(Cancellation.NONE, openSnapshots::size);
+    }
 
     private final Map<String, Optional<EgLinkTypes.CreatureDisplays>> displayCache =
             new LinkedHashMap<>(256, 0.75f, true) {
@@ -745,14 +767,22 @@ public final class EgLinkRepository implements AutoCloseable {
                                                             + ")",
                                                     parameters));
             for (var row : rows) {
-                var record = record(source, row);
-                long id = Long.parseLong(record.id());
-                List<EgLinkTypes.CreatureDisplay> displays;
+                long id;
                 try {
-                    displays = parseDisplays(record.json());
-                } catch (IOException malformed) {
-                    // One malformed record never fails the others; it reads as unrecorded.
-                    continue;
+                    id = Long.parseLong(String.valueOf(row[2]));
+                } catch (NumberFormatException unnamed) {
+                    continue; // never one of the numeric IDs asked for
+                }
+                List<EgLinkTypes.CreatureDisplay> displays = List.of();
+                String problem = null;
+                try {
+                    displays = parseDisplays(record(source, row).json());
+                } catch (IOException | RuntimeException malformed) {
+                    // One malformed record never fails the others: recorded, but unreadable.
+                    problem =
+                            malformed.getMessage() == null
+                                    ? malformed.getClass().getSimpleName()
+                                    : malformed.getMessage();
                 }
                 answer.put(
                         id,
@@ -763,7 +793,8 @@ public final class EgLinkRepository implements AutoCloseable {
                                         open.build().version(),
                                         recorded.get().lastCollectedOn(),
                                         id,
-                                        displays)));
+                                        displays,
+                                        problem)));
             }
         }
         return answer;

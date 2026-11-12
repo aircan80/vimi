@@ -125,9 +125,30 @@ public final class EgLinkTypes {
             String build,
             String collectedOn,
             long creatureId,
-            List<CreatureDisplay> displays) {
+            List<CreatureDisplay> displays,
+            String problem) {
         public CreatureDisplays {
             displays = List.copyOf(displays);
+            if (problem != null && !displays.isEmpty()) {
+                throw new IllegalArgumentException("A malformed record lists no display");
+            }
+        }
+
+        public CreatureDisplays(
+                String snapshotId,
+                String product,
+                String build,
+                String collectedOn,
+                long creatureId,
+                List<CreatureDisplay> displays) {
+            this(snapshotId, product, build, collectedOn, creatureId, displays, null);
+        }
+
+        /**
+         * Whether the creature is recorded but its displays could not be read ({@link #problem}).
+         */
+        public boolean malformed() {
+            return problem != null;
         }
 
         /** EG Link, its license and the collected build, for the facts shown with a display. */
