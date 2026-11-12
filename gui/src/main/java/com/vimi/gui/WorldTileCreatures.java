@@ -748,9 +748,12 @@ final class WorldTileCreatures implements AutoCloseable {
         }
         // A display refused because the model reader was busy is asked again before the tile's
         // objects are attached (#484): after a short, doubling pause, a few times, within the
-        // tile's preview budget. Still busy after that, its spawns count as busy as before.
+        // tile's preview budget and the pause budget shared by consecutive tiles. Still busy
+        // after that, its spawns count as busy as before.
+        if (placing.answered) busyAnswered();
         for (int round = 0; round < BUSY_RETRIES && !deferred.isEmpty(); round++) {
-            pause.pause(BUSY_PAUSE_MILLIS << round, token);
+            long millis = BUSY_PAUSE_MILLIS << round;
+            if (!busyPause(millis) || !pause.pause(millis, token)) break;
             placing.busyDisplays.values().removeIf(refusal -> refusal == Count.PREVIEWS_BUSY);
             var again = new ArrayList<>(deferred);
             deferred.clear();
@@ -760,6 +763,8 @@ final class WorldTileCreatures implements AutoCloseable {
                 placing.place(pending.spawn(), pending.chosen(), deferred);
             }
         }
+        if (placing.answered) busyAnswered();
+        else if (!deferred.isEmpty() && placing.retries > 0) busyStuck();
         placing.counts[Count.PREVIEWS_BUSY.ordinal()] += deferred.size();
         return placing.summary(nearby.omitted() == 0 ? null
                 : nearby.omitted() + " nearby points beyond the query limit were not considered");
@@ -771,25 +776,78 @@ final class WorldTileCreatures implements AutoCloseable {
     /** The first pause before a busy reader is asked again; it doubles each time (#484). */
     static final long BUSY_PAUSE_MILLIS = 100;
 
-    /** Waits between busy retries; returns early, throwing, when the tile is canceled. */
+    /**
+     * Retry pauses all tiles may spend together within {@link #BUSY_WINDOW_NANOS}: the exterior
+     * objects of tiles are prepared one at a time, so a pause delays every tile behind it.
+     */
+    static final long BUSY_BUDGET_MILLIS = 1_000;
+
+    /** The window the shared pause budget covers, and how long a stuck reader skips retries. */
+    static final long BUSY_WINDOW_NANOS = 10_000_000_000L;
+
+    // The shared retry pause budget (#484), guarded by this: what the current window has spent,
+    // when it began, and when a tile last found the reader still busy after all its retries.
+    private long busySpentMillis, busyWindowStart, busyStuckAt;
+    private boolean busyWindow, busyStuck;
+
+    /**
+     * Whether a retry may pause {@code millis} now, charging it to the shared budget: not while a
+     * reader that stayed busy through a tile's retries has not answered since (for up to {@link
+     * #BUSY_WINDOW_NANOS}), and not past {@link #BUSY_BUDGET_MILLIS} in the current window.
+     */
+    private synchronized boolean busyPause(long millis) {
+        long now = clock.getAsLong();
+        if (busyStuck && now - busyStuckAt < BUSY_WINDOW_NANOS) return false;
+        busyStuck = false;
+        if (!busyWindow || now - busyWindowStart >= BUSY_WINDOW_NANOS) {
+            busyWindow = true;
+            busyWindowStart = now;
+            busySpentMillis = 0;
+        }
+        if (busySpentMillis + millis > BUSY_BUDGET_MILLIS) return false;
+        busySpentMillis += millis;
+        return true;
+    }
+
+    /** A tile's retries all stayed busy: later tiles do not pause for a while. */
+    private synchronized void busyStuck() {
+        busyStuck = true;
+        busyStuckAt = clock.getAsLong();
+    }
+
+    /** The reader answered a preview: retries may pause again. */
+    private synchronized void busyAnswered() {
+        busyStuck = false;
+    }
+
+    /**
+     * Waits between busy retries. Returns false to stop retrying (the thread was interrupted);
+     * throws when the tile is canceled.
+     */
     @FunctionalInterface
     interface Pause {
-        void pause(long millis, Cancellation token);
+        boolean pause(long millis, Cancellation token);
 
         Pause SLEEP = WorldTileCreatures::sleep;
     }
 
-    /** Sleeps {@code millis}, or less when {@code token} is canceled, which then throws. */
+    /**
+     * Sleeps {@code millis}, or less when {@code token} is canceled, which then throws. An
+     * interrupt keeps the thread's interrupt flag and returns false, so the tile stops retrying
+     * without failing.
+     */
     @SuppressWarnings("try")
-    static void sleep(long millis, Cancellation token) {
+    static boolean sleep(long millis, Cancellation token) {
         var woken = new java.util.concurrent.CountDownLatch(1);
         try (var registration = token.onCancel(woken::countDown)) {
             woken.await(millis, java.util.concurrent.TimeUnit.MILLISECONDS);
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
-            throw new CancellationException("Interrupted");
+            token.check();
+            return false;
         }
         token.check();
+        return true;
     }
 
     private volatile Pause pause = Pause.SLEEP;
@@ -813,6 +871,8 @@ final class WorldTileCreatures implements AutoCloseable {
         final HashMap<Long, Integer> added = new HashMap<>();
         final java.util.ArrayList<WorldObjectPicks.Creature> placed = new java.util.ArrayList<>();
         int placements, previewsTried, retries;
+        // Whether the reader answered any preview on this tile (anything but busy).
+        boolean answered;
         long textureBytes, setBytes;
         // Displays whose preview was busy, or whose NPC appearance cannot be read yet, on this
         // tile: not asked again for every later spawn of the same pass.
@@ -875,6 +935,7 @@ final class WorldTileCreatures implements AutoCloseable {
                     }
                     previewsTried++;
                     converted = load(display, token);
+                    if (converted.refusal() != Count.PREVIEWS_BUSY) answered = true;
                     // A busy or closed reader learned nothing: refund the preview it cost. An NPC
                     // appearance that cannot be read yet keeps its cost but is asked once per tile.
                     if (converted.refusal() == Count.PREVIEWS_BUSY) {

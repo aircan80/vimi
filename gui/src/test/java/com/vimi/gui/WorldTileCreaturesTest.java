@@ -43,6 +43,7 @@ public final class WorldTileCreaturesTest {
         aDenseNeighbourNoLongerStarvesTheTilesOwnSpawns();
         busyOrClosedPreviewsCostNoBudget();
         busyPreviewsAreRetriedAndDrawnOnTheSameTile();
+        busyRetryPausesShareOneBudgetAcrossTiles();
         creaturesStandInTheirIdlePoseOrSayWhyNot();
         billboardTrianglesAreLeftOutOfTheWorldStandAndDisclosed();
         unreadableStandSequencesAreAskedAgainButUnsupportedOnesAreKept();
@@ -487,7 +488,7 @@ public final class WorldTileCreaturesTest {
                     asked.incrementAndGet();
                     throw new DisplayModelTypes.ServiceUnavailable("Display previews busy", false, null);
                 });
-        one.pause((millis, token) -> {});
+        one.pause((millis, token) -> true);
         var crowded = one.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
         require(asked.get() == tries && crowded.count(WorldTileCreatures.Count.PREVIEWS_BUSY) == 300,
                 "A busy display is asked once per try, not once per spawn: " + asked.get());
@@ -537,7 +538,7 @@ public final class WorldTileCreaturesTest {
                         throw new DisplayModelTypes.ServiceUnavailable("Display previews busy", false, null);
                     return preview(display, 0L, 0L, appearance(true));
                 });
-        crowded.pause((millis, token) -> {});
+        crowded.pause((millis, token) -> true);
         var budgeted = crowded.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
         require(budgeted.drawn() == WorldTileCreatures.TILE_PREVIEWS
                         && budgeted.count(WorldTileCreatures.Count.CAPPED) == 10
@@ -553,6 +554,7 @@ public final class WorldTileCreaturesTest {
         canceling.pause((millis, waiting) -> {
             token.cancel();
             waiting.check();
+            return true;
         });
         try {
             canceling.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, token);
@@ -571,6 +573,82 @@ public final class WorldTileCreaturesTest {
             require(System.nanoTime() - began < java.util.concurrent.TimeUnit.SECONDS.toNanos(30),
                     "A canceled sleep ends early");
         }
+    }
+
+    /**
+     * #484: the retry pauses of consecutive tiles share one budget, because exteriors are prepared
+     * one tile at a time: at most about 1 s per 10 s window, none after a tile whose retries all
+     * stayed busy until the reader answers or the window passes, and an interrupt stops retrying
+     * without failing the tile.
+     */
+    private static void busyRetryPausesShareOneBudgetAcrossTiles() {
+        var rows = List.of(WorldSpawnOverlayTest.spawn(1, 1, -100, -100, 10.0));
+        var now = new java.util.concurrent.atomic.AtomicLong(1_000_000_000L);
+        var busy = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var stuck = new WorldTileCreatures(token -> index(rows), () -> "r1",
+                (npc, token) -> qualified((int) npc, null), (display, token) -> {
+                    if (busy.get()) throw new DisplayModelTypes.ServiceUnavailable("Display previews busy", false, null);
+                    return preview(display, 0L, 0L, appearance(true));
+                }, now::get);
+        var pauses = new ArrayList<Long>();
+        stuck.pause((millis, token) -> pauses.add(millis));
+        stuck.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(pauses.equals(List.of(100L, 200L, 400L)), "The first busy tile retries: " + pauses);
+        pauses.clear();
+        var next = stuck.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(pauses.isEmpty() && next.count(WorldTileCreatures.Count.PREVIEWS_BUSY) == 1,
+                "After a tile stayed busy through its retries, the next tile does not pause: " + pauses);
+        now.addAndGet(WorldTileCreatures.BUSY_WINDOW_NANOS);
+        stuck.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(pauses.equals(List.of(100L, 200L, 400L)), "Once the window passes, tiles retry again: " + pauses);
+        // The reader answering lifts the skip at once.
+        pauses.clear();
+        busy.set(false);
+        stuck.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(pauses.isEmpty(), "An answering reader needs no pause");
+
+        // Busy the first time each tile asks, answered on the retry: each tile pauses 100 ms,
+        // until the shared 1 s budget of the window is spent. A new revision per tile empties the
+        // model cache, so every tile asks the reader again.
+        var tileNumber = new AtomicInteger();
+        var askedOnTile = new java.util.HashSet<Integer>();
+        var flaky = new WorldTileCreatures(token -> index(rows), tileNumber::get,
+                (npc, token) -> qualified((int) npc, null), (display, token) -> {
+                    if (askedOnTile.add(tileNumber.get()))
+                        throw new DisplayModelTypes.ServiceUnavailable("Display previews busy", false, null);
+                    return preview(display, 0L, 0L, appearance(true));
+                }, now::get);
+        var spent = new ArrayList<Long>();
+        flaky.pause((millis, token) -> spent.add(millis));
+        int drawn = 0;
+        for (int tile = 0; tile < 12; tile++) {
+            tileNumber.incrementAndGet();
+            drawn += flaky.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE).drawn();
+        }
+        require(spent.size() == 10 && spent.stream().allMatch(millis -> millis == 100),
+                "Ten 100 ms pauses fill the 1 s budget: " + spent);
+        require(drawn == 10, "The tiles that paused drew their creature: " + drawn);
+        now.addAndGet(WorldTileCreatures.BUSY_WINDOW_NANOS);
+        tileNumber.incrementAndGet();
+        flaky.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(spent.size() == 11, "A new window has a new budget: " + spent.size());
+
+        // An interrupted pause stops the retries; the tile is not failed and keeps the interrupt.
+        var interrupted = new WorldTileCreatures(token -> index(rows), () -> "r1",
+                (npc, token) -> qualified((int) npc, null), (display, token) -> {
+                    throw new DisplayModelTypes.ServiceUnavailable("Display previews busy", false, null);
+                }, now::get);
+        var tries = new AtomicInteger();
+        interrupted.pause((millis, token) -> {
+            tries.incrementAndGet();
+            return false;
+        });
+        var summary = interrupted.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(tries.get() == 1 && summary.count(WorldTileCreatures.Count.PREVIEWS_BUSY) == 1,
+                "An interrupted pause ends the retries and counts the spawn busy");
+        Thread.currentThread().interrupt();
+        boolean slept = WorldTileCreatures.sleep(60_000, new Cancellation());
+        require(!slept && Thread.interrupted(), "The real pause returns false on interrupt and keeps the flag");
     }
 
     /** One opaque triangle at z 0 and its one-bone Stand sequence that lifts it by 5. */
