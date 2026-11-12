@@ -69,6 +69,11 @@ final class WorldExplorerInput {
             return CollisionWorld.terrain(ground());
         }
 
+        /** The terrain's liquid surface for a swimming body; none unless the view knows it. */
+        default com.vibeminer.rendering.world.LiquidSurface liquids() {
+            return com.vibeminer.rendering.world.LiquidSurface.empty();
+        }
+
         /**
          * Whether a drawn body standing still may request frames for its idle animation: the view
          * is shown and has the keyboard focus.
@@ -282,7 +287,9 @@ final class WorldExplorerInput {
     double effectiveSpeed() {
         return switch (mode) {
             case FREE -> motion.speed(speed(), held(WorldControls.Action.SPRINT));
-            case WALK -> axes().forward() < 0 ? MovementParity.BACKPEDAL_SPEED : MovementParity.RUN_SPEED;
+            case WALK -> body.body().swimming()
+                    ? axes().forward() < 0 ? MovementParity.SWIM_BACK_SPEED : MovementParity.SWIM_SPEED
+                    : axes().forward() < 0 ? MovementParity.BACKPEDAL_SPEED : MovementParity.RUN_SPEED;
             case FLY -> flySpeed();
         };
     }
@@ -615,10 +622,11 @@ final class WorldExplorerInput {
         double x = walker.x(), y = walker.y(), z = walker.z();
         boolean placed = body.placed() && camera.equals(body.shown());
         var stepped = body.step(camera, input.forward(), input.strafe(), input.vertical(), input.turn(),
-                input.tilt(), flySpeed(), dt, host.collision());
+                input.tilt(), flySpeed(), dt, host.collision(), host.liquids());
         host.bodyStatus(mode, stepped.status());
         if (animator != null)
-            animator.step(body.mode(), stepped.status(), walker.horizontalSpeed(), input.forward() < 0, false, dt);
+            animator.step(body.mode(), stepped.status(), walker.horizontalSpeed(), input.forward() < 0,
+                    walker.swimming(), dt);
         // Only the body travelling is movement; a look or a zoom only swings the camera.
         // Placing the body under a new camera is not travel either.
         boolean travelled = placed && (walker.x() != x || walker.y() != y || walker.z() != z);
