@@ -81,9 +81,31 @@ class WorldDoodadLightTest {
     }
 
     @Test
-    void moltLightsAndAmbientOverridesAreNotRead() {
+    void moltLightsAreNotRead() {
         assertNull(WorldExteriorObjects.doodadLight(0x4, colour(1, 2, 3), AMBIENT, null));
-        assertNull(WorldExteriorObjects.doodadLight(0x8, colour(1, 2, 3), AMBIENT, null));
         assertNull(WorldExteriorObjects.doodadLight(0x6, colour(1, 2, 3), AMBIENT, null));
+        assertNull(WorldExteriorObjects.doodadLight(0xc, colour(1, 2, 3), AMBIENT, null));
+    }
+
+    @Test
+    void mohdLikeAmbientOverrideTakesTheRawColour() {
+        // 0x8 without 0x2: ambient the raw colour, uncapped (0xff over the 0x60 cap); direct as
+        // without 0x8.
+        var bright = WorldExteriorObjects.doodadLight(0x8, colour(0xff, 0x80, 0), AMBIENT, null);
+        assertArrayEquals(new float[] {1, 0x80 / 255f, 0}, ambient(bright), 1e-6f);
+        assertArrayEquals(new float[] {1, 0x80 / 255f, 0}, direct(bright), 1e-6f);
+        var dim = WorldExteriorObjects.doodadLight(0x8, colour(0x30, 0x20, 0x10), AMBIENT, null);
+        assertArrayEquals(new float[] {0x30 / 255f, 0x20 / 255f, 0x10 / 255f}, ambient(dim), 1e-6f);
+        assertEquals(0x70 / 255f, dim.directR(), 1e-6f);
+        // 0x8 with 0x2: ambient the colour, not the building's; direct the colour toward the group.
+        double[] up = {0, 0, 1};
+        var inside = WorldExteriorObjects.doodadLight(0xa, colour(0x30, 0x20, 0x10), AMBIENT, up);
+        assertArrayEquals(ambient(dim), ambient(inside), 1e-6f);
+        assertArrayEquals(
+                new float[] {0x30 / 255f, 0x20 / 255f, 0x10 / 255f}, direct(inside), 1e-6f);
+        assertArrayEquals(new float[] {0, 0, 1}, toward(inside));
+        // 0x8 with 0x10: the colour takes the building ambient's place in the sum.
+        var mddi = WorldExteriorObjects.doodadLight(0x1a, colour(0x30, 0x20, 0x10), AMBIENT, up);
+        assertArrayEquals(new float[] {0x60 / 255f, 0x40 / 255f, 0x20 / 255f}, direct(mddi), 1e-6f);
     }
 }

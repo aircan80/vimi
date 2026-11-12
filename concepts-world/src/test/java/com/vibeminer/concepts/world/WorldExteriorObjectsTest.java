@@ -8500,6 +8500,62 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
+    void anInteriorLightingDoodadIsLitTowardItsGroupCentreThroughTheBuildingTransform() {
+        // A building turned 37 degrees, pitched 5 and scaled 1.5 (MODF 0x4, 1536 / 1024), with a
+        // MODD 0x2 doodad off its origin: the light points from the doodad's placed origin to its
+        // group box centre placed by the same building transform.
+        var defs = List.of(new Modd(0x2 << 24, 1.5f, -2, 0.5f, new double[] {0, 0, 0, 1}, 1));
+        byte[] doodads = doodadChunks(new int[][] {{0, 1}}, new long[] {MODEL}, defs);
+        int modd = indexOf(doodads, "MODD") + 8;
+        ByteBuffer.wrap(doodads).order(ByteOrder.LITTLE_ENDIAN).putInt(modd + 36, 0xff302010);
+        var building = new Modf(ROOT, 1, 0x8 | 0x4, 100, 20, 300, 5, 37, 0, 1536);
+        try (var f = new Fixture(List.of(building))) {
+            putModel(f, MODEL, model());
+            f.files.sources.put(
+                    ROOT,
+                    root(
+                            2,
+                            new long[] {GROUP, INTERIOR},
+                            List.of(new Material(0, IMAGE, 0)),
+                            portalChunks(1, true),
+                            doodads));
+            f.files.sources.put(GROUP, withDoodadRefs(portalRange(group(EXT), 0, 1)));
+            f.files.sources.put(INTERIOR, withDoodadRefs(portalRange(group(ROOM), 1, 1), 0));
+            try (var set = f.runInstance()) {
+                var b =
+                        set.placements().stream()
+                                .filter(p -> p.kind() == WorldExteriorObjects.Kind.BUILDING)
+                                .findFirst()
+                                .orElseThrow();
+                var d =
+                        set.placements().stream()
+                                .filter(p -> p.kind() == WorldExteriorObjects.Kind.SET_DOODAD)
+                                .findFirst()
+                                .orElseThrow();
+                var g = set.models().get(b.model()).portals().groups().get(1);
+                double[] m = b.rotation().rowMajor();
+                double cx = (g.minX() + g.maxX()) / 2, cy = (g.minY() + g.maxY()) / 2;
+                double cz = (g.minZ() + g.maxZ()) / 2, s = b.scale();
+                double[] centre = {
+                    b.x() + s * (m[0] * cx + m[1] * cy + m[2] * cz),
+                    b.y() + s * (m[3] * cx + m[4] * cy + m[5] * cz),
+                    b.z() + s * (m[6] * cx + m[7] * cy + m[8] * cz)
+                };
+                double dx = centre[0] - d.x(), dy = centre[1] - d.y(), dz = centre[2] - d.z();
+                double length = Math.sqrt(dx * dx + dy * dy + dz * dz);
+                assertTrue(length > 0.1, "the doodad stands off the group centre");
+                var light = d.light();
+                assertNotNull(light);
+                assertEquals(dx / length, light.towardX(), 1e-5);
+                assertEquals(dy / length, light.towardY(), 1e-5);
+                assertEquals(dz / length, light.towardZ(), 1e-5);
+                assertEquals(1.5, s, 1e-9);
+                assertTrue(Math.abs(m[1]) > 0.5, "the building is turned");
+            }
+        }
+    }
+
+    @Test
     void theReadProfileCoversEveryImageSlotReadTwice() {
         var profile = WorldStreamScopes.UseProfile.BASIC_EXTERIOR;
         // Building images: the tile's, the split roots' shared large and interior slots, and the

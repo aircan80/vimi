@@ -11,7 +11,7 @@ class WorldPlacementLightTest {
         // Placements 0..5: lights 2, -1, 0, 2, -1, 0.
         int[] lights = {2, -1, 0, 2, -1, 0};
         int[] order = {9, 0, 1, 2, 3, 4, 5, 9};
-        BgfxWorldStreamRenderer.sortByLight(order, 1, 6, lights);
+        BgfxWorldStreamRenderer.sortByLight(order, 1, 6, lights, new int[4], new int[6]);
         assertArrayEquals(new int[] {9, 1, 4, 2, 5, 0, 3, 9}, order, "stable within a light");
     }
 
@@ -19,7 +19,7 @@ class WorldPlacementLightTest {
     void aGroupWithOneLightIsUntouched() {
         int[] lights = {-1, -1, -1};
         int[] order = {2, 0, 1};
-        BgfxWorldStreamRenderer.sortByLight(order, 0, 3, lights);
+        BgfxWorldStreamRenderer.sortByLight(order, 0, 3, lights, new int[1], new int[3]);
         assertArrayEquals(new int[] {2, 0, 1}, order);
     }
 }

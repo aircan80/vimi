@@ -552,6 +552,12 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         /** Per model: whether any of its placements has its own light. */
         final boolean[] litModels;
 
+        /**
+         * {@link #sortByLight} scratch: one count per light plus the World light, and one entry per
+         * placement.
+         */
+        final int[] lightCounts, lightScratch;
+
         short vertices = INVALID, indices = INVALID;
         long bytes;
 
@@ -689,6 +695,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             placementLights = source.placementLights;
             lights = source.lights;
             litModels = new boolean[models.length / 2];
+            lightCounts = new int[lights.length / WorldStreamObjectsFile.Lights.FLOATS + 1];
+            lightScratch = new int[placementLights.length];
             for (int p = 0; p < placementLights.length; p++) {
                 if (placementLights[p] >= 0) {
                     litModels[placementModels[p]] = true;
@@ -3215,18 +3223,27 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
 
     /**
      * Orders {@code order[first, first + count)} by placement light, World-lit placements first,
-     * then each light's placements together, so each run draws as one group. Returns nothing; the
-     * runs are read back from {@code lights}. Insertion sort: lit groups are small.
+     * then each light's placements together and in their order, so each run draws as one group. A
+     * counting sort over the light indices: {@code counts} holds one more slot than there are
+     * lights and {@code scratch} at least {@code count} entries; nothing is allocated.
      */
-    static void sortByLight(int[] order, int first, int count, int[] lights) {
-        for (int i = first + 1; i < first + count; i++) {
-            int p = order[i], key = lights[p], j = i - 1;
-            while (j >= first && lights[order[j]] > key) {
-                order[j + 1] = order[j];
-                j--;
-            }
-            order[j + 1] = p;
+    static void sortByLight(
+            int[] order, int first, int count, int[] lights, int[] counts, int[] scratch) {
+        java.util.Arrays.fill(counts, 0);
+        for (int i = first; i < first + count; i++) {
+            counts[lights[order[i]] + 1]++;
         }
+        int sum = 0;
+        for (int k = 0; k < counts.length; k++) {
+            int n = counts[k];
+            counts[k] = sum;
+            sum += n;
+        }
+        for (int i = first; i < first + count; i++) {
+            int p = order[i];
+            scratch[counts[lights[p] + 1]++] = p;
+        }
+        System.arraycopy(scratch, 0, order, first, count);
     }
 
     /**
@@ -3301,7 +3318,13 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             }
             if (objects.litModels[m]) {
                 // Placements with their own light (interior set doodads) draw in runs of one light.
-                sortByLight(objects.order, first, count, objects.placementLights);
+                sortByLight(
+                        objects.order,
+                        first,
+                        count,
+                        objects.placementLights,
+                        objects.lightCounts,
+                        objects.lightScratch);
                 int run = first;
                 while (run < first + count) {
                     int light = objects.placementLights[objects.order[run]], end = run + 1;
@@ -3404,7 +3427,13 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             int drawn = 0;
             if (objects.litModels[m]) {
                 // Members with their own light draw in runs of one light.
-                sortByLight(objects.poseMembers, 0, members, objects.placementLights);
+                sortByLight(
+                        objects.poseMembers,
+                        0,
+                        members,
+                        objects.placementLights,
+                        objects.lightCounts,
+                        objects.lightScratch);
                 int run = 0;
                 while (run < members) {
                     int light = objects.placementLights[objects.poseMembers[run]], end = run + 1;

@@ -351,7 +351,7 @@ public final class WorldExteriorObjects {
     private static final int SET_DOODAD_ADMITTED = 0x1 | 0x2 | 0x4 | 0x8 | 0x10;
 
     // MODD 0x2, 0x4, 0x8 and 0x10 take part in a set doodad's interior light when an interior
-    // group lists it (doodadLight); 0x4 and 0x8 keep it in the World light.
+    // group lists it (doodadLight); 0x4 keeps it in the World light.
 
     /**
      * Whether texture1 of a batch is sampled with UV0: the batch's shader ID and texture count name
@@ -774,10 +774,15 @@ public final class WorldExteriorObjects {
          */
         DOODAD_INTERIOR_LIGHT,
         /**
-         * Set doodads of an interior group left in the World light: MODD 0x4 or 0x8, whose MOLT
-         * light or ambient override is not read. Not an outcome bucket.
+         * Set doodads of an interior group left in the World light: MODD 0x4, whose MOLT light is
+         * not read. Not an outcome bucket.
          */
         DOODAD_LIGHT_UNSUPPORTED,
+        /**
+         * Of {@link #DOODAD_INTERIOR_LIGHT}: MODD 0x8 doodads, whose ambient is their raw colour.
+         * Not an outcome bucket.
+         */
+        DOODAD_LIGHT_AMBIENT_OVERRIDE,
         /**
          * Of {@link #DOODAD_INTERIOR_LIGHT}: MODD 0x2 doodads whose colour alpha names a MOLT
          * light, lit toward their group's centre instead. Not an outcome bucket.
@@ -1097,20 +1102,24 @@ public final class WorldExteriorObjects {
      *   <li>Otherwise: ambient the MODD colour (with 0x10, plus the building ambient, normalized),
      *       scaled down so its largest channel is at most 0x60; direct the same colour scaled up so
      *       its largest channel is at least 0x70; toward the light the default interior direction.
+     *   <li>MODD 0x8 overrides the ambient with the raw MODD colour, uncapped, which also takes the
+     *       building ambient's place in the 0x10 sums; the direct light follows the rules above.
      * </ul>
      *
-     * <p>Null, keeping the World light, when MODD 0x4 or 0x8 is set: those take a MOLT light or an
-     * ambient override, not read here. The MDDI multiplier is taken as 1 (its value is not read;
-     * the client uses at least 1).
+     * <p>Null, keeping the World light, when MODD 0x4 is set: it takes a MOLT light, not read here.
+     * The MDDI multiplier is taken as 1 (its value is not read; the client uses at least 1).
      *
      * @param colour MODD colour as stored (B, G, R, A bytes of a little-endian u32)
      * @param ambient MOHD ambColor as stored
      */
     static DoodadLight doodadLight(int flags, int colour, long ambient, double[] groupToward) {
-        if ((flags & (MODD_LIGHT_4 | MODD_LIGHT_8)) != 0) {
+        if ((flags & MODD_LIGHT_4) != 0) {
             return null;
         }
-        float[] c = rgb(colour), a = rgb((int) ambient);
+        float[] c = rgb(colour);
+        boolean override = (flags & MODD_LIGHT_8) != 0;
+        // 0x8 replaces the building's ambients with the colour before anything reads them.
+        float[] a = override ? c : rgb((int) ambient);
         boolean mddi = (flags & MODD_MDDI) != 0;
         if ((flags & MODD_INTERIOR) != 0) {
             float[] direct = mddi ? sumNormalized(c, a) : c;
@@ -1118,7 +1127,7 @@ public final class WorldExteriorObjects {
             return light(a, direct, toward);
         }
         float[] base = mddi ? sumNormalized(c, a) : c;
-        return light(limitBelow(base, 0x60), raiseTo(base, 0x70), INTERIOR_TOWARD);
+        return light(override ? c : limitBelow(base, 0x60), raiseTo(base, 0x70), INTERIOR_TOWARD);
     }
 
     private static DoodadLight light(float[] ambient, float[] direct, double[] toward) {
@@ -4041,6 +4050,11 @@ public final class WorldExteriorObjects {
          * it (MODR) is lit as an interior: MOGI 0x2000 without exterior 0x8 or exterior lit 0x40,
          * as the client lights a doodad from an interior group. Null otherwise, or when the
          * building has no portal set (its group flags and boxes are not kept).
+         *
+         * <p>Two deviations from the client, both kept deterministic. A doodad several groups list
+         * keeps the World light: the client lights it from whichever of them loads it first. And
+         * the MODD 0x2 direction starts at the placement's origin, where the client starts it at
+         * the doodad's bounding-box centre (the model is not read yet when the light is decided).
          */
         private DoodadLight interiorLight(
                 Placement building,
@@ -4087,6 +4101,9 @@ public final class WorldExteriorObjects {
             }
             var light = doodadLight(def.flags(), def.colour(), ambient, toward);
             count(light == null ? Count.DOODAD_LIGHT_UNSUPPORTED : Count.DOODAD_INTERIOR_LIGHT);
+            if (light != null && (def.flags() & MODD_LIGHT_8) != 0) {
+                count(Count.DOODAD_LIGHT_AMBIENT_OVERRIDE);
+            }
             return light;
         }
 
