@@ -659,6 +659,46 @@ public final class PreviewAnimation {
     }
 
     /**
+     * This animation over a subset of its rest vertices: the same label, timing, bones and tracks,
+     * with rest vertex {@code i} of the result being rest vertex {@code vertices[i]} of this one
+     * (its position, normal and influences). A consumer that draws only some of a large surface's
+     * vertices (a World creature drawing a few of its sections, #384) carries only those. Rigid
+     * billboard vertices added by {@link #withRigidVertices} cannot be selected.
+     */
+    public PreviewAnimation subset(int[] vertices) {
+        int count = vertices.length, surface = rest.length / 3;
+        if (count == 0) {
+            throw new IllegalArgumentException("An empty subset");
+        }
+        float[] positions = new float[count * 3];
+        float[] normals = restNormals.length == 0 ? new float[0] : new float[count * 3];
+        int[] boneIndices = new int[count * 4], weights = new int[count * 4];
+        for (int i = 0; i < count; i++) {
+            int v = vertices[i];
+            if (v < 0 || v >= surface) {
+                throw new IllegalArgumentException("Subset vertex outside the rest surface");
+            }
+            System.arraycopy(rest, v * 3, positions, i * 3, 3);
+            if (normals.length != 0) {
+                System.arraycopy(restNormals, v * 3, normals, i * 3, 3);
+            }
+            System.arraycopy(influenceBones, v * 4, boneIndices, i * 4, 4);
+            System.arraycopy(influenceWeights, v * 4, weights, i * 4, 4);
+        }
+        return new PreviewAnimation(
+                label,
+                durationMillis,
+                globalMillis,
+                bones,
+                new PreviewMesh(
+                        positions, new int[] {0, 0, 0}, List.of(new PreviewMesh.Part(0, 0, 3))),
+                normals,
+                boneIndices,
+                weights,
+                moveSpeed);
+    }
+
+    /**
      * Writes everything this animation was built from (label, timing, bones and their tracks, the
      * rest vertices, normals and influences), for {@link #read}. Rigid billboard vertices added by
      * {@link #withRigidVertices} are not written.

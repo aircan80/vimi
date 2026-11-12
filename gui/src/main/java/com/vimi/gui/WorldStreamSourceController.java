@@ -1733,6 +1733,18 @@ final class WorldStreamSourceController {
         changed();
     }
 
+    /** The current creature part of the ready detail, unclipped (measurement probes). */
+    String creatureStatus() {
+        int tiles = 0;
+        var creatures = WorldTileCreatures.Summary.NONE;
+        for (var entry : current) {
+            var tileCreatures = entry.source().creatures();
+            if (tileCreatures.drawn() > 0) tiles++;
+            creatures = creatures.plus(tileCreatures);
+        }
+        return creatureDetail(creatures, tiles);
+    }
+
     /** Drawn creature models and the per-reason counts of spawn points not drawn. */
     static String creatureDetail(WorldTileCreatures.Summary creatures, int tiles) {
         var text = new StringBuilder();
@@ -1748,6 +1760,10 @@ final class WorldStreamSourceController {
         if (creatures.billboardsLeftOut() > 0)
             text.append(", ").append(creatures.billboardsLeftOut())
                     .append(" with camera-facing parts left out");
+        // Models carrying their idle (#384) play it near the camera, within the child's budgets.
+        if (creatures.animated() > 0)
+            text.append(", ").append(creatures.animated())
+                    .append(" playing their idle near the camera");
         var npcs = creatures.npcs();
         if (npcs.drawn() > 0) {
             // Humanoid NPCs (#385): their item models and item records left out are disclosed.

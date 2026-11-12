@@ -105,6 +105,52 @@ final class WorldStreamObjectsFileTest {
     }
 
     @Test
+    void anAnimationSectionRoundTripsAndPacksForTheChild() throws Exception {
+        var builder = WorldStreamTileWriter.Exterior.builder();
+        builder.image(2, 2, chain(2, 2, rgba(4, 10)));
+        builder.image(4, 1, chain(4, 1, rgba(4, 20)));
+        builder.model();
+        var plain = small().data();
+        builder.mesh(
+                FloatBuffer.wrap(plain.vertices),
+                IntBuffer.wrap(new int[] {0, 1, 2, 2, 1, 3}),
+                new int[] {0, 3, 0, 3, 3, 1},
+                new int[2],
+                IntBuffer.wrap(SMALL_COLOURS));
+        builder.placement(0, -100.25, -200.5, 12, 1, 1, 0);
+        byte[] animation = WorldObjectAnimationTest.bytes(WorldObjectAnimationTest.swing());
+        builder.animate(0, new int[] {0, 1, 2, 3}, animation);
+        var exterior = builder.build();
+        var reference = write(exterior);
+        assertEquals(exterior.bytes(), reference.length());
+        assertEquals(
+                small().bytes() - placementBytes() + 12 + 16 + (animation.length + 3) / 4 * 4,
+                reference.length());
+        var read = WorldStreamObjectsFile.read(objectsPath(), IDENTITY, reference, () -> false);
+        assertArrayEquals(new int[] {0}, read.animations.models);
+        assertArrayEquals(new int[] {0, 1, 2, 3}, read.animations.sources[0]);
+        assertArrayEquals(animation, read.animations.animations[0]);
+        try (var packed = WorldStreamPackedObjects.pack(read, () -> false)) {
+            assertNotNull(packed.animations[0]);
+            assertEquals(0, packed.refusedAnimations);
+            assertEquals(800, packed.animations[0].animation.durationMillis());
+        }
+        // A file without animations is as before, but version 10.
+        Files.delete(objectsPath());
+        var none = write(small());
+        assertEquals(
+                0,
+                WorldStreamObjectsFile.read(objectsPath(), IDENTITY, none, () -> false)
+                        .animations
+                        .count());
+    }
+
+    /** The bytes of one placement row: the second placement {@link #small} has beyond one. */
+    private static int placementBytes() {
+        return 8 + WorldStreamObjectsFile.PLACEMENT_DOUBLES * 8;
+    }
+
+    @Test
     void roundTripPreservesEveryTableAndBindsToItsTile() throws Exception {
         var exterior = small();
         var reference = write(exterior);
@@ -290,7 +336,7 @@ final class WorldStreamObjectsFileTest {
         // classes of #367) fails its header check instead of being misread.
         var clean = Files.readAllBytes(objectsPath());
         assertEquals(WorldStreamObjectsFile.VERSION, clean[8]);
-        assertEquals(9, WorldStreamObjectsFile.VERSION);
+        assertEquals(10, WorldStreamObjectsFile.VERSION);
         // Version 5 (#367, before the vertex colours of #375), version 6 (#375, before the
         // portal tables and mesh groups of #383), version 7 (before the INTERIOR_LIGHT range
         // flag of #383) and version 8 (before placement portal ties) are stale as well.
@@ -741,9 +787,13 @@ final class WorldStreamObjectsFileTest {
         assertEquals("Objects portal counts", refused.apply(164, -1));
         // Within the caps but not the file's length.
         assertEquals("Objects header counts", refused.apply(164, 12));
-        // Byte 148 is #466's format mask, BC bits only; the reserved bytes from 172 must be zero.
+        // Byte 148 is #466's format mask, BC bits only; bytes 172-179 count the animation section
+        // (#384); the reserved bytes from 180 must be zero.
         assertEquals("Objects header counts", refused.apply(148, 1));
-        assertEquals("Reserved objects bytes", refused.apply(172, 1));
+        assertEquals("Objects animation counts", refused.apply(172, 1));
+        assertEquals("Objects animation counts", refused.apply(176, 4));
+        assertEquals("Objects animation counts", refused.apply(172, -1));
+        assertEquals("Reserved objects bytes", refused.apply(180, 1));
         assertEquals("Reserved objects bytes", refused.apply(252, 1));
     }
 
@@ -968,7 +1018,9 @@ final class WorldStreamObjectsFileTest {
         // Every table at its cap, the portal tables (#383) included, fits the ceiling, which is
         // derived from them (#308): 33 MiB with the vertex colours of #375 and the large allowance,
         // 46 MiB with the interior allowance of roots drawn by group, 50 MiB with the larger doodad
-        // pools, 53 MiB with the tile's own interior allowance.
+        // pools, 53 MiB with the tile's own interior allowance, 69 MiB with the animation section
+        // of
+        // #384 (CPU bytes the child parses, not GPU memory).
         long caps =
                 WorldStreamObjectsFile.length(
                                 WorldStreamObjectsFile.MAX_MODELS,
@@ -984,9 +1036,10 @@ final class WorldStreamObjectsFileTest {
                                 WmoPortalSet.MAX_TILE_GROUPS,
                                 WmoPortalSet.MAX_TILE_PORTALS,
                                 WmoPortalSet.MAX_TILE_VERTICES,
-                                WmoPortalSet.MAX_TILE_REFS);
+                                WmoPortalSet.MAX_TILE_REFS)
+                        + WorldStreamObjectsFile.MAX_ANIMATION_BYTES;
         assertTrue(caps > (25 << 20) && caps <= WorldStreamObjectsFile.MAX_BYTES, "caps " + caps);
-        assertEquals(53 << 20, WorldStreamObjectsFile.MAX_BYTES);
+        assertEquals(69 << 20, WorldStreamObjectsFile.MAX_BYTES);
         // The ceiling itself is enforced by the reference and by the tile header.
         assertThrows(
                 IllegalArgumentException.class,
@@ -1436,7 +1489,7 @@ final class WorldStreamObjectsFileTest {
         assertEquals(
                 WorldStreamObjectsFile.ADDITIVE | WorldStreamObjectsFile.UNLIT, read.ranges[11]);
         assertEquals(WorldStreamObjectsFile.OPAQUE | WorldStreamObjectsFile.UNLIT, read.ranges[15]);
-        assertEquals(9, WorldStreamObjectsFile.VERSION);
+        assertEquals(10, WorldStreamObjectsFile.VERSION);
         assertEquals(h, read.placements[8], 0);
         // An unknown class, a scaled matrix or a reflection is refused.
         // Modulate (4) and unknown flag bits stay refused: 0x800 alone and beside a known kind

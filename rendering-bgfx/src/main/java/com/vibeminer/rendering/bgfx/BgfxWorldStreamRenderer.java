@@ -542,6 +542,27 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         short vertices = INVALID, indices = INVALID;
         long bytes;
 
+        /** Per model: its idle animation (#384), or null for a static model. */
+        final WorldStreamPackedObjects.ObjectAnimation[] animations;
+
+        /**
+         * Placements that may animate: their model has an idle animation and no sorted range (a
+         * blended or additive range stays in the static sorted pass), in placement order.
+         */
+        final int[] animated;
+
+        /** Per placement: the phase it plays ({@link WorldObjectAnimation#phase}). */
+        final int[] phases;
+
+        /** Per model and phase: its pose, created when first needed, or null. */
+        final WorldObjectAnimation.Pose[] poses;
+
+        /** GPU bytes of this set's poses, reserved against the object budget. */
+        long poseBytes;
+
+        /** Per-frame scratch: the placements one pose draws. */
+        final int[] poseMembers;
+
         /**
          * GPU bytes of this set's own buffers, reserved against OBJECT_BUDGET_BYTES until
          * destroyed; its textures are reserved once each in the session's shared textures.
@@ -630,6 +651,32 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             meshGroups = source.meshGroups;
             placementParents = source.placementParents;
             placementGroups = source.placementGroups;
+            animations = source.animations;
+            int animatedCount = 0;
+            for (int p = 0; p < placementModels.length; p++) {
+                int m = placementModels[p];
+                if (animations[m] != null && !blendedModels[m]) {
+                    animatedCount++;
+                }
+            }
+            animated = new int[animatedCount];
+            phases = new int[placementModels.length];
+            for (int p = 0, at = 0; p < placementModels.length; p++) {
+                int m = placementModels[p];
+                if (animations[m] != null && !blendedModels[m]) {
+                    animated[at++] = p;
+                    phases[p] =
+                            WorldObjectAnimation.phase(
+                                    placements[p * WorldStreamObjectsFile.PLACEMENT_DOUBLES],
+                                    placements[p * WorldStreamObjectsFile.PLACEMENT_DOUBLES + 1]);
+                }
+            }
+            poses =
+                    new WorldObjectAnimation.Pose
+                            [animatedCount == 0
+                                    ? 0
+                                    : models.length / 2 * WorldObjectAnimation.PHASES];
+            poseMembers = new int[animatedCount];
             portalVisible = new java.util.BitSet[placementModels.length];
             for (int p = 0; p < portalVisible.length; p++) {
                 var traversal = portals[placementModels[p]];
@@ -660,6 +707,13 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         }
 
         void destroy() {
+            for (int i = 0; i < poses.length; i++) {
+                if (poses[i] != null) {
+                    poses[i].close();
+                    poses[i] = null;
+                }
+            }
+            poseBytes = 0;
             if (vertices != INVALID) {
                 bgfx_destroy_dynamic_vertex_buffer(vertices);
                 vertices = INVALID;
@@ -788,6 +842,34 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private WorldStreamBodyDraw body;
     private WorldStreamTransport.Body bodyPose;
     private int frameBodySubmits;
+
+    /**
+     * Object animation (#384), per frame: placements drawn animated, animatable placements left
+     * static (beyond the radius, over the instance cap, or without a pose within the budgets),
+     * poses re-skinned and their vertices, and poses drawn a step late for the skin budget.
+     */
+    private int frameAnimated, frameAnimatedStatic, frameSkins, frameSkinVertices, frameStalePoses;
+
+    /** Of {@link #frameAnimatedStatic}: beyond the radius, and refused a pose by its budgets. */
+    private int frameAnimatedFar, frameAnimatedRefused;
+
+    /**
+     * Object animation off: every animatable placement draws its static pose (proofs compare both;
+     * the application switches animation off on the parent side, whose files then carry none).
+     */
+    private boolean objectAnimation = true;
+
+    /** The animation clock's start; poses are timed from it on this child's monotonic clock. */
+    private final long animationEpoch = System.nanoTime();
+
+    /** This frame's animation clock, milliseconds since {@link #animationEpoch}. */
+    private long animationClock;
+
+    /** Placements the last finished frame drew animated. */
+    private int lastFrameAnimated;
+
+    /** A proof's fixed animation clock, or -1. */
+    private long proofClock = -1;
 
     BgfxWorldStreamRenderer(WorldStreamEnvelope.Session session) throws IOException {
         this.session = java.util.Objects.requireNonNull(session);
@@ -1961,6 +2043,18 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         objectCulling = enabled;
     }
 
+    /** Object animation on or off (#384); a proof compares both. */
+    void objectAnimation(boolean enabled) {
+        requireOwner();
+        objectAnimation = enabled;
+    }
+
+    /** Proofs only: the animation clock every following frame uses, or -1 for the real clock. */
+    void animationClockForProof(long millis) {
+        requireOwner();
+        proofClock = millis;
+    }
+
     /**
      * Proof seam: false draws every placement as its own one-instance draw, the submit pattern
      * before instancing (#382), so a proof can compare draw counts and pixels. Production never
@@ -2007,6 +2101,42 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     /** Changes whenever late objects become drawable, so an unchanged camera redraws once. */
     long objectsRevision() {
         return objectsRevision;
+    }
+
+    /**
+     * Changes every {@link WorldObjectAnimation#REDRAW_MILLIS} while the last frame drew animated
+     * placements (#384), so an unchanged camera redraws at that cadence and the idle keeps playing;
+     * constant (-1) otherwise, so a still scene without animation costs no frames.
+     */
+    long animationRevision() {
+        return lastFrameAnimated == 0
+                ? -1
+                : (System.nanoTime() - animationEpoch)
+                        / 1_000_000
+                        / WorldObjectAnimation.REDRAW_MILLIS;
+    }
+
+    /** Object animation counts of the frame just drawn (#384); see {@link #frameAnimated}. */
+    record AnimationCounts(
+            int animated,
+            int animatedStatic,
+            int far,
+            int refused,
+            int skins,
+            int skinVertices,
+            int stale,
+            long poseBytes) {}
+
+    AnimationCounts animationCounts() {
+        return new AnimationCounts(
+                frameAnimated,
+                frameAnimatedStatic,
+                frameAnimatedFar,
+                frameAnimatedRefused,
+                frameSkins,
+                frameSkinVertices,
+                frameStalePoses,
+                poseBytes());
     }
 
     private boolean lateTarget(WorldStreamState.Lease lease) {
@@ -2330,6 +2460,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             portalCulling.frame(view);
             frameMaterial = -1;
             frameBodySubmits = 0;
+            frameAnimated = frameAnimatedStatic = frameSkins = frameSkinVertices = 0;
+            frameStalePoses = frameAnimatedFar = frameAnimatedRefused = 0;
+            animationClock =
+                    proofClock >= 0 ? proofClock : (System.nanoTime() - animationEpoch) / 1_000_000;
             boolean bodyDrawn =
                     wmoProgram != INVALID
                             && body != null
@@ -2399,6 +2533,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 }
             }
         }
+        lastFrameAnimated = frameAnimated;
         lastFrame =
                 new FrameCounts(
                         framePlacements,
@@ -2858,6 +2993,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 }
             }
         }
+        if (objects.animated.length > 0) {
+            drawAnimated(frame, objects, origin);
+        }
         int models = objects.models.length / 2;
         WorldObjectInstances.groupByModel(
                 objects.placementModels, objects.grouped, models, objects.starts, objects.order);
@@ -2876,6 +3014,127 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 }
             }
         }
+    }
+
+    /**
+     * Draws this set's animatable placements that animate this frame (#384) from their phase's pose
+     * and takes them out of the static model groups. A placement beyond {@link
+     * WorldObjectAnimation#RADIUS}, over {@link WorldObjectAnimation#FRAME_INSTANCES}, or whose
+     * pose cannot be created within {@link WorldObjectAnimation#GPU_BYTES} and the object budget,
+     * or has never been skinned and does not fit this frame's skin budget, stays in its static
+     * group.
+     */
+    private void drawAnimated(ObjectFrame frame, SlotObjects objects, TerrainScene.Origin origin) {
+        if (!objectAnimation) {
+            frameAnimatedStatic += objects.animated.length;
+            return;
+        }
+        double radius = WorldObjectAnimation.RADIUS * WorldObjectAnimation.RADIUS;
+        int stride = WorldStreamObjectsFile.PLACEMENT_DOUBLES;
+        int models = objects.models.length / 2;
+        for (int m = 0; m < models; m++) {
+            var animation = objects.animations[m];
+            if (animation == null || objects.blendedModels[m]) {
+                continue;
+            }
+            long duration = animation.animation.durationMillis();
+            for (int phase = 0; phase < WorldObjectAnimation.PHASES; phase++) {
+                int members = 0;
+                WorldObjectAnimation.Pose pose = null;
+                boolean refused = false;
+                for (int p : objects.animated) {
+                    if (objects.placementModels[p] != m
+                            || objects.phases[p] != phase
+                            || !objects.grouped[p]) {
+                        continue;
+                    }
+                    double dx = objects.placements[p * stride] - origin.x();
+                    double dy = objects.placements[p * stride + 1] - origin.y();
+                    double dz = objects.placements[p * stride + 2] - origin.z();
+                    if (dx * dx + dy * dy + dz * dz > radius) {
+                        frameAnimatedStatic++;
+                        frameAnimatedFar++;
+                        continue;
+                    }
+                    if (refused
+                            || frameAnimated + members >= WorldObjectAnimation.FRAME_INSTANCES) {
+                        frameAnimatedStatic++;
+                        frameAnimatedRefused++;
+                        continue;
+                    }
+                    if (pose == null) {
+                        pose = pose(objects, m, phase, animation, duration);
+                        if (pose == null) {
+                            refused = true;
+                            frameAnimatedStatic++;
+                            frameAnimatedRefused++;
+                            continue;
+                        }
+                    }
+                    objects.poseMembers[members++] = p;
+                }
+                if (members == 0) {
+                    continue;
+                }
+                for (int i = 0; i < members; i++) {
+                    objects.grouped[objects.poseMembers[i]] = false;
+                }
+                int drawn = instances(frame, objects, objects.poseMembers, 0, members, origin);
+                if (drawn > 0) {
+                    drawRangesStep(frame, objects, m, drawn, STEP_UNSORTED, null, pose);
+                }
+                frameAnimated += members;
+            }
+        }
+    }
+
+    /**
+     * Model {@code m}'s pose for {@code phase}, skinned for this frame's clock: created when first
+     * needed (null when the pose budgets or bgfx refuse it), re-skinned when the clock stepped and
+     * the frame's skin budget allows, else drawn as last skinned. Null for a pose never skinned
+     * that does not fit the skin budget: its placements draw static this frame.
+     */
+    private WorldObjectAnimation.Pose pose(
+            SlotObjects objects,
+            int m,
+            int phase,
+            WorldStreamPackedObjects.ObjectAnimation animation,
+            long duration) {
+        int at = m * WorldObjectAnimation.PHASES + phase;
+        var pose = objects.poses[at];
+        if (pose == null) {
+            long bytes = WorldObjectAnimation.bytes(animation);
+            if (poseBytes() + bytes > WorldObjectAnimation.GPU_BYTES
+                    || !objectsFit(objectBudget, reservedObjectBytes(), bytes)) {
+                return null;
+            }
+            try (var layout = objectLayout()) {
+                pose = WorldObjectAnimation.Pose.create(animation, layout);
+            } catch (IOException unavailable) {
+                return null;
+            }
+            if (pose == null) {
+                return null;
+            }
+            objects.poses[at] = pose;
+            objects.poseBytes += bytes;
+        }
+        long millis = WorldObjectAnimation.millis(animationClock, duration, phase);
+        if (pose.skinned() != millis) {
+            if (frameSkinVertices + animation.vertexCount()
+                    <= WorldObjectAnimation.FRAME_SKIN_VERTICES) {
+                long skinning = com.vibeminer.formats.world.WorldStageTimings.start();
+                pose.skin(millis);
+                com.vibeminer.formats.world.WorldStageTimings.stop("child.frame.skin", skinning);
+                frameSkins++;
+                frameSkinVertices += animation.vertexCount();
+            } else if (pose.skinned() < 0) {
+                return null;
+            } else {
+                frameStalePoses++;
+            }
+        }
+        return pose;
     }
 
     /**
@@ -2992,7 +3251,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         if (count == 0) {
             return;
         }
-        drawRangesStep(frame, objects, m, count, STEP_UNSORTED, groups);
+        drawRangesStep(frame, objects, m, count, STEP_UNSORTED, groups, null);
     }
 
     /**
@@ -3036,9 +3295,17 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             if (portals != null && portalSkipped(objects, portals, groups, mesh)) {
                 continue;
             }
-            submitRange(frame, objects, mesh, r, count, true);
+            submitRange(
+                    frame,
+                    objects,
+                    objects.vertices,
+                    objects.meshes[mesh * 6],
+                    mesh,
+                    r,
+                    count,
+                    true);
         }
-        drawRangesStep(frame, objects, m, count, STEP_ADDITIVE, groups);
+        drawRangesStep(frame, objects, m, count, STEP_ADDITIVE, groups, null);
     }
 
     /**
@@ -3198,7 +3465,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             int m,
             int count,
             int step,
-            java.util.BitSet groups) {
+            java.util.BitSet groups,
+            WorldObjectAnimation.Pose pose) {
         boolean sortedPass = step != STEP_UNSORTED;
         var portals = groups == null ? null : objects.portals[m];
         for (int mesh = objects.models[m * 2];
@@ -3215,7 +3483,27 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                     r < objects.meshes[at + 4] + objects.meshes[at + 5];
                     r++) {
                 if (step(objects.ranges[r * WorldStreamObjectsFile.RANGE_INTS + 3]) == step) {
-                    submitRange(frame, objects, mesh, r, count, sortedPass);
+                    if (pose == null) {
+                        submitRange(
+                                frame,
+                                objects,
+                                objects.vertices,
+                                objects.meshes[at],
+                                mesh,
+                                r,
+                                count,
+                                sortedPass);
+                    } else {
+                        submitRange(
+                                frame,
+                                objects,
+                                pose.vertices,
+                                objects.animations[m].meshOffsets[mesh - objects.models[m * 2]],
+                                mesh,
+                                r,
+                                count,
+                                sortedPass);
+                    }
                 }
             }
         }
@@ -3229,6 +3517,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private void submitRange(
             ObjectFrame frame,
             SlotObjects objects,
+            short vertexBuffer,
+            int firstVertex,
             int mesh,
             int r,
             int count,
@@ -3240,8 +3530,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             bgfx_set_uniform(wmoMaterial, frame.material(kind), 1);
             frameMaterial = kind;
         }
-        bgfx_set_dynamic_vertex_buffer(
-                0, objects.vertices, objects.meshes[at], objects.meshes[at + 1]);
+        bgfx_set_dynamic_vertex_buffer(0, vertexBuffer, firstVertex, objects.meshes[at + 1]);
         bgfx_set_dynamic_index_buffer(
                 objects.indices,
                 objects.meshes[at + 2] + objects.ranges[r * stride],
@@ -3537,7 +3826,18 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         }
         for (var slot : slots) {
             if (slot != null && slot.objects != null) {
-                total += slot.objects.reserved;
+                total += slot.objects.reserved + slot.objects.poseBytes;
+            }
+        }
+        return total;
+    }
+
+    /** GPU bytes all resident sets' animation poses hold (#384). */
+    private long poseBytes() {
+        long total = 0;
+        for (var slot : slots) {
+            if (slot != null && slot.objects != null) {
+                total += slot.objects.poseBytes;
             }
         }
         return total;

@@ -161,6 +161,9 @@ final class WorldStreamNativeOwner implements AutoCloseable {
     private WorldStreamControl.Camera lastCamera;
     private long cameraRevision, policy, submittedCamera, submittedContent = -1, submittedPolicy;
     private long submittedObjects;
+
+    // The animation revision the last readback frame drew (#384).
+    private long submittedAnimation = -1;
     private long publishedCamera, publishedContent, sequence, order;
     // Opt-in measurement only: the previous publication, 0 while timings are off.
     private long lastPublished;
@@ -574,6 +577,7 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         if (submittedCamera == cameraRevision
                 && submittedContent == renderer.contentRevision()
                 && submittedObjects == renderer.objectsRevision()
+                && submittedAnimation == renderer.animationRevision()
                 && submittedPolicy == policy
                 && !renderer.horizonWaiting()) {
             return false;
@@ -632,11 +636,13 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         if (drawing != 0L) {
             WorldStageTimings.stop("child.frame.submitCpu", drawing);
             cullCounts(renderer.frameCounts());
+            animationCounts(renderer.animationCounts());
         }
         renderedThisFrame = true;
         submittedCamera = cameraRevision;
         submittedContent = ticket.content();
         submittedObjects = renderer.objectsRevision();
+        submittedAnimation = renderer.animationRevision();
         submittedPolicy = policy;
         return true;
     }
@@ -831,6 +837,22 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                 "child.frame.portalPlacementsCulled", counts.portalPlacementsCulled());
     }
 
+    /**
+     * Object animation (#384) in the frame just submitted (opt-in only): placements drawn animated
+     * and left static, poses re-skinned and their vertices, poses drawn a step late, and the GPU
+     * bytes all poses hold.
+     */
+    static void animationCounts(BgfxWorldStreamRenderer.AnimationCounts counts) {
+        WorldStageTimings.value("child.frame.animated", counts.animated());
+        WorldStageTimings.value("child.frame.animatedStatic", counts.animatedStatic());
+        WorldStageTimings.value("child.frame.animatedFar", counts.far());
+        WorldStageTimings.value("child.frame.animatedRefused", counts.refused());
+        WorldStageTimings.value("child.frame.skins", counts.skins());
+        WorldStageTimings.value("child.frame.skinVertices", counts.skinVertices());
+        WorldStageTimings.value("child.frame.stalePoses", counts.stale());
+        WorldStageTimings.value("child.frame.poseBytes", counts.poseBytes());
+    }
+
     /** bgfx's statistics of the frame just rendered, after a frame that drew (opt-in only). */
     private static void frameStats() {
         var stats = bgfx_get_stats();
@@ -996,6 +1018,30 @@ final class WorldStreamNativeOwner implements AutoCloseable {
     void objectCulling(boolean enabled) {
         requireOpen();
         renderer.objectCulling(enabled);
+    }
+
+    /** Object animation on or off (#384); proofs only. */
+    void objectAnimation(boolean enabled) {
+        requireOpen();
+        renderer.objectAnimation(enabled);
+    }
+
+    /** Proofs only: a fixed animation clock for the following frames, or -1. */
+    void animationClockForProof(long millis) {
+        requireOpen();
+        renderer.animationClockForProof(millis);
+    }
+
+    /** The object animation counts of the frame just drawn (#384). */
+    BgfxWorldStreamRenderer.AnimationCounts animationCounts() {
+        requireOpen();
+        return renderer.animationCounts();
+    }
+
+    /** The renderer's animation revision (#384): -1 when the last frame animated nothing. */
+    long animationRevision() {
+        requireOpen();
+        return renderer.animationRevision();
     }
 
     /** Proof seam only: see {@link BgfxWorldStreamRenderer#objectInstancing}. */

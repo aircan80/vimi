@@ -102,11 +102,30 @@ final class WorldTileCreatures implements AutoCloseable {
     static final int CHOICE_CACHE = 4096;
 
     /**
-     * Converted models are remembered across tiles up to this many bytes (vertices, indices and
-     * texture chains). An area with the EG Link fallback uses 49-189 distinct models; a count of
-     * 32 evicted them, so warm passes converted again.
+     * Largest serialized idle animation one creature model carries to the child (#384), the
+     * objects file's per-entry bound less its rest-vertex map; a larger one stays static.
      */
-    static final long MODEL_CACHE_BYTES = 128L << 20;
+    static final int ANIMATION_BYTES = 5 << 20;
+
+    /** Animated models and their animation bytes per tile: the objects file's section bounds. */
+    static final int MAX_ANIMATED = 64, ANIMATION_SECTION_BYTES = 16 << 20;
+
+    /**
+     * Creature animation on (the default when creatures are): models carry their idle for the
+     * child to play. {@code -Dvimi.world.creatureAnimation=false} keeps every model in its baked
+     * Stand pose, as before #384.
+     */
+    static final boolean ANIMATION =
+            !"false".equalsIgnoreCase(System.getProperty("vimi.world.creatureAnimation"));
+
+    /**
+     * Converted models are remembered across tiles up to this many bytes (vertices, indices,
+     * texture chains and, since #384, the idle animation each carries: about 0.4 MB a model, at
+     * most 0.8 MB, on 70862 around Stormwind). An area with the EG Link fallback uses 49-196
+     * distinct models; a count of 32, and later 128 MiB once models carried their animations,
+     * evicted them, so warm passes converted again.
+     */
+    static final long MODEL_CACHE_BYTES = 256L << 20;
 
     /**
      * Humanoid NPC appearances draw their pre-baked texture at most this many pixels a side, a
@@ -157,6 +176,10 @@ final class WorldTileCreatures implements AutoCloseable {
 
         private final int[] counts;
         private final int models, restPosed, billboardsLeftOut;
+
+        /** Drawn placements whose model carries its idle animation for the child to play (#384). */
+        private int animated;
+
         private final NpcCounts npcs;
         private final String note;
         private final List<WorldObjectPicks.Creature> placed;
@@ -249,7 +272,21 @@ final class WorldTileCreatures implements AutoCloseable {
             for (int i = 0; i < sum.length; i++) sum[i] += other.counts[i];
             return new Summary(sum, models + other.models, restPosed + other.restPosed,
                     billboardsLeftOut + other.billboardsLeftOut, npcs.plus(other.npcs),
-                    note != null ? note : other.note, List.of(), bytes + other.bytes);
+                    note != null ? note : other.note, List.of(), bytes + other.bytes)
+                    .withAnimated(animated + other.animated);
+        }
+
+        /**
+         * Drawn placements whose model carries its idle (Stand) animation, which the child plays
+         * near the camera within its budgets (#384); the rest of the drawn placements stand still.
+         */
+        int animated() {
+            return animated;
+        }
+
+        private Summary withAnimated(int count) {
+            animated = count;
+            return this;
         }
     }
 
@@ -281,15 +318,36 @@ final class WorldTileCreatures implements AutoCloseable {
                 RaceNpcs.Appearance.refused("character appearances are not provided by this source");
 
         RaceNpcs.Appearance appearance(long extendedDisplayInfoId, Cancellation token) throws Exception;
+
+        /**
+         * The Stand idle of one NPC's composed {@code appearance} (#384), over that surface, or
+         * null when there is none. Optional: by default humanoid NPCs stand still.
+         */
+        default com.vibeminer.rendering.models.PreviewAnimation idle(long extendedDisplayInfoId,
+                MeshAppearance appearance, Cancellation token) throws Exception {
+            return null;
+        }
     }
 
     /** Production NPC appearances from the workspace's races component, when it is open. */
     static Npcs npcs(Supplier<BuildRaces> races) {
         Objects.requireNonNull(races);
-        return (extendedDisplayInfoId, token) -> {
-            var handle = races.get();
-            if (handle == null) return RaceNpcs.Appearance.refused("race data is not open");
-            return handle.npcAppearance(extendedDisplayInfoId, token).join();
+        return new Npcs() {
+            @Override
+            public RaceNpcs.Appearance appearance(long extendedDisplayInfoId, Cancellation token) {
+                var handle = races.get();
+                if (handle == null) return RaceNpcs.Appearance.refused("race data is not open");
+                return handle.npcAppearance(extendedDisplayInfoId, token).join();
+            }
+
+            @Override
+            public com.vibeminer.rendering.models.PreviewAnimation idle(long extendedDisplayInfoId,
+                    MeshAppearance appearance, Cancellation token) {
+                var handle = races.get();
+                if (handle == null) return null;
+                var idle = handle.npcIdle(extendedDisplayInfoId, appearance, token).join();
+                return idle.animation() != null && idle.animation().matches(appearance) ? idle.animation() : null;
+            }
         };
     }
 
@@ -389,7 +447,14 @@ final class WorldTileCreatures implements AutoCloseable {
      * without {@link #UNLIT}, or {@link #ADDITIVE} with {@link #UNLIT}).
      */
     record Model(float[] vertices, int[] indices, int[] ranges, int[] blends, List<Image> images,
-            int omittedSurfaces, String restPose, NpcCounts npc, int billboardTriangles) {
+            int omittedSurfaces, String restPose, NpcCounts npc, int billboardTriangles,
+            int[] sources, byte[] animation) {
+        Model(float[] vertices, int[] indices, int[] ranges, int[] blends, List<Image> images,
+                int omittedSurfaces, String restPose, NpcCounts npc, int billboardTriangles) {
+            this(vertices, indices, ranges, blends, images, omittedSurfaces, restPose, npc, billboardTriangles,
+                    null, null);
+        }
+
         Model(float[] vertices, int[] indices, int[] ranges, int[] blends, List<Image> images,
                 int omittedSurfaces) {
             this(vertices, indices, ranges, blends, images, omittedSurfaces, null, null, 0);
@@ -403,14 +468,40 @@ final class WorldTileCreatures implements AutoCloseable {
         /** The same model with why it stays in its rest pose (null: baked in the Stand pose). */
         Model withRestPose(String reason) {
             return new Model(vertices, indices, ranges, blends, images, omittedSurfaces, reason, npc,
-                    billboardTriangles);
+                    billboardTriangles, reason == null ? sources : null, reason == null ? animation : null);
         }
 
         /** The same model as one humanoid NPC's, with what each placement leaves undrawn. */
         Model withNpc(int omittedItems, int attachments) {
             return new Model(vertices, indices, ranges, blends, images, omittedSurfaces, restPose,
                     new NpcCounts(1, omittedItems, attachments, omittedSurfaces > 0 ? 1 : 0, omittedSurfaces),
-                    billboardTriangles);
+                    billboardTriangles, null, null);
+        }
+
+        /**
+         * The same model carrying its idle animation for the child to play (#384): {@code sources}
+         * names each model vertex's rest vertex, {@code animation} is the sequence's {@link
+         * com.vibeminer.rendering.models.PreviewAnimation#write} bytes.
+         */
+        Model withAnimation(int[] sources, byte[] animation) {
+            if (sources.length != vertexCount())
+                throw new IllegalArgumentException("Animation sources differ from the model's vertices");
+            return new Model(vertices, indices, ranges, blends, images, omittedSurfaces, restPose, npc,
+                    billboardTriangles, sources.clone(), animation.clone());
+        }
+
+        /**
+         * Whether the child may animate this model: it carries an animation and every range is
+         * opaque or alpha-keyed (a blended or additive range is drawn in the sorted pass, which
+         * stays static).
+         */
+        boolean animatable() {
+            if (animation == null) return false;
+            for (int blend : blends) {
+                int kind = com.vibeminer.rendering.world.WorldObjectPicking.kind(blend);
+                if (kind != OPAQUE && kind != CUTOUT) return false;
+            }
+            return true;
         }
 
         Model {
@@ -463,6 +554,13 @@ final class WorldTileCreatures implements AutoCloseable {
     private final Npcs npcs;
     private final Map<Long, Chosen> choices = lru(CHOICE_CACHE);
     private final ModelCache models = new ModelCache(MODEL_CACHE_BYTES);
+
+    /** Whether models carry their idle animation to the child ({@link #ANIMATION}; tests set it). */
+    private volatile boolean animation = ANIMATION;
+
+    void animation(boolean on) {
+        animation = on;
+    }
     private Object cachedRevision;
     /** The chooser's last {@link Chooser#revision}; guarded by this. */
     private Object choiceRevision;
@@ -574,7 +672,9 @@ final class WorldTileCreatures implements AutoCloseable {
     static long bytes(Converted converted) {
         var m = converted.model();
         if (m == null) return 64;
-        return (long) m.vertices().length * 4 + (long) m.indices().length * 4 + m.pixels() * 4 + 256;
+        return (long) m.vertices().length * 4 + (long) m.indices().length * 4 + m.pixels() * 4 + 256
+                + (m.sources() == null ? 0 : m.sources().length * 4L)
+                + (m.animation() == null ? 0 : m.animation().length);
     }
 
     private static <V> Map<Long, V> lru(int capacity) {
@@ -734,7 +834,10 @@ final class WorldTileCreatures implements AutoCloseable {
         // Builder model indices of humanoid NPCs, with what each placement leaves undrawn.
         var npcModels = new HashMap<Integer, NpcCounts>();
         var npcCounts = NpcCounts.NONE;
-        int restPosed = 0, billboardsLeftOut = 0;
+        int restPosed = 0, billboardsLeftOut = 0, animated = 0;
+        long animationBytes = 0;
+        // Builder model indices the child may animate (#384).
+        var animatedModels = new HashSet<Integer>();
         // Builder model indices whose Stand pose left out billboard triangles.
         var billboardModels = new HashSet<Integer>();
         var tileChooser = tileChooser(nearby.placed(), tile, token);
@@ -810,6 +913,13 @@ final class WorldTileCreatures implements AutoCloseable {
                     continue;
                 }
                 model = add(builder, m);
+                long entry = 12L + m.vertexCount() * 4L + (m.animation() == null ? 0 : (m.animation().length + 3L) / 4 * 4);
+                if (animation && m.animatable() && animatedModels.size() < MAX_ANIMATED
+                        && animationBytes + entry <= ANIMATION_SECTION_BYTES) {
+                    builder.animate(model, m.sources(), m.animation());
+                    animatedModels.add(model);
+                    animationBytes += entry;
+                }
                 textureBytes += m.pixels() * 4;
                 setBytes += gpuBytes(m);
                 added.put(display, model);
@@ -830,12 +940,14 @@ final class WorldTileCreatures implements AutoCloseable {
             placements++;
             if (restModels.contains(model)) restPosed++;
             if (billboardModels.contains(model)) billboardsLeftOut++;
+            if (animatedModels.contains(model)) animated++;
             var npc = npcModels.get(model);
             if (npc != null) npcCounts = npcCounts.plus(npc);
             counts[Count.DRAWN.ordinal()]++;
         }
         return new Summary(counts, added.size(), restPosed, billboardsLeftOut, npcCounts, nearby.omitted() == 0 ? null
-                : nearby.omitted() + " nearby points beyond the query limit were not considered", placed, setBytes);
+                : nearby.omitted() + " nearby points beyond the query limit were not considered", placed, setBytes)
+                .withAnimated(animated);
     }
 
     /**
@@ -939,6 +1051,7 @@ final class WorldTileCreatures implements AutoCloseable {
         boolean retry = false;
         var appearance = preview.appearance();
         int[] leftOut = new int[0];
+        com.vibeminer.rendering.models.PreviewAnimation animation = null;
         try {
             var idle = previews.worldIdle(display, token);
             token.check();
@@ -951,6 +1064,7 @@ final class WorldTileCreatures implements AutoCloseable {
                 appearance = idle.animation().pose(appearance, 0);
                 leftOut = idle.leftOut();
                 restPose = null;
+                animation = idle.animation();
             }
         } catch (Exception failed) {
             token.check();
@@ -958,10 +1072,52 @@ final class WorldTileCreatures implements AutoCloseable {
             restPose = "Stand pose failed: " + failed.getClass().getSimpleName();
             retry = true;
         }
+        var sources = new java.util.ArrayList<Integer>();
         var converted = convert(new DisplayModelTypes.Preview(preview.state(), preview.reference(), appearance,
-                preview.visibleParts(), preview.issues(), preview.restored(), preview.message()), leftOut, token);
+                preview.visibleParts(), preview.issues(), preview.restored(), preview.message()), leftOut,
+                animation == null ? null : sources::add, token);
+        if (converted.model() != null && restPose == null && animation != null) {
+            var animated = animated(converted.model(), sources, animation);
+            if (animated != null) converted = new Converted(animated, null, null, converted.transientPose());
+        }
         return converted.model() == null || restPose == null ? converted
                 : new Converted(converted.model().withRestPose(restPose), null, null, retry);
+    }
+
+    /**
+     * {@code model} carrying its Stand animation for the child to play (#384), or null when it
+     * cannot: the animation is camera-facing (World creatures leave those vertices out), its
+     * serialized form does not read back to the same rest surface, it is over the objects file's
+     * per-entry bound, or the gathered sources do not name every model vertex.
+     */
+    static Model animated(Model model, List<Integer> sources,
+            com.vibeminer.rendering.models.PreviewAnimation animation) {
+        if (animation.viewDependent() || sources.size() != model.vertexCount()) return null;
+        // Only the rest vertices the model draws travel: a character's surface holds every geoset
+        // (some 43,000 vertices) while its drawn sections use a tenth of them.
+        var used = new java.util.LinkedHashMap<Integer, Integer>();
+        for (int source : sources) {
+            if (source < 0 || source >= animation.vertexCount()) return null;
+            used.putIfAbsent(source, used.size());
+        }
+        var subset = new int[used.size()];
+        used.forEach((source, at) -> subset[at] = source);
+        byte[] bytes;
+        try {
+            animation = animation.subset(subset);
+            var out = new java.io.ByteArrayOutputStream();
+            animation.write(new java.io.DataOutputStream(out));
+            bytes = out.toByteArray();
+            if (bytes.length > ANIMATION_BYTES) return null;
+            var back = com.vibeminer.rendering.models.PreviewAnimation.read(
+                    new java.io.DataInputStream(new java.io.ByteArrayInputStream(bytes)));
+            if (back.vertexCount() != animation.vertexCount()) return null;
+        } catch (java.io.IOException | RuntimeException unwritable) {
+            return null;
+        }
+        var array = new int[sources.size()];
+        for (int i = 0; i < array.length; i++) array[i] = used.get(sources.get(i));
+        return model.withAnimation(array, bytes);
     }
 
     /**
@@ -985,11 +1141,27 @@ final class WorldTileCreatures implements AutoCloseable {
         var mesh = result.appearance().mesh();
         if (mesh.parts().stream().noneMatch(part -> visible.contains(part.id())))
             return Converted.refused(Count.VISIBILITY_UNRESOLVED, "the NPC appearance shows no geoset");
-        var converted = surfaces(result.appearance(), visible, new int[0], false, NPC_IMAGE_SIDE, token);
-        return converted.model() == null ? converted
-                : new Converted(converted.model()
-                        .withNpc(answer.omittedItems(), answer.omittedAttachments())
-                        .withRestPose("NPC appearances are static"), null, null);
+        var sources = new java.util.ArrayList<Integer>();
+        var converted = surfaces(result.appearance(), visible, new int[0], false, NPC_IMAGE_SIDE, sources::add,
+                token);
+        if (converted.model() == null) return converted;
+        var model = converted.model()
+                .withNpc(answer.omittedItems(), answer.omittedAttachments())
+                .withRestPose("NPC appearances are static");
+        // The race model's Stand over this NPC's surface (#384): played near the camera; the baked
+        // copy stays in the rest pose, as before.
+        com.vibeminer.rendering.models.PreviewAnimation idle = null;
+        try {
+            idle = npcs.idle(extendedDisplayInfoId, result.appearance(), token);
+        } catch (Exception failed) {
+            token.check();
+            if (busy(failed) || failed instanceof CancellationException) throw failed;
+        }
+        if (idle != null) {
+            var animated = animated(model, sources, idle);
+            if (animated != null) model = animated;
+        }
+        return new Converted(model, null, null);
     }
 
     /** Whether a preview failure is the component's busy or closed refusal, however wrapped. */
