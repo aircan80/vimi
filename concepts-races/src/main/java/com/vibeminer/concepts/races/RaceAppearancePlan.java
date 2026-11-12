@@ -1,6 +1,7 @@
 package com.vibeminer.concepts.races;
 
 import com.vibeminer.access.Cancellation;
+import com.vibeminer.concepts.core.RelationIndexes;
 import com.vibeminer.formats.db2.Db2Types;
 import com.vibeminer.formats.tables.BuildTables;
 import com.vibeminer.formats.tables.TableTypes;
@@ -990,17 +991,22 @@ final class RaceAppearancePlan {
                 : null;
     }
 
-    private List<Db2Types.Row> query(
-            RacesService.Data data, String field, long value, Cancellation token) {
+    /** At most this many rows answer one filtered relationship; more is outside the profile. */
+    static final int QUERY_ROWS = 256;
+
+    /**
+     * The rows of {@code data} whose {@code field} is {@code value}, through the relation index
+     * when it answers for a complete table ({@link #indexed}), else a filtered page scan.
+     */
+    List<Db2Types.Row> query(RacesService.Data data, String field, long value, Cancellation token) {
         String key = data.name + "/" + field + "/" + value;
         var previous = queries.get(key);
         if (previous != null) {
             return previous;
         }
         // The component's reverse relation index answers without scanning the table; a filtered
-        // page scan cost about 36 ms per texture resource (most of a humanoid NPC's plan). The
-        // page stays for relations the index does not serve and for partial tables, whose
-        // readable rows it keeps.
+        // page scan cost about 36 ms per lookup on real data. The page stays for relations the
+        // index does not serve and for partial tables, whose readable rows it keeps.
         var lookup =
                 value < 0 || value > 0xffffffffL
                         ? null
@@ -1009,39 +1015,23 @@ final class RaceAppearancePlan {
                                         data.name,
                                         field,
                                         value,
-                                        256,
+                                        QUERY_ROWS,
                                         TableTypes.Priority.INTERACTIVE,
                                         token)
                                 .join();
-        var state =
-                lookup == null
-                        ? com.vibeminer.concepts.core.RelationIndexes.State.UNSUPPORTED
-                        : lookup.state();
-        switch (state) {
-            case NOT_READABLE, STALE ->
-                    throw new RacesService.Unreadable(
-                            data.name + ": filtered texture relationship is " + lookup.state());
-            case OK -> {
-                if (lookup.matches() > 256) {
-                    throw data.unsupported(
-                            "Filtered texture relationship is unavailable or exceeds bounds");
-                }
-                if (lookup.complete()) {
-                    var rows = lookup.rows().stream().map(TableTypes.Row::row).toList();
-                    if (queries.size() < 512) {
-                        queries.put(key, rows);
-                    }
-                    return rows;
-                }
+        var indexed = indexed(lookup, data);
+        if (indexed != null) {
+            if (queries.size() < 512) {
+                queries.put(key, indexed);
             }
-            default -> {}
+            return indexed;
         }
         var page =
                 tables.page(
                                 new TableTypes.PageRequest(
                                         TableTypes.Ref.forName(data.name),
                                         -1,
-                                        256,
+                                        QUERY_ROWS,
                                         List.of(
                                                 new TableTypes.Filter(
                                                         field,
@@ -1054,17 +1044,45 @@ final class RaceAppearancePlan {
                         .join();
         if (page.state() != TableTypes.PageState.OK) {
             throw new RacesService.Unreadable(
-                    data.name + ": filtered texture relationship is " + page.state());
+                    data.name + ": filtered relationship is " + page.state());
         }
         if (page.nextAfter() != null) {
-            throw data.unsupported(
-                    "Filtered texture relationship is unavailable or exceeds bounds");
+            throw data.unsupported("Filtered relationship is unavailable or exceeds bounds");
         }
         var rows = page.rows().stream().map(TableTypes.Row::row).toList();
         if (queries.size() < 512) {
             queries.put(key, rows);
         }
         return rows;
+    }
+
+    /**
+     * The rows a relation index lookup answers, or null when the page scan must answer instead: no
+     * lookup, a relation the index does not serve, or a table that is not complete (a partial
+     * table's page keeps its readable rows). An index that cannot be read now is unreadable, and
+     * more than {@link #QUERY_ROWS} matches is outside the profile, as for the page.
+     */
+    static List<Db2Types.Row> indexed(RelationIndexes.Lookup lookup, RacesService.Data data) {
+        if (lookup == null) {
+            return null;
+        }
+        switch (lookup.state()) {
+            case NOT_READABLE, STALE ->
+                    throw new RacesService.Unreadable(
+                            data.name + ": filtered relationship is " + lookup.state());
+            case OK -> {
+                if (lookup.matches() > QUERY_ROWS) {
+                    throw data.unsupported(
+                            "Filtered relationship is unavailable or exceeds bounds");
+                }
+                return lookup.complete()
+                        ? lookup.rows().stream().map(TableTypes.Row::row).toList()
+                        : null;
+            }
+            default -> {
+                return null;
+            }
+        }
     }
 
     private static boolean hasRace(
