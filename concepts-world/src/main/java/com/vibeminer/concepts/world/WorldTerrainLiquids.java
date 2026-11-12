@@ -56,6 +56,28 @@ final class WorldTerrainLiquids {
     static final int MAX_APPEARANCE_TYPES = 16;
 
     /**
+     * The swimming kind of a building liquid of LiquidType {@code type} from its drawn {@code
+     * appearance} ({@link #appearances}), so swimming and drawing read one source: water and ocean
+     * as drawn; a flat liquid is magma or slime for the WMO magma and slime rows (19, 20) and other
+     * otherwise; a type whose rows could not be read (null) is other.
+     */
+    static com.vibeminer.rendering.world.LiquidSurface.Kind kind(int type, int[] appearance) {
+        if (appearance == null) {
+            return com.vibeminer.rendering.world.LiquidSurface.Kind.OTHER;
+        }
+        return switch (appearance[0]) {
+            case 0 -> com.vibeminer.rendering.world.LiquidSurface.Kind.WATER;
+            case 1 -> com.vibeminer.rendering.world.LiquidSurface.Kind.OCEAN;
+            default ->
+                    type == 19
+                            ? com.vibeminer.rendering.world.LiquidSurface.Kind.MAGMA
+                            : type == 20
+                                    ? com.vibeminer.rendering.world.LiquidSurface.Kind.SLIME
+                                    : com.vibeminer.rendering.world.LiquidSurface.Kind.OTHER;
+        };
+    }
+
+    /**
      * How building liquids (WMO MLIQ) of these LiquidType IDs are drawn, by the rule terrain water
      * follows: the type's LiquidMaterial vertex format 0 or 2 is water (ocean for LiquidType 14,
      * WMO ocean; river or lake otherwise), 1 or 3 a flat liquid in the type's MinimapStaticCol.
@@ -70,29 +92,70 @@ final class WorldTerrainLiquids {
             if (type <= 0 || looked++ >= MAX_APPEARANCE_TYPES) {
                 continue;
             }
-            try {
-                var row =
-                        tables.observe(
-                                WorldLiquidTables.Profile.TYPE,
-                                java.util.Set.of((long) type),
-                                token);
-                int material = row.value(type);
-                var materials =
-                        tables.observe(
-                                WorldLiquidTables.Profile.MATERIAL,
-                                java.util.Set.of((long) material),
-                                token);
-                int format = materials.value(material);
-                if (format == 0 || format == 2) {
-                    out.put(type, new int[] {type == 14 ? 1 : 0, 0});
-                } else if (format == 1 || format == 3) {
-                    out.put(type, new int[] {2, row.minimapColour(type) & 0xFFFFFF});
+            // Drawing and collision both ask, on every prepare of a tile: answered once per type.
+            var known = appearanceCache.get(type);
+            if (known != null) {
+                if (known.length > 0) {
+                    out.put(type, known.clone());
                 }
-            } catch (WorldLiquidTables.Unavailable missing) {
-                // Unknown: not drawn.
+                continue;
+            }
+            int[] found = lookUp(type, token);
+            if (found != NOT_CACHED) {
+                if (appearanceCache.size() < MAX_CACHED_APPEARANCES) {
+                    appearanceCache.putIfAbsent(type, found);
+                }
+                if (found.length > 0) {
+                    out.put(type, found.clone());
+                }
             }
         }
         return java.util.Map.copyOf(out);
+    }
+
+    /** Appearances looked up so far, by LiquidType; an empty array is a remembered absence. */
+    private final java.util.concurrent.ConcurrentHashMap<Integer, int[]> appearanceCache =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** Distinct LiquidTypes whose appearance (or absence) is remembered. */
+    static final int MAX_CACHED_APPEARANCES = 1024;
+
+    /** A lookup that must not be remembered: the source changed under it. */
+    private static final int[] NOT_CACHED = new int[0];
+
+    /** Lookups done so far (tests: the cache answers repeats). */
+    final java.util.concurrent.atomic.AtomicInteger appearanceLookups =
+            new java.util.concurrent.atomic.AtomicInteger();
+
+    /**
+     * One type's appearance from the tables; an empty array when it has none (an absence worth
+     * remembering), or {@link #NOT_CACHED} when the source changed and a later lookup may differ.
+     */
+    private int[] lookUp(int type, Cancellation token) {
+        appearanceLookups.incrementAndGet();
+        try {
+            var row =
+                    tables.observe(
+                            WorldLiquidTables.Profile.TYPE, java.util.Set.of((long) type), token);
+            int material = row.value(type);
+            var materials =
+                    tables.observe(
+                            WorldLiquidTables.Profile.MATERIAL,
+                            java.util.Set.of((long) material),
+                            token);
+            int format = materials.value(material);
+            if (format == 0 || format == 2) {
+                return new int[] {type == 14 ? 1 : 0, 0};
+            } else if (format == 1 || format == 3) {
+                return new int[] {2, row.minimapColour(type) & 0xFFFFFF};
+            }
+            return new int[0];
+        } catch (WorldLiquidTables.Unavailable missing) {
+            // Unknown: not drawn. A changed source may answer later, so it is not remembered.
+            return missing.reason == WorldLiquidTables.Reason.SOURCE_CHANGED
+                    ? NOT_CACHED
+                    : new int[0];
+        }
     }
 
     static final class Pressure extends RuntimeException {

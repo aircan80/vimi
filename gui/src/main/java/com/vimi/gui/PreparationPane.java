@@ -276,6 +276,7 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
                             new WorldNpcDisplays(work::creaturesHandle,
                                     NpcPreviews.egLinkBatch(sources, job.build(), job.locale()),
                                     NpcPreviews.egLinkRevision(sources, job.build(), job.locale()),
+                                    work::revision,
                                     job.build().version()),
                             new WorldTileCreatures.DisplayPreviews(() -> {
                                 var tables = work.tablesHandle();

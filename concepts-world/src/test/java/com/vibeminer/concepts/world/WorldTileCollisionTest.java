@@ -3,6 +3,7 @@ package com.vibeminer.concepts.world;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.vibeminer.access.Cancellation;
@@ -248,7 +249,10 @@ class WorldTileCollisionTest {
         assertEquals(1, part.liquids().size());
         var liquid = part.liquids().get(0);
         assertEquals(new WorldTileCollision.Key('L', 7, 0), liquid.key());
-        assertEquals(com.vibeminer.rendering.world.LiquidSurface.Kind.WATER, liquid.kind());
+        // The reader leaves the kind to the stream, which reads the LiquidType's rows.
+        assertEquals(com.vibeminer.rendering.world.LiquidSurface.Kind.OTHER, liquid.kind());
+        assertEquals(
+                13, liquid.liquid().liquidType(), "the group's WMO water type, for the stream");
         // Heading 90 maps local (a, b) to (b, -a): local (U/2, U/4) lands at (x + U/4, y - U/2).
         var surface = com.vibeminer.rendering.world.LiquidSurface.empty().with(part.liquids());
         var at = surface.at(C - 300 + UNIT / 4, C - 100 - UNIT / 2);
@@ -259,6 +263,73 @@ class WorldTileCollisionTest {
         var both = new java.util.ArrayList<>(part.liquids());
         both.addAll(twice.liquids());
         assertEquals(1, com.vibeminer.rendering.world.LiquidSurface.empty().with(both).placed());
+    }
+
+    /** The building-liquid part of the heading-90 building, as the reader gives it. */
+    WorldTileCollision.Part wetPart() {
+        var f = files(obj0(List.of(modf(ROOT, 7, 0x8, 100, 20, 300, 90, 0, 1024)), List.of()));
+        f.bytes.put(GROUP, groupWithLiquid());
+        return new WorldTileCollision(f, 1 << 20).prepare(TILE, Cancellation.NONE);
+    }
+
+    @Test
+    void theStreamResolvesALiquidsKindFromItsTypesRows() {
+        var part = wetPart();
+        var asked = new java.util.ArrayList<java.util.Set<Integer>>();
+        var resolved =
+                WorldPreparedTerrain.withLiquidKinds(
+                        part,
+                        (types, token) -> {
+                            asked.add(types);
+                            return Map.of(13, new int[] {0, 0});
+                        },
+                        Cancellation.NONE);
+        assertEquals(List.of(Set.of(13)), asked, "one lookup of the distinct types");
+        assertEquals(1, resolved.liquids().size());
+        var liquid = resolved.liquids().get(0);
+        assertEquals(com.vibeminer.rendering.world.LiquidSurface.Kind.WATER, liquid.kind());
+        // Everything else of the part is kept as it was.
+        assertEquals(part.liquids().get(0).key(), liquid.key());
+        assertEquals(part.placements(), resolved.placements());
+        assertEquals(part.skipped(), resolved.skipped());
+        assertEquals(part.complete(), resolved.complete());
+        assertArrayEquals(part.liquids().get(0).rotation(), liquid.rotation(), 0);
+    }
+
+    @Test
+    void aTableFailureLeavesLiquidsOtherAndCancellationPropagates() {
+        var part = wetPart();
+        var failed =
+                WorldPreparedTerrain.withLiquidKinds(
+                        part,
+                        (types, token) -> {
+                            throw new IllegalStateException("tables unavailable");
+                        },
+                        Cancellation.NONE);
+        assertEquals(
+                com.vibeminer.rendering.world.LiquidSurface.Kind.OTHER,
+                failed.liquids().get(0).kind());
+        assertEquals(part.placements(), failed.placements(), "the part itself does not fail");
+        org.junit.jupiter.api.Assertions.assertThrows(
+                java.util.concurrent.CancellationException.class,
+                () ->
+                        WorldPreparedTerrain.withLiquidKinds(
+                                part,
+                                (types, token) -> {
+                                    throw new java.util.concurrent.CancellationException();
+                                },
+                                Cancellation.NONE));
+        // A part without liquids asks nothing.
+        var dry = files(obj0(List.of(modf(ROOT, 7, 0x8, 0, 0, 0, 0, 0, 1024)), List.of()));
+        var plain = new WorldTileCollision(dry, 1 << 20).prepare(TILE, Cancellation.NONE);
+        assertSame(
+                plain,
+                WorldPreparedTerrain.withLiquidKinds(
+                        plain,
+                        (types, token) -> {
+                            throw new AssertionError("asked without liquids");
+                        },
+                        Cancellation.NONE));
     }
 
     @Test

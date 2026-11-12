@@ -41,6 +41,12 @@ final class WorldNpcDisplays implements WorldTileCreatures.Chooser {
     private final Supplier<BuildCreatures> creatures;
     private final Observed observed;
     private final Supplier<Object> revision;
+
+    /** The prepared data's revision: a table change under the same handle (new keys, say). */
+    private final Supplier<Object> dataRevision;
+
+    /** What the chains are kept for, taken once when a tile chooser is made; null otherwise. */
+    private final Object tileRevision;
     private final String build;
 
     /** Outside displays read for the NPCs of one tile at once; null outside {@link #forNpcs}. */
@@ -48,6 +54,83 @@ final class WorldNpcDisplays implements WorldTileCreatures.Chooser {
 
     /** Why the tile's outside read failed; set on a tile's chooser, which then reads no more. */
     private final String unavailable;
+
+    /** Client records read for one tile's NPCs at once; empty outside {@link #forNpcs}. */
+    private final Map<Long, com.vibeminer.concepts.creatures.CreatureTypes.CreatureResult> clients;
+
+    /** Display chains, shared by this chooser and every tile chooser made from it. */
+    private final Chains chains;
+
+    /**
+     * Display chains already read, for the session (#175): the chooser asks for the same displays
+     * on every tile, twice per NPC (whether a display is absent, then the chain of the one shown).
+     * Bounded, and dropped whenever the creature data handle, the chooser's {@link #revision()} or
+     * the prepared data's revision changes. A chain whose display or model is not readable yet is not kept, so it is asked again.
+     */
+    static final class Chains {
+        static final int MAX = 4096;
+        private Object handle, revision;
+        private final Map<Long, com.vibeminer.concepts.creatures.CreatureTypes.CreatureDisplayChain> known =
+                new java.util.LinkedHashMap<>(64, 0.75f, true) {
+                    @java.io.Serial private static final long serialVersionUID = 1L;
+
+                    @Override
+                    protected boolean removeEldestEntry(
+                            Map.Entry<Long, com.vibeminer.concepts.creatures.CreatureTypes.CreatureDisplayChain> eldest) {
+                        return size() > MAX;
+                    }
+                };
+        private long reads;
+
+        com.vibeminer.concepts.creatures.CreatureTypes.CreatureDisplayChain chain(BuildCreatures handle, Object revision,
+                long displayId, Cancellation token) {
+            synchronized (this) {
+                if (this.handle != handle || !Objects.equals(this.revision, revision)) {
+                    known.clear();
+                    this.handle = handle;
+                    this.revision = revision;
+                }
+                var chain = known.get(displayId);
+                if (chain != null) return chain;
+            }
+            var chain = handle.displayChain(displayId, TableTypes.Priority.BACKGROUND, token).join();
+            token.check();
+            synchronized (this) {
+                reads++;
+                if (this.handle == handle && Objects.equals(this.revision, revision) && lasting(chain.state()))
+                    known.put(displayId, chain);
+            }
+            return chain;
+        }
+
+        /** Chains read from the creature data so far (tests). */
+        synchronized long reads() {
+            return reads;
+        }
+
+        private static boolean lasting(com.vibeminer.concepts.creatures.CreatureTypes.CreatureDisplayChainState state) {
+            return switch (state) {
+                case DISPLAY_NOT_READABLE, MODEL_NOT_READABLE, DISPLAY_UNKNOWN, MODEL_UNKNOWN -> false;
+                default -> true;
+            };
+        }
+    }
+
+    /** As {@link NpcPreviews#absentDisplays}, through the session's chains. */
+    private java.util.function.LongPredicate absent(BuildCreatures handle, Object revision, Cancellation token) {
+        return displayId -> {
+            if (displayId < 1 || displayId > Integer.MAX_VALUE) return true;
+            try {
+                var state = chains.chain(handle, revision, displayId, token).state();
+                return state == com.vibeminer.concepts.creatures.CreatureTypes.CreatureDisplayChainState.DISPLAY_ABSENT
+                        || state == com.vibeminer.concepts.creatures.CreatureTypes.CreatureDisplayChainState
+                                .INVALID_DISPLAY_REFERENCE;
+            } catch (RuntimeException unavailable) {
+                token.check();
+                return false;
+            }
+        };
+    }
 
     WorldNpcDisplays(Supplier<BuildCreatures> creatures, Observed observed, String build) {
         this(creatures, observed, () -> null, build);
@@ -59,28 +142,59 @@ final class WorldNpcDisplays implements WorldTileCreatures.Chooser {
             Observed observed,
             Supplier<Object> revision,
             String build) {
-        this(creatures, observed, revision, build, null, null);
+        this(creatures, observed, revision, () -> null, build);
+    }
+
+    /**
+     * As above; {@code dataRevision} is the prepared data's revision, which can change the creature
+     * tables under the same handle, so the session's display chains are dropped with it.
+     */
+    WorldNpcDisplays(
+            Supplier<BuildCreatures> creatures,
+            Observed observed,
+            Supplier<Object> revision,
+            Supplier<Object> dataRevision,
+            String build) {
+        this(creatures, observed, revision, dataRevision, build, null, null, Map.of(), new Chains(), null);
     }
 
     private WorldNpcDisplays(
             Supplier<BuildCreatures> creatures,
             Observed observed,
             Supplier<Object> revision,
+            Supplier<Object> dataRevision,
             String build,
             Map<Long, List<NpcDisplays.External>> read,
-            String unavailable) {
+            String unavailable,
+            Map<Long, com.vibeminer.concepts.creatures.CreatureTypes.CreatureResult> clients,
+            Chains chains,
+            Object tileRevision) {
         this.creatures = Objects.requireNonNull(creatures);
         this.observed = Objects.requireNonNull(observed);
         this.revision = Objects.requireNonNull(revision);
+        this.dataRevision = Objects.requireNonNull(dataRevision);
+        this.tileRevision = tileRevision;
         this.build = build == null || build.isBlank() ? "unknown" : build;
         this.read = read;
         this.unavailable = unavailable;
+        this.clients = Map.copyOf(clients);
+        this.chains = Objects.requireNonNull(chains);
+    }
+
+    /** The session's display chains (tests). */
+    Chains chains() {
+        return chains;
     }
 
     /** The outside sources in use (snapshots and bundled history): choices are remade when it changes. */
     @Override
     public Object revision() {
         return revision.get();
+    }
+
+    /** What the session's chains are kept for: the outside sources and the prepared data. */
+    private Object chainsRevision() {
+        return java.util.Arrays.asList(revision(), dataRevision.get());
     }
 
     private String clientProvenance() {
@@ -96,18 +210,29 @@ final class WorldNpcDisplays implements WorldTileCreatures.Chooser {
             throws Exception {
         var handle = creatures.get();
         if (handle == null || npcIds.isEmpty()) return this;
-        var absent = NpcPreviews.absentDisplays(handle, TableTypes.Priority.BACKGROUND, token);
-        var outside = new java.util.ArrayList<Long>();
+        Object current = chainsRevision();
+        var absent = absent(handle, current, token);
+        // The tile's client records are asked for together, then kept for its choices.
+        var asked = new java.util.LinkedHashMap<Long,
+                java.util.concurrent.CompletableFuture<com.vibeminer.concepts.creatures.CreatureTypes.CreatureResult>>();
         for (long npcId : npcIds) {
-            if (npcId < 0 || npcId > 0xffffffffL) continue;
-            var client = handle.getData(npcId, TableTypes.Priority.BACKGROUND, token).join();
+            if (npcId < 0 || npcId > 0xffffffffL || asked.containsKey(npcId)) continue;
+            asked.put(npcId, handle.getData(npcId, TableTypes.Priority.BACKGROUND, token));
+        }
+        var clients = new java.util.HashMap<Long, com.vibeminer.concepts.creatures.CreatureTypes.CreatureResult>();
+        var outside = new java.util.ArrayList<Long>();
+        for (var each : asked.entrySet()) {
+            var client = each.getValue().join();
             token.check();
+            clients.put(each.getKey(), client);
             if (NpcDisplays.resolve(client, clientProvenance(), null, absent).source()
                     != NpcDisplays.Source.CLIENT) {
-                outside.add(npcId);
+                outside.add(each.getKey());
             }
         }
-        if (outside.isEmpty()) return this;
+        if (outside.isEmpty())
+            return new WorldNpcDisplays(
+                    creatures, observed, revision, dataRevision, build, null, null, clients, chains, current);
         Map<Long, List<NpcDisplays.External>> found;
         try {
             found = observed.displays(outside, token);
@@ -117,13 +242,14 @@ final class WorldNpcDisplays implements WorldTileCreatures.Chooser {
             // Reported once for the tile; its NPCs without a client display wait for a later tile.
             token.check();
             WorldDiagnostics.degraded("creature lookups", "World outside display lookup failed", failed);
-            return new WorldNpcDisplays(creatures, observed, revision, build, Map.of(),
-                    failed.getClass().getSimpleName());
+            return new WorldNpcDisplays(creatures, observed, revision, dataRevision, build, Map.of(),
+                    failed.getClass().getSimpleName(), clients, chains, current);
         }
         token.check();
         var tile = new java.util.HashMap<Long, List<NpcDisplays.External>>();
         for (long npcId : outside) tile.put(npcId, found.getOrDefault(npcId, List.of()));
-        return new WorldNpcDisplays(creatures, observed, revision, build, Map.copyOf(tile), null);
+        return new WorldNpcDisplays(
+                creatures, observed, revision, dataRevision, build, Map.copyOf(tile), null, clients, chains, current);
     }
 
     @Override
@@ -134,9 +260,14 @@ final class WorldNpcDisplays implements WorldTileCreatures.Chooser {
         if (npcId < 0 || npcId > 0xffffffffL)
             return new WorldTileCreatures.Chosen(
                     CreatureModelPolicy.unknown("NPC ID is outside the client creature range"), null);
-        var client = handle.getData(npcId, TableTypes.Priority.BACKGROUND, token).join();
-        token.check();
-        var absent = NpcPreviews.absentDisplays(handle, TableTypes.Priority.BACKGROUND, token);
+        var client = clients.get(npcId);
+        if (client == null) {
+            client = handle.getData(npcId, TableTypes.Priority.BACKGROUND, token).join();
+            token.check();
+        }
+        // A tile chooser took it once; the session chooser takes it per choice.
+        Object current = tileRevision != null ? tileRevision : chainsRevision();
+        var absent = absent(handle, current, token);
         var resolution = NpcDisplays.resolve(client, clientProvenance(), null, absent);
         if (resolution.source() == NpcDisplays.Source.CLIENT) {
             // The World's single-display rule for client records.
@@ -186,8 +317,7 @@ final class WorldNpcDisplays implements WorldTileCreatures.Chooser {
                     null);
         }
         var shown = resolution.shown();
-        var chain = handle.displayChain(shown.displayId(), TableTypes.Priority.BACKGROUND, token).join();
-        token.check();
+        var chain = chains.chain(handle, current, shown.displayId(), token);
         var choice =
                 CreatureModelPolicy.observed(
                         (int) shown.displayId(),

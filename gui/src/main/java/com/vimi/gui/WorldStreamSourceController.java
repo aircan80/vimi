@@ -598,6 +598,11 @@ final class WorldStreamSourceController {
         kick();
     }
 
+    /** When a refused body may be sent again (controller clock), or 0 when no retry waits (tests). */
+    long bodyRetryAt() {
+        return bodyInFlight.get() ? 0 : bodyRetryAt;
+    }
+
     /** The key of the body the World child draws now, or -1 before any (or after a failed swap). */
     long bodyDrawn() {
         return bodyDrawn;
