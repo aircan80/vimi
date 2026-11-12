@@ -602,7 +602,16 @@ final class WorldPreparedTerrain {
             }
             reader = collision;
         }
-        return withLiquidKinds(reader.prepare(tile, cancel), cancel);
+        return withLiquidKinds(
+                reader.prepare(tile, cancel),
+                (types, token) -> scopes.liquids().appearances(types, token),
+                cancel);
+    }
+
+    /** Appearances of LiquidTypes, as {@link WorldTerrainLiquids#appearances} answers them. */
+    @FunctionalInterface
+    interface LiquidAppearances {
+        java.util.Map<Integer, int[]> of(java.util.Set<Integer> types, Cancellation token);
     }
 
     /**
@@ -610,8 +619,8 @@ final class WorldPreparedTerrain {
      * is drawn by ({@link WorldTerrainLiquids#appearances}), so the canals' modern LiquidType reads
      * as the water it is drawn as. Tables that cannot be read leave every liquid other.
      */
-    private WorldTileCollision.Part withLiquidKinds(
-            WorldTileCollision.Part part, Cancellation cancel) {
+    static WorldTileCollision.Part withLiquidKinds(
+            WorldTileCollision.Part part, LiquidAppearances lookup, Cancellation cancel) {
         if (part.liquids().isEmpty()) {
             return part;
         }
@@ -621,7 +630,7 @@ final class WorldPreparedTerrain {
         }
         java.util.Map<Integer, int[]> appearances;
         try {
-            appearances = scopes.liquids().appearances(types, cancel);
+            appearances = lookup.of(types, cancel);
         } catch (java.util.concurrent.CancellationException canceled) {
             throw canceled;
         } catch (RuntimeException unavailable) {
