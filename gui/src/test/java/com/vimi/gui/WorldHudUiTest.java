@@ -76,7 +76,7 @@ public final class WorldHudUiTest {
                             && mode.getTooltip().getText().endsWith("to walk"),
                     "Fly: " + mode.getTooltip().getText());
             var wings = glyph(mode);
-            icons.mode(WorldStatusIcons.Mode.WALK, "Walking · collides with terrain (not yet buildings or objects)");
+            icons.mode(WorldStatusIcons.Mode.WALK, "Walking · collides with terrain, buildings and objects");
             require(!amber(mode) && !glyph(mode).equals(wings) && mode.getTooltip().getText().endsWith("to fly"),
                     "Walk: boots, white");
             icons.mode(WorldStatusIcons.Mode.WALK_NO_TERRAIN, "Walking · waiting for terrain collision here");

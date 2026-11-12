@@ -145,6 +145,11 @@ final class WorldStreamScopes {
     private long generation;
     private Proof current, replacement;
 
+    /** The build's files, for readers outside the scoped source lane (walking collision). */
+    BuildFiles files() {
+        return files;
+    }
+
     WorldStreamScopes(BuildTables tables, BuildFiles files) {
         maps = new WorldMapProofs(tables, files);
         borrowedTables = tables;

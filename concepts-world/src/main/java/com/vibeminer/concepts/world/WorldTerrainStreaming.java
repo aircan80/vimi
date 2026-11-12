@@ -737,6 +737,19 @@ public final class WorldTerrainStreaming {
         }
     }
 
+    /**
+     * Walking collision for one recorded tile's placements (buildings and doodads), read from the
+     * build's files outside the scoped source lane; see {@link WorldTileCollision}.
+     */
+    public WorldTileCollision.Part prepareCollision(WorldFormats.Tile tile, Cancellation cancel) {
+        Objects.requireNonNull(tile);
+        Objects.requireNonNull(cancel);
+        if (tile.x() < 0 || tile.x() >= 64 || tile.y() < 0 || tile.y() >= 64) {
+            throw new IllegalArgumentException("Tile coordinate profile");
+        }
+        return source().collision(tile, cancel);
+    }
+
     public <R extends AutoCloseable> WrittenTile<R> prepareAndWrite(
             Scope scope, WorldFormats.Tile comparison, Cancellation cancel, Output<R> writer) {
         Objects.requireNonNull(scope);

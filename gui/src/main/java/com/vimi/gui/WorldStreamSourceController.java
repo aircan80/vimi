@@ -314,6 +314,16 @@ final class WorldStreamSourceController {
     private final IdentityHashMap<Entry, Optional<TerrainGround.Tile>> heights =
             new IdentityHashMap<>();
     private volatile TerrainGround ground = TerrainGround.empty();
+    // Walking collision of buildings and doodads: the parts of the 3x3 tiles around the camera,
+    // read on their own worker (never the source lane), merged and published as one set.
+    private ExecutorService collisionWorker;
+    private final Cancellation collisionCancellation = new Cancellation();
+    private final java.util.Map<Integer, com.vibeminer.concepts.world.WorldTileCollision.Part> collisionParts =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Set<Integer> collisionPending = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private volatile java.util.Set<Integer> collisionMerged = java.util.Set.of();
+    private volatile com.vibeminer.rendering.world.ObjectCollision objectCollision =
+            com.vibeminer.rendering.world.ObjectCollision.empty();
     // Worker-published pick geometry of the current residents whose late objects are drawn.
     private volatile List<WorldObjectPicks.Tile> objects = List.of();
     // Worker-owned immutable area metadata of current residents, for pure point lookups.
@@ -591,6 +601,83 @@ final class WorldStreamSourceController {
     /** Rendered-surface heights of the current resident tiles; never source or payload handles. */
     TerrainGround ground() {
         return closing ? TerrainGround.empty() : ground;
+    }
+
+    /** Buildings and doodads around the camera for a walking body; empty until read. */
+    com.vibeminer.rendering.world.ObjectCollision objectCollision() {
+        return closing ? com.vibeminer.rendering.world.ObjectCollision.empty() : objectCollision;
+    }
+
+    /** Whether the buildings and doodads of the tile under (x, y) are in {@link #objectCollision}. */
+    boolean objectsReady(double x, double y) {
+        return collisionMerged.contains(collisionKey(tileOf(x), tileOf(y)));
+    }
+
+    private static int tileOf(double native_) {
+        return (int) Math.floor(32 - native_ / WorldFormats.TILE_SIZE);
+    }
+
+    private static int collisionKey(int x, int y) {
+        return x * 64 + y;
+    }
+
+    /**
+     * Reads the collision of each recorded tile within one tile of the camera that has none yet,
+     * one at a time on the collision worker; parts more than two tiles away are dropped. Runs on
+     * the source worker with the camera it just used.
+     */
+    private void updateCollision(WorldStreamTransport.Camera latest) {
+        var lane = source;
+        if (latest == null || lane == null || closing) return;
+        int cx = tileOf(latest.view().x()), cy = tileOf(latest.view().y());
+        boolean dropped = collisionParts.keySet().removeIf(key -> Math.abs(key / 64 - cx) > 2 || Math.abs(key % 64 - cy) > 2);
+        if (dropped) mergeCollision();
+        if (!collisionPending.isEmpty()) return;
+        WorldFormats.Tile next = null;
+        int best = Integer.MAX_VALUE;
+        for (var tile : request.inventory().world().tiles()) {
+            int dx = Math.abs(tile.x() - cx), dy = Math.abs(tile.y() - cy);
+            if (dx > 1 || dy > 1 || collisionParts.containsKey(collisionKey(tile.x(), tile.y()))) continue;
+            if (dx + dy < best) {
+                best = dx + dy;
+                next = tile;
+            }
+        }
+        if (next == null) return;
+        var tile = next;
+        int key = collisionKey(tile.x(), tile.y());
+        collisionPending.add(key);
+        if (collisionWorker == null)
+            collisionWorker = Executors.newSingleThreadExecutor(
+                    Thread.ofPlatform().daemon().name("world-walk-collision").factory());
+        CompletableFuture.runAsync(() -> {
+            try {
+                var part = lane.prepareCollision(tile, collisionCancellation);
+                collisionParts.put(key, part);
+                mergeCollision();
+            } catch (RuntimeException failure) {
+                if (!collisionCancellation.isCanceled())
+                    WorldDiagnostics.degraded("walking collision", "Walking collision could not be read for a tile", failure);
+                // An empty part: the tile is not retried until it leaves and comes back.
+                collisionParts.put(key, new com.vibeminer.concepts.world.WorldTileCollision.Part(
+                        tile.x(), tile.y(), List.of(), java.util.Map.of("failed", 1)));
+            } finally {
+                collisionPending.remove(key);
+                kick();
+            }
+        }, collisionWorker);
+    }
+
+    /** Publishes the current parts as one collision set (on whichever worker changed them). */
+    private synchronized void mergeCollision() {
+        var placements = new ArrayList<com.vibeminer.rendering.world.ObjectCollision.Placement>();
+        var keys = new java.util.HashSet<Integer>();
+        for (var entry : collisionParts.entrySet()) {
+            placements.addAll(entry.getValue().placements());
+            keys.add(entry.getKey());
+        }
+        objectCollision = com.vibeminer.rendering.world.ObjectCollision.of(placements);
+        collisionMerged = java.util.Set.copyOf(keys);
     }
 
     /**
@@ -1865,6 +1952,7 @@ final class WorldStreamSourceController {
         areaTable = table;
         areaScans.incrementAndGet();
         updateGround();
+        updateCollision(latest);
         if (latest == null) return;
         // The same chunk rule as a click's areaAt, over the metadata updateGround just retained.
         var result =
@@ -2034,6 +2122,11 @@ final class WorldStreamSourceController {
         exteriorBudget.clear();
         exterior = null;
         if (exteriorWorker != null) exteriorWorker.shutdown();
+        collisionCancellation.cancel();
+        if (collisionWorker != null) collisionWorker.shutdown();
+        collisionParts.clear();
+        objectCollision = com.vibeminer.rendering.world.ObjectCollision.empty();
+        collisionMerged = java.util.Set.of();
         if (geometryWake != null) {
             try {
                 geometryWake.close();

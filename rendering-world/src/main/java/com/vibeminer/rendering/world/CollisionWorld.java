@@ -75,4 +75,33 @@ public interface CollisionWorld {
             }
         };
     }
+
+    /**
+     * The retained terrain with placed objects (buildings and doodads) on top. Whether a box is
+     * known follows the terrain: objects still loading do not stop a body, they only fail to block
+     * it until they arrive.
+     */
+    static CollisionWorld combined(TerrainGround ground, ObjectCollision objects) {
+        Objects.requireNonNull(objects);
+        var terrain = terrain(ground);
+        return new CollisionWorld() {
+            @Override
+            public void triangles(
+                    double x0,
+                    double y0,
+                    double z0,
+                    double x1,
+                    double y1,
+                    double z1,
+                    TerrainGround.TriangleSink sink) {
+                terrain.triangles(x0, y0, z0, x1, y1, z1, sink);
+                objects.triangles(x0, y0, z0, x1, y1, z1, sink);
+            }
+
+            @Override
+            public Coverage coverage(double x0, double y0, double x1, double y1) {
+                return terrain.coverage(x0, y0, x1, y1);
+            }
+        };
+    }
 }

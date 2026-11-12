@@ -1557,16 +1557,34 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private TerrainGround collisionGround;
+    private com.vibeminer.rendering.world.ObjectCollision collisionObjects;
     private CollisionWorld collision = CollisionWorld.NONE;
 
-    /** Body collision over the current ground, rebuilt only when the ground changes. */
+    /**
+     * Body collision: the current ground, with the stream's buildings and doodads around the
+     * camera; rebuilt only when either changes.
+     */
     private CollisionWorld currentCollision() {
         var surface = currentGround();
-        if (surface != collisionGround) {
+        var controller = streamingMode ? streaming : null;
+        var objects = controller == null ? com.vibeminer.rendering.world.ObjectCollision.empty()
+                : controller.objectCollision();
+        if (surface != collisionGround || objects != collisionObjects) {
             collisionGround = surface;
-            collision = CollisionWorld.terrain(surface);
+            collisionObjects = objects;
+            collision = CollisionWorld.combined(surface, objects);
         }
         return collision;
+    }
+
+    /** Buildings and doodads under the body: not read off the stream, loading, or colliding. */
+    enum ObjectsState { NONE, LOADING, READY }
+
+    private ObjectsState objectsReady() {
+        var controller = streamingMode ? streaming : null;
+        if (controller == null) return ObjectsState.NONE;
+        var walker = input.body().body();
+        return controller.objectsReady(walker.x(), walker.y()) ? ObjectsState.READY : ObjectsState.LOADING;
     }
 
     private TerrainGround currentGround() {
@@ -1601,23 +1619,31 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private WorldExplorerInput.Mode bodyMode;
     private WalkController.Status bodyShown;
     private double bodySpeedShown = -1;
+    private ObjectsState objectsShown = ObjectsState.NONE;
 
     /** The status line for a walking or flying body; relabels only when something changed. */
     private void bodyStatus(WorldExplorerInput.Mode mode, WalkController.Status status) {
         double speed = mode == WorldExplorerInput.Mode.FLY ? input.flySpeed() : 0;
-        if (mode == bodyMode && status == bodyShown && speed == bodySpeedShown) return;
+        var ready = objectsReady();
+        if (mode == bodyMode && status == bodyShown && speed == bodySpeedShown && ready == objectsShown) return;
         bodyMode = mode;
         bodyShown = status;
         bodySpeedShown = speed;
-        motionStatus.setText(bodyText(mode, status, speed));
+        objectsShown = ready;
+        motionStatus.setText(bodyText(mode, status, speed, ready));
         motionGround = status == WalkController.Status.LOADING ? ExplorerMotion.Ground.UNAVAILABLE
                 : ExplorerMotion.Ground.FOLLOWING;
         refreshIcons();
     }
 
     /** What a body status says, e.g. "Walking · collides with terrain". */
-    static String bodyText(WorldExplorerInput.Mode mode, WalkController.Status status, double flySpeed) {
-        String collides = " · collides with terrain (not yet buildings or objects)";
+    static String bodyText(WorldExplorerInput.Mode mode, WalkController.Status status, double flySpeed,
+            ObjectsState objects) {
+        String collides = switch (objects) {
+            case NONE -> " · collides with terrain";
+            case LOADING -> " · collides with terrain; buildings and objects here still loading";
+            case READY -> " · collides with terrain, buildings and objects";
+        };
         if (mode == WorldExplorerInput.Mode.FLY) {
             String speed = String.format(java.util.Locale.ROOT, " · %.0f yd/s", flySpeed)
                     + (flySpeed > MovementParity.TAXI_SPEED ? ", beyond game speed"

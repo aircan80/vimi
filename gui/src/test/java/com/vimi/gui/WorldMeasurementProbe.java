@@ -221,7 +221,7 @@ public final class WorldMeasurementProbe {
                             case "refusals" -> refusals(handle, catalog);
                             case "water" -> water(handle, catalog);
                             case "prep" -> prep(handle, catalog);
-                            case "walk" -> walk(handle, catalog);
+                            case "walk" -> walk(opened, handle, catalog);
                             case "collision" -> collision(opened, handle, catalog);
                             case "creatures" -> creatures(opened, handle, catalog);
                             case "displays" -> displays(opened);
@@ -346,7 +346,8 @@ public final class WorldMeasurementProbe {
      * fall from 300 yd. Reports where each walk ended, how far the feet ever were below the
      * rendered surface, airborne and sliding steps, and whether the body waited for collision.
      */
-    private static void walk(BuildWorld handle, WorldService.Catalog catalog) throws Exception {
+    private static void walk(WorldMeasurementOpen opened, BuildWorld handle, WorldService.Catalog catalog)
+            throws Exception {
         var scenarios = Scenario.parse(System.getProperty("probe.scenarios", "elwynn:0:49:31"));
         var source =
                 handle.terrainStreaming()
@@ -388,6 +389,10 @@ public final class WorldMeasurementProbe {
             }
             var ground = com.vibeminer.rendering.world.TerrainGround.of(heights);
             var world = com.vibeminer.rendering.world.CollisionWorld.terrain(ground);
+            if ("true".equals(System.getProperty("probe.objects"))) {
+                world = com.vibeminer.rendering.world.CollisionWorld.combined(
+                        ground, walkObjects(opened, source, inventory, scenario));
+            }
             say(String.format(Locale.ROOT, "PROBE walk %s: %d qualified tiles, start %.1f, %.1f", scenario.name(),
                     ground.tiles(), middle[0], middle[1]));
             double dt = com.vibeminer.rendering.world.MovementParity.STEP_SECONDS;
@@ -433,6 +438,70 @@ public final class WorldMeasurementProbe {
             }
             say(String.format(Locale.ROOT, "PROBE walk %s: a 300 yd fall landed after %.2f s at %.2f (ground %.2f)",
                     scenario.name(), fall * dt, faller.z(), floor));
+        }
+    }
+
+    /**
+     * The buildings and doodads of the scenario's 3x3 through the production reader, with a
+     * transform check: each building's collision box against the box its MODF record states.
+     */
+    private static com.vibeminer.rendering.world.ObjectCollision walkObjects(WorldMeasurementOpen opened,
+            com.vibeminer.concepts.world.WorldTerrainStreaming source, WorldService.Inventory inventory,
+            Scenario scenario) throws Exception {
+        var placements = new ArrayList<com.vibeminer.rendering.world.ObjectCollision.Placement>();
+        var skipped = new TreeMap<String, Integer>();
+        var recordedBoxes = new java.util.HashMap<Long, double[]>();
+        long began = System.nanoTime();
+        for (var tile : inventory.world().tiles()) {
+            if (Math.abs(tile.x() - scenario.x()) > 1 || Math.abs(tile.y() - scenario.y()) > 1) continue;
+            var part = source.prepareCollision(tile, Cancellation.NONE);
+            placements.addAll(part.placements());
+            part.skipped().forEach((k, v) -> skipped.merge(k, v, Integer::sum));
+            byte[] raw = bytes(opened, tile.obj0Id(), skipped, "probe obj0");
+            if (raw == null) continue;
+            for (var p : com.vibeminer.formats.world.WorldPlacements.readObj0(raw, () -> false).worldObjects()) {
+                double c = 51200.0 / 3.0;
+                var lo = p.lowerBounds();
+                var hi = p.upperBounds();
+                recordedBoxes.put(p.uniqueId(), new double[] {c - Math.max(lo.z(), hi.z()), c - Math.max(lo.x(), hi.x()),
+                    Math.min(lo.y(), hi.y()), c - Math.min(lo.z(), hi.z()), c - Math.min(lo.x(), hi.x()), Math.max(lo.y(), hi.y())});
+            }
+        }
+        var merged = com.vibeminer.rendering.world.ObjectCollision.of(placements);
+        var byBuilding = new java.util.HashMap<Long, List<com.vibeminer.rendering.world.ObjectCollision.Placement>>();
+        int doodads = 0;
+        for (var p : placements) {
+            var key = (com.vibeminer.concepts.world.WorldTileCollision.Key) p.key();
+            if (key.kind() == 'W') byBuilding.computeIfAbsent(key.uniqueId(), k -> new ArrayList<>()).add(p);
+            else doodads++;
+        }
+        double worst = 0;
+        long worstId = 0;
+        int checked = 0, within = 0;
+        for (var entry : byBuilding.entrySet()) {
+            var recorded = recordedBoxes.get(entry.getKey());
+            var box = com.vibeminer.rendering.world.ObjectCollision.of(entry.getValue()).bounds();
+            if (recorded == null || box == null) continue;
+            // How far the collision reaches outside the recorded box (it may be smaller: groups
+            // without solid triangles are left out).
+            double off = 0;
+            for (int a = 0; a < 3; a++) off = Math.max(off, Math.max(recorded[a] - box[a], box[a + 3] - recorded[a + 3]));
+            checked++;
+            if (off < 2) within++;
+            if (off > worst) {
+                worst = off;
+                worstId = entry.getKey();
+            }
+        }
+        say(String.format(Locale.ROOT, "PROBE walk %s objects: %d placements (%d after de-duplication), %d buildings,"
+                        + " %d doodad placements, %.1f MiB, read in %.1f s; building boxes reaching at most 2 yd outside their MODF"
+                        + " bounds: %d of %d (worst %.1f yd, unique ID %d); left out %s",
+                scenario.name(), placements.size(), merged.placements(), byBuilding.size(), doodads,
+                merged.bytes() / 1048576.0, seconds(System.nanoTime() - began), within, checked, worst, worstId, skipped));
+        return merged;
+    }
+
+    /**
      * Collision bytes around each scenario: every obj0 placement of its 3x3 tiles, never the
      * capped draw set. WMO groups through {@link com.vibeminer.formats.world.WmoCollision} (solid
      * MOPY triangles and the group BSP), doodads (MDDF and the placed WMO doodad sets, set 0

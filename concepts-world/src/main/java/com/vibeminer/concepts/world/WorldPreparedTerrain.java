@@ -590,6 +590,21 @@ final class WorldPreparedTerrain {
         invalidated = true;
     }
 
+    private WorldTileCollision collision;
+
+    /** Walking collision of one tile's placements; the parsed sources are shared across tiles. */
+    WorldTileCollision.Part collision(WorldFormats.Tile tile, Cancellation cancel) {
+        checkOpen();
+        WorldTileCollision reader;
+        synchronized (this) {
+            if (collision == null) {
+                collision = new WorldTileCollision(scopes.files());
+            }
+            reader = collision;
+        }
+        return reader.prepare(tile, cancel);
+    }
+
     private void checkOpen() {
         if (invalidated) {
             throw WorldSourceRefusals.at(WorldSourceRefusals.Site.OWNER_RETIRED);
