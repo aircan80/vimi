@@ -216,4 +216,84 @@ class WmoCollisionTest {
                 java.util.concurrent.CancellationException.class,
                 () -> WmoCollision.read(group(null, null), () -> true));
     }
+
+    /** A group of {@code triangles} copies of one triangle over {@code vertices} vertices. */
+    static byte[] large(int vertices, int triangles, boolean movx, byte[] mobn, byte[] mobr) {
+        var positions = buffer(vertices * 12);
+        for (int v = 0; v < vertices; v++) {
+            positions.putFloat(v % 7).putFloat(v % 5).putFloat(0);
+        }
+        var indices = buffer(triangles * 3 * (movx ? 4 : 2));
+        var flags = buffer(triangles * 2);
+        for (int t = 0; t < triangles; t++) {
+            int a = t % vertices, b = (t + 1) % vertices, c = vertices - 1;
+            if (movx) {
+                indices.putInt(a).putInt(b).putInt(c);
+            } else {
+                indices.putShort((short) a).putShort((short) b).putShort((short) c);
+            }
+            flags.put((byte) WmoCollision.COLLISION).put((byte) 0);
+        }
+        var parts =
+                new ArrayList<byte[]>(
+                        List.of(
+                                new byte[68],
+                                chunk("MOVT", positions.array()),
+                                chunk(movx ? "MOVX" : "MOVI", indices.array()),
+                                chunk("MOPY", flags.array())));
+        if (mobn != null) {
+            parts.add(chunk("MOBN", mobn));
+            parts.add(chunk("MOBR", mobr));
+        }
+        return join(
+                chunk("MVER", buffer(4).putInt(17).array()),
+                chunk("MOGP", join(parts.toArray(byte[][]::new))));
+    }
+
+    @Test
+    void movxGroupsWithMoreThan65536VerticesAreRead() {
+        var c = WmoCollision.read(large(70_000, 10, true, null, null), () -> false);
+        assertEquals(70_000, c.vertices());
+        assertEquals(69_999, c.corner(0, 2), "a corner past 16 bits");
+        assertEquals(10, c.solidTriangles());
+    }
+
+    @Test
+    void aBspThatCannotNameEveryTriangleIsNotUsed() {
+        var leaf = node(4, -1, -1, 1, 0, 0);
+        var c = WmoCollision.read(large(3, 65_537, false, leaf, refs(0)), () -> false);
+        assertFalse(c.hasBsp());
+        assertEquals("more triangles than MOBR can name", c.bspIssue());
+        int[] offered = {0};
+        c.query(-1, -1, -1, 9, 9, 1, t -> offered[0]++);
+        assertEquals(65_537, offered[0], "every solid triangle is offered instead");
+    }
+
+    @Test
+    void eachStructuralBspRefusalIsNamed() {
+        var cases =
+                List.of(
+                        // Node 0 splits into 1 and 2, and both split into the same leaf 3.
+                        List.of(
+                                join(
+                                        node(0, 1, 2, 0, 0, 3.5f),
+                                        node(1, 3, -1, 0, 0, 0),
+                                        node(1, 3, -1, 0, 0, 0),
+                                        node(4, -1, -1, 4, 0, 0)),
+                                "not a tree"),
+                        List.of(
+                                join(node(0, 1, 99, 0, 0, 3.5f), node(4, -1, -1, 4, 0, 0)),
+                                "child outside the nodes"),
+                        List.of(
+                                join(
+                                        node(3, 1, 2, 0, 0, 3.5f),
+                                        node(4, -1, -1, 2, 0, 0),
+                                        node(4, -1, -1, 2, 2, 0)),
+                                "split axis or plane"));
+        for (var bad : cases) {
+            var c = WmoCollision.read(group((byte[]) bad.get(0), refs(0, 1, 2, 3)), () -> false);
+            assertFalse(c.hasBsp());
+            assertEquals(bad.get(1), c.bspIssue());
+        }
+    }
 }

@@ -21,8 +21,16 @@ import java.util.function.IntConsumer;
 public final class WmoCollision {
     public static final int DETAIL = 0x04, COLLISION = 0x08, RENDER = 0x20;
 
-    /** At most this many vertices and triangles per group (MOVI and MOBR index with 16 bits). */
-    public static final int MAX_VERTICES = 65_536, MAX_TRIANGLES = 131_072;
+    /**
+     * Vertex and triangle bounds per group. MOVI indexes 65,536 vertices with 16 bits, but a MOVX
+     * group indexes more with 32 bits, so vertices are bounded by what an 8 MiB group file can hold
+     * (12 bytes each), and triangles likewise (6 bytes each through MOVI).
+     */
+    public static final int MAX_VERTICES = WmoFormats.MAX_SOURCE_BYTES / 12,
+            MAX_TRIANGLES = WmoFormats.MAX_SOURCE_BYTES / 6;
+
+    /** MOBR names triangles with 16 bits: a BSP over more triangles cannot reach them all. */
+    public static final int MAX_BSP_TRIANGLES = 65_536;
 
     /** BSP bounds: nodes, face references and traversal depth. */
     public static final int MAX_NODES = 65_536, MAX_FACE_REFS = 1 << 20, MAX_DEPTH = 128;
@@ -38,7 +46,7 @@ public final class WmoCollision {
             MOBR = 0x4d4f4252;
 
     private final float[] positions;
-    private final char[] indices;
+    private final int[] indices;
     private final long[] solid;
     private final int solidCount;
     private final short[] nodeFlags, negative, positive;
@@ -51,7 +59,7 @@ public final class WmoCollision {
 
     private WmoCollision(
             float[] positions,
-            char[] indices,
+            int[] indices,
             long[] solid,
             int solidCount,
             short[] nodeFlags,
@@ -92,7 +100,7 @@ public final class WmoCollision {
         }
         var input = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
         float[] positions = null;
-        char[] indices = null;
+        int[] indices = null;
         // Per-triangle flags: MOPY (flags byte, material byte) or MPY2 (16-bit flags, material).
         int[] flags = null;
         byte[] nodes = null;
@@ -128,19 +136,25 @@ public final class WmoCollision {
                     int innerEnd = input.position() + length;
                     switch (inner) {
                         case MOVT -> positions = floats(input, length, MAX_VERTICES * 3);
-                        case MOVI -> indices = shorts(input, length, MAX_TRIANGLES * 3);
+                        case MOVI -> {
+                            char[] narrow = shorts(input, length, MAX_TRIANGLES * 3);
+                            indices = new int[narrow.length];
+                            for (int i = 0; i < narrow.length; i++) {
+                                indices[i] = narrow[i];
+                            }
+                        }
                         case MOVX -> {
                             if (length % 4 != 0 || length / 4 > MAX_TRIANGLES * 3) {
                                 throw new IllegalArgumentException("MOVX size");
                             }
-                            indices = new char[length / 4];
+                            indices = new int[length / 4];
                             for (int i = 0; i < indices.length; i++) {
                                 long index = Integer.toUnsignedLong(input.getInt());
                                 if (index >= MAX_VERTICES) {
                                     throw new IllegalArgumentException(
                                             "Index outside vertex inventory");
                                 }
-                                indices[i] = (char) index;
+                                indices[i] = (int) index;
                             }
                         }
                         case MOPY -> {
@@ -192,7 +206,7 @@ public final class WmoCollision {
             throw new IllegalArgumentException("WMO collision shape disagrees");
         }
         int vertices = positions.length / 3, triangles = indices.length / 3;
-        for (char index : indices) {
+        for (int index : indices) {
             if (index >= vertices) {
                 throw new IllegalArgumentException("Index outside vertex inventory");
             }
@@ -217,7 +231,14 @@ public final class WmoCollision {
         char[] faceCount = new char[count];
         int[] faceStart = new int[count];
         float[] planes = new float[count];
-        String issue = count == 0 ? "no MOBN" : refs == null ? "no MOBR" : null;
+        String issue =
+                count == 0
+                        ? "no MOBN"
+                        : refs == null
+                                ? "no MOBR"
+                                : triangles > MAX_BSP_TRIANGLES
+                                        ? "more triangles than MOBR can name"
+                                        : null;
         if (count > 0) {
             var n = ByteBuffer.wrap(nodes).order(ByteOrder.LITTLE_ENDIAN);
             for (int i = 0; i < count; i++) {
@@ -305,7 +326,7 @@ public final class WmoCollision {
     private static WmoCollision empty() {
         return new WmoCollision(
                 new float[0],
-                new char[0],
+                new int[0],
                 new long[0],
                 0,
                 new short[0],
@@ -359,7 +380,7 @@ public final class WmoCollision {
     public long retainedBytes() {
         return 96L
                 + positions.length * 4L
-                + indices.length * 2L
+                + indices.length * 4L
                 + solid.length * 8L
                 + nodeFlags.length * 16L
                 + faces.length * 2L;
