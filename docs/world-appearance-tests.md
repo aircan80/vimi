@@ -37,10 +37,10 @@ A passing run prints the renderer and sample count, one line per scene, then a p
 ```
 WORLD_APPEARANCE_RENDERER Vulkan
 WORLD_APPEARANCE_SAMPLES 4
-WORLD_APPEARANCE terrain mean 0.000, outliers 0.0000%, max 0
-WORLD_APPEARANCE water mean 0.000, outliers 0.0000%, max 0
-WORLD_APPEARANCE fog mean 0.000, outliers 0.0000%, max 0
-WORLD_APPEARANCE objects mean 0.000, outliers 0.0000%, max 0
+WORLD_APPEARANCE terrain mean 0.000, outliers 0.0000%, max 0; within a pixel mean 0.000, outliers 0.0000%, max 0
+WORLD_APPEARANCE water mean 0.000, outliers 0.0000%, max 0; within a pixel mean 0.000, outliers 0.0000%, max 0
+WORLD_APPEARANCE fog mean 0.000, outliers 0.0000%, max 0; within a pixel mean 0.000, outliers 0.0000%, max 0
+WORLD_APPEARANCE objects mean 0.000, outliers 0.0000%, max 0; within a pixel mean 0.000, outliers 0.0000%, max 0
 WORLD_APPEARANCE_PASS backend=VULKAN scenes=[terrain, water, fog, objects]
 ```
 
@@ -48,14 +48,29 @@ The helper must also close cleanly after the last frame: a drain failure fails t
 
 ## Tolerance
 
-A frame matches its reference when both of these hold (`AppearanceImages.Tolerance.STANDARD`):
+A frame matches its reference when it matches within a pixel, both ways
+(`AppearanceImages.matches`, `Tolerance.NEAR`, `compareNearBothWays`). Each channel of each pixel
+of the frame is measured against the range of that channel, lowest to highest, over the reference's
+3 x 3 neighbourhood around the same place: inside the range it differs by 0, outside by its distance
+to the nearer end. Each reference pixel is measured against the frame the same way. Over the worse
+of the two directions, the mean difference must be at most 1.5 per channel, and at most 0.05 % of
+pixels (about 70 of a 480 x 300 frame) may lie more than 8 outside in any channel.
 
-- the mean absolute channel difference over all pixels is at most 1.5;
-- at most 0.5 % of pixels differ by more than 8 in any channel.
+Another GPU or driver that rasterizes an edge a pixel apart, or blends an edge pixel with another
+MSAA coverage (say 50 % where the reference has 25 %), keeps the edge's colours between those on
+either side of it, so it passes even when every edge differs. A whole feature that appears or
+disappears does not pass, down to a line one pixel wide across the frame: its colour is nowhere in
+the other frame's neighbourhood. Comparing one way only would miss a thin feature that disappears,
+because every remaining pixel still lies within the range beside it, which is why both directions
+are checked. A lost texture, a wrong light and a changed sky or fog gradient fail as well. What
+this check cannot see is a change smaller than its limits: a feature of a few dozen pixels, one
+that moves by a single pixel, or a colour change confined to pixels next to a high-contrast edge
+(whose range already spans both sides).
 
-That absorbs driver rounding and edge rasterization differences. It fails a lost texture, a wrong
-light, a missing or extra surface, or a region of the frame drawn differently. The comparison
-itself is unit-tested (`AppearanceImagesTest`) and needs no GPU.
+The proof also prints the plain pixel-by-pixel measurement (`compare`, with the limits of
+`Tolerance.STANDARD`: mean 1.5 and 0.5 % of pixels) for every scene, next to the within-a-pixel
+one; it does not decide the result. The comparison itself is unit-tested
+(`AppearanceImagesTest`) and needs no GPU.
 
 On a mismatch, the proof writes `<scene>-actual.png` and `<scene>-diff.png` (differences scaled up
 8x) to `rendering-bgfx/build/native-world-appearance/`, and fails with the measured difference.
@@ -81,6 +96,21 @@ renderer bgfx created on stderr (`World v2 renderer: <name>`), the proof prints 
 `WORLD_APPEARANCE_RENDERER <name>` and fails if it is not the requested one ("Vulkan",
 "Direct3D 11"). On the Windows development machine both backends report their own renderer and
 still produce byte-identical frames for these flat, untextured-light scenes.
+
+## History of the references (#527)
+
+The Vulkan references were re-recorded on Linux (Vulkan, MSAA x4) at the main of #527, where
+two runs are byte-identical. The earlier ones (#464) did not match any current helper: their sky
+is the legacy screen-row gradient (91,141,177 at the top row to 170,200,213 at the bottom), which
+the sky shader draws only with `u_terrainMode.w` 0, and the World renderer has set it to 1 (the
+horizon gradient) since #407. Rendering the #464 commit itself on Linux gives the horizon gradient,
+so the old references were not portable output of that code but frames of an older effective sky,
+and no tolerance could have accepted them. The terrain and object frames also changed since #464 (on the same
+machine, the #464 commit and current main differ in terrain shading and the objects scene), so
+the references are re-recorded from current main.
+
+The Direct3D 11 references still date from #464 and must be re-recorded on Windows with
+`-PappearanceBackend=D3D11 -PappearanceUpdate=true` before that backend is checked again.
 
 ## Not covered yet
 
