@@ -81,7 +81,9 @@ public final class WalkController {
     private static final double LIMIT = 1_000_000;
 
     private final CapsuleCollision collision = new CapsuleCollision();
-    private final double walkable = Math.cos(Math.toRadians(MovementParity.SLOPE_LIMIT_DEGREES));
+    // Ground at exactly the slope limit is walkable; the margin absorbs rounding in its normal.
+    private final double walkable =
+            Math.cos(Math.toRadians(MovementParity.SLOPE_LIMIT_DEGREES)) - 1e-9;
     private CapsuleCollision.Shape shape =
             new CapsuleCollision.Shape(
                     MovementParity.DEFAULT_RADIUS, MovementParity.DEFAULT_HEIGHT);

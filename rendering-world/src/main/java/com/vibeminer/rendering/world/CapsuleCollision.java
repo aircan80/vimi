@@ -54,6 +54,9 @@ public final class CapsuleCollision {
     private double bestT, bestX, bestY, bestZ, bestFace;
     private boolean found;
 
+    /** Push-out passes; corners need several, each pass resolving every overlap it finds. */
+    static final int DEPENETRATION_PASSES = 16;
+
     private double[] triangles = new double[9 * 256];
     private int count;
 
@@ -149,7 +152,7 @@ public final class CapsuleCollision {
         double[] spheres = shape.spheres();
         double r = shape.radius();
         double[] closest = new double[3];
-        for (int pass = 0; pass < 4; pass++) {
+        for (int pass = 0; pass < DEPENETRATION_PASSES; pass++) {
             boolean moved = false;
             for (int i = 0; i < count; i++) {
                 for (double offset : spheres) {
@@ -166,8 +169,13 @@ public final class CapsuleCollision {
                         if (n == null) {
                             continue;
                         }
-                        // Exactly on the surface: leave on the upward side.
-                        double sign = n[2] < 0 ? -1 : 1;
+                        // Exactly on the surface: leave on the side the capsule's middle is on,
+                        // or the upward side when that is on the surface too.
+                        double side =
+                                n[0] * (at[0] - closest[0])
+                                        + n[1] * (at[1] - closest[1])
+                                        + n[2] * (at[2] + shape.height() / 2 - closest[2]);
+                        double sign = Math.abs(side) > 1e-9 ? Math.signum(side) : n[2] < 0 ? -1 : 1;
                         ex = n[0] * sign;
                         ey = n[1] * sign;
                         ez = n[2] * sign;
@@ -310,7 +318,10 @@ public final class CapsuleCollision {
         found = true;
     }
 
-    /** The smallest root of a t^2 + b t + c = 0 in [0, limit), or NaN. */
+    /**
+     * The smallest root of a t^2 + b t + c = 0 in [0, limit), 0 when t = 0 lies between the roots
+     * (already overlapping), or NaN.
+     */
     static double lowestRoot(double a, double b, double c, double limit) {
         if (Math.abs(a) < 1e-14) {
             return Double.NaN;
@@ -329,7 +340,11 @@ public final class CapsuleCollision {
         if (r1 >= 0 && r1 < limit) {
             return r1;
         }
-        // Overlaps at the start are left to depenetrate(); the later root is the exit.
+        // Already overlapping at the start: contact now. Callers keep it only when the move goes
+        // further in, so a body can always move out of a surface it touches.
+        if (r1 < 0 && r2 > 0 && limit > 0) {
+            return 0;
+        }
         return Double.NaN;
     }
 

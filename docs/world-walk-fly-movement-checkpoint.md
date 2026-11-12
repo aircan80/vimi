@@ -29,6 +29,7 @@ frame; longer gaps are dropped, not caught up):
 - Walls stop the body one radius away; moving at an angle slides along them.
 - Terrain holes are open: the body falls through. A body that falls 500 yd below
   where it last stood (a hole into nothing) is put back there.
+- There is no swimming yet: in water the body walks on the lake or river bed.
 - Where collision is not loaded yet, a walking body waits: it does not move into
   the unknown area and does not fall while its own footprint is unknown. The
   status line says so (amber mode icon).
