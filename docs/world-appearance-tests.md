@@ -49,19 +49,23 @@ The helper must also close cleanly after the last frame: a drain failure fails t
 ## Tolerance
 
 A frame matches its reference when it matches within a pixel, both ways
-(`AppearanceImages.matches`, `Tolerance.NEAR`, `compareNearBothWays`): each pixel of the frame is
-compared with the reference pixel within one pixel of its place (its 3 x 3 neighbourhood) that it
-matches best, and each reference pixel with the frame the same way. Over the worse of the two
-directions, the mean absolute channel difference must be at most 1.5, and at most 0.05 % of pixels
-(about 70 of a 480 x 300 frame) may differ by more than 8 in any channel.
+(`AppearanceImages.matches`, `Tolerance.NEAR`, `compareNearBothWays`). Each channel of each pixel
+of the frame is measured against the range of that channel, lowest to highest, over the reference's
+3 x 3 neighbourhood around the same place: inside the range it differs by 0, outside by its distance
+to the nearer end. Each reference pixel is measured against the frame the same way. Over the worse
+of the two directions, the mean difference must be at most 1.5 per channel, and at most 0.05 % of
+pixels (about 70 of a 480 x 300 frame) may lie more than 8 outside in any channel.
 
-Another GPU or driver that places MSAA samples or rasterizes an edge a pixel apart moves edges, so
-it passes even when many edges move. A whole feature that appears or disappears does not, down to a
-line one pixel wide across the frame: comparing one way only misses a thin feature that disappears,
-because every remaining pixel still finds a match beside it, which is why both directions are
-checked. A lost texture, a wrong light and a changed sky or fog gradient fail as well. What this
-check cannot see is a change smaller than its limits: a feature of a few dozen pixels, or one
-that moves by a single pixel.
+Another GPU or driver that rasterizes an edge a pixel apart, or blends an edge pixel with another
+MSAA coverage (say 50 % where the reference has 25 %), keeps the edge's colours between those on
+either side of it, so it passes even when every edge differs. A whole feature that appears or
+disappears does not pass, down to a line one pixel wide across the frame: its colour is nowhere in
+the other frame's neighbourhood. Comparing one way only would miss a thin feature that disappears,
+because every remaining pixel still lies within the range beside it, which is why both directions
+are checked. A lost texture, a wrong light and a changed sky or fog gradient fail as well. What
+this check cannot see is a change smaller than its limits: a feature of a few dozen pixels, one
+that moves by a single pixel, or a colour change confined to pixels next to a high-contrast edge
+(whose range already spans both sides).
 
 The proof also prints the plain pixel-by-pixel measurement (`compare`, with the limits of
 `Tolerance.STANDARD`: mean 1.5 and 0.5 % of pixels) for every scene, next to the within-a-pixel

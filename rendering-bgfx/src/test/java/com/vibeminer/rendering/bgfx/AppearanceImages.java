@@ -31,12 +31,13 @@ final class AppearanceImages {
         static final Tolerance STANDARD = new Tolerance(1.5, 8, 0.005);
 
         /**
-         * The frame compared within a pixel both ways: every pixel of each frame must match the
-         * other within one pixel of its place (see {@link AppearanceImages#compareNearBothWays}),
-         * so a GPU that places MSAA samples or rasterizes an edge a pixel apart passes, while a
-         * feature that appears or disappears, even a line one pixel wide, does not. Its outlier
-         * share is a tenth of the pixel tolerance's, so about 70 pixels of such a feature in a 480
-         * x 300 frame already fail.
+         * The frame compared within a pixel both ways: every pixel of each frame must lie within
+         * the colour range of the other's 3 x 3 neighbourhood around its place (see {@link
+         * AppearanceImages#compareNearBothWays}), so a GPU that blends MSAA edges with other
+         * coverage or rasterizes an edge a pixel apart passes, while a feature that appears or
+         * disappears, even a line one pixel wide, does not. Its outlier share is a tenth of the
+         * pixel tolerance's, so about 70 pixels of such a feature in a 480 x 300 frame already
+         * fail.
          */
         static final Tolerance NEAR = new Tolerance(1.5, 8, 0.0005);
     }
@@ -82,9 +83,13 @@ final class AppearanceImages {
     }
 
     /**
-     * As {@link #compare}, except that a pixel is an outlier only when no reference pixel within
-     * one pixel of its place (its 3 x 3 neighbourhood, clipped at the frame) is within {@code
-     * pixelDelta} in every channel. The mean and maximum are over each pixel's best match.
+     * As {@link #compare}, except that each pixel is measured against the envelope of the reference
+     * within one pixel of its place: per channel, the lowest to the highest value of its 3 x 3
+     * neighbourhood (clipped at the frame). A channel inside that range differs by 0, one outside
+     * it by its distance to the nearer end; a pixel is an outlier when a channel lies more than
+     * {@code pixelDelta} outside. An edge rasterized a pixel apart, or blended with a different
+     * coverage (another GPU's MSAA sample pattern), stays between the colours on either side of the
+     * edge and passes; a colour the reference has nowhere near does not.
      */
     static Difference compareNear(
             int[] actual, int[] reference, int width, int height, int pixelDelta) {
@@ -97,30 +102,27 @@ final class AppearanceImages {
         int outliers = 0, max = 0;
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
-                int i = y * width + x;
-                // The reference pixel within one pixel that this one matches best.
-                int bestWorst = Integer.MAX_VALUE, bestSum = 0;
-                for (int dy = -1; dy <= 1; dy++) {
-                    for (int dx = -1; dx <= 1; dx++) {
-                        int nx = x + dx, ny = y + dy;
-                        if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
-                            continue;
-                        }
-                        int other = reference[ny * width + nx], worst = 0, total = 0;
-                        for (int shift = 0; shift < 32; shift += 8) {
-                            int d = Math.abs((actual[i] >>> shift & 255) - (other >>> shift & 255));
-                            worst = Math.max(worst, d);
-                            total += d;
-                        }
-                        if (worst < bestWorst || worst == bestWorst && total < bestSum) {
-                            bestWorst = worst;
-                            bestSum = total;
+                int pixel = actual[y * width + x], worst = 0;
+                for (int shift = 0; shift < 32; shift += 8) {
+                    int low = 255, high = 0;
+                    for (int dy = -1; dy <= 1; dy++) {
+                        for (int dx = -1; dx <= 1; dx++) {
+                            int nx = x + dx, ny = y + dy;
+                            if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
+                                continue;
+                            }
+                            int value = reference[ny * width + nx] >>> shift & 255;
+                            low = Math.min(low, value);
+                            high = Math.max(high, value);
                         }
                     }
+                    int value = pixel >>> shift & 255;
+                    int d = Math.max(0, Math.max(value - high, low - value));
+                    sum += d;
+                    worst = Math.max(worst, d);
                 }
-                sum += bestSum;
-                max = Math.max(max, bestWorst);
-                if (bestWorst > pixelDelta) {
+                max = Math.max(max, worst);
+                if (worst > pixelDelta) {
                     outliers++;
                 }
             }

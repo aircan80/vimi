@@ -152,4 +152,28 @@ class AppearanceImagesTest {
         }
         assertTrue(AppearanceImages.matches(lower, line, width, height));
     }
+
+    @Test
+    void anEdgeBlendedWithOtherCoverageMatches() {
+        // Vertical edges, black to white, every 16 columns, each with one blended column: 25 %
+        // white in the reference, 50 % in the frame (another GPU's MSAA coverage).
+        int width = 480, height = 300;
+        int[] reference = new int[width * height], actual = new int[width * height];
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                int phase = x % 16;
+                int quarter = phase == 8 ? 64 : phase > 8 ? 255 : 0;
+                int half = phase == 8 ? 128 : phase > 8 ? 255 : 0;
+                reference[y * width + x] = 0xff000000 | quarter * 0x010101;
+                actual[y * width + x] = 0xff000000 | half * 0x010101;
+            }
+        }
+        // Each blended pixel is 64 from every single reference pixel near it: a whole column of
+        // outliers per edge, far over the share, if blends had to match one neighbour.
+        assertFalse(
+                AppearanceImages.compare(actual, reference, 8)
+                        .matches(AppearanceImages.Tolerance.NEAR));
+        assertTrue(AppearanceImages.matches(actual, reference, width, height));
+        assertTrue(AppearanceImages.matches(reference, actual, width, height));
+    }
 }
