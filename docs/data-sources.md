@@ -103,9 +103,11 @@ lists them too.
 
 A small EG Link history also ships inside the application
 (`eg-link/src/main/resources/com/vibeminer/eglink/history/`, CC BY 4.0, by Efficient
-Games). For each NPC it holds the displays of the newest `wowf` client build that
-recorded it across the upstream repository's last 60 days of commits, with that
-build, commit and collection date. It is not a data source either: it is regenerated
+Games). For each NPC and each `wowf` client build that recorded it across the
+upstream repository's last 60 days of commits, it holds the displays of the newest
+commit holding that build, with that build, commit and collection date (5,001 NPCs
+in 11,219 lines, 262 KB). `--since`/`--until` pin the window for a reproducible
+regeneration. It is not a data source either: it is regenerated
 by hand before a release with `python3 scripts/release/eg_link_history.py`, which
 clones the upstream repository without file contents into a temporary directory and
 reads only `creature_details.enUS` at each commit (display IDs do not depend on the
