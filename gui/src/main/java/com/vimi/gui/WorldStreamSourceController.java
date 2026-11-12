@@ -233,6 +233,10 @@ final class WorldStreamSourceController {
         // The later creatures pass (#175): buildings again with the tile's creatures, replacing the
         // drawn buildings-only set (or attached as the first set when the tile had no buildings).
         final boolean creaturesPass;
+        // A creature pass: the buildings its tile's buildings pass kept, reused instead of being
+        // prepared again, or null. A buildings pass: what it kept (set on the exterior worker).
+        WorldStreamSourceBridge.KeptBuildings reuse;
+        volatile WorldStreamSourceBridge.KeptBuildings kept;
 
         Exterior(Entry entry) {
             this(entry, false);
@@ -272,6 +276,14 @@ final class WorldStreamSourceController {
     private final IdentityHashMap<Entry, Long> creatureBudget = new IdentityHashMap<>();
     // Creature passes canceled for buildings since one last ran to its end (worker-owned).
     private int creaturePreemptions;
+    // Buildings prepared in a tile's buildings pass and kept for its creature pass (#175), by
+    // resident, and the bytes they hold: at most KEPT_BUILDINGS_BYTES, past which a tile's
+    // creature pass prepares its buildings again. Dropped once the creature pass ends, the tile
+    // retires or the session closes. Worker-owned.
+    private final IdentityHashMap<Entry, WorldStreamSourceBridge.KeptBuildings> keptBuildings =
+            new IdentityHashMap<>();
+    private long keptBuildingsBytes;
+    static final long KEPT_BUILDINGS_BYTES = 64L << 20;
     static final int CREATURE_PREEMPTIONS = 3;
     private Events events;
     private final Consumer<Runnable> fxPost;
@@ -1719,9 +1731,12 @@ final class WorldStreamSourceController {
                 if (objects != WorldStreamTransport.ExteriorObjects.DRAWN
                         && objects != WorldStreamTransport.ExteriorObjects.NONE) {
                     creaturesPending.remove(entry);
+                    dropKept(entry);
                     continue;
                 }
-                prepare(new Exterior(entry, true), tile, creatureAllowance(), "parent.objects.prepareCreatures");
+                var work = new Exterior(entry, true);
+                work.reuse = takeKept(entry);
+                prepare(work, tile, creatureAllowance(), "parent.objects.prepareCreatures");
                 return;
             }
         }
@@ -1773,7 +1788,8 @@ final class WorldStreamSourceController {
                     long preparing = WorldStageTimings.start();
                     try {
                         return exteriorPreparer.prepare(
-                                lane, owner, tile, work.cancellation, formats, creatureBytes);
+                                lane, owner, tile, work.cancellation, formats, creatureBytes, work.reuse,
+                                creaturesLater && !work.creaturesPass ? kept -> work.kept = kept : null);
                     } finally {
                         WorldStageTimings.stop(work.cancellation.isCanceled()
                                 ? "parent.objects.prepareCanceled" : timing, preparing);
@@ -1782,6 +1798,36 @@ final class WorldStreamSourceController {
                 exteriorWorker);
         exterior = work;
         work.prepared.whenComplete((ignored, failure) -> kick());
+    }
+
+    /** Keeps {@code kept} for {@code entry}'s creature pass when the bound allows; else closes it. */
+    private void keep(Entry entry, WorldStreamSourceBridge.KeptBuildings kept) {
+        if (kept == null) return;
+        if (closing || !live(entry) || !current.contains(entry)
+                || keptBuildingsBytes + kept.bytes() > KEPT_BUILDINGS_BYTES) {
+            kept.close();
+            WorldStageTimings.add("parent.objects.buildingsNotKept", 1);
+            return;
+        }
+        var old = keptBuildings.put(entry, kept);
+        keptBuildingsBytes += kept.bytes();
+        if (old != null) {
+            keptBuildingsBytes -= old.bytes();
+            old.close();
+        }
+    }
+
+    /** The buildings kept for {@code entry}, now owned by the caller, or null. */
+    private WorldStreamSourceBridge.KeptBuildings takeKept(Entry entry) {
+        var kept = keptBuildings.remove(entry);
+        if (kept != null) keptBuildingsBytes -= kept.bytes();
+        return kept;
+    }
+
+    /** Closes the buildings kept for {@code entry}, if any. */
+    private void dropKept(Entry entry) {
+        var kept = takeKept(entry);
+        if (kept != null) kept.close();
     }
 
     /** A creature set refused for budget waits, like a buildings set, for a release since. */
@@ -1826,6 +1872,12 @@ final class WorldStreamSourceController {
                 copy = work.prepared.join();
             } catch (RuntimeException failed) {
                 exterior = null;
+                // A canceled creature pass keeps its tile's buildings for when it resumes.
+                if (work.creaturesPass && work.reuse != null) {
+                    if (work.cancellation.isCanceled() && creaturesPending.contains(work.entry)) keep(work.entry, work.reuse);
+                    else work.reuse.close();
+                    work.reuse = null;
+                }
                 // Preempted by terrain (or retired): untried, so it restarts when terrain idles.
                 if (work.creaturesPass) {
                     // Canceled (for terrain or buildings), it stays pending. Failed, its buildings
@@ -1848,6 +1900,16 @@ final class WorldStreamSourceController {
                 return;
             }
             work.prepared = null;
+            if (work.reuse != null) {
+                // Copied into this pass's set: no longer needed.
+                work.reuse.close();
+                work.reuse = null;
+            }
+            // Kept only while the tile waits for its creature pass; dropped below if it does not.
+            if (work.kept != null) {
+                keep(work.entry, work.kept);
+                work.kept = null;
+            }
             // A creature pass ran to its end: the next one may give way to buildings again.
             if (work.creaturesPass) creaturePreemptions = 0;
             if (work.creaturesPass && (copy.exterior() == null || copy.failed() || copy.creatures().drawn() == 0)) {
@@ -1870,6 +1932,8 @@ final class WorldStreamSourceController {
                 if (creaturesLater && copy.exterior() == null && !copy.failed()) {
                     creaturesPending.add(work.entry);
                     changed();
+                } else {
+                    dropKept(work.entry);
                 }
                 return;
             }
@@ -1914,10 +1978,13 @@ final class WorldStreamSourceController {
             if (work.creatures.bytes() > 0 && creaturesShed.add(work.entry)) {
                 // Its creatures may be what did not fit: its buildings are offered again at once,
                 // without them.
+                dropKept(work.entry);
                 changed();
                 return;
             }
             exteriorBudget.put(work.entry, work.releaseRevision);
+            // Its buildings pass runs again; what it keeps then replaces these.
+            dropKept(work.entry);
             changed();
             return;
         }
@@ -1948,6 +2015,8 @@ final class WorldStreamSourceController {
                 }
                 case DROPPED, BUDGET -> {}
             }
+            // Kept buildings serve only a creature pass still to come.
+            if (!creaturesPending.contains(work.entry)) dropKept(work.entry);
         } catch (RuntimeException failed) {
             // A stopping session cancels delivery; anything else fails only these objects.
             if (!closing && !CleanCancellation.is(failed)) work.entry.source().exteriorFailedLate();
@@ -2359,6 +2428,7 @@ final class WorldStreamSourceController {
             creaturesShed.remove(entry);
             creaturesPending.remove(entry);
             creatureBudget.remove(entry);
+            dropKept(entry);
         }
     }
 
@@ -2475,6 +2545,9 @@ final class WorldStreamSourceController {
         exteriorBudget.clear();
         creaturesShed.clear();
         creaturesPending.clear();
+        for (var kept : keptBuildings.values()) kept.close();
+        keptBuildings.clear();
+        keptBuildingsBytes = 0;
         creatureBudget.clear();
         exterior = null;
         if (exteriorWorker != null) exteriorWorker.shutdown();
