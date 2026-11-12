@@ -29,7 +29,8 @@ and the wheel moves along the view direction (Shift+wheel changes speed).
 **Walk with collision** (or F) and **Fly with collision** (or G) move a body
 that the camera follows: walking runs at 7 yards/s with gravity, Space to jump, a
 slope limit and step-up; flying goes at least the 32 yards/s taxi speed. The
-wheel or C zooms down to first person. The body collides with the terrain,
+wheel or C zooms down to first person. The body is drawn as a murloc that
+stands, walks and runs, hidden in first person. It collides with the terrain,
 buildings and doodads. **Smooth motion** eases the free camera only. See
 [walk and fly movement](world-walk-fly-movement-checkpoint.md).
 **Bookmark this view** saves the camera with its map identity and tile. Below the

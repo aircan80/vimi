@@ -90,6 +90,7 @@ final class WorldStreamParentState {
         CANCELED,
         OBJECTS,
         HORIZON,
+        BODY,
         CLOSED
     }
 
@@ -105,6 +106,8 @@ final class WorldStreamParentState {
     private boolean hello, closed, childGone;
     // The session's one HORIZON (#372): sent, then answered once.
     private boolean horizonSent, horizonAnswered;
+    // The session's one BODY_MODEL: sent, then answered once.
+    private boolean bodySent, bodyAnswered;
     private int objectFormats;
     private Ticket ticket;
     // The ticket whose lease the latest CREDIT returned (null for the first credit); read by the
@@ -288,6 +291,20 @@ final class WorldStreamParentState {
         }
         horizonSent = true;
         return new WorldStreamControl.Horizon(session.nonce(), length, sha);
+    }
+
+    /** The session's one body model command, or null once one was sent or the session ended. */
+    synchronized WorldStreamControl.BodyModel body(int length, String sha) {
+        if (closed || !hello || bodySent) {
+            return null;
+        }
+        bodySent = true;
+        return new WorldStreamControl.BodyModel(session.nonce(), length, sha);
+    }
+
+    /** A body command that was built but not sent (the session began stopping). */
+    synchronized void bodyUnsent() {
+        bodyAnswered = true;
     }
 
     /** A horizon command that was built but not sent (the session began stopping). */
@@ -591,6 +608,13 @@ final class WorldStreamParentState {
             }
             horizonAnswered = true;
             return Change.HORIZON;
+        }
+        if (message instanceof WorldStreamStatus.BodyDone) {
+            if (!bodySent || bodyAnswered) {
+                return Change.IGNORED;
+            }
+            bodyAnswered = true;
+            return Change.BODY;
         }
         if (message instanceof WorldStreamStatus.ObjectsDone value) {
             require(

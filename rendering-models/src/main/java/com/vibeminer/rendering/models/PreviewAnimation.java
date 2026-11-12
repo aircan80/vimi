@@ -536,6 +536,11 @@ public final class PreviewAnimation {
         return rest.length / 3;
     }
 
+    /** Whether the rest surface records normals, which skinning then turns with the bones. */
+    public boolean hasNormals() {
+        return restNormals.length != 0;
+    }
+
     /**
      * This animation over a larger rest surface that begins with this one's: its first vertices
      * keep their influences, and each further vertex follows one bone ({@code extraBones}, one per

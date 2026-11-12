@@ -390,21 +390,79 @@ public final class WorldStreamTransport {
         }
     }
 
-    /** {@code sky} is the recorded sky for this frame, or null for the explorer's own. */
+    /**
+     * The walking body's pose for one frame: its feet at (x, y, z) in World yards, turned {@code
+     * yaw} radians from native +X, playing AnimationData {@code sequence} at {@code millis} of its
+     * clock, and {@code hidden} in first person. Values are quantized to what the control line
+     * carries: thousandths of a yard, ten-thousandths of a radian with the yaw in [0, 2 pi).
+     */
+    public record Body(
+            double x, double y, double z, double yaw, int sequence, long millis, boolean hidden) {
+        /** Farthest a body may be from the World origin on any axis, yards. */
+        public static final double MAX_YARDS = 100_000;
+
+        public Body {
+            if (!(Math.abs(x) <= MAX_YARDS && Math.abs(y) <= MAX_YARDS && Math.abs(z) <= MAX_YARDS)
+                    || !Double.isFinite(yaw)
+                    || sequence < 0
+                    || sequence > 0xffff
+                    || millis < 0
+                    || millis
+                            > com.vibeminer.rendering.models.PreviewAnimation.MAX_DURATION_MILLIS) {
+                throw new IllegalArgumentException("Invalid body pose");
+            }
+            x = Math.round(x * 1000) / 1000.0;
+            y = Math.round(y * 1000) / 1000.0;
+            z = Math.round(z * 1000) / 1000.0;
+            long turn = Math.round(yaw * 10_000) % 62_832;
+            yaw = (turn < 0 ? turn + 62_832 : turn) / 10_000.0;
+            if (Math.round(yaw * 10_000) >= 62_832) {
+                yaw = 0;
+            }
+        }
+    }
+
+    /**
+     * {@code sky} is the recorded sky for this frame, or null for the explorer's own; {@code body}
+     * the walking body's pose, or null when no body is drawn.
+     */
     public record Camera(
-            long revision, long policy, int width, int height, TerrainCamera view, Sky sky) {
+            long revision,
+            long policy,
+            int width,
+            int height,
+            TerrainCamera view,
+            Sky sky,
+            Body body) {
         public Camera {
             new WorldStreamControl.Camera(
-                    new WorldStreamState.Nonce(1, 1), revision, policy, width, height, view, sky);
+                    new WorldStreamState.Nonce(1, 1),
+                    revision,
+                    policy,
+                    width,
+                    height,
+                    view,
+                    sky,
+                    body);
+        }
+
+        public Camera(
+                long revision, long policy, int width, int height, TerrainCamera view, Sky sky) {
+            this(revision, policy, width, height, view, sky, null);
         }
 
         public Camera(long revision, long policy, int width, int height, TerrainCamera view) {
-            this(revision, policy, width, height, view, null);
+            this(revision, policy, width, height, view, null, null);
         }
 
         /** This camera with another sky. */
         public Camera withSky(Sky value) {
-            return new Camera(revision, policy, width, height, view, value);
+            return new Camera(revision, policy, width, height, view, value, body);
+        }
+
+        /** This camera with another body pose. */
+        public Camera withBody(Body value) {
+            return new Camera(revision, policy, width, height, view, sky, value);
         }
     }
 
@@ -1080,13 +1138,34 @@ public final class WorldStreamTransport {
         private static final int RELIABLE_COMMIT = 1;
         private static final int RELIABLE_OBJECTS = 1; // late OBJECTS
         private static final int RELIABLE_HORIZON = 1; // the session's one HORIZON (#372)
+        private static final int RELIABLE_BODY = 1; // the session's one BODY_MODEL
         private static final int RELIABLE_COMMANDS =
-                RELIABLE_TILE + RELIABLE_COMMIT + RELIABLE_OBJECTS + RELIABLE_HORIZON;
+                RELIABLE_TILE
+                        + RELIABLE_COMMIT
+                        + RELIABLE_OBJECTS
+                        + RELIABLE_HORIZON
+                        + RELIABLE_BODY;
 
         private ObjectsOperation objectsOperation;
         // The session's one horizon WDL (#372) and whether any commit has completed yet.
         private HorizonOperation horizonOperation;
         private boolean horizonRequested, horizonStarted, committedOnce;
+
+        // The session's one walking body model.
+        private BodyOperation bodyOperation;
+        private boolean bodyRequested, bodyStarted;
+
+        /** The one body delivery: file write, BODY_MODEL, reply, file delete. */
+        private static final class BodyOperation {
+            final byte[] file;
+            final CompletableFuture<BodyOutcome> result = new CompletableFuture<>();
+            boolean advertised;
+            WorldStreamStatus.BodyOutcome reply;
+
+            BodyOperation(byte[] file) {
+                this.file = file;
+            }
+        }
 
         /** The one horizon delivery: file write, HORIZON, reply, file delete. */
         private static final class HorizonOperation {
@@ -1428,6 +1507,94 @@ public final class WorldStreamTransport {
             }
         }
 
+        /**
+         * Sends the walking body's model and animations ({@link WorldStreamBodyFile}) for the child
+         * to draw wherever a camera carries a body pose; at most once per session, after the first
+         * commit. The future completes with the child's one outcome; any failure only means no
+         * body. A stopping session cancels it.
+         */
+        public CompletableFuture<BodyOutcome> attachBody(byte[] file) {
+            Objects.requireNonNull(file);
+            if (file.length < WorldStreamBodyFile.MIN_BYTES
+                    || file.length > WorldStreamBodyFile.MAX_BYTES) {
+                return CompletableFuture.failedFuture(new IllegalArgumentException("Body size"));
+            }
+            synchronized (lock) {
+                if (closing || owner.stopping()) {
+                    return CompletableFuture.failedFuture(
+                            new java.util.concurrent.CancellationException("World stopped"));
+                }
+                if (bodyRequested) {
+                    return CompletableFuture.failedFuture(
+                            new IllegalStateException("Body already sent for this session"));
+                }
+                bodyRequested = true;
+                var operation = new BodyOperation(file.clone());
+                bodyOperation = operation;
+                lock.notifyAll();
+                return operation.result.copy();
+            }
+        }
+
+        /**
+         * On the objects worker: the one body delivery, as {@link #deliverHorizon} delivers the
+         * horizon, holding the worker until the child's BODY_DONE (or its exit).
+         */
+        private void deliverBody(BodyOperation operation, WorldStreamLaunchOwner.Handle handle)
+                throws Exception {
+            Path path = handle.files().directory().resolve(WorldStreamControl.BodyModel.BASENAME);
+            WorldStreamStatus.BodyOutcome outcome = null;
+            boolean written = false;
+            Throwable fatal = null;
+            try {
+                written = true;
+                java.nio.file.Files.write(
+                        path,
+                        operation.file,
+                        java.nio.file.StandardOpenOption.CREATE_NEW,
+                        java.nio.file.StandardOpenOption.WRITE);
+                String sha =
+                        java.util.HexFormat.of()
+                                .formatHex(
+                                        java.security.MessageDigest.getInstance("SHA-256")
+                                                .digest(operation.file));
+                synchronized (lock) {
+                    var command = state.body(operation.file.length, sha);
+                    if (command != null && !closing && !handle.stopping()) {
+                        operation.advertised = enqueueCommand(command);
+                    }
+                    if (command != null && !operation.advertised) {
+                        state.bodyUnsent();
+                    }
+                }
+                if (operation.advertised) {
+                    synchronized (lock) {
+                        while (operation.reply == null && !(actualExit && statusesDrained)) {
+                            lock.wait(20);
+                        }
+                        outcome = operation.reply;
+                    }
+                }
+            } catch (IOException failed) {
+                outcome = WorldStreamStatus.BodyOutcome.FAILED;
+            } catch (Throwable failed) {
+                fatal = failed;
+            } finally {
+                if (written) {
+                    java.nio.file.Files.deleteIfExists(path);
+                }
+            }
+            if (fatal != null) {
+                operation.result.completeExceptionally(fatal);
+                fail(fatal);
+            } else if (outcome != null) {
+                operation.result.complete(BodyOutcome.valueOf(outcome.name()));
+            } else {
+                operation.result.completeExceptionally(
+                        new java.util.concurrent.CancellationException("World stopped"));
+            }
+        }
+
         public CompletableFuture<Void> initialized() {
             return initialized.copy();
         }
@@ -1675,6 +1842,7 @@ public final class WorldStreamTransport {
             while (true) {
                 ObjectsOperation operation;
                 HorizonOperation wdl = null;
+                BodyOperation body = null;
                 synchronized (lock) {
                     operation = objectsOperation;
                     if (operation == null
@@ -1687,10 +1855,25 @@ public final class WorldStreamTransport {
                         horizonStarted = true;
                         wdl = horizonOperation;
                     }
-                    if (operation == null && wdl == null) {
+                    if (operation == null
+                            && wdl == null
+                            && bodyOperation != null
+                            && committedOnce
+                            && !bodyStarted
+                            && !handle.stopping()) {
+                        // The body likewise goes after the first visible tile.
+                        bodyStarted = true;
+                        body = bodyOperation;
+                    }
+                    if (operation == null && wdl == null && body == null) {
                         if (handle.stopping()) {
                             if (horizonOperation != null && !horizonStarted) {
                                 horizonOperation.result.completeExceptionally(
+                                        new java.util.concurrent.CancellationException(
+                                                "World stopped"));
+                            }
+                            if (bodyOperation != null && !bodyStarted) {
+                                bodyOperation.result.completeExceptionally(
                                         new java.util.concurrent.CancellationException(
                                                 "World stopped"));
                             }
@@ -1702,8 +1885,10 @@ public final class WorldStreamTransport {
                 }
                 if (operation != null) {
                     deliverObjects(operation, handle);
-                } else {
+                } else if (wdl != null) {
                     deliverHorizon(wdl, handle);
+                } else {
+                    deliverBody(body, handle);
                 }
             }
         }
@@ -2363,7 +2548,8 @@ public final class WorldStreamTransport {
                             camera.width(),
                             camera.height(),
                             camera.view(),
-                            camera.sky());
+                            camera.sky(),
+                            camera.body());
             synchronized (lock) {
                 if (closing || owner != null && owner.stopping()) {
                     throw new IllegalStateException("World session is stopping");
@@ -2754,6 +2940,19 @@ public final class WorldStreamTransport {
                                 }
                             }
                         }
+                        case BODY -> {
+                            synchronized (lock) {
+                                var operation = bodyOperation;
+                                if (operation != null
+                                        && operation.advertised
+                                        && operation.reply == null) {
+                                    operation.reply =
+                                            ((WorldStreamStatus.BodyDone) message).outcome();
+                                    retireReliable();
+                                    lock.notifyAll();
+                                }
+                            }
+                        }
                         case OBJECTS -> {
                             var outcome = ((WorldStreamStatus.ObjectsDone) message).outcome();
                             synchronized (lock) {
@@ -3073,6 +3272,13 @@ public final class WorldStreamTransport {
             if (wdl != null) {
                 wdl.result.completeExceptionally(failure);
             }
+            BodyOperation body;
+            synchronized (lock) {
+                body = bodyOperation;
+            }
+            if (body != null) {
+                body.result.completeExceptionally(failure);
+            }
             if (current != null) {
                 current.result.completeExceptionally(failure);
                 current.canceled.completeExceptionally(failure);
@@ -3102,6 +3308,14 @@ public final class WorldStreamTransport {
         DRAWN,
         /** A valid WDL with no readable tile. */
         NONE,
+        /** Write, read, validation or allocation failed; the session continues without it. */
+        FAILED
+    }
+
+    /** The child's one answer to the session's body model; never session-fatal. */
+    public enum BodyOutcome {
+        /** Read and attached; drawn wherever a camera carries a body pose. */
+        DRAWN,
         /** Write, read, validation or allocation failed; the session continues without it. */
         FAILED
     }

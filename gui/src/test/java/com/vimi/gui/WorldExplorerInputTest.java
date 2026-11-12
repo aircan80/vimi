@@ -20,6 +20,7 @@ public final class WorldExplorerInputTest {
     private WorldExplorerInputTest() {}
 
     public static void main(String[] args) {
+        aDrawnBodyPlaysItsSequencesAndKeepsFramingWhileItStands();
         keysMapToClampedAxes();
         walkToggleIgnoresKeyRepeat();
         commandKeysFireOncePerPressAndNeverMove();
@@ -86,6 +87,8 @@ public final class WorldExplorerInputTest {
         @Override public TerrainGround ground() { return TerrainGround.empty(); }
         @Override public boolean wheelReady() { return wheelReady; }
         @Override public boolean fastCadence() { return fast; }
+        boolean idle = true;
+        @Override public boolean idleFrames() { return idle; }
         @Override public void groundStatus(ExplorerMotion.Ground ground) { calls.add("ground:" + ground); }
         @Override public void toggleWalk() { toggles++; }
         int flyToggles;
@@ -1089,6 +1092,55 @@ public final class WorldExplorerInputTest {
         input.pulse(t += 16_666_667L);
         input.pulse(t += 16_666_667L);
         require(host.statuses.getLast().equals("WALK:LOADING"), "Waits for collision: " + host.statuses.getLast());
+    }
+
+    /**
+     * With a drawn body, standing still keeps requesting frames at the movement cadence so its
+     * idle plays; running forward plays Run and backpedalling the walk (backwards).
+     */
+    private static void aDrawnBodyPlaysItsSequencesAndKeepsFramingWhileItStands() {
+        var host = new Host();
+        var input = new WorldExplorerInput(host);
+        input.motion(WorldExplorerInput.Mode.WALK, true);
+        var animator = new com.vibeminer.rendering.world.BodyAnimator(
+                java.util.Map.of(0, 1333L, 4, 534L, 5, 533L), java.util.Map.of(4, 2.5f, 5, 8.333333f));
+        input.animator(animator);
+        long t = 1_000_000_000L;
+        input.pulse(t);
+        long before = host.count("frame");
+        // 400 ms of 5 ms pulses: the idle cadence (80 ms) frames about five times, not 25.
+        for (int i = 0; i < 80; i++) input.pulse(t += 5_000_000L);
+        long idleFrames = host.count("frame") - before;
+        require(idleFrames >= 4 && idleFrames <= 6, "Standing still frames the idle slowly: " + idleFrames);
+        require(animator.sequence() == 0 && animator.millis() > 100, "Stand plays: " + animator.millis());
+        // Unfocused, or in first person (the body is hidden), standing still frames nothing.
+        host.idle = false;
+        before = host.count("frame");
+        for (int i = 0; i < 80; i++) input.pulse(t += 5_000_000L);
+        require(host.count("frame") == before, "No idle frames while unfocused: " + host.calls);
+        host.idle = true;
+        input.body().camera().distance(0);
+        for (int i = 0; i < 4; i++) input.pulse(t += 5_000_000L);
+        before = host.count("frame");
+        for (int i = 0; i < 80; i++) input.pulse(t += 5_000_000L);
+        require(host.count("frame") == before, "No idle frames in first person: " + host.calls);
+        input.body().camera().distance(MovementParity.CAMERA_START_DISTANCE);
+        input.keyPressed(KeyCode.W);
+        for (int i = 0; i < 10; i++) input.pulse(t += 16_666_667L);
+        require(animator.sequence() == 5, "Running forward plays Run: " + animator.sequence());
+        input.keyReleased(KeyCode.W);
+        input.keyPressed(KeyCode.S);
+        for (int i = 0; i < 10; i++) input.pulse(t += 16_666_667L);
+        require(animator.sequence() == 4, "Backpedalling plays the walk: " + animator.sequence());
+        input.keyReleased(KeyCode.S);
+        // Without a drawn body nothing frames a body that stands still.
+        var plain = new Host();
+        var still = new WorldExplorerInput(plain);
+        still.motion(WorldExplorerInput.Mode.WALK, true);
+        still.pulse(t);
+        long once = plain.count("frame");
+        for (int i = 0; i < 30; i++) still.pulse(t += 5_000_000L);
+        require(plain.count("frame") == once, "No body, no idle frames: " + plain.calls);
     }
 
     /** F toggles walking, G walking or flying, and C first person, once per press. */

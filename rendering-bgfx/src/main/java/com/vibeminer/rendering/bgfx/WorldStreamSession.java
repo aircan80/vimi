@@ -59,6 +59,11 @@ final class WorldStreamSession {
     private record HorizonDecoded(
             com.vibeminer.formats.world.WorldLowRes.LowRes lowRes, Throwable error) {}
 
+    // The walking body's model: read and checked on the horizon's worker (each comes once).
+    private CompletableFuture<BodyDecoded> bodyDecoding;
+
+    private record BodyDecoded(WorldStreamBodyFile.Body body, Throwable error) {}
+
     private WorldStreamControl.LateObjects objectsCommand;
     private BgfxWorldStreamRenderer.LateUpload lateUpload;
     private volatile boolean failed;
@@ -201,6 +206,8 @@ final class WorldStreamSession {
                     takeObjects();
                     takeHorizon();
                     completeHorizon(owner);
+                    takeBody();
+                    completeBody(owner);
                     reconcile();
                     if (window != null) {
                         stepWithinFrameBudget(owner); // #381 spike
@@ -706,6 +713,98 @@ final class WorldStreamSession {
                             }
                         },
                         horizonDecoder);
+    }
+
+    private void takeBody() {
+        if (closing.get() || bodyDecoding != null) {
+            return;
+        }
+        var command = mailbox.takeBody();
+        if (command == null) {
+            return;
+        }
+        bodyDecoding =
+                CompletableFuture.supplyAsync(
+                        () -> {
+                            try {
+                                return new BodyDecoded(
+                                        decodeBody(directory, command, horizonCanceled::get), null);
+                            } catch (Throwable error) {
+                                return new BodyDecoded(null, error);
+                            }
+                        },
+                        horizonDecoder);
+    }
+
+    /**
+     * Read of the session's one body file: a private regular file of exactly the announced length
+     * and digest, checked by {@link WorldStreamBodyFile#decode}.
+     */
+    static WorldStreamBodyFile.Body decodeBody(
+            Path directory,
+            WorldStreamControl.BodyModel command,
+            java.util.function.BooleanSupplier canceled)
+            throws IOException {
+        Path path = directory.resolve(WorldStreamControl.BodyModel.BASENAME);
+        if (!java.nio.file.Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("Body is not a regular file (links are not followed)");
+        }
+        byte[] bytes;
+        try (var channel =
+                FileChannel.open(path, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)) {
+            if (channel.size() != command.length()) {
+                throw new IOException("Body length differs from its command");
+            }
+            var buffer = java.nio.ByteBuffer.allocate(command.length());
+            while (buffer.hasRemaining()) {
+                if (canceled.getAsBoolean()) {
+                    throw new java.util.concurrent.CancellationException();
+                }
+                if (channel.read(buffer) < 0) {
+                    throw new IOException("Truncated body file");
+                }
+            }
+            bytes = buffer.array();
+        }
+        try {
+            String digest =
+                    java.util.HexFormat.of()
+                            .formatHex(
+                                    java.security.MessageDigest.getInstance("SHA-256")
+                                            .digest(bytes));
+            if (!digest.equals(command.sha256())) {
+                throw new IOException("Body digest differs from its command");
+            }
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new AssertionError(impossible);
+        }
+        return WorldStreamBodyFile.decode(bytes);
+    }
+
+    /** Attaches a decoded body on the owner thread and answers its one BODY_DONE. */
+    private void completeBody(WorldStreamNativeOwner owner) {
+        if (bodyDecoding == null || !bodyDecoding.isDone()) {
+            return;
+        }
+        var result = bodyDecoding.join();
+        bodyDecoding = null;
+        if (closing.get()) {
+            return;
+        }
+        WorldStreamStatus.BodyOutcome outcome;
+        if (result.error() != null) {
+            outcome = WorldStreamStatus.BodyOutcome.FAILED;
+            System.err.println("World body unavailable: " + result.error());
+        } else {
+            try {
+                owner.attachBody(result.body());
+                outcome = WorldStreamStatus.BodyOutcome.DRAWN;
+            } catch (IOException | RuntimeException failed) {
+                outcome = WorldStreamStatus.BodyOutcome.FAILED;
+                System.err.println("World body unavailable: " + failed);
+            }
+        }
+        send("BODY_DONE 1 " + outcome.name());
     }
 
     /**

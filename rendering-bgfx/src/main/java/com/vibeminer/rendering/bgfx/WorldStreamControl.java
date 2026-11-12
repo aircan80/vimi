@@ -13,12 +13,20 @@ import java.util.Objects;
 final class WorldStreamControl {
     /**
      * The longest camera line with its sky, light and water tails is 333 bytes with its newline
-     * (#171, #177).
+     * (#171, #177); a body tail ({@link #body}) adds at most 59, so 392.
      */
-    static final int MAX_LINE_BYTES = 384;
+    static final int MAX_LINE_BYTES = 400;
 
     sealed interface Command
-            permits Camera, Offer, Commit, Cancel, CancelUnused, LateObjects, Horizon, Close {
+            permits Camera,
+                    Offer,
+                    Commit,
+                    Cancel,
+                    CancelUnused,
+                    LateObjects,
+                    Horizon,
+                    BodyModel,
+                    Close {
         WorldStreamState.Nonce nonce();
     }
 
@@ -29,7 +37,8 @@ final class WorldStreamControl {
             int width,
             int height,
             TerrainCamera camera,
-            WorldStreamTransport.Sky sky)
+            WorldStreamTransport.Sky sky,
+            WorldStreamTransport.Body body)
             implements Command {
         Camera {
             Objects.requireNonNull(nonce);
@@ -48,7 +57,18 @@ final class WorldStreamControl {
                 int width,
                 int height,
                 TerrainCamera camera) {
-            this(nonce, revision, policy, width, height, camera, null);
+            this(nonce, revision, policy, width, height, camera, null, null);
+        }
+
+        Camera(
+                WorldStreamState.Nonce nonce,
+                long revision,
+                long policy,
+                int width,
+                int height,
+                TerrainCamera camera,
+                WorldStreamTransport.Sky sky) {
+            this(nonce, revision, policy, width, height, camera, sky, null);
         }
     }
 
@@ -139,6 +159,23 @@ final class WorldStreamControl {
         }
     }
 
+    /**
+     * The walking body's model and animations, file {@code body-1.wsb} ({@link
+     * WorldStreamBodyFile}). At most one per session, outside the tile transaction sequence; the
+     * child answers with exactly one {@code BODY_DONE}, and any failure only means no body.
+     */
+    record BodyModel(WorldStreamState.Nonce nonce, int length, String sha256) implements Command {
+        static final String BASENAME = "body-1.wsb";
+
+        BodyModel {
+            Objects.requireNonNull(nonce);
+            digest(sha256);
+            if (length < WorldStreamBodyFile.MIN_BYTES || length > WorldStreamBodyFile.MAX_BYTES) {
+                throw new IllegalArgumentException("Invalid body length");
+            }
+        }
+    }
+
     record Close(WorldStreamState.Nonce nonce) implements Command {
         Close {
             Objects.requireNonNull(nonce);
@@ -198,6 +235,57 @@ final class WorldStreamControl {
                 + (long) sky.recordedEnd()
                 + light
                 + water;
+    }
+
+    /**
+     * The optional body tail, after any sky: {@code BODY}, the position in thousandths of a yard,
+     * the yaw in ten-thousandths of a radian (0 up to 2 pi), the sequence, its clock in
+     * milliseconds and 1 when hidden (first person), else 0. Body values are already quantized to
+     * exactly these steps.
+     */
+    private static String body(WorldStreamTransport.Body body) {
+        if (body == null) {
+            return "";
+        }
+        return " BODY "
+                + Math.round(body.x() * 1000)
+                + " "
+                + Math.round(body.y() * 1000)
+                + " "
+                + Math.round(body.z() * 1000)
+                + " "
+                + Math.round(body.yaw() * 10_000)
+                + " "
+                + body.sequence()
+                + " "
+                + body.millis()
+                + " "
+                + (body.hidden() ? 1 : 0);
+    }
+
+    /** Fields of the body tail, {@code BODY} included. */
+    static final int BODY_FIELDS = 8;
+
+    private static WorldStreamTransport.Body body(String[] parts, int at) {
+        if (!parts[at].equals("BODY") || !parts[at + 7].matches("[01]")) {
+            throw new IllegalArgumentException("Invalid camera body");
+        }
+        return new WorldStreamTransport.Body(
+                signed(parts[at + 1]) / 1000.0,
+                signed(parts[at + 2]) / 1000.0,
+                signed(parts[at + 3]) / 1000.0,
+                number(parts[at + 4]) / 10_000.0,
+                integer(parts[at + 5]),
+                number(parts[at + 6]),
+                parts[at + 7].equals("1"));
+    }
+
+    /** A canonical signed decimal integer. */
+    private static long signed(String value) {
+        if (!value.matches("0|-?[1-9][0-9]{0,11}")) {
+            throw new IllegalArgumentException("Noncanonical body value");
+        }
+        return Long.parseLong(value);
     }
 
     private static WorldStreamTransport.Sky sky(String[] parts) {
@@ -304,7 +392,8 @@ final class WorldStreamControl {
                                     + c.camera().yaw()
                                     + " "
                                     + c.camera().pitch()
-                                    + sky(c.sky());
+                                    + sky(c.sky())
+                                    + body(c.body());
                     case Offer c ->
                             "OFFER "
                                     + c.transaction()
@@ -355,6 +444,13 @@ final class WorldStreamControl {
                                     + c.sha256();
                     case Horizon c ->
                             "HORIZON 1 " + Horizon.BASENAME + " " + c.length() + " " + c.sha256();
+                    case BodyModel c ->
+                            "BODY_MODEL 1 "
+                                    + BodyModel.BASENAME
+                                    + " "
+                                    + c.length()
+                                    + " "
+                                    + c.sha256();
                     case Close ignored -> "CLOSE";
                 };
         byte[] line = (prefix + tail + "\n").getBytes(StandardCharsets.US_ASCII);
@@ -416,6 +512,13 @@ final class WorldStreamControl {
             Command result =
                     switch (parts[2]) {
                         case "CAM" -> {
+                            // An optional body tail last: BODY and its seven values.
+                            WorldStreamTransport.Body body = null;
+                            if (parts.length >= 12 + BODY_FIELDS
+                                    && parts[parts.length - BODY_FIELDS].equals("BODY")) {
+                                body = body(parts, parts.length - BODY_FIELDS);
+                                parts = java.util.Arrays.copyOf(parts, parts.length - BODY_FIELDS);
+                            }
                             // An optional sky tail: SKY colours weight start end.
                             if (parts.length != 12) {
                                 // SKY, then an optional LIGHT (3 more) and WATER (7 more).
@@ -440,7 +543,8 @@ final class WorldStreamControl {
                                             decimal(parts[9]),
                                             decimal(parts[10]),
                                             decimal(parts[11])),
-                                    parts.length == 12 ? null : sky(parts));
+                                    parts.length == 12 ? null : sky(parts),
+                                    body);
                         }
                         case "OFFER" -> {
                             arity(parts, 10);
@@ -490,6 +594,12 @@ final class WorldStreamControl {
                             basename(parts[3], "1");
                             basename(parts[4], Horizon.BASENAME);
                             yield new Horizon(nonce, integer(parts[5]), parts[6]);
+                        }
+                        case "BODY_MODEL" -> {
+                            arity(parts, 7);
+                            basename(parts[3], "1");
+                            basename(parts[4], BodyModel.BASENAME);
+                            yield new BodyModel(nonce, integer(parts[5]), parts[6]);
                         }
                         case "CLOSE" -> {
                             arity(parts, 3);

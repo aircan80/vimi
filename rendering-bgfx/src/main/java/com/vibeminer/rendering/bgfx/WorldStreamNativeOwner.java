@@ -613,6 +613,7 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         // The frame's sky travels with its camera, so a coalesced camera never loses it. The
         // renderer turns it into the frame's fog, with the horizon when it draws one (#547).
         renderer.sky(command.sky());
+        renderer.bodyPose(command.body());
         long drawing = WorldStageTimings.start();
         var ticket = renderer.draw(command.camera(), cameraRevision, policy, width, height);
         bgfx_blit(1, available.texture, 0, 0, 0, 0, color, 0, 0, 0, 0, width, height, 1);
@@ -651,6 +652,7 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         }
         // The recorded sky and fog travel with the camera here too, as in readback (#555).
         renderer.sky(command.sky());
+        renderer.bodyPose(command.body());
         renderer.drawWindow(command.camera(), cameraRevision, policy, size[0], size[1]);
         window.drew();
         renderedThisFrame = true;
@@ -921,6 +923,30 @@ final class WorldStreamNativeOwner implements AutoCloseable {
             built.close();
             throw failed;
         }
+    }
+
+    /** Draws the walking body from now on, wherever a camera carries its pose. */
+    void attachBody(WorldStreamBodyFile.Body body) throws IOException {
+        requireOpen();
+        renderer.body(body);
+    }
+
+    /** Texture handles object sets and the body hold (proofs). */
+    int objectTexturesHeld() {
+        requireOpen();
+        return renderer.objectTexturesHeld();
+    }
+
+    /** Object submits of the walking body in the last drawn frame (proofs). */
+    int bodySubmits() {
+        requireOpen();
+        return renderer.bodySubmits();
+    }
+
+    /** Vertex uploads of the walking body so far (proofs). */
+    long bodyUploads() {
+        requireOpen();
+        return renderer.bodyUploads();
     }
 
     /** Whether the next horizon build is waiting for idle upload steps. */

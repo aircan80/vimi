@@ -57,6 +57,7 @@ public final class WorldStreamSourceControllerTest {
         heldPresentationBackpressuresTwelveUniqueOwnersAndKeepsFinalFrame();
         nativePresentationAcceptsCurrentContentAndRelievesTwelveOwners();
         nativePresentationWithAStillCameraAcceptsEachCommit();
+        everySessionSendsTheBodyOnceAfterItsFirstCommit();
         nativeReportBeforeTheReceiptIsStillAccepted();
         poolReleaseRetriesWithoutDemandOrParentCapacityChange();
         capacityChangeBetweenTileRefusalAndRetryStillWakesPreparation();
@@ -2502,6 +2503,51 @@ public final class WorldStreamSourceControllerTest {
             check(fixture.controller.snapshot().prepared() == 1, "The one tile is presented natively");
         } finally {
             fixture.close();
+        }
+    }
+
+    /**
+     * A body source is asked once per session, after the first commit, and the body goes to the
+     * child once; a new session (a restart) asks and sends it again.
+     */
+    private static void everySessionSendsTheBodyOnceAfterItsFirstCommit() throws Exception {
+        for (int session = 0; session < 2; session++) {
+            var fixture = new Fixture(new AuthoredTerrainSource.Files(), 9);
+            var asked = new java.util.concurrent.atomic.AtomicInteger();
+            var outcome = new java.util.concurrent.CompletableFuture<byte[]>();
+            try {
+                fixture.start();
+                fixture.controller.body(() -> {
+                    asked.incrementAndGet();
+                    return java.util.concurrent.CompletableFuture.completedFuture(new byte[64]);
+                });
+                fixture.until(() -> fixture.controller.snapshot().seed() != null);
+                fixture.camera(1);
+                fixture.controller.neighborhood(fixture.tiles.subList(0, 9));
+                fixture.untilPresented(() -> fixture.controller.snapshot().phase()
+                        == WorldStreamSourceController.Phase.READY);
+                var log = fixture.gpu.scratch.getParent().resolve("authored-commands.log");
+                fixture.until(() -> {
+                    try {
+                        return Files.readString(log).contains("BodyModel[");
+                    } catch (java.io.IOException e) {
+                        return false;
+                    }
+                });
+                // A second hand-over in the same session (walk entered again) is not a second send.
+                fixture.controller.body(() -> {
+                    asked.incrementAndGet();
+                    return outcome;
+                });
+                outcome.complete(new byte[64]);
+                for (int i = 0; i < 20; i++) fixture.pump();
+                long sent = Files.readString(log).lines().filter(line -> line.startsWith("BodyModel[")).count();
+                check(sent == 1, "Session " + session + " sent the body once: " + sent);
+                check(asked.get() == 1, "The body was asked for once per session: " + asked.get());
+            } finally {
+                outcome.complete(new byte[64]);
+                fixture.close();
+            }
         }
     }
 

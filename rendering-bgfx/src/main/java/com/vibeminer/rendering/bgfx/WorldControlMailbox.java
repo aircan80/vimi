@@ -25,6 +25,9 @@ final class WorldControlMailbox {
     // Separate at-most-once lane for the horizon WDL (#372); a repeat is ignored, never fatal.
     private WorldStreamControl.Horizon horizon;
     private boolean horizonSeen;
+    // Separate at-most-once lane for the walking body's model; a repeat is ignored.
+    private WorldStreamControl.BodyModel body;
+    private boolean bodySeen;
     private long revision, policy;
     private int width, height;
     private boolean close, failed;
@@ -43,6 +46,7 @@ final class WorldControlMailbox {
             camera = null;
             objects = null;
             horizon = null;
+            body = null;
             transactions.clear();
             return Result.ACCEPTED;
         }
@@ -67,6 +71,13 @@ final class WorldControlMailbox {
             if (!horizonSeen) {
                 horizonSeen = true;
                 horizon = wdl;
+            }
+            return Result.ACCEPTED;
+        }
+        if (command instanceof WorldStreamControl.BodyModel model) {
+            if (!bodySeen) {
+                bodySeen = true;
+                body = model;
             }
             return Result.ACCEPTED;
         }
@@ -96,6 +107,12 @@ final class WorldControlMailbox {
     synchronized WorldStreamControl.Horizon takeHorizon() {
         var result = horizon;
         horizon = null;
+        return result;
+    }
+
+    synchronized WorldStreamControl.BodyModel takeBody() {
+        var result = body;
+        body = null;
         return result;
     }
 

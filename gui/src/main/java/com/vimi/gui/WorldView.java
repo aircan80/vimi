@@ -179,6 +179,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
     // Metadata-only listfile names for picked objects; read on the pick worker, null when unknown.
     private java.util.function.LongFunction<String> fileNames = id -> null;
     private WorldTileCreatures creatures;
+    // The walking body: its display models, its built model once asked for, and the component.
+    private java.util.function.Supplier<com.vibeminer.concepts.models.BuildDisplayModels> bodyDisplays;
+    private CompletableFuture<WorldBodyModel.Built> bodyModel;
+    // Set on the first switch into a body mode: the body is built and sent only from then on.
+    private boolean bodyWanted;
+    private volatile com.vibeminer.concepts.models.BuildDisplayModels bodyComponent;
     private WorldSpawnOverlay.Picked inspectedSpawn;
     private String inspectedMap;
     private long inspectedRequest;
@@ -237,6 +243,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             return WorldExplorerInput.wheelReady(terrainScene != null, streamingMode, streaming != null);
         }
         @Override public boolean fastCadence() { return streamingMode || gpu != null && gpu.ready(); }
+        @Override public boolean idleFrames() { return viewport.isFocused() && viewportActive(); }
         @Override public void groundStatus(ExplorerMotion.Ground ground) { WorldView.this.groundStatus(ground); }
         @Override public void toggleWalk() {
             walkMode.setSelected(!walkMode.isSelected());
@@ -1604,7 +1611,14 @@ final class WorldView extends BorderPane implements AutoCloseable {
         input.motion(mode, smoothMotion.isSelected());
         bodyMode = null;
         if (mode == WorldExplorerInput.Mode.FREE) groundStatus(ExplorerMotion.Ground.FREE);
-        else bodyStatus(mode, input.body().body().status());
+        else {
+            bodyStatus(mode, input.body().body().status());
+            // Built and sent lazily: only once someone walks or flies.
+            if (!bodyWanted) {
+                bodyWanted = true;
+                sendBody();
+            }
+        }
         if (explorer) focusViewport();
     }
 
@@ -3529,6 +3543,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 public CompletableFuture<Void> closeAsync() { return owner.closeAsync(); }
             };
         }, streamingEvents, Platform::runLater, System::nanoTime, preparer, distance.residents());
+        if (bodyWanted) sendBody();
         if (nativeStream) {
             var controller = streaming;
             controller.onPresented(revision -> nativePresented(controller, revision));
@@ -3705,7 +3720,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (stale(selection) || !viewportActive()) return;
         streamingSize();
         streaming.camera(new com.vibeminer.rendering.bgfx.WorldStreamTransport.Camera(
-                ++streamingControl, streamingPolicy, streamingWidth, streamingHeight, TerrainCamera.from(camera)));
+                ++streamingControl, streamingPolicy, streamingWidth, streamingHeight, TerrainCamera.from(camera))
+                .withBody(bodyPose()));
         presentedCamera.sent(streamingControl, camera);
         stallWatchdog.requested(streamingControl);
         minimap.update(handle, inventory, origin, originX, originY,
@@ -4175,6 +4191,66 @@ final class WorldView extends BorderPane implements AutoCloseable {
     void attachCreatures(WorldTileCreatures source) {
         if (creatures != null || closed) throw new IllegalStateException("Creature models already attached");
         creatures = java.util.Objects.requireNonNull(source);
+    }
+
+    /**
+     * Supplies the display models the walking body is built from ({@link WorldBodyModel}); every
+     * later streaming session draws it in walk and fly modes. FX thread.
+     */
+    void attachBody(java.util.function.Supplier<com.vibeminer.concepts.models.BuildDisplayModels> displays) {
+        if (bodyDisplays != null || closed) throw new IllegalStateException("Body models already attached");
+        bodyDisplays = java.util.Objects.requireNonNull(displays);
+    }
+
+    /**
+     * The walking body, built once on a worker; when it is ready its animation clock and capsule
+     * are handed to the input on the FX thread. A failure only means no drawn body.
+     */
+    private synchronized CompletableFuture<WorldBodyModel.Built> bodyModel() {
+        if (bodyModel != null) return bodyModel;
+        var displays = bodyDisplays;
+        bodyModel = CompletableFuture.supplyAsync(() -> {
+            var component = displays.get();
+            if (component == null) throw new IllegalStateException("Model files are not open");
+            bodyComponent = component;
+            try {
+                return WorldBodyModel.build(component, WorldBodyModel.MURLOC,
+                        com.vibeminer.access.Cancellation.NONE);
+            } catch (RuntimeException failure) {
+                throw failure;
+            } catch (Exception failure) {
+                throw new java.util.concurrent.CompletionException(failure);
+            }
+        }, runnable -> Thread.ofVirtual().name("world-body-model").start(runnable));
+        bodyModel.whenComplete((built, failure) -> Platform.runLater(() -> {
+            if (closed) return;
+            if (failure != null) {
+                WorldDiagnostics.degraded("body", "The walking body could not be built", failure);
+                return;
+            }
+            input.animator(new com.vibeminer.rendering.world.BodyAnimator(built.durations(), built.moveSpeeds()));
+            if (built.capsule() != null) input.body().body().shape(built.capsule());
+        }));
+        return bodyModel;
+    }
+
+    /**
+     * Hands the walking body to the current streaming session (once per session; the controller
+     * ignores a repeat). The body is built on the first call.
+     */
+    private void sendBody() {
+        var controller = streaming;
+        if (bodyDisplays == null || controller == null) return;
+        controller.body(() -> bodyModel().thenApply(WorldBodyModel.Built::file));
+    }
+
+    /** The drawn body's pose for this frame, or null without a body or in the free camera. */
+    private com.vibeminer.rendering.bgfx.WorldStreamTransport.Body bodyPose() {
+        var animator = input.animator();
+        if (animator == null || input.mode() == WorldExplorerInput.Mode.FREE || !input.body().placed()) return null;
+        var walker = input.body().body();
+        return new com.vibeminer.rendering.bgfx.WorldStreamTransport.Body(walker.x(), walker.y(), walker.z(),
+                input.body().yaw(), animator.sequence(), animator.millis(), input.body().camera().firstPerson());
     }
 
     /**
@@ -4759,6 +4835,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (spawns != null) spawns.close();
         objectSelection.close();
         if (creatures != null) creatures.close();
+        var component = bodyComponent;
+        if (component != null) component.closeAsync();
         picks.shutdownNow();
         streamingImages.clear();
         minimap.close();

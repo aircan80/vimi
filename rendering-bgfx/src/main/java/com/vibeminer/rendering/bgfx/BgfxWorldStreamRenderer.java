@@ -784,6 +784,11 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     // The u_wmoMaterial class last set this frame, or -1.
     private int frameMaterial;
 
+    // The walking body: its model on the GPU once attached, and this frame's pose (null: none).
+    private WorldStreamBodyDraw body;
+    private WorldStreamTransport.Body bodyPose;
+    private int frameBodySubmits;
+
     BgfxWorldStreamRenderer(WorldStreamEnvelope.Session session) throws IOException {
         this.session = java.util.Objects.requireNonNull(session);
         // A near session allocates fewer slots of the same fixed size; never more than the ceiling.
@@ -1870,6 +1875,55 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         return !"false".equalsIgnoreCase(property);
     }
 
+    /** Attaches the walking body's model; drawn wherever a frame's camera carries its pose. */
+    void body(WorldStreamBodyFile.Body value) throws IOException {
+        requireOwner();
+        requireOpen();
+        java.util.Objects.requireNonNull(value);
+        if (wmoProgram == INVALID) {
+            throw new IOException("The body needs the objects pass");
+        }
+        // The body is charged to the objects' accounting like an object set (#658, #660): its
+        // handles and bytes count against the same limits, and object sets see them as held.
+        int handles = WorldStreamBodyDraw.handles(value);
+        long bytes = WorldStreamBodyDraw.gpuBytes(value);
+        int heldNow = reservedObjectTextures() - (body == null ? 0 : body.handles());
+        long reservedNow = reservedObjectBytes() - (body == null ? 0 : body.bytes());
+        if (!objectsFit(objectBudget, reservedNow, bytes)
+                || !objectTexturesFit(objectTextureLimit, heldNow, handles)
+                || !objectTexturesFit(liveTextureRoom(), 0, handles)) {
+            throw new IOException(
+                    "The body does not fit the objects' budget: "
+                            + handles
+                            + " textures, "
+                            + bytes
+                            + " bytes");
+        }
+        WorldStreamBodyDraw built;
+        try (var layout = objectLayout()) {
+            built = new WorldStreamBodyDraw(value, layout);
+        }
+        if (body != null) {
+            body.close();
+        }
+        body = built;
+    }
+
+    /** The walking body's pose for the next frame, or null to draw none. */
+    void bodyPose(WorldStreamTransport.Body value) {
+        bodyPose = value;
+    }
+
+    /** Object submits of the walking body in the last drawn frame (proofs). */
+    int bodySubmits() {
+        return frameBodySubmits;
+    }
+
+    /** Vertex uploads of the walking body so far (proofs). */
+    long bodyUploads() {
+        return body == null ? 0 : body.uploads();
+    }
+
     /** The light of the next frames; #177 feeds it from the light tables. */
     void light(WorldLight value) {
         requireOwner();
@@ -2275,12 +2329,22 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             framePortalWalks = framePortalCulled = framePortalPlacementsCulled = 0;
             portalCulling.frame(view);
             frameMaterial = -1;
+            frameBodySubmits = 0;
+            boolean bodyDrawn =
+                    wmoProgram != INVALID
+                            && body != null
+                            && bodyPose != null
+                            && !bodyPose.hidden()
+                            && body.prepare(bodyPose);
             if (wmoProgram != INVALID) {
                 for (var lease : active) {
                     var objects = slots[lease.slot()].objects;
                     if (objects != null) {
                         drawObjects(frame, view, objects, origin);
                     }
+                }
+                if (bodyDrawn) {
+                    drawBody(frame, origin, false);
                 }
             }
             // Sky after every opaque surface: reversed depth clears to 0 and every drawn surface
@@ -2330,6 +2394,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             // Alpha-blended object ranges last, after water, farthest placement first.
             if (wmoProgram != INVALID) {
                 drawBlended(frame, view, origin);
+                if (bodyDrawn) {
+                    drawBody(frame, origin, true);
+                }
             }
         }
         lastFrame =
@@ -2476,6 +2543,60 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private void frameUniform(short handle, java.nio.FloatBuffer value) {
         bgfx_set_uniform(handle, value, 1);
         frameCameraUniforms++;
+    }
+
+    /**
+     * The walking body's opaque and cutout ranges ({@code sorted} false), or its blended then
+     * additive ones, under its one instance row; with the objects' program, materials and states.
+     * The sorted ranges draw after every object's blended ranges, in file order: they are not
+     * sorted by distance with the objects' (#552), so a blended object between the camera and the
+     * body draws under the body's blended ranges.
+     */
+    private void drawBody(ObjectFrame frame, TerrainScene.Origin origin, boolean sorted) {
+        var model = body.body;
+        int[] ranges = model.ranges(), blends = model.blends();
+        boolean placed = false;
+        for (int step = sorted ? 1 : 0; step < (sorted ? 3 : 1); step++) {
+            for (int r = 0; r < blends.length; r++) {
+                int kind = WorldStreamObjectsFile.kind(blends[r]);
+                int wanted =
+                        kind == WorldStreamObjectsFile.BLENDED
+                                ? 1
+                                : kind == WorldStreamObjectsFile.ADDITIVE ? 2 : 0;
+                if (wanted != step) {
+                    continue;
+                }
+                if (!placed) {
+                    if (!body.place(bodyPose, origin)) {
+                        return;
+                    }
+                    placed = true;
+                }
+                if (blends[r] != frameMaterial) {
+                    bgfx_set_uniform(wmoMaterial, frame.material(blends[r]), 1);
+                    frameMaterial = blends[r];
+                }
+                bgfx_set_dynamic_vertex_buffer(0, body.vertices, 0, model.vertexCount());
+                org.lwjgl.bgfx.BGFX.bgfx_set_index_buffer(
+                        body.indices, ranges[r * 3], ranges[r * 3 + 1]);
+                org.lwjgl.bgfx.BGFX.bgfx_set_instance_data_buffer(body.instance(), 0, 1);
+                bgfx_set_texture(
+                        0, wmoSampler, body.textures[ranges[r * 3 + 2]], OBJECT_SAMPLER_FLAGS);
+                bgfx_set_state(
+                        !sorted
+                                ? frame.state(blends[r])
+                                : kind == WorldStreamObjectsFile.ADDITIVE
+                                        ? ADDITIVE_STATE
+                                        : BLENDED_STATE,
+                        0);
+                bgfx_submit(0, wmoProgram, 0, BGFX_DISCARD_ALL);
+                frameObjectSubmits++;
+                frameBodySubmits++;
+                if (sorted) {
+                    frameSortedSubmits++;
+                }
+            }
+        }
     }
 
     /**
@@ -3382,7 +3503,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
 
     /** Texture handles object sets hold: each shared texture once, created or reserved. */
     private int reservedObjectTextures() {
-        return objectTextures.entries();
+        return objectTextures.entries() + (body == null ? 0 : body.handles());
     }
 
     /** Image references resident and building object sets hold; owner thread only. */
@@ -3409,7 +3530,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 (upload == null || upload.objects == null || upload.objects.building == null
                                 ? 0
                                 : upload.objects.building.reserved)
-                        + objectTextures.reservedBytes();
+                        + objectTextures.reservedBytes()
+                        + (body == null ? 0 : body.bytes());
         if (late != null && late.build.building != null) {
             total += late.build.building.reserved;
         }
@@ -3477,6 +3599,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             horizon.close();
         }
         destroyHorizonBuffers();
+        if (body != null) {
+            body.close();
+            body = null;
+        }
         if (splatDummyArray != INVALID) {
             bgfx_destroy_texture(splatDummyArray);
             splatDummyArray = INVALID;

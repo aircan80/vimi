@@ -115,6 +115,9 @@ public final class AuthoredWorldControllerChild {
                                         + covered
                                         + (exteriors ? " 0" : ""));
                     }
+                } else if (command instanceof WorldStreamControl.BodyModel) {
+                    // The authored child takes any body file; it draws nothing.
+                    state.send("BODY_DONE 1 DRAWN");
                 } else if (command instanceof WorldStreamControl.Commit next) {
                     var commit =
                             WorldStreamEnvelope.decodeCommit(
