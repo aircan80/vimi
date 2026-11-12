@@ -192,7 +192,7 @@ public final class WorldMeasurementProbe {
                                         null,
                                         issue -> say("PROBE " + issue),
                                         DEADLINE - System.nanoTime(),
-                                        List.of("creatures", "displays", "body")
+                                        List.of("creatures", "displays", "body", "races", "raceSkin", "fetch")
                                                 .contains(
                                                         System.getProperty(
                                                                 "probe.mode", "stream"))));
@@ -224,6 +224,9 @@ public final class WorldMeasurementProbe {
                             case "walk" -> walk(opened, handle, catalog);
                             case "collision" -> collision(opened, handle, catalog);
                             case "body" -> body(opened);
+                            case "races" -> races(opened);
+                            case "raceSkin" -> raceSkin(opened);
+                            case "fetch" -> fetch(opened);
                             case "creatures" -> creatures(opened, handle, catalog);
                             case "displays" -> displays(opened);
                             default -> stream(handle, catalog);
@@ -500,6 +503,233 @@ public final class WorldMeasurementProbe {
                 scenario.name(), placements.size(), merged.placements(), byBuilding.size(), doodads,
                 merged.bytes() / 1048576.0, seconds(System.nanoTime() - began), within, checked, worst, worstId, skipped));
         return merged;
+    }
+
+    /**
+     * Reads -Pprobe.files (FileDataIDs) whole through the build's files; with -Pprobe.online=true
+     * the work is the app's online one, so files missing from this measurement copy are fetched
+     * from the CDN into it. For private checks only; nothing fetched is committed.
+     */
+    private static void fetch(WorldMeasurementOpen opened) throws Exception {
+        if (!Boolean.getBoolean("probe.online")) throw new IllegalStateException("fetch needs -Pprobe.online=true");
+        var files = opened.files();
+        for (var text : System.getProperty("probe.files", "").split(",")) {
+            if (text.isBlank()) continue;
+            long id = Long.parseLong(text.strip());
+            var open = files.openRead(com.vibeminer.files.FileTypes.FileRef.id(id), Cancellation.NONE)
+                    .get(5, TimeUnit.MINUTES);
+            long read = 0;
+            if (open.stream() != null) {
+                try (var stream = open.stream()) {
+                    var buffer = java.nio.ByteBuffer.allocate(1 << 16);
+                    while (true) {
+                        buffer.clear();
+                        int n = stream.read(buffer, Cancellation.NONE).get(5, TimeUnit.MINUTES);
+                        if (n <= 0) break;
+                        read += n;
+                    }
+                    say("PROBE fetch " + id + ": " + open.state() + ", " + read + " of " + stream.length()
+                            + " bytes, holes " + stream.holes().size());
+                }
+            } else {
+                say("PROBE fetch " + id + ": " + open.state() + " " + open.code() + " " + open.message());
+            }
+        }
+    }
+
+    /** Rows of {@code table} whose {@code column} equals one of {@code values}, as name=value maps. */
+    private static List<Map<String, String>> rows(com.vibeminer.formats.tables.BuildTables tables, String table,
+            String column, java.util.Collection<Long> values) throws Exception {
+        var ref = com.vibeminer.formats.tables.TableTypes.Ref.forName(table);
+        var schema = tables.schema(ref, com.vibeminer.formats.tables.TableTypes.Priority.INTERACTIVE, Cancellation.NONE)
+                .get(2, TimeUnit.MINUTES);
+        var names = schema.columns().stream().map(com.vibeminer.formats.db2.Db2Types.Column::name).toList();
+        int at = column == null ? -1 : names.indexOf(column);
+        var out = new ArrayList<Map<String, String>>();
+        long after = -1;
+        while (true) {
+            var page = tables.page(new com.vibeminer.formats.tables.TableTypes.PageRequest(ref, after, 1000, List.of(), null),
+                    com.vibeminer.formats.tables.TableTypes.Priority.INTERACTIVE, Cancellation.NONE).get(2, TimeUnit.MINUTES);
+            for (var row : page.rows()) {
+                var values0 = row.row().values();
+                if (at >= 0 && !values.contains(Long.parseLong(values0.get(at)))) continue;
+                var map = new java.util.LinkedHashMap<String, String>();
+                map.put("ID", Long.toString(row.row().id()));
+                for (int i = 0; i < names.size() && i < values0.size(); i++) map.put(names.get(i), values0.get(i));
+                out.add(map);
+            }
+            if (page.nextAfter() == null) break;
+            after = page.nextAfter();
+        }
+        return out;
+    }
+
+    /**
+     * For -Pprobe.models (ChrModel IDs), the customization chain the race preview samples from:
+     * options, their choices, the choices' elements and the elements' materials (#104).
+     */
+    private static void raceSkin(WorldMeasurementOpen opened) throws Exception {
+        var tables = opened.tables();
+        var materials = new java.util.HashMap<String, String>();
+        for (var row : rows(tables, "ChrCustomizationMaterial", null, List.of()))
+            materials.put(row.get("ID"), row.get("ChrModelTextureTargetID"));
+        var displays = System.getProperty("probe.displays");
+        if (displays != null) {
+            var ids = new ArrayList<Long>();
+            for (var text : displays.split(",")) ids.add(Long.parseLong(text.strip()));
+            var extras = new ArrayList<Long>();
+            for (var row : rows(tables, "CreatureDisplayInfo", "ID", ids)) {
+                say("PROBE display " + row.get("ID") + " model " + row.get("ModelID") + " extended "
+                        + row.get("ExtendedDisplayInfoID") + " textures " + row.get("TextureVariationFileDataID[0]") + ","
+                        + row.get("TextureVariationFileDataID[1]") + "," + row.get("TextureVariationFileDataID[2]"));
+                extras.add(Long.parseLong(row.get("ExtendedDisplayInfoID")));
+            }
+            for (var row : rows(tables, "CreatureDisplayInfoExtra", "ID", extras)) say("PROBE extra " + row);
+            for (var row : rows(tables, "ChrCustomizationReq", "ID", List.of(12L, 146L, 141L))) say("PROBE req " + row);
+            return;
+        }
+        var models = new ArrayList<Long>();
+        for (var text : System.getProperty("probe.models", "27,28").split(",")) models.add(Long.parseLong(text.strip()));
+        if (Boolean.getBoolean("probe.layouts")) {
+            for (var row : rows(tables, "ChrModel", "ID", models)) {
+                say("PROBE chrmodel " + row);
+                long layout = Long.parseLong(row.get("CharComponentTextureLayoutID"));
+                for (var m : rows(tables, "ChrModelMaterial", "CharComponentTextureLayoutsID", List.of(layout)))
+                    say("PROBE  material " + m);
+                for (var l : rows(tables, "ChrModelTextureLayer", "CharComponentTextureLayoutsID", List.of(layout)))
+                    say("PROBE  layer " + l);
+            }
+            return;
+        }
+        for (long model : models) {
+            var options = rows(tables, "ChrCustomizationOption", "ChrModelID", List.of(model));
+            say("PROBE model " + model + ": " + options.size() + " options");
+            for (var option : options) {
+                long optionId = Long.parseLong(option.get("ID"));
+                var choices = rows(tables, "ChrCustomizationChoice", "ChrCustomizationOptionID", List.of(optionId));
+                say("PROBE  option " + optionId + " " + option.get("Name_lang") + " req " + option.get("ChrCustomizationReqID")
+                        + " flags " + option.get("Flags") + " choices " + choices.size());
+                int shown = 0;
+                for (var choice : choices) {
+                    long choiceId = Long.parseLong(choice.get("ID"));
+                    var elements = rows(tables, "ChrCustomizationElement", "ChrCustomizationChoiceID", List.of(choiceId));
+                    var targets = new StringBuilder();
+                    for (var element : elements) {
+                        long material = Long.parseLong(element.get("ChrCustomizationMaterialID"));
+                        String target = "-";
+                        if (material != 0) target = materials.getOrDefault(Long.toString(material), "?");
+                        targets.append(" [mat ").append(material).append(" target ").append(target)
+                                .append(" related ").append(element.get("RelatedChrCustomizationChoiceID")).append(']');
+                    }
+                    if (shown++ < 3)
+                        say("PROBE   choice " + choiceId + " req " + choice.get("ChrCustomizationReqID") + " visreq "
+                                + choice.get("ChrCustomizationVisReqID") + " elements " + elements.size() + targets);
+                }
+            }
+        }
+    }
+
+    /**
+     * The textured player preview of every race model variant (#104): each variant's outcome, with
+     * the untextured ones grouped by their stated reason. The first class the race records is
+     * chosen, as the Races page does by default.
+     */
+    private static void races(WorldMeasurementOpen opened) throws Exception {
+        try (var measured = busy(() -> opened.openCreatures(Cancellation.NONE))) {
+            var races = measured.races();
+            var catalog = races.catalog(Cancellation.NONE).get(2, TimeUnit.MINUTES);
+            say("PROBE races: catalog " + catalog.state() + ", " + catalog.races().size() + " races");
+            var reasons = new java.util.TreeMap<String, List<String>>();
+            int total = 0, textured = 0, incomplete = 0;
+            // Races whose textured variants are rendered to PNG files for review.
+            var imaged = new java.util.HashSet<Long>();
+            for (var text : System.getProperty("probe.raceImages", "").split(","))
+                if (!text.isBlank()) imaged.add(Long.parseLong(text.strip()));
+            for (var race : catalog.races()) {
+                if (!beforeDeadline()) {
+                    say("PROBE races: deadline reached at race " + race.id());
+                    incomplete = -1;
+                    break;
+                }
+                var overview = races.overview(race.id(), Cancellation.NONE).get(2, TimeUnit.MINUTES);
+                long classId = overview.classes() == null || overview.classes().isEmpty() ? 0
+                        : overview.classes().getFirst().id();
+                var variants = races.modelVariants(race.id(), Cancellation.NONE).get(2, TimeUnit.MINUTES);
+                if (variants.variants().isEmpty()) {
+                    say("PROBE race " + race.id() + " " + race.name() + ": no model variants (" + variants.message() + ")");
+                    continue;
+                }
+                for (var variant : variants.variants()) {
+                    total++;
+                    String label = race.id() + " " + race.name() + " " + (variant.sex() == 0 ? "male" : "female")
+                            + " (ChrModel " + variant.chrModelId() + ", display " + variant.displayId()
+                            + ", M2 " + variant.modelFileDataId() + ")";
+                    com.vibeminer.concepts.races.RaceAppearanceTypes.Result result;
+                    try {
+                        result = races.appearance(race.id(), classId, variant.chrModelId(), Cancellation.NONE)
+                                .get(3, TimeUnit.MINUTES);
+                    } catch (Exception failed) {
+                        reasons.computeIfAbsent("FAILED: " + failed.getClass().getSimpleName(), k -> new ArrayList<>())
+                                .add(label);
+                        continue;
+                    }
+                    if (result.appearance() != null) {
+                        textured++;
+                        var notes = result.issues().stream().filter(i -> i.startsWith("Preview incomplete")).toList();
+                        if (!notes.isEmpty()) incomplete++;
+                        long canvasPixels = 0;
+                        for (var texture : result.appearance().textures())
+                            canvasPixels += (long) texture.width() * texture.height();
+                        say("PROBE race textured " + label + " canvases " + result.appearance().textures().size() + " / "
+                                + canvasPixels + " px" + (notes.isEmpty() ? "" : " INCOMPLETE " + notes));
+                        if (imaged.contains(race.id())) {
+                            say("PROBE   issues " + result.issues());
+                            for (double yaw : new double[] {-1.2, 1.9}) {
+                                var frame = com.vibeminer.rendering.models.StaticMeshRenderer.render(result.appearance(),
+                                        480, 480,
+                                        new com.vibeminer.rendering.models.StaticMeshRenderer.View(yaw, .1, 1, false,
+                                                result.visibleParts()),
+                                        () -> false);
+                                var image = new java.awt.image.BufferedImage(frame.width(), frame.height(),
+                                        java.awt.image.BufferedImage.TYPE_INT_ARGB);
+                                image.setRGB(0, 0, frame.width(), frame.height(), frame.argb(), 0, frame.width());
+                                var file = Path.of(System.getProperty("probe.out")).resolve("race-" + race.id() + "-model-"
+                                        + variant.chrModelId() + (yaw < 0 ? "-front" : "-back") + ".png");
+                                javax.imageio.ImageIO.write(image, "png", file.toFile());
+                            }
+                        }
+                        if (Boolean.getBoolean("probe.raceDetail")) {
+                            var options = races.customizations(race.id(), classId, variant.chrModelId(),
+                                    Cancellation.NONE).get(2, TimeUnit.MINUTES);
+                            var summary = new StringBuilder();
+                            for (var option : options.options())
+                                summary.append(option.label()).append('=').append(option.choices().size()).append(' ');
+                            say("PROBE   customizations " + options.state() + ": " + summary);
+                        }
+                    } else {
+                        String reason = result.state() + ": " + result.message();
+                        reasons.computeIfAbsent(reason, k -> new ArrayList<>()).add(label);
+                        say("PROBE race untextured " + label + " -- " + reason);
+                        if (Boolean.getBoolean("probe.raceDetail")) {
+                            say("PROBE   issues " + result.issues());
+                            var options = races.customizations(race.id(), classId, variant.chrModelId(),
+                                    Cancellation.NONE).get(2, TimeUnit.MINUTES);
+                            var summary = new StringBuilder();
+                            for (var option : options.options())
+                                summary.append(option.label()).append('=').append(option.choices().size()).append(' ');
+                            say("PROBE   customizations " + options.state() + " " + options.message() + ": " + summary
+                                    + " issues " + options.issues());
+                        }
+                    }
+                }
+            }
+            say("PROBE races: " + total + " variants, " + textured + " textured (" + incomplete
+                    + " incomplete), " + (total - textured) + " untextured");
+            for (var entry : reasons.entrySet()) {
+                say(String.format(Locale.ROOT, "PROBE   %3d  %s", entry.getValue().size(), entry.getKey()));
+                for (var label : entry.getValue()) say("PROBE         " + label);
+            }
+        }
     }
 
     /**

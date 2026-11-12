@@ -887,6 +887,30 @@ final class RaceNpcAppearanceTest {
     }
 
     /**
+     * #104: a player preview whose whole-body base skin layer cannot be decoded is refused for
+     * every profile, never drawn with a black body; an NPC (whose bake covers the body) is not
+     * affected by this rule.
+     */
+    @Test
+    void aPlayerBodyWithoutItsBaseSkinIsRefusedNotDrawnBlack() throws Exception {
+        var variant = new RaceMediaTypes.Variant(3, 0, 1, 1, 1234);
+        // The model and skin, but not layer file 100 (the whole-body base).
+        var files =
+                new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
+                        .add(1234, "1".repeat(32), withSkeleton(false))
+                        .add(900, "2".repeat(32), golden("authored-274.skin"))
+                        .add(555, "5".repeat(32), skeletonFile(0x20));
+        var generated = new com.vibeminer.generated.MemoryGeneratedStore();
+        var key = RaceAppearance.appearanceKey("missing-base", false);
+        var result = render(files, variant, false, generated, key);
+        assertEquals(null, result.appearance());
+        assertEquals(
+                "The base skin texture is unavailable; no incomplete body is presented.",
+                result.message());
+        assertFalse(saved(generated, key));
+    }
+
+    /**
      * #499: a player preview whose model facts cannot be read whole says it is incomplete and why,
      * and is not saved. Where its draws need the facts it is not drawn and says the model is not
      * stored whole (not a lasting refusal); the complete preview says nothing of the kind.
