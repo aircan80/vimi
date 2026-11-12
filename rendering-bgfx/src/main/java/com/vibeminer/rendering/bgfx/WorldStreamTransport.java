@@ -1926,6 +1926,34 @@ public final class WorldStreamTransport {
             }
         }
 
+        /**
+         * The assets this session's delivered objects files carried (#380 stage 4), for the
+         * measurement probe: what a reference-based file would no longer send.
+         */
+        private final WorldStreamObjectAssets.Ledger assets = new WorldStreamObjectAssets.Ledger();
+
+        /**
+         * Counts a written file's model and image asset bytes, all of them and those no earlier
+         * file of the session carried. Only while stage timings are on: it digests every asset,
+         * which the files themselves do not need yet.
+         */
+        private void tallyAssets(WorldStreamObjectsFile.Data data) {
+            if (!WorldStageTimings.enabled()) {
+                return;
+            }
+            long digesting = WorldStageTimings.start();
+            var tally = assets.record(WorldStreamObjectAssets.of(data));
+            WorldStageTimings.stop("objects.assets.digest", digesting);
+            WorldStageTimings.add("objects.assets.models", tally.models());
+            WorldStageTimings.add("objects.assets.newModels", tally.newModels());
+            WorldStageTimings.add("objects.assets.modelBytes", tally.modelBytes());
+            WorldStageTimings.add("objects.assets.newModelBytes", tally.newModelBytes());
+            WorldStageTimings.add("objects.assets.images", tally.images());
+            WorldStageTimings.add("objects.assets.newImages", tally.newImages());
+            WorldStageTimings.add("objects.assets.imageBytes", tally.imageBytes());
+            WorldStageTimings.add("objects.assets.newImageBytes", tally.newImageBytes());
+        }
+
         private void deliverObjects(
                 ObjectsOperation operation, WorldStreamLaunchOwner.Handle handle) throws Exception {
             var metadata = operation.resident.metadata;
@@ -1951,6 +1979,7 @@ public final class WorldStreamTransport {
                                         operation.data,
                                         stop);
                         written = true;
+                        tallyAssets(operation.data);
                     } catch (IOException | RuntimeException failed) {
                         // The writer removes its own partial file. Only these objects fail, and
                         // the resident records it like a child FAILED, or DROPPED once retired.
