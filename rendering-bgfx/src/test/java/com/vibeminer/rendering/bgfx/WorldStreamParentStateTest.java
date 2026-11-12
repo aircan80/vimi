@@ -416,4 +416,16 @@ class WorldStreamParentStateTest {
                 "a repeated answer");
         assertNull(new WorldStreamParentState(SESSION).body(4096, "a".repeat(64)));
     }
+
+    @Test
+    void aHeartbeatIsIgnoredBeforeAndAfterTheSessionHello() {
+        var fresh = new WorldStreamParentState(SESSION);
+        assertEquals(
+                WorldStreamParentState.Change.IGNORED,
+                fresh.status(new WorldStreamStatus.Alive(NONCE, 1)));
+        var state = ready();
+        assertEquals(
+                WorldStreamParentState.Change.IGNORED,
+                state.status(new WorldStreamStatus.Alive(NONCE, 2)));
+    }
 }

@@ -51,6 +51,9 @@ final class WorldStreamStatus {
     /** Non-reliable wake-up hint that the frame mapping published {@code sequence}. */
     record FramePublished(WorldStreamState.Nonce nonce, long sequence) implements Message {}
 
+    /** The child's heartbeat: its render loop still runs. Carries no state. */
+    record Alive(WorldStreamState.Nonce nonce, long beat) implements Message {}
+
     /**
      * #381, native presentation only: non-reliable latest value, the child window's swap chain
      * presented a frame drawn for {@code camera} (a camera revision) over committed content
@@ -234,6 +237,10 @@ final class WorldStreamStatus {
                 case "PRESENTED" -> {
                     arity(p, 5);
                     yield new Presented(nonce, positive(p[3]), number(p[4]));
+                }
+                case "ALIVE" -> {
+                    arity(p, 4);
+                    yield new Alive(nonce, positive(p[3]));
                 }
                 case "FRAME" -> {
                     arity(p, 4);

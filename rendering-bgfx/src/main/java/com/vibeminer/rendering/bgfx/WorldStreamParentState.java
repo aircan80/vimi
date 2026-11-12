@@ -438,6 +438,10 @@ final class WorldStreamParentState {
         if (!session.nonce().equals(message.nonce())) {
             return Change.IGNORED;
         }
+        if (message instanceof WorldStreamStatus.Alive) {
+            // A heartbeat only shows the child still works (its arrival counts as progress).
+            return Change.IGNORED;
+        }
         require(!closed, "Status after terminal");
         if (message instanceof WorldStreamStatus.Session value) {
             require(!hello, "Duplicate session");

@@ -414,6 +414,17 @@ final class RaceNpcAppearanceTest {
             boolean npc,
             com.vibeminer.generated.GeneratedStore generated,
             com.vibeminer.generated.GeneratedKey key) {
+        return render(files, variant, npc, generated, key, List.of());
+    }
+
+    /** As above, with {@code extraLayers} drawn over the base layer. */
+    private static RaceAppearanceTypes.Result render(
+            com.vibeminer.files.BuildFiles files,
+            RaceMediaTypes.Variant variant,
+            boolean npc,
+            com.vibeminer.generated.GeneratedStore generated,
+            com.vibeminer.generated.GeneratedKey key,
+            List<RaceAppearancePlan.Layer> extraLayers) {
         var build = BUILD;
         var tables =
                 new MemoryTables()
@@ -440,9 +451,20 @@ final class RaceNpcAppearanceTest {
             var plan =
                     new RaceAppearancePlan.Plan(
                             List.of(new RaceAppearancePlan.Canvas(1, 4, 4)),
-                            List.of(
-                                    new RaceAppearancePlan.Layer(
-                                            1, 100, 0, 0, 4, 4, 1, 0, "NPC bake #100")),
+                            java.util.stream.Stream.concat(
+                                            java.util.stream.Stream.of(
+                                                    new RaceAppearancePlan.Layer(
+                                                            1,
+                                                            100,
+                                                            0,
+                                                            0,
+                                                            4,
+                                                            4,
+                                                            1,
+                                                            0,
+                                                            "NPC bake #100")),
+                                            extraLayers.stream())
+                                    .toList(),
                             List.of(),
                             RaceAppearanceProfiles.Profile.LEGACY,
                             npc);
@@ -814,11 +836,19 @@ final class RaceNpcAppearanceTest {
         final int failAt;
 
         PartialOpen(int failAt) throws Exception {
+            this(failAt, golden("authored-274.m2"), null);
+        }
+
+        /** With another model, and the skeleton file 555 when {@code skeleton} is not null. */
+        PartialOpen(int failAt, byte[] model, byte[] skeleton) throws Exception {
             super(BUILD, "enUS");
             this.failAt = failAt;
-            add(1234, "1".repeat(32), golden("authored-274.m2"));
+            add(1234, "1".repeat(32), model);
             add(900, "2".repeat(32), golden("authored-274.skin"));
             add(100, "3".repeat(32), bake());
+            if (skeleton != null) {
+                add(555, "5".repeat(32), skeleton);
+            }
         }
 
         @Override
@@ -877,6 +907,93 @@ final class RaceNpcAppearanceTest {
         assertEquals(
                 "The base skin texture is unavailable; no incomplete body is presented.",
                 result.message());
+        assertFalse(saved(generated, key));
+    }
+
+    /**
+     * #499: a player preview whose model facts cannot be read whole says it is incomplete and why,
+     * and is not saved. Where its draws need the facts it is not drawn and says the model is not
+     * stored whole (not a lasting refusal); the complete preview says nothing of the kind.
+     */
+    @Test
+    void aPlayerPreviewReadOnlyInPartSaysItIsIncompleteAndIsNotSaved() throws Exception {
+        var variant = new RaceMediaTypes.Variant(3, 0, 1, 1, 1234);
+        var key = RaceAppearance.appearanceKey("partial-player", false);
+        // A model the static character preview draws (its skeleton is stored whole).
+        var whole = new PartialOpen(0, withSkeleton(false), skeletonFile(0x20));
+        var savedWhole = new com.vibeminer.generated.MemoryGeneratedStore();
+        var complete = render(whole, variant, false, savedWhole, key);
+        assertTrue(complete.appearance() != null, complete.message());
+        assertTrue(
+                complete.issues().stream()
+                        .noneMatch(issue -> issue.startsWith(RaceAppearance.INCOMPLETE)),
+                complete.issues().toString());
+        assertTrue(saved(savedWhole, key), "a complete preview is saved");
+        int last = whole.opens.get();
+        var generated = new com.vibeminer.generated.MemoryGeneratedStore();
+        var partial =
+                render(
+                        new PartialOpen(last, withSkeleton(false), skeletonFile(0x20)),
+                        variant,
+                        false,
+                        generated,
+                        key);
+        var incomplete =
+                partial.issues().stream()
+                        .filter(issue -> issue.startsWith(RaceAppearance.INCOMPLETE))
+                        .toList();
+        assertEquals(1, incomplete.size(), partial.issues().toString());
+        assertTrue(
+                incomplete.getFirst().contains("model file is PARTIAL")
+                        && incomplete.getFirst().contains("not saved"),
+                incomplete.getFirst());
+        assertFalse(saved(generated, key), "an incomplete preview is not saved");
+        assertTrue(partial.appearance() != null, "what could be read is still shown");
+        // A model none of whose draws can be checked without its facts is not drawn, and is
+        // not called unsupported: that would be a lasting claim from a passing read.
+        var counted = new PartialOpen(0);
+        render(counted, variant, false, new com.vibeminer.generated.MemoryGeneratedStore(), key);
+        var unchecked =
+                render(
+                        new PartialOpen(counted.opens.get()),
+                        variant,
+                        false,
+                        new com.vibeminer.generated.MemoryGeneratedStore(),
+                        key);
+        assertEquals(null, unchecked.appearance());
+        assertEquals(
+                RaceAppearance.modelNotWhole(
+                        com.vibeminer.files.FileTypes.FileReadState.PARTIAL, false),
+                unchecked.message());
+        assertTrue(
+                unchecked.issues().stream()
+                        .anyMatch(issue -> issue.startsWith(RaceAppearance.INCOMPLETE)),
+                unchecked.issues().toString());
+    }
+
+    /** #499: a layer texture that cannot be read leaves the preview incomplete, and unsaved. */
+    @Test
+    void aPlayerPreviewWithAnUnreadableLayerSaysItIsIncomplete() throws Exception {
+        var variant = new RaceMediaTypes.Variant(3, 0, 1, 1, 1234);
+        var key = RaceAppearance.appearanceKey("unreadable-layer", false);
+        var generated = new com.vibeminer.generated.MemoryGeneratedStore();
+        // Layer file 101 is not in the build; the base layer 100 is.
+        var preview =
+                render(
+                        skeletal(false, skeletonFile(0x20), '5'),
+                        variant,
+                        false,
+                        generated,
+                        key,
+                        List.of(new RaceAppearancePlan.Layer(1, 101, 0, 0, 4, 4, 1, 1, "#101")));
+        assertTrue(preview.appearance() != null, preview.message());
+        assertTrue(
+                preview.issues().stream()
+                        .anyMatch(
+                                issue ->
+                                        issue.startsWith(RaceAppearance.INCOMPLETE + "texture #101")
+                                                && issue.endsWith("this preview is not saved.")),
+                preview.issues().toString());
         assertFalse(saved(generated, key));
     }
 
@@ -1107,6 +1224,13 @@ final class RaceNpcAppearanceTest {
         var preview = render(new PartialSkeleton(), variant, false, generated, key);
         assertTrue(preview.appearance() != null, preview.message());
         assertFalse(saved(generated, key));
+        assertTrue(
+                preview.issues().stream()
+                        .anyMatch(
+                                issue ->
+                                        issue.startsWith(RaceAppearance.INCOMPLETE)
+                                                && issue.contains("skeleton cannot be read whole")),
+                preview.issues().toString());
         var unreadable =
                 assertThrows(
                         RacesService.Unreadable.class,
@@ -1120,10 +1244,16 @@ final class RaceNpcAppearanceTest {
         assertTrue(unreadable.getMessage().contains("skeleton"), unreadable.getMessage());
         // A skeleton missing from the build: shown, but not saved.
         var missing = new com.vibeminer.generated.MemoryGeneratedStore();
-        assertTrue(
-                render(skeletal(false, null, '5'), variant, false, missing, key).appearance()
-                        != null);
+        var absent = render(skeletal(false, null, '5'), variant, false, missing, key);
+        assertTrue(absent.appearance() != null);
         assertFalse(saved(missing, key));
+        assertTrue(
+                absent.issues().stream()
+                        .anyMatch(
+                                issue ->
+                                        issue.startsWith(RaceAppearance.INCOMPLETE)
+                                                && issue.contains("skeleton is")),
+                absent.issues().toString());
     }
 
     @Test

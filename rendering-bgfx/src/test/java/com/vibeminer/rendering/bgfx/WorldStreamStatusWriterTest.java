@@ -202,4 +202,29 @@ class WorldStreamStatusWriterTest {
             closed = true;
         }
     }
+
+    @Test
+    void heartbeatsCoalesceToTheLatestAndStopAtQuiet() throws Exception {
+        var output = new HeldOutput();
+        var clock = new WorldStatusDeadline();
+        var writer = new WorldStreamStatusWriter(NONCE, output, clock);
+        writer.reliable("SESSION TERRAIN_BASIC_V1");
+        assertTrue(output.entered.await(2, TimeUnit.SECONDS));
+        for (int beat = 1; beat <= 50; beat++) {
+            assertTrue(writer.alive(beat));
+        }
+        assertEquals(1, clock.outstanding(), "a heartbeat takes no reliable credit");
+        output.release.countDown();
+        long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        while (output.lines().size() < 2 && System.nanoTime() < until) {
+            Thread.sleep(1);
+        }
+        assertEquals(java.util.List.of("SESSION TERRAIN_BASIC_V1", "ALIVE 50"), output.lines());
+        writer.quiet();
+        assertFalse(writer.alive(51), "no heartbeat after the terminal quiet");
+        writer.reliable("CLOSED");
+        writer.finish().get(3, TimeUnit.SECONDS);
+        assertEquals("CLOSED", output.lines().getLast());
+        assertThrows(IllegalArgumentException.class, () -> writer.alive(0));
+    }
 }
