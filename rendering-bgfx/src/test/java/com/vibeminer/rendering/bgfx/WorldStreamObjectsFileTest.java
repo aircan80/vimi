@@ -567,11 +567,11 @@ final class WorldStreamObjectsFileTest {
         // classes of #367) fails its header check instead of being misread.
         var clean = Files.readAllBytes(objectsPath());
         assertEquals(WorldStreamObjectsFile.VERSION, clean[8]);
-        assertEquals(11, WorldStreamObjectsFile.VERSION);
+        assertEquals(13, WorldStreamObjectsFile.VERSION);
         // Version 5 (#367, before the vertex colours of #375), version 6 (#375, before the
         // portal tables and mesh groups of #383), version 7 (before the INTERIOR_LIGHT range
         // flag of #383) and version 8 (before placement portal ties) are stale as well.
-        for (byte stale : new byte[] {3, 4, 5, 6, 7, 8}) {
+        for (byte stale : new byte[] {3, 4, 5, 6, 7, 8, 11, 12}) {
             var bytes = clean.clone();
             bytes[8] = stale;
             Files.write(objectsPath(), bytes);
@@ -1724,7 +1724,7 @@ final class WorldStreamObjectsFileTest {
         assertEquals(
                 WorldStreamObjectsFile.ADDITIVE | WorldStreamObjectsFile.UNLIT, read.ranges[11]);
         assertEquals(WorldStreamObjectsFile.OPAQUE | WorldStreamObjectsFile.UNLIT, read.ranges[15]);
-        assertEquals(11, WorldStreamObjectsFile.VERSION);
+        assertEquals(13, WorldStreamObjectsFile.VERSION);
         assertEquals(h, read.placements[8], 0);
         // An unknown class, a scaled matrix or a reflection is refused.
         // Modulate (4) and unknown flag bits stay refused: 0x800 alone and beside a known kind
