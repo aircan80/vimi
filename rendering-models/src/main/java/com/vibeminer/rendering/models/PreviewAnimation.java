@@ -927,21 +927,24 @@ public final class PreviewAnimation {
     }
 
     /**
-     * Whether {@link #READ_CHECK_SAMPLES} poses evenly over the loop (and, for a camera-facing
-     * animation, a few views around it) lie inside {@code framing}, within a small tolerance for
-     * rounding.
+     * Whether {@link #READ_CHECK_SAMPLES} poses spread over the loop (and, for a camera-facing
+     * animation, two of its views) lie inside {@code framing}, within a small tolerance for
+     * rounding. The poses and views are points of the grid the framing was evaluated on, so a
+     * framing that grid produced always holds them, however the bones move between its points.
      */
     private boolean holds(float[] framing) {
         float[] scratch = new float[rest.length];
         var working = new Scratch(bones.size());
         List<View> views = new ArrayList<>();
-        views.add(viewDependent ? View.orbit(0, 0) : null);
+        views.add(viewDependent ? View.orbit(0 * Math.PI / 4, 0) : null);
         if (viewDependent) {
-            views.add(View.orbit(Math.PI, 1.1));
+            views.add(View.orbit(4 * Math.PI / 4, 1.1));
         }
+        int grid = viewDependent ? FRAMING_SAMPLES / 8 : FRAMING_SAMPLES;
         for (var view : views) {
             for (int sample = 0; sample < READ_CHECK_SAMPLES; sample++) {
-                matrices(durationMillis * sample / READ_CHECK_SAMPLES, view, working);
+                long point = (long) sample * grid / READ_CHECK_SAMPLES;
+                matrices(durationMillis * point / grid, view, working);
                 skin(working.matrices, working.scales, scratch, null);
                 for (int i = 0; i < scratch.length; i++) {
                     int axis = i % 3;

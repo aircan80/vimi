@@ -881,6 +881,61 @@ class PreviewAnimationTest {
     }
 
     @Test
+    void aCameraFacingAnimationMovingBetweenFramingSamplesReadsBack() throws Exception {
+        // The root rises to 10 at 150 ms and is back at 0 by 300 ms: a camera-facing animation is
+        // framed every 100 ms (a twelfth of its 1200 ms loop), so its framing tops out near 6.7,
+        // and a pose at an eighth of the loop (150 ms) is above it. A read checks only poses on
+        // the framing's own grid, so the stream reads back with the same framing.
+        var rise =
+                new Track(
+                        Interpolation.LINEAR,
+                        -1,
+                        3,
+                        new int[] {0, 150, 300},
+                        new float[] {0, 0, 0, 0, 0, 10, 0, 0, 0});
+        var bones =
+                List.of(
+                        new Bone(-1, 0, 0, 0, rise, null, null, false),
+                        new Bone(
+                                0,
+                                0,
+                                0,
+                                1,
+                                null,
+                                null,
+                                null,
+                                false,
+                                PreviewAnimation.Facing.SPHERICAL),
+                        new Bone(1, 1, 0, 1, null, null, null, false));
+        var rest = mesh(1, 0, 1, 2, 0, 1, 0, 0, 0);
+        var animation =
+                new PreviewAnimation(
+                        "Stand",
+                        1200,
+                        new long[0],
+                        bones,
+                        rest,
+                        new float[0],
+                        rigid(2, 1, 0),
+                        full(3));
+        assertTrue(animation.viewDependent());
+        float[] framed = framingFrom(animation, rest);
+        float[] between = animation.pose(rest, 150, FROM_X).mesh().positions();
+        assertTrue(between[2] > framed[5] + 1, "a pose between the framing's samples is above it");
+        var copy = PreviewAnimation.read(stream(bytes(animation)));
+        assertArrayEquals(framed, framingFrom(copy, rest));
+    }
+
+    /** As {@link #framing}, for a camera-facing animation (posed from +X). */
+    private static float[] framingFrom(PreviewAnimation animation, PreviewMesh rest) {
+        var posed = animation.pose(rest, 0, FROM_X).mesh();
+        return new float[] {
+            posed.minimum(0), posed.minimum(1), posed.minimum(2),
+            posed.maximum(0), posed.maximum(1), posed.maximum(2)
+        };
+    }
+
+    @Test
     void readRefusesStoredFramingThatDoesNotHoldItsPoses() throws Exception {
         var rest = mesh(4, 0, 0, 0, 2, 0, 0, 0, 1, -3, 1, 0);
         byte[] good = bytes(swinging(rest));
