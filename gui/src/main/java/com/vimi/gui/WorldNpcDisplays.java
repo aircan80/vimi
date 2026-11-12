@@ -41,6 +41,12 @@ final class WorldNpcDisplays implements WorldTileCreatures.Chooser {
     private final Supplier<BuildCreatures> creatures;
     private final Observed observed;
     private final Supplier<Object> revision;
+
+    /** The prepared data's revision: a table change under the same handle (new keys, say). */
+    private final Supplier<Object> dataRevision;
+
+    /** What the chains are kept for, taken once when a tile chooser is made; null otherwise. */
+    private final Object tileRevision;
     private final String build;
 
     /** Outside displays read for the NPCs of one tile at once; null outside {@link #forNpcs}. */
@@ -58,8 +64,8 @@ final class WorldNpcDisplays implements WorldTileCreatures.Chooser {
     /**
      * Display chains already read, for the session (#175): the chooser asks for the same displays
      * on every tile, twice per NPC (whether a display is absent, then the chain of the one shown).
-     * Bounded, and dropped whenever the creature data handle or the chooser's {@link #revision()}
-     * changes. A chain whose display or model is not readable yet is not kept, so it is asked again.
+     * Bounded, and dropped whenever the creature data handle, the chooser's {@link #revision()} or
+     * the prepared data's revision changes. A chain whose display or model is not readable yet is not kept, so it is asked again.
      */
     static final class Chains {
         static final int MAX = 4096;
@@ -136,21 +142,38 @@ final class WorldNpcDisplays implements WorldTileCreatures.Chooser {
             Observed observed,
             Supplier<Object> revision,
             String build) {
-        this(creatures, observed, revision, build, null, null, Map.of(), new Chains());
+        this(creatures, observed, revision, () -> null, build);
+    }
+
+    /**
+     * As above; {@code dataRevision} is the prepared data's revision, which can change the creature
+     * tables under the same handle, so the session's display chains are dropped with it.
+     */
+    WorldNpcDisplays(
+            Supplier<BuildCreatures> creatures,
+            Observed observed,
+            Supplier<Object> revision,
+            Supplier<Object> dataRevision,
+            String build) {
+        this(creatures, observed, revision, dataRevision, build, null, null, Map.of(), new Chains(), null);
     }
 
     private WorldNpcDisplays(
             Supplier<BuildCreatures> creatures,
             Observed observed,
             Supplier<Object> revision,
+            Supplier<Object> dataRevision,
             String build,
             Map<Long, List<NpcDisplays.External>> read,
             String unavailable,
             Map<Long, com.vibeminer.concepts.creatures.CreatureTypes.CreatureResult> clients,
-            Chains chains) {
+            Chains chains,
+            Object tileRevision) {
         this.creatures = Objects.requireNonNull(creatures);
         this.observed = Objects.requireNonNull(observed);
         this.revision = Objects.requireNonNull(revision);
+        this.dataRevision = Objects.requireNonNull(dataRevision);
+        this.tileRevision = tileRevision;
         this.build = build == null || build.isBlank() ? "unknown" : build;
         this.read = read;
         this.unavailable = unavailable;
@@ -169,6 +192,11 @@ final class WorldNpcDisplays implements WorldTileCreatures.Chooser {
         return revision.get();
     }
 
+    /** What the session's chains are kept for: the outside sources and the prepared data. */
+    private Object chainsRevision() {
+        return java.util.Arrays.asList(revision(), dataRevision.get());
+    }
+
     private String clientProvenance() {
         return "client Creature record, build " + build;
     }
@@ -182,7 +210,7 @@ final class WorldNpcDisplays implements WorldTileCreatures.Chooser {
             throws Exception {
         var handle = creatures.get();
         if (handle == null || npcIds.isEmpty()) return this;
-        Object current = revision();
+        Object current = chainsRevision();
         var absent = absent(handle, current, token);
         // The tile's client records are asked for together, then kept for its choices.
         var asked = new java.util.LinkedHashMap<Long,
@@ -203,7 +231,8 @@ final class WorldNpcDisplays implements WorldTileCreatures.Chooser {
             }
         }
         if (outside.isEmpty())
-            return new WorldNpcDisplays(creatures, observed, revision, build, null, null, clients, chains);
+            return new WorldNpcDisplays(
+                    creatures, observed, revision, dataRevision, build, null, null, clients, chains, current);
         Map<Long, List<NpcDisplays.External>> found;
         try {
             found = observed.displays(outside, token);
@@ -213,13 +242,14 @@ final class WorldNpcDisplays implements WorldTileCreatures.Chooser {
             // Reported once for the tile; its NPCs without a client display wait for a later tile.
             token.check();
             WorldDiagnostics.degraded("creature lookups", "World outside display lookup failed", failed);
-            return new WorldNpcDisplays(creatures, observed, revision, build, Map.of(),
-                    failed.getClass().getSimpleName(), clients, chains);
+            return new WorldNpcDisplays(creatures, observed, revision, dataRevision, build, Map.of(),
+                    failed.getClass().getSimpleName(), clients, chains, current);
         }
         token.check();
         var tile = new java.util.HashMap<Long, List<NpcDisplays.External>>();
         for (long npcId : outside) tile.put(npcId, found.getOrDefault(npcId, List.of()));
-        return new WorldNpcDisplays(creatures, observed, revision, build, Map.copyOf(tile), null, clients, chains);
+        return new WorldNpcDisplays(
+                creatures, observed, revision, dataRevision, build, Map.copyOf(tile), null, clients, chains, current);
     }
 
     @Override
@@ -235,7 +265,8 @@ final class WorldNpcDisplays implements WorldTileCreatures.Chooser {
             client = handle.getData(npcId, TableTypes.Priority.BACKGROUND, token).join();
             token.check();
         }
-        Object current = revision();
+        // A tile chooser took it once; the session chooser takes it per choice.
+        Object current = tileRevision != null ? tileRevision : chainsRevision();
         var absent = absent(handle, current, token);
         var resolution = NpcDisplays.resolve(client, clientProvenance(), null, absent);
         if (resolution.source() == NpcDisplays.Source.CLIENT) {

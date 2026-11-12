@@ -31,6 +31,7 @@ public final class WorldNpcDisplaysTest {
         anUnreadableBundledHistoryLeavesTheSnapshotsAnswering();
         theRevisionFollowsOnlyTheOutsideSourcesInUse();
         displayChainsAreReadOncePerSessionAndClientRecordsOncePerTile();
+        aPreparedDataChangeDropsTheChainsAndATileTakesItsRevisionOnce();
         System.out.println("World NPC displays: client rule, observed choice, batching and malformed records passed");
     }
 
@@ -364,6 +365,34 @@ public final class WorldNpcDisplaysTest {
         switching.choose(7, Cancellation.NONE);
         assertTrue(other.chainReads > 0, "a new handle's chains are read from it");
         assertTrue(WorldNpcDisplays.Chains.MAX > 0, "bounded");
+    }
+
+    static void aPreparedDataChangeDropsTheChainsAndATileTakesItsRevisionOnce() throws Exception {
+        var creatures = new Creatures(Map.of(1L, declared(1, 31)), Set.of(), Set.of());
+        WorldNpcDisplays.Observed observed = (ids, token) -> {
+            var out = new java.util.HashMap<Long, List<NpcDisplays.External>>();
+            for (long id : ids) out.put(id, List.of(eg("EG", 1, id + 10)));
+            return out;
+        };
+        int[] revisionCalls = {0};
+        long[] data = {1};
+        var chooser = new WorldNpcDisplays(() -> creatures, observed, () -> {
+            revisionCalls[0]++;
+            return "eg";
+        }, () -> data[0], "b");
+        var tile = chooser.forNpcs(List.of(1L, 7L, 8L), Cancellation.NONE);
+        int afterForNpcs = revisionCalls[0];
+        tile.choose(7, Cancellation.NONE);
+        tile.choose(8, Cancellation.NONE);
+        tile.choose(1, Cancellation.NONE);
+        assertEquals(afterForNpcs, revisionCalls[0]);
+        int chains = creatures.chainReads;
+        // The same handle, new prepared data (newly readable tables, say): the chains are read again.
+        chooser.forNpcs(List.of(7L), Cancellation.NONE).choose(7, Cancellation.NONE);
+        assertEquals(chains, creatures.chainReads);
+        data[0] = 2;
+        chooser.forNpcs(List.of(7L), Cancellation.NONE).choose(7, Cancellation.NONE);
+        assertTrue(creatures.chainReads > chains, "a data revision change drops the session's chains");
     }
 
     private static com.vibeminer.eglink.EgLinkTypes.CreatureDisplays displays(String snapshot, long npc, long display) {
