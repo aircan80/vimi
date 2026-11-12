@@ -16,14 +16,20 @@ import java.util.function.IntUnaryOperator;
  * <ul>
  *   <li>MOHD flag 0x8: the colour is kept; the light is {@code 2 * c + ambient}.
  *   <li>Otherwise, vertices of the group's first {@code transBatchCount} batches: {@code f = (c -
- *       ambient) * (1 - a / 255) / 2}, floored at 0; others: {@code f = ((c * a >> 6) + c -
- *       ambient) / 2}, clamped to 0..255. The light is {@code 2 * f + ambient}.
+ *       base) * (1 - a / 255) / 2}, floored at 0; others: {@code f = ((c * a >> 6) + c - base) /
+ *       2}, clamped to 0..255. {@code base} is the ambient, or 0 with MOHD flag 0x2 (skip base
+ *       colour). The light is {@code 2 * f + ambient}, the ambient added either way.
  * </ul>
  *
  * <p>So an interior vertex is never darker than the ambient, and its MOCV alpha brightens it.
- * {@code AttenTransVerts} (the transition batches' fade toward a portal to an outdoor group) is not
- * applied: its vertices are lit as if no such portal were near, as the client lights them when none
- * is.
+ *
+ * <p>A transition vertex whose colour is under the base is floored at 0. The open-source port
+ * subtracts in unsigned bytes, so such a channel wraps around to a bright value there; wowdev
+ * describes a plain subtraction. On build 70862 one transition vertex of 50,448 in the interiors
+ * around Stormwind, Goldshire, Ironforge, Orgrimmar, Thunder Bluff and Shadowfang Keep has such a
+ * channel (none of the 67 buildings there sets MOHD 0x2 without 0x8). {@code AttenTransVerts} (the
+ * transition batches' fade toward a portal to an outdoor group) is not applied: its vertices are
+ * lit as if no such portal were near, as the client lights them when none is.
  *
  * <p>The light can reach 3.0 (two full colours and a full ambient), but it reaches the shader as a
  * vertex colour of one byte per channel, the light itself, so it is kept to 1.0. On build 70862 the
@@ -36,6 +42,12 @@ final class WmoInteriorLight {
 
     /** MOHD flag 0x8: the colour adjustment keeps the MOCV colour (only its alpha changes). */
     static final int KEEP_COLOUR = 0x8;
+
+    /**
+     * MOHD flag 0x2 (skip base colour): the colour adjustment subtracts nothing instead of the
+     * ambient; the shader still adds the ambient. MOHD 0x8 takes precedence.
+     */
+    static final int SKIP_BASE_COLOUR = 0x2;
 
     /**
      * Each vertex's light, packed as {@link WorldExteriorObjects#packColour} packs a colour. {@code
@@ -72,11 +84,12 @@ final class WmoInteriorLight {
         if ((flags & KEEP_COLOUR) != 0) {
             return c;
         }
+        int base = (flags & SKIP_BASE_COLOUR) != 0 ? 0 : ambient;
         if (trans) {
-            float less = c - ambient;
+            float less = c - base;
             return (int) Math.max(0f, (float) Math.floor((less - a / 255f * less) / 2f));
         }
-        int sum = (c * a >> 6) + c - ambient;
+        int sum = (c * a >> 6) + c - base;
         return (int) Math.min(255f, Math.max(sum / 2f, 0f));
     }
 

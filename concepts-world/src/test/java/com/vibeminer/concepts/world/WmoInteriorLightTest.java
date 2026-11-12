@@ -64,6 +64,16 @@ class WmoInteriorLightTest {
     }
 
     @Test
+    void aTransitionChannelUnderTheAmbientIsFlooredNotWrapped() {
+        // 10 - 20 floors at 0 (an unsigned byte would wrap to 246 and give 123): the ambient alone.
+        assertEquals(0, WmoInteriorLight.fixed(10, 0, 20, true, 0));
+        assertEquals(0, WmoInteriorLight.fixed(10, 200, 20, true, 0));
+        assertArrayEquals(
+                new int[] {WorldExteriorObjects.packColour(20, 20, 20)},
+                colours(mocv(10, 10, 10, 0), 1, ambient(20, 20, 20), 0));
+    }
+
+    @Test
     void mohdFlag0x8KeepsTheColourAndAddsTheAmbient() {
         int keep = WmoInteriorLight.KEEP_COLOUR;
         assertEquals(22, WmoInteriorLight.fixed(22, 116, 33, false, keep));
@@ -71,6 +81,24 @@ class WmoInteriorLightTest {
         assertArrayEquals(
                 new int[] {WorldExteriorObjects.packColour(77, 77, 77)},
                 colours(mocv(22, 22, 22, 116), 0, ambient(33, 33, 33), keep | 0x1));
+    }
+
+    @Test
+    void mohdFlag0x2SubtractsNoBaseColourButTheAmbientIsStillAdded() {
+        int skip = WmoInteriorLight.SKIP_BASE_COLOUR;
+        // Others: ((80 * 64 >> 6) + 80 - 0) / 2 = 80, light 2 * 80 + 20 = 180 (without 0x2: 160).
+        assertEquals(80, WmoInteriorLight.fixed(80, 64, 20, false, skip));
+        assertEquals(180, WmoInteriorLight.light(80, 20));
+        // Transition: 100 * (1 - 51 / 255) / 2 = 40, light 2 * 40 + 20 = 100 (without 0x2: 84).
+        assertEquals(40, WmoInteriorLight.fixed(100, 51, 20, true, skip));
+        // A colour under the ambient is not floored away: 10 / 2 = 5, light 30.
+        assertEquals(5, WmoInteriorLight.fixed(10, 0, 20, true, skip));
+        assertArrayEquals(
+                new int[] {WorldExteriorObjects.packColour(180, 180, 180)},
+                colours(mocv(80, 80, 80, 64), 0, ambient(20, 20, 20), skip));
+        // 0x8 takes precedence: the colour is kept.
+        int both = skip | WmoInteriorLight.KEEP_COLOUR;
+        assertEquals(80, WmoInteriorLight.fixed(80, 64, 20, false, both));
     }
 
     @Test
