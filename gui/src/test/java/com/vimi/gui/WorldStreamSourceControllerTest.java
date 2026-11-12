@@ -87,6 +87,7 @@ public final class WorldStreamSourceControllerTest {
         budgetRefusedObjectsRetryAfterAReleaseOnly();
         creaturesShareTheirBytesAndYieldToBuildings();
         buildingsComeFirstAndCreaturesReplaceThemLater();
+        aSessionThatDrawsCreaturesWarmsItsPreparerOffItsThread();
         creaturePassesReuseTheBuildingsTheirBuildingsPassKept();
         keptBuildingsSurviveAPreemptionAndCloseOnceOnRetirement();
         closingWhileABuildingsPassHoldsItsKeptSetClosesIt();
@@ -1475,6 +1476,54 @@ public final class WorldStreamSourceControllerTest {
             Thread.sleep(2);
         check(preparer.sets.get() == 1 && preparer.closes.get(1).get() == 1,
                 "The held pass's kept set was closed once: " + preparer.closes);
+    }
+
+    /**
+     * A controller whose preparer appends creatures warms it once, on a thread of its own, when it
+     * starts; one whose preparer does not never warms it.
+     */
+    private static void aSessionThatDrawsCreaturesWarmsItsPreparerOffItsThread() throws Exception {
+        for (boolean creatures : new boolean[] {true, false}) {
+            var fixture = new Fixture(new AuthoredTerrainSource.Files(), 1);
+            fixture.exteriors = true;
+            var warmed = new java.util.concurrent.atomic.AtomicInteger();
+            var warmedOn = new java.util.concurrent.atomic.AtomicReference<Thread>();
+            var caller = Thread.currentThread();
+            var preparer = new WorldStreamSourceBridge.ExteriorPreparer() {
+                @Override
+                public WorldStreamSourceBridge.ExteriorCopy prepare(
+                        com.vibeminer.concepts.world.WorldTerrainStreaming source,
+                        com.vibeminer.concepts.world.WorldTerrainStreaming.Scope scope,
+                        com.vibeminer.formats.world.WorldFormats.Tile tile,
+                        com.vibeminer.access.Cancellation cancellation, int formats, long creatureBytes) {
+                    return new WorldStreamSourceBridge.ExteriorCopy(building(), 1, false, "authored");
+                }
+
+                @Override
+                public boolean appendsCreatures() {
+                    return creatures;
+                }
+
+                @Override
+                public void warm() {
+                    warmedOn.set(Thread.currentThread());
+                    warmed.incrementAndGet();
+                }
+            };
+            try {
+                fixture.start(fixture.gpu::start, () -> {}, preparer);
+                fixture.until(() -> fixture.controller.snapshot().seed() != null);
+                if (creatures) {
+                    fixture.until(() -> warmed.get() == 1);
+                    check(warmedOn.get() != caller, "Warmed off the thread that made the controller");
+                }
+                for (int i = 0; i < 50; i++) { fixture.pump(); Thread.sleep(2); }
+                check(warmed.get() == (creatures ? 1 : 0),
+                        "Warmed exactly when the preparer appends creatures: " + creatures + " " + warmed);
+            } finally {
+                fixture.close();
+            }
+        }
     }
 
     /** A replacement refused for budget leaves the drawn buildings and is not offered again at once. */

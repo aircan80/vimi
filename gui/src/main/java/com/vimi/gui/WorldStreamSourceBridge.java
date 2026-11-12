@@ -354,6 +354,9 @@ final class WorldStreamSourceBridge {
             return false;
         }
 
+        /** Starts what the creature passes will read first (their spawn index), without waiting. */
+        default void warm() {}
+
         /**
          * {@code objectFormats}: the BC formats the session's child samples as blocks (bit per
          * format code, {@code WorldStreamTransport.Session.objectFormats()}), 0 for RGBA8 only.
@@ -478,6 +481,11 @@ final class WorldStreamSourceBridge {
             @Override
             public boolean appendsCreatures() {
                 return true;
+            }
+
+            @Override
+            public void warm() {
+                creatures.warm();
             }
         };
     }

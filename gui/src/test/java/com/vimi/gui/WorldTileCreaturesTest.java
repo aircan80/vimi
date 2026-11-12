@@ -63,6 +63,7 @@ public final class WorldTileCreaturesTest {
         humanoidDisplaysSkipTheirPreview();
         aHumanoidDisplayWithoutItsModelFileIsDrawnAsAnNpc();
         failedIndexLoadsBackOff();
+        warmingLoadsTheSpawnIndexOnceAheadOfTheFirstTile();
         conversionChecksVertexValuesAndLightsMissingNormals();
         distinctModelsStopAtTheTileTextureBudget();
         theModelCacheIsBoundedByBytes();
@@ -1852,6 +1853,26 @@ public final class WorldTileCreaturesTest {
                 });
         require(previewCanceled.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE)
                 .count(WorldTileCreatures.Count.FAILED) == 1, "A canceled preview future is a failed model");
+    }
+
+    /** Warming starts the spawn index load without waiting; the first tile then uses that load. */
+    private static void warmingLoadsTheSpawnIndexOnceAheadOfTheFirstTile() throws Exception {
+        var loads = new AtomicInteger();
+        var loaded = new java.util.concurrent.CountDownLatch(1);
+        var creatures = new WorldTileCreatures(token -> {
+            loads.incrementAndGet();
+            loaded.countDown();
+            return index(List.of(WorldSpawnOverlayTest.spawn(1, 1, -100, -100, 10.0)));
+        }, () -> "r1", (npc, token) -> qualified(7, null),
+                (display, token) -> preview(display, 0L, 0L, appearance(true)));
+        creatures.warm();
+        require(loaded.await(10, java.util.concurrent.TimeUnit.SECONDS), "Warming started the load");
+        creatures.warm();
+        var summary = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(summary.drawn() == 1 && loads.get() == 1, "The first tile used the warmed load: " + loads.get());
+        creatures.close();
+        creatures.warm(); // closed: nothing happens, nothing is thrown
+        require(loads.get() == 1, "A closed source is not loaded again");
     }
 
     private static void failedIndexLoadsBackOff() {
