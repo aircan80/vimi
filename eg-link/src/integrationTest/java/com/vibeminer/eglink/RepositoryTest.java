@@ -534,7 +534,26 @@ final class RepositoryTest {
     }
 
     @Test
-    void aSnapshotThatCannotBeReleasedIsAnIssueAndStaysListed() throws Exception {
+    void aBuildNoLongerAdvertisedIsAWarningNotAFailure() throws Exception {
+        var source = new Source();
+        var builds = new HashMap<String, Object>();
+        try (var repository = crowded(source, builds)) {
+            builds.remove("1.60.1.70200");
+            index(source, builds);
+            source.revision = "b".repeat(40);
+            var synced =
+                    repository
+                            .sync(progress -> {}, held -> java.util.Set.of(), Cancellation.NONE)
+                            .join();
+            assertTrue(synced.issues().isEmpty(), synced.issues().toString());
+            assertTrue(
+                    synced.warnings().stream().anyMatch(w -> w.startsWith("No longer advertised")),
+                    synced.warnings().toString());
+        }
+    }
+
+    @Test
+    void aSnapshotThatCannotBeReleasedIsAWarningAndStaysListed() throws Exception {
         var source = new Source();
         var builds = new HashMap<String, Object>();
         var released = new java.util.ArrayList<String>();
@@ -547,13 +566,15 @@ final class RepositoryTest {
                     };
             var synced = repository.sync(progress -> {}, Cancellation.NONE).join();
             assertEquals(1, released.size(), "released before anything is deleted");
-            assertEquals(1, synced.issues().size(), synced.issues().toString());
-            assertTrue(synced.issues().getFirst().contains("file is in use"));
+            assertTrue(synced.issues().isEmpty(), "not a failure: " + synced.issues());
+            assertEquals(1, synced.warnings().size(), synced.warnings().toString());
+            assertTrue(synced.warnings().getFirst().contains("file is in use"));
             assertEquals(3, synced.snapshots().size(), "the snapshot stays, complete");
             assertEquals(3, synced.reused(), "the rest of the sync still counts");
             EgLinkRepository.releaseForTest = released::add;
             var retried = repository.sync(progress -> {}, Cancellation.NONE).join();
             assertTrue(retried.issues().isEmpty(), retried.issues().toString());
+            assertTrue(retried.warnings().isEmpty(), retried.warnings().toString());
             assertEquals(2, retried.snapshots().size(), "removed at the next sync");
         } finally {
             EgLinkRepository.releaseForTest = null;
@@ -603,7 +624,8 @@ final class RepositoryTest {
                     };
             var synced = repository.sync(progress -> {}, Cancellation.NONE).join();
             EgLinkRepository.trashedForTest = null;
-            assertEquals(1, synced.issues().size(), synced.issues().toString());
+            assertTrue(synced.issues().isEmpty(), synced.issues().toString());
+            assertEquals(1, synced.warnings().size(), synced.warnings().toString());
             assertEquals(2, synced.snapshots().size(), "the trashed snapshot is not listed");
             try (var listed = Files.list(folder.resolve("sources"))) {
                 for (Path path : listed.toList()) {

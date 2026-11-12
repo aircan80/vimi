@@ -291,7 +291,8 @@ public final class BuildApplication {
                         var comparisons = new ComparisonCoordinator(
                                 new LocalComparisonFactory(fullContexts, dataSources, comparisonWork), comparisonWork);
                         cleanup.addFirst(comparisons::closeAsync);
-                        var preparation = new BuildPreparation(fullContexts);
+                        var preparation =
+                                new BuildPreparation(fullContexts).onStart(dataSources::opened);
                         cleanup.addFirst(preparation::closeAsync);
                         cleanup.addFirst(
                                 () -> {
@@ -310,7 +311,14 @@ public final class BuildApplication {
                                                 directory),
                                         background);
                         cleanup.addFirst(downloads::closeAsync);
-                        var opening = new BuildOpening(contexts::open, state);
+                        var opening =
+                                new BuildOpening(
+                                        (info, ref, opened) -> {
+                                            // Its EG Link snapshots are kept from now on.
+                                            dataSources.opened(info);
+                                            return contexts.open(info, ref, opened);
+                                        },
+                                        state);
                         cleanup.addFirst(opening::closeAsync);
                         token.check();
                         var service =

@@ -53,15 +53,23 @@ builds therefore outlast repeated commits of the latest one, and the NPCs page c
 still find an NPC only an older build recorded.
 
 Pruning never deletes a snapshot in use: for each build saved in the library and
-each build opened this session, the newest compatible prepared snapshot holding
-each dataset is kept, and so is any snapshot downloaded or prepared by hand this
-session. These are kept on top of the ten. Removing a snapshot first closes what the
+each recently opened build, the newest compatible prepared snapshot holding each
+dataset is kept, and so is any snapshot downloaded or prepared by hand this session.
+These are kept on top of the ten. A build counts as opened when a workspace opens
+it, a preparation job starts for it, or its NPC, quest or location sources are
+read; the last 32 are remembered across restarts. Only that newest compatible
+snapshot per dataset is protected: older compatible commits of the same builds, which
+the NPCs page also tries, survive only while they rank within the ten. Removing a snapshot first closes what the
 repository holds open for it, then renames its folder atomically to a trash name (a
 crash never leaves a listed snapshot without its manifest), then deletes its
 database and the trash; leftover trash and orphaned databases are purged at the next
 sync. A snapshot that cannot be removed now (Windows refuses to delete a file
-another handle holds) is reported as a sync issue and tried again next time; the
-downloads and preparation of that sync still stand.
+another handle holds) is a warning and is tried again next time.
+
+A sync fails only when a build could not be downloaded or prepared. Warnings (a
+build no longer advertised, its data retained; an older snapshot left for the next
+sync; pruning skipped because what is in use could not be determined) leave it
+completed, and Data Sources shows them as "Completed with notes".
 
 The unchanged-build check compares only what the index declares per dataset
 (records, sources and collection date); it declares no content digest. A build

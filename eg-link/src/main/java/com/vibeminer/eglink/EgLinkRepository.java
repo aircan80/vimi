@@ -191,14 +191,15 @@ public final class EgLinkRepository implements AutoCloseable {
                                                 : before);
                     }
                     var issues = new ArrayList<String>();
+                    var warnings = new ArrayList<String>();
                     for (Snapshot snapshot : installed) {
                         String key = snapshot.build().product() + "/" + snapshot.build().version();
                         Build current = advertised.get(key);
                         if (current != null) {
                             targets.put(key, current);
-                        } else if (!issues.contains(
+                        } else if (!warnings.contains(
                                 "No longer advertised: " + key + "; local data retained")) {
-                            issues.add("No longer advertised: " + key + "; local data retained");
+                            warnings.add("No longer advertised: " + key + "; local data retained");
                         }
                     }
                     latest.values()
@@ -283,15 +284,16 @@ public final class EgLinkRepository implements AutoCloseable {
                     } catch (RuntimeException failure) {
                         // Without knowing what is in use, nothing is pruned this time.
                         kept = null;
-                        issues.add("Older snapshots were kept: " + failure.getMessage());
+                        warnings.add("Older snapshots were kept: " + failure.getMessage());
                     }
-                    int pruned = kept == null ? 0 : prune(held, kept, issues, token);
+                    int pruned = kept == null ? 0 : prune(held, kept, warnings, token);
                     if (pruned > 0) {
                         progress.accept(
                                 new Progress(
                                         "Removed " + pruned + " older EG Link snapshots", 1, 1));
                     }
-                    return new EgLinkTypes.Sync(local(token), downloaded, prepared, reused, issues);
+                    return new EgLinkTypes.Sync(
+                            local(token), downloaded, prepared, reused, issues, warnings);
                 });
     }
 
@@ -347,8 +349,8 @@ public final class EgLinkRepository implements AutoCloseable {
     /**
      * Deletes each product's snapshots beyond the retained count, except those in {@code keep}; the
      * number deleted. A snapshot that cannot be removed now (a file another process holds open, as
-     * Windows refuses to delete it) is an issue, never a sync failure: it stays listed and is tried
-     * again at the next sync.
+     * Windows refuses to delete it) is a warning, never a sync failure: it stays listed and is
+     * tried again at the next sync.
      */
     private int prune(
             List<Snapshot> snapshots, Set<String> keep, List<String> issues, Cancellation token)
