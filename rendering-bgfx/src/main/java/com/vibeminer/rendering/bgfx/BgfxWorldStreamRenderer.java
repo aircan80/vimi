@@ -833,7 +833,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private int[] horizonDrawRanges = new int[0];
     private int frameHorizonSubmits;
     private int horizonStagedBytes;
-    // Samples of the target this renderer draws into; above 1, cutouts use alpha to coverage.
+    // Samples of the target this renderer draws into; see cutoutCoverage.
     private int targetSamples = 1;
     // Optional exterior objects pass (existing world-wmo shaders); INVALID program disables it.
     private short wmoProgram = INVALID, wmoEye = INVALID, wmoProjection = INVALID;
@@ -2572,7 +2572,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             }
             // One fixed set of object uniform buffers per frame: per-placement work allocates
             // nothing on the frame's MemoryStack, whatever the number of placements.
-            var frame = wmoProgram == INVALID ? null : ObjectFrame.on(stack, targetSamples > 1);
+            var frame =
+                    wmoProgram == INVALID
+                            ? null
+                            : ObjectFrame.on(stack, cutoutCoverage(targetSamples));
             framePlacements = frameCulled = frameObjectSubmits = frameSortedSubmits = 0;
             frameInstances = frameInstancesDropped = 0;
             framePortalWalks = framePortalCulled = framePortalPlacementsCulled = 0;
@@ -2929,6 +2932,22 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     static final int OBJECT_SAMPLER_FLAGS =
             org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MIN_ANISOTROPIC
                     | org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MAG_ANISOTROPIC;
+
+    /**
+     * Whether cutout ranges use alpha to coverage on a multisampled target. They do not: on an
+     * integrated GPU (Intel UHD 770) it took Goldshire's rotate p95 from 18 to 30 ms, all of it in
+     * the cutout object ranges. Keeping it only for placements near the camera does not help: the
+     * cost comes from the dense mid-distance foliage, beyond about 40 yd under the canopy and 160
+     * yd above it, and that is also the only place it visibly softens leaf silhouettes against the
+     * sky; within a band cheap enough to keep 18 ms it changed no pixels. The coverage path stays
+     * for a later per-GPU setting.
+     */
+    static final boolean CUTOUT_COVERAGE = false;
+
+    /** Whether cutouts use alpha to coverage on a target with {@code samples} samples. */
+    static boolean cutoutCoverage(int samples) {
+        return CUTOUT_COVERAGE && samples > 1;
+    }
 
     /**
      * The u_wmoMaterial value of cutout ranges. Multisampled, z turns the alpha test into an alpha

@@ -359,9 +359,10 @@ final class WorldStreamObjectsCullProof {
     static final double FAR_FOG_DEPTH = 2190;
 
     /**
-     * A fresh context drawing only {@link #coverageQuad}. Multisampled, cutouts use alpha to
-     * coverage, so the quad's alpha edge resolves with pixels that mix yellow and the background;
-     * single-sampled, the plain alpha test leaves none. Returns the count of such pixels.
+     * A fresh context drawing only {@link #coverageQuad}. With alpha to coverage (see {@link
+     * BgfxWorldStreamRenderer#cutoutCoverage}) the quad's alpha edge resolves with pixels that mix
+     * yellow and the background; with the plain alpha test, multisampled or not, it leaves none.
+     * Returns the count of such pixels.
      */
     @SuppressWarnings("try")
     static int coverage(Path base) throws Exception {
@@ -442,7 +443,7 @@ final class WorldStreamObjectsCullProof {
             }
             require(yellow > 2000, "Coverage quad drawn: " + yellow);
             require(
-                    samples > 1 ? partial >= 50 : partial == 0,
+                    BgfxWorldStreamRenderer.cutoutCoverage(samples) ? partial >= 50 : partial == 0,
                     "Cutout edge pixels " + partial + " at " + samples + " samples");
             // Fog near the cut, above the horizon. The far quad (rows 50..210, x 280..520) is at
             // 2190 yd; its opaque part at pixel (300, 100) fades almost fully toward the sky at

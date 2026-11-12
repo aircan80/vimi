@@ -2,6 +2,7 @@ package com.vibeminer.rendering.bgfx;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -145,6 +146,17 @@ class WorldFogTest {
                 new float[] {BgfxWorldStreamRenderer.CUTOUT_REFERENCE, 0, 0, 0},
                 BgfxWorldStreamRenderer.cutoutMaterial(false));
         assertEquals(BgfxWorldWmoPass.DRAW_STATE, BgfxWorldStreamRenderer.cutoutState(false));
+    }
+
+    /**
+     * Alpha to coverage is off on every target, multisampled or not (its cost, see the constant).
+     */
+    @Test
+    void cutoutsUseThePlainAlphaTestOnEveryTarget() {
+        assertFalse(BgfxWorldStreamRenderer.CUTOUT_COVERAGE);
+        for (int samples : new int[] {1, 2, 4, 8}) {
+            assertFalse(BgfxWorldStreamRenderer.cutoutCoverage(samples), samples + " samples");
+        }
     }
 
     /** A recorded sky with fog fully recorded (weight 1) from 250 yd to {@code end}. */
