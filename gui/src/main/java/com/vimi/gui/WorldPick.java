@@ -258,6 +258,8 @@ final class WorldPick {
             case CREATURE_PROTECTED -> "creature encrypted";
             case CREATURE_UNREADABLE -> "creature unreadable";
             case NO_CREATURE_DATA -> "no creature data";
+            case OBSERVED_DISPLAY -> "observed display";
+            case OBSERVED_MALFORMED -> "observed record malformed";
         };
     }
 

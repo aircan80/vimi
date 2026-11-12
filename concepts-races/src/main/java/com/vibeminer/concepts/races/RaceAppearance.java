@@ -37,6 +37,9 @@ final class RaceAppearance {
     private final RaceAppearancePlan plans;
     private final RacesService service;
 
+    /** The handle's persistent NPC appearance index, or null without one. */
+    private final RaceNpcIndex index;
+
     static final int MAX_REMEMBERED = 6;
     static final long MAX_REMEMBERED_BYTES = 160L << 20;
 
@@ -67,12 +70,19 @@ final class RaceAppearance {
         this.files = files;
         this.generated = generated;
         this.service = owner;
+        this.index = owner.npcIndex;
         plans = new RaceAppearancePlan(owner, media, tables);
     }
 
     boolean available() {
         return files != null && generated != null;
     }
+
+    /**
+     * What a complete NPC appearance is indexed under ({@link RaceNpcIndex}): its extended display
+     * ID and the omission counts its answer carries.
+     */
+    record Indexing(long extendedDisplayInfoId, int omittedItems, int omittedAttachments) {}
 
     record Prepared(
             RaceMediaTypes.Preview base,
@@ -83,10 +93,24 @@ final class RaceAppearance {
             String request,
             java.util.Map<Long, String> sources,
             long raceId,
-            RaceAppearancePlan.Npc npc) {
+            RaceAppearancePlan.Npc npc,
+            Indexing indexing) {
         Prepared {
             issues = List.copyOf(issues);
             sources = sources == null ? java.util.Map.of() : java.util.Map.copyOf(sources);
+        }
+
+        Prepared(
+                RaceMediaTypes.Preview base,
+                RaceAppearancePlan.Plan plan,
+                GeneratedKey key,
+                List<String> issues,
+                RaceAppearanceTypes.Result finished,
+                String request,
+                java.util.Map<Long, String> sources,
+                long raceId,
+                RaceAppearancePlan.Npc npc) {
+            this(base, plan, key, issues, finished, request, sources, raceId, npc, null);
         }
 
         Prepared(
@@ -239,13 +263,108 @@ final class RaceAppearance {
      * RaceAppearancePlan.Npc}). What its items leave undrawn is counted by {@link #npcOmissions}.
      */
     Prepared prepareNpc(RaceNpcs.Spec spec, Cancellation token) {
-        return prepare(
-                spec.raceId(),
-                spec.classId(),
-                spec.variant().chrModelId(),
-                token,
-                spec.choices(),
-                new RaceAppearancePlan.Npc(spec.items(), spec.bakeFileDataId()));
+        return prepareNpc(spec, token, null);
+    }
+
+    /** As above; a complete appearance is then written to the index under {@code indexing}. */
+    Prepared prepareNpc(RaceNpcs.Spec spec, Cancellation token, Indexing indexing) {
+        var prepared =
+                prepare(
+                        spec.raceId(),
+                        spec.classId(),
+                        spec.variant().chrModelId(),
+                        token,
+                        spec.choices(),
+                        new RaceAppearancePlan.Npc(spec.items(), spec.bakeFileDataId()));
+        return indexing == null || prepared.finished() != null
+                ? prepared
+                : new Prepared(
+                        prepared.base(),
+                        prepared.plan(),
+                        prepared.key(),
+                        prepared.issues(),
+                        null,
+                        prepared.request(),
+                        prepared.sources(),
+                        prepared.raceId(),
+                        prepared.npc(),
+                        indexing);
+    }
+
+    /**
+     * An NPC's appearance from the index ({@link RaceNpcIndex}), its composite restored: null when
+     * there is no entry, anything it was built from changed, or the composite cannot be restored.
+     */
+    RaceNpcs.Appearance indexed(long extendedDisplayInfoId, Cancellation token) {
+        if (index == null || files == null || generated == null) {
+            return null;
+        }
+        var entry = index.find(extendedDisplayInfoId, token);
+        if (entry == null) {
+            return null;
+        }
+        var restored = restore(entry.composite(), entry.modelFileDataId(), token);
+        if (restored == null) {
+            return null;
+        }
+        token.check();
+        return new RaceNpcs.Appearance(
+                new RaceAppearanceTypes.Result(
+                        RaceTypes.State.PARTIAL,
+                        restored.appearance(),
+                        entry.visible(),
+                        entry.items(),
+                        entry.issues(),
+                        true,
+                        null),
+                entry.omittedItems(),
+                entry.omittedAttachments(),
+                null,
+                false);
+    }
+
+    /** Whether an NPC's items include one that may attach a model (a helmet or shoulders). */
+    static boolean attaches(RaceAppearancePlan.Npc npc) {
+        return npc.items().stream()
+                .anyMatch(
+                        item ->
+                                item.slot() == RaceNpcAttachments.HEAD_SLOT
+                                        || item.slot() == RaceNpcAttachments.SHOULDER_SLOT);
+    }
+
+    /**
+     * Writes a complete NPC appearance to the index: its prepared sources with the content keys the
+     * composite's key named, its skeleton, and the attached item files.
+     */
+    private void index(
+            Prepared prepared,
+            RaceAppearanceTypes.Result result,
+            long skeleton,
+            String skeletonContent,
+            Set<Long> attached,
+            Cancellation token) {
+        var indexing = prepared.indexing();
+        if (index == null
+                || indexing == null
+                || prepared.key() == null
+                || prepared.sources().isEmpty()
+                || skeleton != 0 && skeletonContent == null) {
+            return;
+        }
+        var known = new java.util.TreeMap<>(prepared.sources());
+        if (skeleton != 0) {
+            known.put(skeleton, skeletonContent);
+        }
+        index.write(
+                indexing.extendedDisplayInfoId(),
+                prepared.key(),
+                prepared.base().variant().modelFileDataId(),
+                result,
+                indexing.omittedItems(),
+                indexing.omittedAttachments(),
+                known,
+                attached,
+                token);
     }
 
     /** What the NPC's items leave undrawn (item models and unread displays). */
@@ -433,6 +552,21 @@ final class RaceAppearance {
                 var result = result(restored.appearance(), visible, plan, issues, true);
                 token.check();
                 remember(prepared, result, restored.skeleton(), restored.skeletonContent());
+                // An NPC whose items may attach models is indexed after a restore only when the
+                // composite recorded the item files its attachments came from.
+                Set<Long> attachedFiles = Set.of();
+                if (prepared.npc() != null && attaches(prepared.npc()) && index != null) {
+                    attachedFiles = index.attachments(key, token);
+                }
+                if (attachedFiles != null) {
+                    index(
+                            prepared,
+                            result,
+                            restored.skeleton(),
+                            restored.skeletonContent(),
+                            attachedFiles,
+                            token);
+                }
                 return result;
             }
             var images = new BlpImages(generated);
@@ -703,6 +837,7 @@ final class RaceAppearance {
             }
             var appearance = new MeshAppearance(mesh, uv, normals, bindings, textures);
             var visible = base.visibleParts();
+            Set<Long> attachedFiles = Set.of();
             if (prepared.npc() != null) {
                 var attached =
                         RaceNpcAttachments.attach(
@@ -721,8 +856,12 @@ final class RaceAppearance {
                 visible = attached.visible();
                 // An item or texture not readable yet: shown, but not saved or remembered.
                 complete &= attached.complete();
+                attachedFiles = attached.files();
                 attached.notes().forEach(text -> note(issues, text));
                 npcFacts(appearance, issues);
+            }
+            if (complete && prepared.npc() != null && index != null) {
+                index.attachments(key, attachedFiles, token);
             }
             if (complete) {
                 save(
@@ -742,6 +881,7 @@ final class RaceAppearance {
             if (complete) {
                 token.check();
                 remember(prepared, result, skeletonId, skeletonContent);
+                index(prepared, result, skeletonId, skeletonContent, attachedFiles, token);
             }
             return result;
         } catch (RacesService.Projection unavailable) {

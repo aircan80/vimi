@@ -103,6 +103,103 @@ class NpcDisplaysTest {
         assertEquals(NpcDisplays.Source.NONE, NpcDisplays.resolve(null, "client", null).source());
     }
 
+    @Test
+    void aMalformedRecordIsStatedAsSuchNeverAsNoDisplay() {
+        var malformed =
+                new NpcDisplays.External("EG Link 70888", List.of(), "displays is not a list");
+        assertTrue(malformed.malformed());
+        var only = NpcDisplays.resolve(absent(), "client", List.of(malformed), id -> false);
+        assertEquals(NpcDisplays.Source.NONE, only.source());
+        assertEquals(1, only.malformed());
+        assertEquals(
+                "No client Creature record for this NPC; the outside source's record for this NPC"
+                        + " is malformed (EG Link 70888: displays is not a list)",
+                only.detail());
+        // An older source that records displays is used, and the malformed one is stated.
+        var older =
+                new NpcDisplays.External(
+                        "EG Link 70862", List.of(new NpcDisplays.Candidate(2029, 1.0, 1.0)));
+        var drawn = NpcDisplays.resolve(absent(), "client", List.of(malformed, older), id -> false);
+        assertEquals(2029, drawn.shown().displayId());
+        assertEquals(1, drawn.malformed());
+        assertTrue(
+                drawn.detail().contains("one outside record for this NPC is malformed"),
+                drawn.detail());
+        // Beside a source that records no display, the malformed one is still named.
+        var empty = new NpcDisplays.External("EG Link 70862", List.of());
+        var none = NpcDisplays.resolve(absent(), "client", List.of(malformed, empty), id -> false);
+        assertTrue(none.detail().contains("is malformed"), none.detail());
+        assertTrue(
+                org.junit.jupiter.api.Assertions.assertThrows(
+                                IllegalArgumentException.class,
+                                () ->
+                                        new NpcDisplays.External(
+                                                "x",
+                                                List.of(new NpcDisplays.Candidate(1, 1, null)),
+                                                "bad"))
+                        != null);
+    }
+
+    @Test
+    void sourcesAreTriedInOrderAndADisplayMissingFromTheBuildFallsThrough() {
+        var downloaded =
+                new NpcDisplays.External(
+                        "EG Link 70888", List.of(new NpcDisplays.Candidate(900, 1.0, 1.0)));
+        var older =
+                new NpcDisplays.External(
+                        "EG Link 70862", List.of(new NpcDisplays.Candidate(2029, 1.0, 1.0)));
+        var bundled =
+                new NpcDisplays.External(
+                        "EG Link 70862 (bundled)",
+                        List.of(new NpcDisplays.Candidate(2029, 1.0, 1.0)));
+        var absent = absent();
+        // The first source with a display wins.
+        var first = NpcDisplays.resolve(absent, "client", List.of(downloaded, older), id -> false);
+        assertEquals(900, first.shown().displayId());
+        assertEquals("EG Link 70888", first.provenance());
+        // A display the build's CreatureDisplayInfo proves missing: the next source.
+        var next =
+                NpcDisplays.resolve(
+                        absent, "client", List.of(downloaded, older, bundled), id -> id == 900);
+        assertEquals(2029, next.shown().displayId());
+        assertEquals("EG Link 70862", next.provenance());
+        assertTrue(next.detail().contains("one newer source had none"), next.detail());
+        // An empty source falls through to the bundled one.
+        var empty = new NpcDisplays.External("EG Link 70888", List.of());
+        var fallback = NpcDisplays.resolve(absent, "client", List.of(empty, bundled), id -> false);
+        assertEquals("EG Link 70862 (bundled)", fallback.provenance());
+        // Nothing left anywhere.
+        var none = NpcDisplays.resolve(absent, "client", List.of(downloaded, older), id -> true);
+        assertEquals(NpcDisplays.Source.NONE, none.source());
+        assertTrue(none.detail().contains("no outside source records"), none.detail());
+    }
+
+    @Test
+    void aClientDisplayMissingFromTheBuildFallsThroughToTheOutsideSources() {
+        var resolution =
+                NpcDisplays.resolve(
+                        found(new int[] {12}, new float[] {1}),
+                        "client",
+                        List.of(EG),
+                        id -> id == 12);
+        assertEquals(NpcDisplays.Source.EXTERNAL, resolution.source());
+        assertTrue(
+                resolution.detail().contains("The client Creature record's displays are not in"),
+                resolution.detail());
+        var kept =
+                NpcDisplays.resolve(
+                        found(new int[] {12, 13}, new float[] {1, 1}),
+                        "client",
+                        List.of(EG),
+                        id -> id == 12);
+        assertEquals(NpcDisplays.Source.CLIENT, kept.source());
+        assertEquals(13, kept.shown().displayId());
+    }
+
+    private static CreatureResult absent() {
+        return new CreatureResult(CreatureResultState.ABSENT, null, null, null, null, null);
+    }
+
     private static CreatureResult found(int[] displays, float[] probabilities) {
         var slots = new ArrayList<CreatureDisplaySlot>();
         for (int slot = 0; slot < displays.length; slot++) {

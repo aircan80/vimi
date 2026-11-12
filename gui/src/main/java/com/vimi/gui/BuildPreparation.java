@@ -142,6 +142,15 @@ public final class BuildPreparation {
     private boolean closed;
     private long generation;
 
+    /** Told of each build a preparation job starts for (the EG Link keep-set records it). */
+    private volatile java.util.function.Consumer<BuildInfo> started = build -> {};
+
+    /** Sets who is told of each build a preparation job starts for. */
+    BuildPreparation onStart(java.util.function.Consumer<BuildInfo> listener) {
+        started = Objects.requireNonNull(listener);
+        return this;
+    }
+
     public BuildPreparation(Factory factory) {
         this(factory, command -> Thread.startVirtualThread(command));
     }
@@ -196,6 +205,7 @@ public final class BuildPreparation {
                         job.retired.isDone()
                                 && (!context.enrichingNames || context.namesOwner != job));
         if (force && !context.enrichingNames) context.namesStarted = false;
+        started.accept(build);
         var job = new Job(build, source, locale, ++generation, context, prior, force);
         context.generations.add(job);
         jobs.put(identity, job);

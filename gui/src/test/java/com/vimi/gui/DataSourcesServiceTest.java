@@ -21,6 +21,32 @@ import java.util.concurrent.CompletionException;
 public final class DataSourcesServiceTest {
     private DataSourcesServiceTest() {}
 
+    static void egLinkSyncWarningsCompleteAndFailuresFail() {
+        var warned =
+                new com.vibeminer.eglink.EgLinkTypes.Sync(
+                        java.util.List.of(), 0, 0, 2, java.util.List.of(),
+                        java.util.List.of("No longer advertised: wowf/1.60.1.70100; local data retained"));
+        String notes = DataSourcesService.egLinkOutcome(warned);
+        require(notes != null && notes.startsWith("No longer advertised"),
+                "A sync with only warnings completes with its notes");
+        require(DataSourcesService.completed(notes).startsWith("Completed with notes: No longer"),
+                "The completed status carries the notes");
+        require(DataSourcesService.completed(null).equals("Completed"), "No notes, plain status");
+        require(DataSourcesService.egLinkOutcome(
+                        new com.vibeminer.eglink.EgLinkTypes.Sync(java.util.List.of(), 1, 1, 0, java.util.List.of(), java.util.List.of()))
+                        == null, "A clean sync has no notes");
+        try {
+            DataSourcesService.egLinkOutcome(
+                    new com.vibeminer.eglink.EgLinkTypes.Sync(
+                            java.util.List.of(), 0, 0, 0, java.util.List.of("wowf 1.60.1.70888: download failed"),
+                            java.util.List.of("Could not remove older snapshot wowf 1.60.1.70100 now")));
+            throw new AssertionError("A failed download fails the sync");
+        } catch (IllegalStateException expected) {
+            require(expected.getMessage().contains("download failed"),
+                    "The failure is what the job reports");
+        }
+    }
+
     public static void main(String[] args) throws Exception {
         Path directory = Files.createTempDirectory("vimi-source-settings-");
         try {
@@ -42,6 +68,7 @@ public final class DataSourcesServiceTest {
                             && history.contains("1.60.1.70862")
                             && history.contains("https://github.com/JIVESCORP/eg-link-output-wowf"),
                     "Settings attributes the bundled EG Link NPC history with builds, license and source");
+            egLinkSyncWarningsCompleteAndFailuresFail();
             mappingRules();
             require(DataSourcesService.compatibleNpcBuild("1.60.1.70532","1.60.1.70707"),"Older same-patch source is eligible");
             require(!DataSourcesService.compatibleNpcBuild("1.60.1.70707","1.60.1.70532"),"Newer sources do not leak backwards");
@@ -341,6 +368,23 @@ public final class DataSourcesServiceTest {
                     require(
                             sources.mapping(build).versionId() == null,
                             "No default database is invented");
+                    var other =
+                            new BuildInfo(
+                                    "wowf", "Forever", "1.60.1.70001", "us", "b".repeat(32),
+                                    BuildInfo.BuildSource.SAVED, false, null, 0);
+                    sources.opened(build);
+                    sources.opened(other);
+                    sources.opened(build); // reopened: moves to the end
+                    sources.opened(build); // already last: no change
+                    require(
+                            sources.openedBuilds()
+                                    .equals(
+                                            java.util.List.of(
+                                                    new DataSourcesService.BuildKey(
+                                                            "wowf", "1.60.1.70001"),
+                                                    new DataSourcesService.BuildKey(
+                                                            "wowf", "1.60.1.70000"))),
+                            "Opened builds are most recently used last");
                     sources.setMapping(build, "TBC").join();
                     sources.setEnabled(DataSourcesService.Id.LISTFILE, false).join();
                     sources.setEnabled(DataSourcesService.Id.QUESTIE, false).join();
@@ -375,6 +419,15 @@ public final class DataSourcesServiceTest {
                     require(
                             "TBC".equals(reopened.mapping(build).choice()),
                             "Build override survives restart");
+                    require(
+                            reopened.openedBuilds()
+                                    .equals(
+                                            java.util.List.of(
+                                                    new DataSourcesService.BuildKey(
+                                                            "wowf", "1.60.1.70001"),
+                                                    new DataSourcesService.BuildKey(
+                                                            "wowf", "1.60.1.70000"))),
+                            "Opened builds and their order survive a restart for EG Link pruning");
                     reopened.setChecks(
                                     DataSourcesService.Id.QUESTIE, DataSourcesService.Checks.MANUAL)
                             .join();

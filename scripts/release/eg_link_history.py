@@ -15,9 +15,9 @@ without displays are skipped. Each line keeps the build, commit and collection d
 The window is the last --days days by default; --since and --until (git dates, for example
 2026-09-26 or a full timestamp) pin it, so the same range regenerates the same file.
 
-The output is deterministic for the same commits: a sorted UTF-8 text file (about 120 KB for
-5,000 NPCs, so it stays readable in review), and a NOTICE.md with the CC BY 4.0 attribution, the
-commit range and the file's SHA-256.
+The output is deterministic for the same commits: a sorted UTF-8 text file (about 262 KB, 11,219
+lines for 5,001 NPCs, so it stays readable in review), and a NOTICE.md with the CC BY 4.0
+attribution, the window, the commit range and the file's SHA-256.
 """
 
 from __future__ import annotations
@@ -156,7 +156,9 @@ def render(merged: dict, product: str, locale: str, commits: list) -> bytes:
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
-def notice(decoded: bytes, product: str, locale: str, commits: list, merged: dict) -> str:
+def notice(
+    decoded: bytes, product: str, locale: str, commits: list, merged: dict, window: str = ""
+) -> str:
     ordered = sorted(commits, key=lambda c: (c.committed_at, c.sha))
     builds = sorted({source.build for _, source in merged.values()}, key=build_key)
     first, last = (ordered[0], ordered[-1]) if ordered else (None, None)
@@ -169,6 +171,7 @@ def notice(decoded: bytes, product: str, locale: str, commits: list, merged: dic
             "retains ownership of the game content the observations describe.",
             "",
             f"Source: {UPSTREAM}",
+            f"Window: {window}." if window else "Window: not recorded.",
             f"Product {product}, dataset creature_details.{locale}, builds {', '.join(builds)}.",
             f"Commits: {len(ordered)}, from {first.sha} ({first.committed_at})"
             f" to {last.sha} ({last.committed_at})."
@@ -266,7 +269,14 @@ def main(argv: list | None = None) -> int:
         return 1
     merged = merge(commits)
     decoded = render(merged, args.product, args.locale, commits)
-    write(args.out, decoded, notice(decoded, args.product, args.locale, commits, merged))
+    window = (
+        f"--since {args.since}" if args.since else f"--days {args.days}"
+    ) + (f" --until {args.until}" if args.until else "")
+    write(
+        args.out,
+        decoded,
+        notice(decoded, args.product, args.locale, commits, merged, window),
+    )
     newest = max(commits, key=lambda c: (c.committed_at, c.sha))
     latest = max(newest.files, key=build_key)
     single = sum(
