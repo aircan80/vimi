@@ -108,7 +108,7 @@ terrain-matching fog, opaque texture). A spawn is drawn only when all of these h
 | Appearance | `ExtendedDisplayInfoID` is 0 (character appearance is not evaluated) | character appearance not evaluated |
 | Visibility | `CreatureGeosetDataID` is 0 and every section is geoset 0 | surface visibility unresolved |
 | Surfaces | at least one section with an opaque diffuse material and a texture. Alpha-keyed, additive, environment-mapped, unbound and rigid-card sections are left out | no opaque textured surface |
-| Budget | at most 8 models, 32 placements and 16 preview loads per tile, at most 32,768 vertices per model, and the shared objects file profile left over after buildings (64 placements, 24 models, 64 images, 1 Mi pixels, 4,096 draws per tile) | over the tile budget |
+| Budget | at most 256 placements, 48 preview loads and 64 models per tile, with the models' textures within 12 MiB per tile, at most 32,768 vertices per model, and the shared objects file profile left over after buildings (64 placements, 24 models, 64 images, 1 Mi pixels, 4,096 draws per tile) | over the tile budget |
 
 Selection goes nearest to the tile centre first, so it never depends on the camera. Models
 are added whole or not at all. Once a tile has no placement or draw room left, the remaining
@@ -125,13 +125,14 @@ model origin. Its scale is `CreatureDisplayInfo.CreatureModelScale × CreatureMo
 when both are recorded once (`CreatureModelPolicy.scale`), and 1 otherwise. A server-side
 creature scale is not client data and is not applied. The source records no facing, so every
 model faces native north (M2 +X to native +X, the identity heading). Textures are box-filtered
-to power-of-two sides of at most 128 px and drawn opaque. Vertices are compacted to the drawn
+to power-of-two sides of at most 256 px (128 px for humanoid NPCs' pre-baked textures). Vertices are compacted to the drawn
 triangles. A vertex value outside the objects file profile refuses that model, not the tile.
 Without recorded normals the model is lit as if facing up.
 
 The World status line adds, for example, `; 7 static creature models on 2 tiles (rest pose,
 facing north); spawns not drawn: 12 no single qualified model, 3 character appearance not
-evaluated`. The spawn index, choices (≤ 4,096) and converted models (≤ 32) are cached per
+evaluated`. The spawn index, choices (≤ 4,096) and converted models (≤ 128 MiB of vertices,
+indices and textures) are cached per
 source revision (Polestar selection plus workspace revision). The index loads once, on its
 own daemon thread, and preempted object work waits for it without cancelling it. A failed load
 is reused for one minute within its revision, so a broken source does not cost one load per
@@ -140,7 +141,7 @@ tile. Creatures are independent of the **NPC spawns** marker toggle.
 Creatures are **opt-in** until they are measured on real data: start the GUI with
 `-Dvimi.world.creatures=true` (exteriors must also be on). While they are on, a tile's
 buildings are delivered only after its creature work ends: the first spawn index load, choice
-lookups and up to 16 preview loads.
+lookups and up to 48 preview loads.
 
 ## Limitations
 

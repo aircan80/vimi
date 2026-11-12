@@ -65,13 +65,43 @@ final class WorldTileCreatures implements AutoCloseable {
     /** Range class flag: drawn at full intensity, without the light (objects file). */
     static final int UNLIT = com.vibeminer.rendering.world.WorldObjectPicking.UNLIT;
 
-    /** Per tile, on top of the shared objects file profile that buildings use first. */
-    static final int TILE_MODELS = 8, TILE_PLACEMENTS = 32, TILE_PREVIEWS = 16;
+    /**
+     * Per-tile bounds, on top of the shared objects file profile that buildings use first. Sized
+     * from the measured need with the EG Link display fallback (70862): busy town tiles hold up
+     * to 223 spawns and 109 distinct displays. Placements reuse a model and cost little, so up to
+     * {@value #TILE_PLACEMENTS} are drawn. Distinct models are bounded by their texture bytes
+     * ({@link #TILE_TEXTURE_BYTES}), with {@value #TILE_MODELS} as a hard ceiling, and at most
+     * {@value #TILE_PREVIEWS} new displays are converted per tile so one tile cannot stall the
+     * rest. Creatures are opt-in, so this memory is spent only when the user enables them.
+     */
+    static final int TILE_MODELS = 64, TILE_PLACEMENTS = 256, TILE_PREVIEWS = 48;
+
+    /**
+     * The texture bytes (RGBA8 mip chains) one tile's distinct creature models may use. A trial
+     * with 24 models a tile measured up to 10.5 MB on the busiest tiles; the shared tile file
+     * holds about 18.7 MB of images in all, and buildings draw first.
+     */
+    static final long TILE_TEXTURE_BYTES = 12L << 20;
 
     /** Whole-model ceiling so one creature never takes a building tile's budget. */
     static final int MODEL_VERTICES = 32_768, MODEL_INDICES = 98_304;
 
-    static final int MODEL_CACHE = 32, CHOICE_CACHE = 4096;
+    static final int CHOICE_CACHE = 4096;
+
+    /**
+     * Converted models are remembered across tiles up to this many bytes (vertices, indices and
+     * texture chains). An area with the EG Link fallback uses 49-189 distinct models; a count of
+     * 32 evicted them, so warm passes converted again.
+     */
+    static final long MODEL_CACHE_BYTES = 128L << 20;
+
+    /**
+     * Humanoid NPC appearances draw their pre-baked texture at most this many pixels a side, a
+     * quarter of the texture memory of {@link #IMAGE_SIDE}: busy town tiles hold dozens of them.
+     * Their canvases are already at most 256 pixels a side, and close-up renders of town NPCs at
+     * 256 and 128 showed no visible difference, so one side serves every distance.
+     */
+    static final int NPC_IMAGE_SIDE = 128;
 
     /** Back-off before a failed spawn index load is tried again within one revision. */
     static final long INDEX_RETRY_NANOS = 60_000_000_000L;
@@ -366,7 +396,7 @@ final class WorldTileCreatures implements AutoCloseable {
     private final Previews previews;
     private final Npcs npcs;
     private final Map<Long, Chosen> choices = lru(CHOICE_CACHE);
-    private final Map<Long, Converted> models = lru(MODEL_CACHE);
+    private final Map<Long, Converted> models = byteBounded(MODEL_CACHE_BYTES);
     private Object cachedRevision;
     private CompletableFuture<WorldSpawns.Index> index;
     private long indexFailedAt;
@@ -397,6 +427,46 @@ final class WorldTileCreatures implements AutoCloseable {
         this.revision = Objects.requireNonNull(revision);
         this.chooser = Objects.requireNonNull(chooser);
         this.previews = Objects.requireNonNull(previews);
+    }
+
+    /** An access-ordered map that drops its eldest models past {@code limit} bytes. */
+    static Map<Long, Converted> byteBounded(long limit) {
+        return new LinkedHashMap<>(64, .75f, true) {
+            private long bytes;
+
+            @Override
+            public Converted put(Long key, Converted value) {
+                var before = super.put(key, value);
+                bytes += bytes(value) - (before == null ? 0 : bytes(before));
+                var eldest = entrySet().iterator();
+                while (bytes > limit && size() > 1 && eldest.hasNext()) {
+                    var entry = eldest.next();
+                    bytes -= bytes(entry.getValue());
+                    eldest.remove();
+                }
+                return before;
+            }
+
+            @Override
+            public Converted remove(Object key) {
+                var before = super.remove(key);
+                if (before != null) bytes -= bytes(before);
+                return before;
+            }
+
+            @Override
+            public void clear() {
+                super.clear();
+                bytes = 0;
+            }
+        };
+    }
+
+    /** The bytes one remembered conversion holds; a refusal holds next to none. */
+    static long bytes(Converted converted) {
+        var m = converted.model();
+        if (m == null) return 64;
+        return (long) m.vertices().length * 4 + (long) m.indices().length * 4 + m.pixels() * 4 + 256;
     }
 
     private static <V> Map<Long, V> lru(int capacity) {
@@ -527,6 +597,7 @@ final class WorldTileCreatures implements AutoCloseable {
         var added = new HashMap<Long, Integer>();
         var placed = new java.util.ArrayList<WorldObjectPicks.Creature>();
         int placements = 0, previewsTried = 0;
+        long textureBytes = 0;
         // Displays whose preview was busy, or whose NPC appearance cannot be read yet, on this
         // tile: not asked again for every later spawn.
         var busyDisplays = new HashMap<Long, Count>();
@@ -598,6 +669,7 @@ final class WorldTileCreatures implements AutoCloseable {
                 }
                 var m = converted.model();
                 if (added.size() == TILE_MODELS
+                        || textureBytes + m.pixels() * 4 > TILE_TEXTURE_BYTES
                         || m.ranges().length / 3 > builder.drawRoom()
                         || !builder.fits(m.images().size(), m.pixels(), 1, m.vertexCount(), m.indices().length,
                                 m.ranges().length / 3)) {
@@ -605,6 +677,7 @@ final class WorldTileCreatures implements AutoCloseable {
                     continue;
                 }
                 model = add(builder, m);
+                textureBytes += m.pixels() * 4;
                 added.put(display, model);
                 if (m.restPose() != null) restModels.add(model);
                 if (m.billboardTriangles() > 0) billboardModels.add(model);
@@ -740,7 +813,7 @@ final class WorldTileCreatures implements AutoCloseable {
         var mesh = result.appearance().mesh();
         if (mesh.parts().stream().noneMatch(part -> visible.contains(part.id())))
             return Converted.refused(Count.VISIBILITY_UNRESOLVED, "the NPC appearance shows no geoset");
-        var converted = surfaces(result.appearance(), visible, token);
+        var converted = surfaces(result.appearance(), visible, new int[0], false, NPC_IMAGE_SIDE, token);
         return converted.model() == null ? converted
                 : new Converted(converted.model()
                         .withNpc(answer.omittedItems(), answer.omittedAttachments())
@@ -817,6 +890,12 @@ final class WorldTileCreatures implements AutoCloseable {
      */
     static Converted surfaces(MeshAppearance appearance, Set<Integer> visibleIds, int[] leftOut,
             boolean sorted, Cancellation token) {
+        return surfaces(appearance, visibleIds, leftOut, sorted, IMAGE_SIDE, token);
+    }
+
+    /** As above, with textures reduced to at most {@code imageSide} pixels a side. */
+    static Converted surfaces(MeshAppearance appearance, Set<Integer> visibleIds, int[] leftOut,
+            boolean sorted, int imageSide, Cancellation token) {
         var mesh = appearance.mesh();
         var billboard = new HashSet<Integer>();
         for (int vertex : leftOut) billboard.add(vertex);
@@ -907,7 +986,7 @@ final class WorldTileCreatures implements AutoCloseable {
             int key = surface.textureIndex() * 3 + materialClass;
             Integer slot = imageSlots.get(key);
             if (slot == null) {
-                var image = reduce(textures.get(surface.textureIndex()), materialClass, token);
+                var image = reduce(textures.get(surface.textureIndex()), materialClass, imageSide, token);
                 if (image.width() < 1 || image.height() < 1)
                     return Converted.refused(Count.MODEL_UNAVAILABLE, "texture has no pixels");
                 slot = images.size();
@@ -1026,12 +1105,19 @@ final class WorldTileCreatures implements AutoCloseable {
      * coverage matching, as the objects' blended chains do.
      */
     static Image reduce(MeshAppearance.Texture texture, int materialClass, Cancellation token) {
+        return reduce(texture, materialClass, IMAGE_SIDE, token);
+    }
+
+    /** As above, to at most {@code side} pixels a side (a power of two up to {@link #IMAGE_SIDE}). */
+    static Image reduce(MeshAppearance.Texture texture, int materialClass, int side, Cancellation token) {
         if (materialClass != OPAQUE && materialClass != CUTOUT && materialClass != BLENDED)
             throw new IllegalArgumentException("Material class");
+        if (side < 1 || side > IMAGE_SIDE || Integer.bitCount(side) != 1)
+            throw new IllegalArgumentException("Image side");
         int width = texture.width(), height = texture.height();
         long sourcePassing = 0;
-        int w = Math.min(IMAGE_SIDE, Integer.highestOneBit(width));
-        int h = Math.min(IMAGE_SIDE, Integer.highestOneBit(height));
+        int w = Math.min(side, Integer.highestOneBit(width));
+        int h = Math.min(side, Integer.highestOneBit(height));
         if (w < 1 || h < 1) return new Image(Math.max(w, 0), Math.max(h, 0), new byte[0]);
         // A read-only view: the texture's pixels are not copied again for every conversion.
         var argb = texture.argbView();
