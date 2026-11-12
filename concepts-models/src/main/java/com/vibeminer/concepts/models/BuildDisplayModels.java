@@ -60,6 +60,33 @@ public interface BuildDisplayModels extends AutoCloseable {
         return idle(displayId, token).thenCombine(worldIdle(displayId, token), java.util.List::of);
     }
 
+    /**
+     * The display's sequences for a moving body in the World, by AnimationData ID (Stand 0, Walk 4,
+     * Run 5, SwimIdle 41, Swim 42 and so on), each admitted under the World profile against the
+     * same rest surface as {@link #worldIdle}. A sequence the model does not store (or stores in an
+     * external file) answers UNSUPPORTED; implementations without animation answer UNAVAILABLE.
+     */
+    default CompletableFuture<java.util.Map<Integer, DisplayModelTypes.Idle>> worldSequences(
+            long displayId, int[] animationIds, Cancellation token) {
+        var out = new java.util.LinkedHashMap<Integer, DisplayModelTypes.Idle>();
+        for (int id : animationIds) {
+            out.put(
+                    id,
+                    DisplayModelTypes.Idle.unavailable(
+                            "Sequences are not provided by this source."));
+        }
+        return CompletableFuture.completedFuture(out);
+    }
+
+    /**
+     * The display's recorded body size (model box and both scales), for a body's capsule; null when
+     * the display or its model is not in the tables. Implementations without tables answer null.
+     */
+    default CompletableFuture<DisplayModelTypes.BodySize> bodySize(
+            long displayId, Cancellation token) {
+        return CompletableFuture.completedFuture(null);
+    }
+
     CompletableFuture<Void> closeAsync();
 
     @Override

@@ -73,6 +73,27 @@ public final class WorldTileCollision {
     @FunctionalInterface
     interface Source {
         byte[] read(long fileDataId, Cancellation token);
+
+        /** Changes when the decryption keys change ({@link BuildFiles#keyRevision}). */
+        default long keyRevision() {
+            return 0;
+        }
+    }
+
+    /**
+     * A source this build will not give (not in the build, encrypted without a key, protected):
+     * remembered like a malformed one and never read again in the session.
+     */
+    static final class Absent extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+
+        /** True when a different key set could give it (a missing or wrong key, a hole). */
+        final boolean keyed;
+
+        Absent(String message, boolean keyed) {
+            super(message, null);
+            this.keyed = keyed;
+        }
     }
 
     /** A source that cannot be read now (missing locally, a network or I/O failure). */
@@ -87,6 +108,15 @@ public final class WorldTileCollision {
     private record Root(long[] groups, WmoFormats.Doodads doodads) {}
 
     private static final Object MISSING = new Object();
+
+    /** Remembered for a source refused for its keys: forgotten when the keys change. */
+    private static final Object KEYED_MISSING = new Object();
+
+    /** What {@link #read} returns for an {@link Absent} source, and for a keyed one. */
+    private static final byte[] ABSENT = new byte[0], KEYED_ABSENT = new byte[0];
+
+    /** The key revision the cache's keyed absences were found under. */
+    private long keys;
 
     private final Source source;
     private final long budget;
@@ -105,17 +135,77 @@ public final class WorldTileCollision {
 
     /** The build's files; any failure other than cancellation reads as unreadable for now. */
     private static Source files(BuildFiles files) {
-        return (id, token) -> {
-            try {
-                return WorldFileBytes.read(files, FileTypes.FileRef.id(id), token, false).bytes();
-            } catch (java.util.concurrent.CancellationException canceled) {
-                throw canceled;
-            } catch (RuntimeException failure) {
-                token.check();
-                throw new Unreadable(String.valueOf(failure.getMessage()), failure);
+        Source read =
+                (id, token) -> {
+                    FileTypes.FileOpen opened;
+                    try {
+                        opened = files.openRead(FileTypes.FileRef.id(id), token).join();
+                    } catch (java.util.concurrent.CancellationException canceled) {
+                        throw canceled;
+                    } catch (RuntimeException failure) {
+                        token.check();
+                        throw new Unreadable(String.valueOf(failure.getMessage()), failure);
+                    }
+                    if (opened.stream() == null) {
+                        if (PERMANENT.contains(opened.state())) {
+                            throw new Absent(
+                                    "File is " + opened.state(), KEYED.contains(opened.state()));
+                        }
+                        throw new Unreadable("File is " + opened.state(), null);
+                    }
+                    try (var stream = opened.stream()) {
+                        if (!stream.holes().isEmpty()) {
+                            throw new Absent("File has protected sections", true);
+                        }
+                        if (stream.length() > WorldFormats.MAX_FILE_BYTES) {
+                            throw new Absent("File exceeds the world file limit", false);
+                        }
+                        var target = java.nio.ByteBuffer.allocate((int) stream.length());
+                        while (target.hasRemaining()) {
+                            token.check();
+                            if (stream.read(target, token).join() <= 0) {
+                                throw new Unreadable("Truncated file", null);
+                            }
+                        }
+                        return target.array();
+                    } catch (Absent
+                            | Unreadable
+                            | java.util.concurrent.CancellationException known) {
+                        throw known;
+                    } catch (RuntimeException failure) {
+                        token.check();
+                        throw new Unreadable(String.valueOf(failure.getMessage()), failure);
+                    }
+                };
+        return new Source() {
+            @Override
+            public byte[] read(long fileDataId, Cancellation token) {
+                return read.read(fileDataId, token);
+            }
+
+            @Override
+            public long keyRevision() {
+                return files.keyRevision();
             }
         };
     }
+
+    /** Permanent outcomes that another key set may change: forgotten when the keys change. */
+    static final java.util.Set<FileTypes.FileReadState> KEYED =
+            java.util.EnumSet.of(
+                    FileTypes.FileReadState.PROTECTED, FileTypes.FileReadState.WRONG_KEY);
+
+    /** Read outcomes that reading again in this session will not change. */
+    static final java.util.Set<FileTypes.FileReadState> PERMANENT =
+            java.util.EnumSet.of(
+                    FileTypes.FileReadState.PROTECTED,
+                    FileTypes.FileReadState.UNKNOWN_FILE,
+                    FileTypes.FileReadState.NOT_IN_LOCALE,
+                    FileTypes.FileReadState.NOT_IN_ENCODING,
+                    FileTypes.FileReadState.WRONG_KEY,
+                    FileTypes.FileReadState.UNSUPPORTED,
+                    FileTypes.FileReadState.CORRUPT,
+                    FileTypes.FileReadState.TOO_LARGE);
 
     /** Sources the shared cache holds now. */
     synchronized int cachedEntries() {
@@ -131,10 +221,11 @@ public final class WorldTileCollision {
     public Part prepare(WorldFormats.Tile tile, Cancellation token) {
         Objects.requireNonNull(tile);
         Objects.requireNonNull(token);
+        forgetKeyedAbsences(source.keyRevision());
         var skipped = new TreeMap<String, Integer>();
         var placements = new ArrayList<ObjectCollision.Placement>();
         byte[] obj0 = read(tile.obj0Id(), token, skipped, "obj0");
-        if (obj0 == null) {
+        if (obj0 == null || obj0 == ABSENT || obj0 == KEYED_ABSENT) {
             return part(tile, placements, skipped);
         }
         WorldPlacements.Metadata recorded;
@@ -330,8 +421,8 @@ public final class WorldTileCollision {
 
     private Root root(long id, Cancellation token, Map<String, Integer> skipped) {
         var known = cached(id);
-        if (known == MISSING) {
-            skipped.merge("building root malformed", 1, Integer::sum);
+        if (known == MISSING || known == KEYED_MISSING) {
+            skipped.merge("building root absent or malformed", 1, Integer::sum);
             return null;
         }
         if (known instanceof Root root) {
@@ -340,6 +431,10 @@ public final class WorldTileCollision {
         byte[] bytes = read(id, token, skipped, "building root");
         if (bytes == null) {
             // Unreadable now: not remembered, so a later read tries again.
+            return null;
+        }
+        if (bytes == ABSENT || bytes == KEYED_ABSENT) {
+            remember(id, bytes == ABSENT ? MISSING : KEYED_MISSING, 64);
             return null;
         }
         Root root = null;
@@ -371,7 +466,7 @@ public final class WorldTileCollision {
             return null;
         }
         var known = cached(id);
-        if (known == MISSING) {
+        if (known == MISSING || known == KEYED_MISSING) {
             return null;
         }
         if (known instanceof WmoMesh mesh) {
@@ -380,6 +475,10 @@ public final class WorldTileCollision {
         byte[] bytes = read(id, token, skipped, "building group");
         if (bytes == null) {
             // Unreadable now: not remembered, so a later read tries again.
+            return null;
+        }
+        if (bytes == ABSENT || bytes == KEYED_ABSENT) {
+            remember(id, bytes == ABSENT ? MISSING : KEYED_MISSING, 64);
             return null;
         }
         WmoMesh mesh = null;
@@ -398,7 +497,7 @@ public final class WorldTileCollision {
 
     private ObjectCollision.Mesh model(long id, Cancellation token, Map<String, Integer> skipped) {
         var known = cached(id);
-        if (known == MISSING) {
+        if (known == MISSING || known == KEYED_MISSING) {
             return null;
         }
         if (known instanceof M2Mesh mesh) {
@@ -407,6 +506,10 @@ public final class WorldTileCollision {
         byte[] bytes = read(id, token, skipped, "doodad model");
         if (bytes == null) {
             // Unreadable now: not remembered, so a later read tries again.
+            return null;
+        }
+        if (bytes == ABSENT || bytes == KEYED_ABSENT) {
+            remember(id, bytes == ABSENT ? MISSING : KEYED_MISSING, 64);
             return null;
         }
         M2Mesh mesh = null;
@@ -421,6 +524,22 @@ public final class WorldTileCollision {
 
         remember(id, mesh == null ? MISSING : mesh, mesh == null ? 64 : mesh.bytes());
         return mesh;
+    }
+
+    /** Drops sources refused for their keys once the keys changed, so they are read again. */
+    private synchronized void forgetKeyedAbsences(long revision) {
+        if (revision == keys) {
+            return;
+        }
+        keys = revision;
+        var it = cache.values().iterator();
+        while (it.hasNext()) {
+            var sized = (Sized) it.next();
+            if (sized.value() == KEYED_MISSING) {
+                cached -= sized.bytes();
+                it.remove();
+            }
+        }
     }
 
     private synchronized Object cached(long id) {
@@ -456,6 +575,9 @@ public final class WorldTileCollision {
         } catch (Unreadable unreadable) {
             skipped.merge(kind + " unreadable", 1, Integer::sum);
             return null;
+        } catch (Absent absent) {
+            skipped.merge(kind + " absent", 1, Integer::sum);
+            return absent.keyed ? KEYED_ABSENT : ABSENT;
         }
     }
 

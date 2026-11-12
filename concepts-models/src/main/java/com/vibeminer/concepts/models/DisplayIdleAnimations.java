@@ -304,7 +304,8 @@ public final class DisplayIdleAnimations {
                             mesh,
                             normals,
                             bones,
-                            weights),
+                            weights,
+                            idle.moveSpeed()),
                     leftOut);
         } catch (IllegalArgumentException invalid) {
             throw new Unsupported("Idle evaluation refused this sequence: " + invalid.getMessage());

@@ -218,6 +218,142 @@ public final class DisplayModelService implements BuildDisplayModels {
         BOTH
     }
 
+    @Override
+    public CompletableFuture<DisplayModelTypes.BodySize> bodySize(
+            long displayId, Cancellation token) {
+        checkDisplay(displayId);
+        return submit(token, request -> readBodySize(displayId, request));
+    }
+
+    private DisplayModelTypes.BodySize readBodySize(long id, Cancellation token) {
+        var issues = new ArrayList<String>();
+        try {
+            var displays = tables.schema("CreatureDisplayInfo", token, issues);
+            displays.reference("ModelID", "CreatureModelData");
+            var display = tables.get(displays, id, token, issues);
+            if (display == null) {
+                return null;
+            }
+            long modelId = displays.number(display, "ModelID");
+            if (modelId <= 0 || modelId > 0xffffffffL) {
+                return null;
+            }
+            var models = tables.schema("CreatureModelData", token, issues);
+            var model = tables.get(models, modelId, token, issues);
+            if (model == null) {
+                return null;
+            }
+            double[] box = new double[6];
+            for (int i = 0; i < 6; i++) {
+                box[i] = models.decimal(model, "GeoBox", i, 6);
+            }
+            return new DisplayModelTypes.BodySize(
+                    box,
+                    models.decimal(model, "ModelScale", 0, 1),
+                    displays.decimal(display, "CreatureModelScale", 0, 1));
+        } catch (java.util.concurrent.CompletionException | IllegalStateException failed) {
+            throw tableFailure(failed);
+        } catch (java.util.NoSuchElementException unreviewed) {
+            throw new IllegalArgumentException("Unreviewed display table shape", unreviewed);
+        }
+    }
+
+    @Override
+    public CompletableFuture<java.util.Map<Integer, DisplayModelTypes.Idle>> worldSequences(
+            long displayId, int[] animationIds, Cancellation token) {
+        checkDisplay(displayId);
+        int[] ids = animationIds.clone();
+        return submit(token, request -> loadSequences(displayId, ids, request));
+    }
+
+    /**
+     * The World answers of several sequences from one parse of the model and its rest surface. Only
+     * a creature display whose bones live in the model is read (its base rig, as the World's
+     * Stand); anything else answers UNSUPPORTED for every sequence.
+     */
+    private java.util.Map<Integer, DisplayModelTypes.Idle> loadSequences(
+            long displayId, int[] ids, Cancellation token) {
+        var out = new java.util.LinkedHashMap<Integer, DisplayModelTypes.Idle>();
+        var issues = new ArrayList<String>();
+        DisplayModelTypes.Reference reference = resolve(displayId, token, issues);
+        java.util.function.Function<
+                        DisplayModelTypes.Idle, java.util.Map<Integer, DisplayModelTypes.Idle>>
+                all =
+                        idle -> {
+                            for (int id : ids) {
+                                out.put(id, idle);
+                            }
+                            return out;
+                        };
+        if (reference == null) {
+            return all.apply(
+                    DisplayModelTypes.Idle.unavailable(
+                            "Display-to-model relationship is unavailable."));
+        }
+        var models = new BuildModels(files);
+        var read =
+                models.readModel(FileTypes.FileRef.id(reference.modelFileDataId()), token).join();
+        if (read.state() != BuildModelTypes.ReadState.READ || read.model() == null) {
+            return all.apply(idleFailed(reference, "Model read is " + read.state()));
+        }
+        var skin = models.readRestDrawSkin(read, 0, token).join();
+        if (skin.state() != BuildModelTypes.ReadState.READ || skin.skin() == null) {
+            return all.apply(idleFailed(reference, "Model surface is " + skin.state()));
+        }
+        var m = read.model();
+        if (!creatureDisplay(reference) || m.skeletonFileDataId() != 0) {
+            return all.apply(
+                    new DisplayModelTypes.Idle(
+                            DisplayModelTypes.IdleState.UNSUPPORTED,
+                            reference,
+                            null,
+                            "Body sequences are read only for creature displays whose bones live in the model."));
+        }
+        var geometry = skin.skin().surface();
+        var surface = restSurface(m, geometry, token);
+        var opened =
+                files.openRead(FileTypes.FileRef.id(reference.modelFileDataId()), token).join();
+        if (opened.stream() == null) {
+            return all.apply(idleFailed(reference, "Model source is unavailable"));
+        }
+        try (var stream = opened.stream()) {
+            if (opened.state() != FileTypes.FileReadState.COMPLETE || !stream.holes().isEmpty()) {
+                return all.apply(idleFailed(reference, "Model source is incomplete"));
+            }
+            for (int id : ids) {
+                token.check();
+                try {
+                    var idle =
+                            M2IdleAnimation.readSequence(AssetSources.file(stream), m, id, token)
+                                    .join();
+                    out.put(id, admitted(reference, m, geometry, surface, idle, true, token));
+                } catch (RuntimeException failure) {
+                    token.check();
+                    var cause = AssetTasks.unwrap(failure);
+                    out.put(
+                            id,
+                            cause instanceof ModelFormatException format
+                                            && format.code().equals("MODEL_UNSUPPORTED")
+                                    ? new DisplayModelTypes.Idle(
+                                            DisplayModelTypes.IdleState.UNSUPPORTED,
+                                            reference,
+                                            null,
+                                            format.getMessage())
+                                    : idleFailed(
+                                            reference,
+                                            "Sequence "
+                                                    + id
+                                                    + " could not be read"
+                                                    + message(
+                                                            cause == null
+                                                                    ? null
+                                                                    : cause.getMessage())));
+                }
+            }
+        }
+        return out;
+    }
+
     /** The preview and World Stand answers of one parse; a profile not asked is null. */
     private record Stands(DisplayModelTypes.Idle preview, DisplayModelTypes.Idle world) {
         static Stands both(DisplayModelTypes.Idle idle) {

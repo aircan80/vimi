@@ -51,6 +51,8 @@ public final class NativePreparationWork implements BuildPreparation.Work {
     }
 
     private volatile com.vibeminer.files.keys.TactKeys effectiveKeySet = com.vibeminer.files.keys.TactKeys.EMPTY;
+    // Advances with every new effectiveKeySet, so readers can retry key-refused files.
+    private final java.util.concurrent.atomic.AtomicLong keyRevision = new java.util.concurrent.atomic.AtomicLong();
     private com.vibeminer.files.keys.TactKeys communityKeys = com.vibeminer.files.keys.TactKeys.EMPTY;
     private boolean communityKeysAllowed;
     private DataSourcesService sourcePolicies;
@@ -386,8 +388,16 @@ public final class NativePreparationWork implements BuildPreparation.Work {
                                 defaults.progressInterval(),
                                 defaults.clock(),
                                 defaults.maxReadBytes(),
-                                name -> {
-                                    return effectiveKeySet.find(name);
+                                new com.vibeminer.files.TactKeySource() {
+                                    @Override
+                                    public byte[] find(long name) {
+                                        return effectiveKeySet.find(name);
+                                    }
+
+                                    @Override
+                                    public long revision() {
+                                        return keyRevision.get();
+                                    }
                                 },
                                 names));
     }
@@ -535,6 +545,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
             values.put(value, buildKeys.find(value));
         }
         effectiveKeySet = new com.vibeminer.files.keys.TactKeys(values);
+        keyRevision.incrementAndGet();
     }
 
     private com.vibeminer.files.keys.TactKeys effectiveKeys() { return effectiveKeySet; }

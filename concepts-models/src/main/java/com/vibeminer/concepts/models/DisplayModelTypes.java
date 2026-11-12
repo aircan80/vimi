@@ -143,4 +143,37 @@ public final class DisplayModelTypes {
             return new Idle(IdleState.UNAVAILABLE, null, null, message);
         }
     }
+
+    /**
+     * A display's recorded body size: the model's box (CreatureModelData GeoBox: minimum x, y, z
+     * then maximum x, y, z, in model yards), its CreatureModelData ModelScale and the display's
+     * CreatureDisplayInfo CreatureModelScale. The body's scale is their product ({@link #scale}).
+     */
+    public record BodySize(double[] geoBox, double modelScale, double creatureModelScale) {
+        public BodySize {
+            if (geoBox == null || geoBox.length != 6) {
+                throw new IllegalArgumentException("A model box has six values");
+            }
+            geoBox = geoBox.clone();
+            for (double v : geoBox) {
+                if (!Double.isFinite(v)) {
+                    throw new IllegalArgumentException("Invalid model box");
+                }
+            }
+            if (!(modelScale > 0 && modelScale < 1000)
+                    || !(creatureModelScale > 0 && creatureModelScale < 1000)) {
+                throw new IllegalArgumentException("Invalid model scale");
+            }
+        }
+
+        @Override
+        public double[] geoBox() {
+            return geoBox.clone();
+        }
+
+        /** CreatureDisplayInfo.CreatureModelScale times CreatureModelData.ModelScale. */
+        public double scale() {
+            return creatureModelScale * modelScale;
+        }
+    }
 }

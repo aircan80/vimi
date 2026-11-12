@@ -73,6 +73,14 @@ public interface BuildFiles extends AutoCloseable {
             Consumer<EnsureProgress> progress,
             Cancellation cancellation);
 
+    /**
+     * Changes whenever the decryption keys this build reads with change ({@link
+     * TactKeySource#revision}); files refused for a missing or wrong key may read after a change.
+     */
+    default long keyRevision() {
+        return 0;
+    }
+
     @Override
     void close();
 }
