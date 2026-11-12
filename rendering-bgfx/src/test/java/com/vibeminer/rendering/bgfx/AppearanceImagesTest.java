@@ -62,4 +62,68 @@ class AppearanceImagesTest {
         int[] diff = AppearanceImages.diff(new int[] {0xff000010}, new int[] {0xff000000});
         assertEquals(0xff000080, diff[0], "differences are scaled up to be visible");
     }
+
+    /** A frame of a dark rectangle on a light ground, its left edge at {@code edge}. */
+    private static int[] rectangle(int width, int height, int edge) {
+        int[] pixels = new int[width * height];
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                boolean inside = x >= edge && x < width - 40 && y >= 40 && y < height - 40;
+                pixels[y * width + x] = inside ? 0xff102030 : 0xffa0b0c0;
+            }
+        }
+        return pixels;
+    }
+
+    @Test
+    void anEdgeAPixelApartIsWithinTheNearToleranceButAMissingRegionIsNot() {
+        int width = 480, height = 300;
+        // Many edges (stripes 8 pixels wide) that another GPU rasterizes one pixel to the right:
+        // an eighth of the pixels are outliers over the pixel tolerance, but each still matches
+        // the reference a pixel away.
+        int[] stripes = new int[width * height], moved = new int[width * height];
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                stripes[y * width + x] = (x / 8) % 2 == 0 ? 0xff102030 : 0xffa0b0c0;
+                moved[y * width + x] = (Math.max(0, x - 1) / 8) % 2 == 0 ? 0xff102030 : 0xffa0b0c0;
+            }
+        }
+        assertFalse(
+                AppearanceImages.compare(moved, stripes, 8)
+                        .matches(AppearanceImages.Tolerance.STANDARD));
+        assertTrue(AppearanceImages.matches(moved, stripes, width, height));
+        int[] reference = rectangle(width, height, 41);
+        int[] shifted = rectangle(width, height, 42);
+        assertTrue(AppearanceImages.matches(shifted, reference, width, height));
+        // A missing region (the rectangle not drawn at all) fails both ways.
+        int[] missing = rectangle(width, height, width);
+        assertFalse(AppearanceImages.matches(missing, reference, width, height));
+        // The whole rectangle a pixel lower too: every edge moves, still within a pixel.
+        int[] lower = new int[reference.length];
+        System.arraycopy(shifted, 0, lower, width, shifted.length - width);
+        System.arraycopy(shifted, 0, lower, 0, width);
+        assertTrue(AppearanceImages.matches(lower, reference, width, height));
+        // A gradient changed by 10 in one channel everywhere (a different sky) fails.
+        int[] sky = reference.clone();
+        for (int i = 0; i < sky.length; i++) {
+            sky[i] += 10;
+        }
+        assertFalse(AppearanceImages.matches(sky, reference, width, height));
+        // A uniformly darker frame (a wrong light) fails both ways.
+        int[] darker = reference.clone();
+        for (int i = 0; i < darker.length; i++) {
+            darker[i] -= 0x00101010;
+        }
+        assertFalse(AppearanceImages.matches(darker, reference, width, height));
+        // A region of 40 x 40 pixels drawn differently (a lost texture on a small quad).
+        int[] patch = reference.clone();
+        for (int y = 100; y < 140; y++) {
+            for (int x = 200; x < 240; x++) {
+                patch[y * width + x] = 0xffff0000;
+            }
+        }
+        assertFalse(AppearanceImages.matches(patch, reference, width, height));
+        // Sizes that differ never match.
+        assertFalse(AppearanceImages.matches(new int[10], reference, width, height));
+    }
 }

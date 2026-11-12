@@ -54,8 +54,21 @@ public final class WorldAppearanceProof {
             var difference =
                     AppearanceImages.compare(
                             actual, reference, AppearanceImages.Tolerance.STANDARD.pixelDelta());
-            System.out.println("WORLD_APPEARANCE " + scene.getKey() + " " + difference);
-            if (!difference.matches(AppearanceImages.Tolerance.STANDARD)) {
+            var near =
+                    AppearanceImages.compareNear(
+                            actual,
+                            reference,
+                            WIDTH,
+                            HEIGHT,
+                            AppearanceImages.Tolerance.NEAR.pixelDelta());
+            System.out.println(
+                    "WORLD_APPEARANCE "
+                            + scene.getKey()
+                            + " "
+                            + difference
+                            + "; within a pixel "
+                            + near);
+            if (!AppearanceImages.matches(actual, reference, WIDTH, HEIGHT)) {
                 AppearanceImages.write(
                         output.resolve(scene.getKey() + "-actual.png"), WIDTH, HEIGHT, actual);
                 if (reference.length == actual.length) {
@@ -65,7 +78,7 @@ public final class WorldAppearanceProof {
                             HEIGHT,
                             AppearanceImages.diff(actual, reference));
                 }
-                failures.add(scene.getKey() + ": " + difference);
+                failures.add(scene.getKey() + ": " + difference + "; within a pixel " + near);
             }
         }
         if (!failures.isEmpty()) {

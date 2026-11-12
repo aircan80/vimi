@@ -25,6 +25,15 @@ final class AppearanceImages {
     record Tolerance(double meanDelta, int pixelDelta, double outlierShare) {
         /** Driver rounding and edge rasterization differences between runs and GPUs. */
         static final Tolerance STANDARD = new Tolerance(1.5, 8, 0.005);
+
+        /**
+         * The same frame where each pixel may match its reference within one pixel of its place
+         * ({@link #compareNear}): a GPU that places MSAA samples or rasterizes an edge a pixel
+         * apart from the one that recorded the reference moves edges, not regions. A lost texture,
+         * a wrong light, a changed gradient, a missing surface or a region drawn differently still
+         * fails.
+         */
+        static final Tolerance NEAR = new Tolerance(1.5, 8, 0.005);
     }
 
     /** How a frame differs from its reference; {@code matches} applies the tolerance. */
@@ -65,6 +74,65 @@ final class AppearanceImages {
         }
         return new Difference(
                 sum / (actual.length * 4.0), outliers / (double) actual.length, max, true);
+    }
+
+    /**
+     * As {@link #compare}, except that a pixel is an outlier only when no reference pixel within
+     * one pixel of its place (its 3 x 3 neighbourhood, clipped at the frame) is within {@code
+     * pixelDelta} in every channel. The mean and maximum are over each pixel's best match.
+     */
+    static Difference compareNear(
+            int[] actual, int[] reference, int width, int height, int pixelDelta) {
+        if (actual.length != reference.length
+                || actual.length == 0
+                || actual.length != width * height) {
+            return new Difference(Double.MAX_VALUE, 1, 255, false);
+        }
+        long sum = 0;
+        int outliers = 0, max = 0;
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                int i = y * width + x;
+                // The reference pixel within one pixel that this one matches best.
+                int bestWorst = Integer.MAX_VALUE, bestSum = 0;
+                for (int dy = -1; dy <= 1; dy++) {
+                    for (int dx = -1; dx <= 1; dx++) {
+                        int nx = x + dx, ny = y + dy;
+                        if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
+                            continue;
+                        }
+                        int other = reference[ny * width + nx], worst = 0, total = 0;
+                        for (int shift = 0; shift < 32; shift += 8) {
+                            int d = Math.abs((actual[i] >>> shift & 255) - (other >>> shift & 255));
+                            worst = Math.max(worst, d);
+                            total += d;
+                        }
+                        if (worst < bestWorst || worst == bestWorst && total < bestSum) {
+                            bestWorst = worst;
+                            bestSum = total;
+                        }
+                    }
+                }
+                sum += bestSum;
+                max = Math.max(max, bestWorst);
+                if (bestWorst > pixelDelta) {
+                    outliers++;
+                }
+            }
+        }
+        return new Difference(
+                sum / (actual.length * 4.0), outliers / (double) actual.length, max, true);
+    }
+
+    /**
+     * Whether a frame matches its reference: within {@link Tolerance#STANDARD} pixel by pixel, or
+     * within {@link Tolerance#NEAR} where each pixel may match within one pixel of its place.
+     */
+    static boolean matches(int[] actual, int[] reference, int width, int height) {
+        return compare(actual, reference, Tolerance.STANDARD.pixelDelta())
+                        .matches(Tolerance.STANDARD)
+                || compareNear(actual, reference, width, height, Tolerance.NEAR.pixelDelta())
+                        .matches(Tolerance.NEAR);
     }
 
     static int[] pixels(IntBuffer frame) {
