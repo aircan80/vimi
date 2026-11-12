@@ -1615,4 +1615,31 @@ class WorldTerrainLiquidsTest {
             }
         }
     }
+
+    @Test
+    void aBuildingLiquidsSwimmingKindIsItsDrawnAppearance() {
+        var kind = com.vibeminer.rendering.world.LiquidSurface.Kind.class;
+        // Water and ocean as drawn, whatever the LiquidType ID (the canals' 1344 is water).
+        assertEquals(
+                com.vibeminer.rendering.world.LiquidSurface.Kind.WATER,
+                WorldTerrainLiquids.kind(1344, new int[] {0, 0}));
+        assertEquals(
+                com.vibeminer.rendering.world.LiquidSurface.Kind.OCEAN,
+                WorldTerrainLiquids.kind(14, new int[] {1, 0}));
+        // Flat liquids: magma and slime only for the WMO magma and slime rows.
+        assertEquals(
+                com.vibeminer.rendering.world.LiquidSurface.Kind.MAGMA,
+                WorldTerrainLiquids.kind(19, new int[] {2, 0xFF4000}));
+        assertEquals(
+                com.vibeminer.rendering.world.LiquidSurface.Kind.SLIME,
+                WorldTerrainLiquids.kind(20, new int[] {2, 0x40FF00}));
+        assertEquals(
+                com.vibeminer.rendering.world.LiquidSurface.Kind.OTHER,
+                WorldTerrainLiquids.kind(181, new int[] {2, 0x202020}));
+        // Rows that could not be read: other, as building water is then not drawn.
+        assertEquals(
+                com.vibeminer.rendering.world.LiquidSurface.Kind.OTHER,
+                WorldTerrainLiquids.kind(13, null));
+        assertTrue(kind.isEnum());
+    }
 }

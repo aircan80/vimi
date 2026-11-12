@@ -602,7 +602,53 @@ final class WorldPreparedTerrain {
             }
             reader = collision;
         }
-        return reader.prepare(tile, cancel);
+        return withLiquidKinds(reader.prepare(tile, cancel), cancel);
+    }
+
+    /**
+     * The part with each building liquid's kind from its LiquidType's rows, the ones building water
+     * is drawn by ({@link WorldTerrainLiquids#appearances}), so the canals' modern LiquidType reads
+     * as the water it is drawn as. Tables that cannot be read leave every liquid other.
+     */
+    private WorldTileCollision.Part withLiquidKinds(
+            WorldTileCollision.Part part, Cancellation cancel) {
+        if (part.liquids().isEmpty()) {
+            return part;
+        }
+        var types = new java.util.TreeSet<Integer>();
+        for (var liquid : part.liquids()) {
+            types.add(liquid.liquid().liquidType());
+        }
+        java.util.Map<Integer, int[]> appearances;
+        try {
+            appearances = scopes.liquids().appearances(types, cancel);
+        } catch (java.util.concurrent.CancellationException canceled) {
+            throw canceled;
+        } catch (RuntimeException unavailable) {
+            appearances = java.util.Map.of();
+        }
+        var resolved =
+                new java.util.ArrayList<com.vibeminer.rendering.world.LiquidSurface.Placed>();
+        for (var p : part.liquids()) {
+            int type = p.liquid().liquidType();
+            resolved.add(
+                    new com.vibeminer.rendering.world.LiquidSurface.Placed(
+                            p.key(),
+                            p.liquid(),
+                            WorldTerrainLiquids.kind(type, appearances.get(type)),
+                            p.rotation(),
+                            p.scale(),
+                            p.x(),
+                            p.y(),
+                            p.z()));
+        }
+        return new WorldTileCollision.Part(
+                part.tileX(),
+                part.tileY(),
+                part.placements(),
+                resolved,
+                part.skipped(),
+                part.complete());
     }
 
     private void checkOpen() {

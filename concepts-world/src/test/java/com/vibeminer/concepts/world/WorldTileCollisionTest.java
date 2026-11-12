@@ -248,7 +248,10 @@ class WorldTileCollisionTest {
         assertEquals(1, part.liquids().size());
         var liquid = part.liquids().get(0);
         assertEquals(new WorldTileCollision.Key('L', 7, 0), liquid.key());
-        assertEquals(com.vibeminer.rendering.world.LiquidSurface.Kind.WATER, liquid.kind());
+        // The reader leaves the kind to the stream, which reads the LiquidType's rows.
+        assertEquals(com.vibeminer.rendering.world.LiquidSurface.Kind.OTHER, liquid.kind());
+        assertEquals(
+                13, liquid.liquid().liquidType(), "the group's WMO water type, for the stream");
         // Heading 90 maps local (a, b) to (b, -a): local (U/2, U/4) lands at (x + U/4, y - U/2).
         var surface = com.vibeminer.rendering.world.LiquidSurface.empty().with(part.liquids());
         var at = surface.at(C - 300 + UNIT / 4, C - 100 - UNIT / 2);

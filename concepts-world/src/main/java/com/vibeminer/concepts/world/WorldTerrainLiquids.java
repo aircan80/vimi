@@ -56,6 +56,28 @@ final class WorldTerrainLiquids {
     static final int MAX_APPEARANCE_TYPES = 16;
 
     /**
+     * The swimming kind of a building liquid of LiquidType {@code type} from its drawn {@code
+     * appearance} ({@link #appearances}), so swimming and drawing read one source: water and ocean
+     * as drawn; a flat liquid is magma or slime for the WMO magma and slime rows (19, 20) and other
+     * otherwise; a type whose rows could not be read (null) is other.
+     */
+    static com.vibeminer.rendering.world.LiquidSurface.Kind kind(int type, int[] appearance) {
+        if (appearance == null) {
+            return com.vibeminer.rendering.world.LiquidSurface.Kind.OTHER;
+        }
+        return switch (appearance[0]) {
+            case 0 -> com.vibeminer.rendering.world.LiquidSurface.Kind.WATER;
+            case 1 -> com.vibeminer.rendering.world.LiquidSurface.Kind.OCEAN;
+            default ->
+                    type == 19
+                            ? com.vibeminer.rendering.world.LiquidSurface.Kind.MAGMA
+                            : type == 20
+                                    ? com.vibeminer.rendering.world.LiquidSurface.Kind.SLIME
+                                    : com.vibeminer.rendering.world.LiquidSurface.Kind.OTHER;
+        };
+    }
+
+    /**
      * How building liquids (WMO MLIQ) of these LiquidType IDs are drawn, by the rule terrain water
      * follows: the type's LiquidMaterial vertex format 0 or 2 is water (ocean for LiquidType 14,
      * WMO ocean; river or lake otherwise), 1 or 3 a flat liquid in the type's MinimapStaticCol.
