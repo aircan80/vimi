@@ -192,7 +192,7 @@ public final class WorldMeasurementProbe {
                                         null,
                                         issue -> say("PROBE " + issue),
                                         DEADLINE - System.nanoTime(),
-                                        List.of("creatures", "displays")
+                                        List.of("creatures", "displays", "body")
                                                 .contains(
                                                         System.getProperty(
                                                                 "probe.mode", "stream"))));
@@ -223,6 +223,7 @@ public final class WorldMeasurementProbe {
                             case "prep" -> prep(handle, catalog);
                             case "walk" -> walk(opened, handle, catalog);
                             case "collision" -> collision(opened, handle, catalog);
+                            case "body" -> body(opened);
                             case "creatures" -> creatures(opened, handle, catalog);
                             case "displays" -> displays(opened);
                             default -> stream(handle, catalog);
@@ -499,6 +500,40 @@ public final class WorldMeasurementProbe {
                 scenario.name(), placements.size(), merged.placements(), byBuilding.size(), doodads,
                 merged.bytes() / 1048576.0, seconds(System.nanoTime() - began), within, checked, worst, worstId, skipped));
         return merged;
+    }
+
+    /**
+     * A walking body's sequences for one display (-Pprobe.display, 441 by default): the World
+     * binding and each sequence's World admission, with CPU renders of each sequence at four
+     * times written to the probe output as PNG files.
+     */
+    private static void body(WorldMeasurementOpen opened) throws Exception {
+        long display = Long.getLong("probe.display", 441);
+        int[] ids = {0, 4, 5, 41, 42, 135};
+        try (var displays = opened.displays()) {
+            var preview = displays.worldPreview(display, Cancellation.NONE).get(2, TimeUnit.MINUTES);
+            say("PROBE body display " + display + ": preview " + preview.state() + " " + preview.message());
+            var sequences = displays.worldSequences(display, ids, Cancellation.NONE).get(2, TimeUnit.MINUTES);
+            var out = Path.of(System.getProperty("probe.out"));
+            for (var entry : sequences.entrySet()) {
+                var idle = entry.getValue();
+                say("PROBE body sequence " + entry.getKey() + ": " + idle.state() + " · " + idle.message());
+                if (idle.animation() == null || preview.appearance() == null) continue;
+                var animation = idle.animation();
+                for (int k = 0; k < 4; k++) {
+                    long t = animation.durationMillis() * k / 4;
+                    var posed = animation.pose(preview.appearance(), t);
+                    var frame = com.vibeminer.rendering.models.StaticMeshRenderer.render(posed, 360, 360,
+                            new com.vibeminer.rendering.models.StaticMeshRenderer.View(-1.2, .15, 1, false, java.util.Set.of()),
+                            () -> false);
+                    var image = new java.awt.image.BufferedImage(frame.width(), frame.height(),
+                            java.awt.image.BufferedImage.TYPE_INT_ARGB);
+                    image.setRGB(0, 0, frame.width(), frame.height(), frame.argb(), 0, frame.width());
+                    var file = out.resolve("body-" + display + "-" + entry.getKey() + "-" + k + ".png");
+                    javax.imageio.ImageIO.write(image, "png", file.toFile());
+                }
+            }
+        }
     }
 
     /**

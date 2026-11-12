@@ -200,6 +200,24 @@ public final class M2IdleAnimation {
         return AssetTasks.run(() -> readCore(source, model, token, true, false));
     }
 
+    /** AnimationData IDs a walking or swimming body plays (wowdev M2/AnimationList). */
+    public static final int WALK = 4, RUN = 5, SWIM_IDLE = 41, SWIM = 42, FLY = 135;
+
+    /**
+     * As {@link #readBaseRig}, for any sequence stored in the model: the first variation of
+     * AnimationData ID {@code animationId} (its alias chain followed), under the same checks and
+     * budgets as Stand. A sequence whose keys live in an external .anim file is refused.
+     */
+    public static CompletableFuture<Idle> readSequence(
+            AssetSource source, M2Types.Model model, int animationId, Cancellation token) {
+        Objects.requireNonNull(model);
+        Objects.requireNonNull(token);
+        if (animationId < 0 || animationId > 0xffff) {
+            throw new IllegalArgumentException("Animation ID outside 16 bits");
+        }
+        return AssetTasks.run(() -> readCore(source, model, token, true, false, animationId));
+    }
+
     /**
      * Reads the base rig's Stand of a model whose bones live in an external skeleton (#384): the
      * skeleton's own bones (SKB1), sequences and global sequences (SKS1), with track arrays inside
@@ -308,6 +326,7 @@ public final class M2IdleAnimation {
                 globalMillis,
                 rows,
                 "skeleton",
+                STAND,
                 token);
     }
 
@@ -362,6 +381,16 @@ public final class M2IdleAnimation {
             Cancellation token,
             boolean refuseSkeleton,
             boolean refuseBoneFiles) {
+        return readCore(source, model, token, refuseSkeleton, refuseBoneFiles, STAND);
+    }
+
+    private static Idle readCore(
+            AssetSource source,
+            M2Types.Model model,
+            Cancellation token,
+            boolean refuseSkeleton,
+            boolean refuseBoneFiles,
+            int animationId) {
         token.check();
         if (!model.isChunked() || model.version() != 272 && model.version() != 274) {
             throw error("UNSUPPORTED", "Idle animation requires a chunked 272/274 model.");
@@ -431,6 +460,7 @@ public final class M2IdleAnimation {
                 globalMillis,
                 rows,
                 "model",
+                animationId,
                 token);
     }
 
@@ -447,18 +477,25 @@ public final class M2IdleAnimation {
             long[] globalMillis,
             List<byte[]> rows,
             String owner,
+            int animationId,
             Cancellation token) {
         int stand = -1;
         for (int i = 0; i < sequenceRows.size() && stand < 0; i++) {
             byte[] row = sequenceRows.get(i);
-            if (u16(row) == STAND && u16(row, 2) == 0) {
+            if (u16(row) == animationId && u16(row, 2) == 0) {
                 stand = i;
             }
         }
         if (stand < 0) {
             throw error(
                     "UNSUPPORTED",
-                    "The " + owner + " records no Stand sequence (ID 0, variation 0).");
+                    animationId == STAND
+                            ? "The " + owner + " records no Stand sequence (ID 0, variation 0)."
+                            : "The "
+                                    + owner
+                                    + " records no sequence "
+                                    + animationId
+                                    + " (variation 0).");
         }
         int sequence = aliasTarget(sequenceRows, stand);
         byte[] target = sequenceRows.get(sequence);

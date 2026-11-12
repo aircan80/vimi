@@ -767,4 +767,53 @@ class PreviewAnimationTest {
         assertNull(animation.withRigidVertices(bigger, new float[18], new int[] {0, 0, 2}));
         assertNull(animation.withRigidVertices(bigger, new float[18], new int[] {0}));
     }
+
+    @Test
+    void anAnimationWrittenAndReadPosesTheSameAndSkinsIntoCallerArrays() throws Exception {
+        var root =
+                new Bone(
+                        -1,
+                        0,
+                        0,
+                        0,
+                        null,
+                        new Track(
+                                Interpolation.LINEAR,
+                                -1,
+                                4,
+                                new int[] {0, 500},
+                                new float[] {0, 0, 0, 1, 0, 0, S, S}),
+                        null,
+                        false);
+        var child = new Bone(0, 1, 0, 0, constant(3, 0, 0, 1), null, constant(3, 2, 2, 2), false);
+        var rest = mesh(2, 0, 0, 1, 1, 0, 2, 0, 0);
+        int[] bones = {1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0};
+        int[] weights = {255, 0, 0, 0, 255, 0, 0, 0, 128, 127, 0, 0};
+        var animation =
+                new PreviewAnimation(
+                        "Walk",
+                        1000,
+                        new long[] {300},
+                        List.of(root, child),
+                        rest,
+                        new float[] {0, 0, 1, 0, 0, 1, 0, 0, 1},
+                        bones,
+                        weights);
+        var bytes = new java.io.ByteArrayOutputStream();
+        animation.write(new java.io.DataOutputStream(bytes));
+        var copy =
+                PreviewAnimation.read(
+                        new java.io.DataInputStream(
+                                new java.io.ByteArrayInputStream(bytes.toByteArray())));
+        assertEquals("Walk", copy.label());
+        assertEquals(1000, copy.durationMillis());
+        for (long t : new long[] {0, 250, 777}) {
+            var expected = animation.pose(rest, t);
+            float[] positions = new float[9], normals = new float[9];
+            copy.skin(t, positions, normals);
+            assertArrayEquals(expected.mesh().positions(), positions, 1e-6f, "positions at " + t);
+            assertArrayEquals(expected.normals(), normals, 1e-6f, "normals at " + t);
+        }
+        assertThrows(IllegalArgumentException.class, () -> copy.skin(0, new float[3], null));
+    }
 }

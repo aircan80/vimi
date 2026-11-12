@@ -541,6 +541,150 @@ public final class PreviewAnimation {
         return pose(restMesh, millis, null);
     }
 
+    /**
+     * Poses the rest vertices at {@code millis} into caller arrays (three floats per vertex;
+     * normals may be null), without building a mesh: for a renderer that re-skins every frame. Not
+     * for a {@link #viewDependent()} animation.
+     */
+    public void skin(long millis, float[] positions, float[] normals) {
+        if (viewDependent) {
+            throw new IllegalArgumentException("A camera-facing pose needs a camera view");
+        }
+        if (positions.length != rest.length
+                || normals != null && normals.length != restNormals.length) {
+            throw new IllegalArgumentException("Skin arrays differ from the rest surface");
+        }
+        double[] matrices = new double[bones.size() * 12];
+        double[] scales = new double[bones.size() * 3];
+        matrices(Math.max(0, millis), null, matrices, scales);
+        skin(matrices, scales, positions, normals == null || normals.length == 0 ? null : normals);
+    }
+
+    /**
+     * Writes everything this animation was built from (label, timing, bones and their tracks, the
+     * rest vertices, normals and influences), for {@link #read}. Rigid billboard vertices added by
+     * {@link #withRigidVertices} are not written.
+     */
+    public void write(java.io.DataOutputStream out) throws java.io.IOException {
+        out.writeUTF(label);
+        out.writeLong(durationMillis);
+        out.writeInt(globalMillis.length);
+        for (long g : globalMillis) {
+            out.writeLong(g);
+        }
+        out.writeInt(bones.size());
+        for (var bone : bones) {
+            out.writeInt(bone.parent());
+            out.writeFloat(bone.pivotX());
+            out.writeFloat(bone.pivotY());
+            out.writeFloat(bone.pivotZ());
+            for (var track : new Track[] {bone.translation(), bone.rotation(), bone.scale()}) {
+                out.writeBoolean(track != null);
+                if (track != null) {
+                    out.writeByte(track.interpolation.ordinal());
+                    out.writeInt(track.globalSequence);
+                    out.writeByte(track.components);
+                    out.writeInt(track.times.length);
+                    for (int t : track.times) {
+                        out.writeInt(t);
+                    }
+                    for (float v : track.values) {
+                        out.writeFloat(v);
+                    }
+                }
+            }
+            out.writeBoolean(bone.billboard());
+            out.writeByte(bone.facing().ordinal());
+        }
+        out.writeInt(rest.length);
+        for (float v : rest) {
+            out.writeFloat(v);
+        }
+        out.writeInt(restNormals.length);
+        for (float v : restNormals) {
+            out.writeFloat(v);
+        }
+        for (int i = 0; i < rest.length / 3 * 4; i++) {
+            out.writeShort(influenceBones[i]);
+            out.writeByte(influenceWeights[i]);
+        }
+    }
+
+    /** Reads an animation {@link #write} wrote; the constructor's checks apply again. */
+    public static PreviewAnimation read(java.io.DataInputStream in) throws java.io.IOException {
+        String label = in.readUTF();
+        long duration = in.readLong();
+        int globals = bounded(in.readInt(), 1024);
+        long[] globalMillis = new long[globals];
+        for (int i = 0; i < globals; i++) {
+            globalMillis[i] = in.readLong();
+        }
+        int count = bounded(in.readInt(), MAX_BONES);
+        var bones = new ArrayList<Bone>(count);
+        for (int b = 0; b < count; b++) {
+            int parent = in.readInt();
+            float px = in.readFloat(), py = in.readFloat(), pz = in.readFloat();
+            Track[] tracks = new Track[3];
+            for (int k = 0; k < 3; k++) {
+                if (!in.readBoolean()) {
+                    continue;
+                }
+                var interpolation = Interpolation.values()[bounded(in.readByte(), 1)];
+                int global = in.readInt();
+                int components = in.readByte();
+                int keys = bounded(in.readInt(), MAX_KEYS);
+                int[] times = new int[keys];
+                for (int i = 0; i < keys; i++) {
+                    times[i] = in.readInt();
+                }
+                float[] values = new float[bounded(keys * components, MAX_KEYS * 4)];
+                for (int i = 0; i < values.length; i++) {
+                    values[i] = in.readFloat();
+                }
+                tracks[k] = new Track(interpolation, global, components, times, values);
+            }
+            boolean billboard = in.readBoolean();
+            var facing = Facing.values()[bounded(in.readByte(), Facing.values().length - 1)];
+            bones.add(
+                    new Bone(
+                            parent, px, py, pz, tracks[0], tracks[1], tracks[2], billboard,
+                            facing));
+        }
+        int restLength = bounded(in.readInt(), PreviewMesh.MAX_VERTICES * 3);
+        float[] rest = new float[restLength];
+        for (int i = 0; i < restLength; i++) {
+            rest[i] = in.readFloat();
+        }
+        float[] normals = new float[bounded(in.readInt(), restLength)];
+        for (int i = 0; i < normals.length; i++) {
+            normals[i] = in.readFloat();
+        }
+        int[] influenceBones = new int[restLength / 3 * 4],
+                influenceWeights = new int[influenceBones.length];
+        for (int i = 0; i < influenceBones.length; i++) {
+            influenceBones[i] = in.readUnsignedShort();
+            influenceWeights[i] = in.readUnsignedByte();
+        }
+        var mesh =
+                new PreviewMesh(rest, new int[] {0, 0, 0}, List.of(new PreviewMesh.Part(0, 0, 3)));
+        return new PreviewAnimation(
+                label,
+                duration,
+                globalMillis,
+                bones,
+                mesh,
+                normals,
+                influenceBones,
+                influenceWeights);
+    }
+
+    private static int bounded(int value, int maximum) {
+        if (value < 0 || value > maximum) {
+            throw new IllegalArgumentException("Animation record outside bounds");
+        }
+        return value;
+    }
+
     /** Whether a camera-facing bone moves rendered vertices: posing then needs a {@link View}. */
     public boolean viewDependent() {
         return viewDependent;

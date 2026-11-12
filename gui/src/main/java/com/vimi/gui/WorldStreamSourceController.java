@@ -323,6 +323,8 @@ final class WorldStreamSourceController {
             new java.util.concurrent.ConcurrentHashMap<>();
     // When a tile whose read failed, or found a source unreadable, may be read again (nanoTime).
     private final java.util.Map<Integer, Long> collisionRetryAt = new java.util.concurrent.ConcurrentHashMap<>();
+    // Failed or partial reads of a tile in a row, which double its retry delay.
+    private final java.util.Map<Integer, Integer> collisionAttempts = new java.util.concurrent.ConcurrentHashMap<>();
     private final java.util.Set<Integer> collisionPending = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private volatile java.util.Set<Integer> collisionMerged = java.util.Set.of();
     private volatile java.util.Set<Integer> collisionRecorded;
@@ -612,8 +614,15 @@ final class WorldStreamSourceController {
         return closing ? com.vibeminer.rendering.world.ObjectCollision.empty() : objectCollision;
     }
 
-    /** Seconds before a tile is read again after a failed or partly unreadable read. */
-    static final long COLLISION_RETRY_NANOS = 15_000_000_000L;
+    /**
+     * Delay before a tile is read again after a failed or partly unreadable read: 15 s, doubling
+     * with each such read in a row, at most four minutes.
+     */
+    static final long COLLISION_RETRY_NANOS = 15_000_000_000L, COLLISION_RETRY_MAX_NANOS = 240_000_000_000L;
+
+    static long collisionRetryDelay(int attempts) {
+        return Math.min(COLLISION_RETRY_MAX_NANOS, COLLISION_RETRY_NANOS << Math.min(10, Math.max(0, attempts - 1)));
+    }
 
     /**
      * Whether the buildings and doodads of the tile under (x, y) are in {@link #objectCollision}.
@@ -654,6 +663,7 @@ final class WorldStreamSourceController {
         int cx = tileOf(latest.view().x()), cy = tileOf(latest.view().y());
         java.util.function.IntPredicate far = key -> Math.abs(key / 64 - cx) > 1 || Math.abs(key % 64 - cy) > 1;
         collisionRetryAt.keySet().removeIf(far::test);
+        collisionAttempts.keySet().removeIf(far::test);
         boolean dropped = collisionParts.keySet().removeIf(far::test);
         if (!collisionPending.isEmpty()) return;
         long now = System.nanoTime();
@@ -685,12 +695,16 @@ final class WorldStreamSourceController {
             try {
                 var part = lane.prepareCollision(tile, collisionCancellation);
                 collisionParts.put(key, com.vibeminer.rendering.world.ObjectCollision.prepare(part.placements()));
-                if (part.complete()) collisionRetryAt.remove(key);
-                else collisionRetryAt.put(key, System.nanoTime() + COLLISION_RETRY_NANOS);
+                if (part.complete()) {
+                    collisionRetryAt.remove(key);
+                    collisionAttempts.remove(key);
+                } else {
+                    collisionRetryAt.put(key, System.nanoTime() + collisionRetryDelay(collisionAttempts.merge(key, 1, Integer::sum)));
+                }
             } catch (RuntimeException failure) {
                 if (!collisionCancellation.isCanceled())
                     WorldDiagnostics.degraded("walking collision", "Walking collision could not be read for a tile", failure);
-                collisionRetryAt.put(key, System.nanoTime() + COLLISION_RETRY_NANOS);
+                collisionRetryAt.put(key, System.nanoTime() + collisionRetryDelay(collisionAttempts.merge(key, 1, Integer::sum)));
             } finally {
                 mergeCollision();
                 collisionPending.remove(key);

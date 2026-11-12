@@ -111,7 +111,10 @@ their world transforms and boxes once, when read; merging the nine parts into
 one `ObjectCollision` (a 32-yard grid, de-duplicated when two tiles list the
 same building) only builds the grid. Parts farther than one tile are dropped.
 A tile whose read failed, or that found a source it could not read yet, is read
-again after 15 seconds; unreadable sources are never remembered as missing.
+again after 15 seconds, doubling with each such read in a row up to four
+minutes. Sources the build will not give (not in the build, encrypted without a
+key, protected) are remembered like malformed ones and never read again;
+sources that cannot be read just now are not remembered.
 Tiles the map does not record (open sea, the map edge) have nothing to wait
 for. Until a tile's buildings are
 read, the body still walks on its terrain and the status line says the
@@ -160,3 +163,24 @@ accept a 0.01 yd overlap.
 
 No game data or screenshots are included. Real-client movement parity is not
 claimed for the flagged values.
+
+## Body sequences (murloc, groundwork)
+
+The drawn body is not in the World yet; its data is:
+
+- `M2IdleAnimation.readSequence` reads any sequence stored in the model (Stand
+  0, Walk 4, Run 5, SwimIdle 41, Swim 42, Fly 135) under the same checks as
+  Stand; `BuildDisplayModels.worldSequences` admits several under the World
+  profile from one parse. Display 441 (murloc, model 31) has Stand, Walk, Run,
+  SwimIdle and Swim, all in the model; it has no jump or fall sequence.
+- `PreviewAnimation.write`/`read` carry an animation to another process, and
+  `skin` poses it into caller arrays every frame.
+- `BodyAnimation.choose` picks the sequence from the body's mode, status and
+  speed (walk at or below 3.5 yd/s, run above, swim in deep water), falling back
+  to what the model has. `BodyAnimation.capsule` sizes the body from the
+  model's GeoBox times the display scale (murloc: radius 0.51, height 1.29 yd),
+  because CreatureModelData's collision size is the same default for every
+  model probed.
+- The measurement probe's `body` mode renders each sequence of a display at four
+  times on the CPU.
+

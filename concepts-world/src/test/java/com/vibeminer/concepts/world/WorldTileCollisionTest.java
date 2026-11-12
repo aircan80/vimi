@@ -157,10 +157,14 @@ class WorldTileCollisionTest {
         final Map<Long, byte[]> bytes = new HashMap<>();
         final Map<Long, Integer> reads = new HashMap<>();
         final Set<Long> unreadable = new java.util.HashSet<>();
+        final Set<Long> absent = new java.util.HashSet<>();
 
         @Override
         public byte[] read(long id, Cancellation token) {
             reads.merge(id, 1, Integer::sum);
+            if (absent.contains(id)) {
+                throw new WorldTileCollision.Absent("not in the build");
+            }
             if (unreadable.contains(id) || !bytes.containsKey(id)) {
                 throw new WorldTileCollision.Unreadable("not local", null);
             }
@@ -314,5 +318,17 @@ class WorldTileCollisionTest {
         int before = f.reads.get(GROUP);
         tight.prepare(TILE, Cancellation.NONE);
         assertTrue(f.reads.get(GROUP) > before, "an evicted source is read again");
+    }
+
+    @Test
+    void absentSourcesAreRememberedNotRetried() {
+        var f = files(obj0(List.of(modf(ROOT, 7, 0x8, 0, 0, 0, 0, 0, 1024)), List.of()));
+        f.absent.add(GROUP);
+        var reader = new WorldTileCollision(f, 1 << 20);
+        var first = reader.prepare(TILE, Cancellation.NONE);
+        assertTrue(first.complete(), "an absent source is not something to wait for");
+        assertEquals(1, first.skipped().get("building group absent"));
+        reader.prepare(TILE, Cancellation.NONE);
+        assertEquals(1, f.reads.get(GROUP), "never read again");
     }
 }

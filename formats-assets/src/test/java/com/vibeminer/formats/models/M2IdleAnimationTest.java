@@ -1044,4 +1044,42 @@ class M2IdleAnimationTest {
                         1001);
         M2ReadersTest.failure("MODEL_INVALID", () -> facts(unordered));
     }
+
+    @ParameterizedTest
+    @ValueSource(ints = {272, 274})
+    void anySequenceStoredInTheModelCanBeRead(int version) {
+        byte[] bytes = authored(version, a -> {});
+        var model = M2ModelReader.read(AssetSource.bytes(bytes)).join();
+        var walk =
+                M2IdleAnimation.readSequence(
+                                AssetSource.bytes(bytes),
+                                model,
+                                M2IdleAnimation.WALK,
+                                Cancellation.NONE)
+                        .join();
+        assertEquals(0, walk.sequenceIndex(), "the authored Walk is sequence 0");
+        assertEquals(800, walk.durationMillis());
+        var stand =
+                M2IdleAnimation.readSequence(
+                                AssetSource.bytes(bytes),
+                                model,
+                                M2IdleAnimation.STAND,
+                                Cancellation.NONE)
+                        .join();
+        assertEquals(read(bytes).sequenceIndex(), stand.sequenceIndex(), "Stand reads as before");
+        M2ReadersTest.failure(
+                "MODEL_UNSUPPORTED",
+                () ->
+                        M2IdleAnimation.readSequence(
+                                        AssetSource.bytes(bytes),
+                                        model,
+                                        M2IdleAnimation.RUN,
+                                        Cancellation.NONE)
+                                .join());
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        M2IdleAnimation.readSequence(
+                                AssetSource.bytes(bytes), model, -1, Cancellation.NONE));
+    }
 }
