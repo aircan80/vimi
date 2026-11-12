@@ -227,7 +227,27 @@ unsupported materials retain explicit partial/height fallback and a retry action
 Static water (lakes, sloped rivers and open sea) renders on the GPU path as an untextured
 diagnostic teal overlay where the Source qualifies it (see
 [visible water checkpoint](world-visible-water-checkpoint.md)); the CPU fallback shows terrain
-only. Buildings, doodads, collision and creature models are not rendered yet; declared NPC spawn points can be shown as static markers (see [NPC spawn placement](world-npc-placement.md)). Global-WMO-only maps have no
+only. Building water (a WMO group's liquid, MLIQ, such as the Stormwind canals) is
+drawn the same way, after terrain water, with the terrain water shader and the
+recorded water light: each drawn group's liquid travels in the tile's objects
+file (version 11, a liquid section after the animations: the group's mesh, kind,
+colour, grid corner, one height per vertex and one live byte per tile, at most
+256 liquids and 262,144 grid vertices per tile), and the child builds each
+placement's live tiles as quads in native coordinates, split on the diagonal
+swimming uses, charged to the objects' buffer budget (at most 65,536 tiles per
+tile's set). A placement culled that frame draws none, and an interior group's
+water draws only while the placement's portal walk reaches that group, as its
+geometry does. The kind comes from the LiquidType's LiquidMaterial vertex format,
+as terrain water's: 0 or 2 is water (ocean for LiquidType 14), 1 or 3 a flat
+liquid in its MinimapStaticCol; a type whose rows cannot be read is not drawn.
+MLIQ records no depth, so building water is shaded at the water light's deep
+colour and opacity (flagged). A building whose groups two tiles both draw stores
+its water in both tiles' objects files and charges it to both sets' budgets;
+depth writes with strict reversed depth only keep it from being blended twice.
+`nativeGpuWorldStreamObjectWaterProof` draws authored building water: water in
+the camera's room and in a room behind a door draw while the door is in view,
+the room behind is skipped once the walk no longer reaches it, and water behind
+the camera is culled with its placement. Buildings, doodads, collision and creature models are not rendered yet; declared NPC spawn points can be shown as static markers (see [NPC spawn placement](world-npc-placement.md)). Global-WMO-only maps have no
 terrain tiles and remain visible with that limitation. The default application viewport now uses inline bgfx GPU rendering on a
 capable backend, with the bounded CPU renderer as fallback. No JavaFX3D pipeline
 is required. **GPU terrain** selects the renderer; **Retry GPU** explicitly retries

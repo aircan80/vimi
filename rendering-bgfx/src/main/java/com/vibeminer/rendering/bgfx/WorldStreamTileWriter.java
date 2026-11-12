@@ -448,6 +448,62 @@ public final class WorldStreamTileWriter {
                 animated.put(model, new Object[] {sources.clone(), animation.clone()});
             }
 
+            // Building liquids by mesh: kind, colour, grid and corner, heights, live tiles.
+            private final java.util.TreeMap<Integer, Object[]> liquids = new java.util.TreeMap<>();
+            private long liquidVertices;
+
+            /** Liquid kinds: river or lake water, ocean, and a flat-coloured liquid. */
+            public static final int LIQUID_RIVER = WorldStreamObjectsFile.LIQUID_RIVER,
+                    LIQUID_OCEAN = WorldStreamObjectsFile.LIQUID_OCEAN,
+                    LIQUID_FLAT = WorldStreamObjectsFile.LIQUID_FLAT;
+
+            /**
+             * Whether a liquid grid of {@code xVertices} x {@code yVertices} still fits the file's
+             * liquid bounds.
+             */
+            public boolean liquidFits(int xVertices, int yVertices) {
+                return liquids.size() < WorldStreamObjectsFile.MAX_LIQUIDS
+                        && liquidVertices + (long) xVertices * yVertices
+                                <= WorldStreamObjectsFile.MAX_LIQUID_VERTICES;
+            }
+
+            /**
+             * The liquid of the mesh added last (building water, WMO MLIQ, in model space): its
+             * kind and 0xRRGGBB colour (a flat liquid's), its grid's vertex counts and corner, one
+             * height per vertex row by row along y, and per tile whether it holds liquid.
+             */
+            public void liquid(
+                    int kind,
+                    int colour,
+                    int xVertices,
+                    int yVertices,
+                    float cornerX,
+                    float cornerY,
+                    float cornerZ,
+                    float[] heights,
+                    boolean[] live) {
+                open();
+                Objects.requireNonNull(heights);
+                Objects.requireNonNull(live);
+                int mesh = meshes.size() - 1;
+                if (mesh < 0 || liquids.containsKey(mesh) || !liquidFits(xVertices, yVertices)) {
+                    throw new IllegalArgumentException("Liquid exceeds file profile");
+                }
+                var bytes = new byte[live.length];
+                for (int i = 0; i < live.length; i++) {
+                    bytes[i] = (byte) (live[i] ? 1 : 0);
+                }
+                liquids.put(
+                        mesh,
+                        new Object[] {
+                            new int[] {kind, colour, xVertices, yVertices},
+                            new float[] {cornerX, cornerY, cornerZ},
+                            heights.clone(),
+                            bytes
+                        });
+                liquidVertices += (long) xVertices * yVertices;
+            }
+
             /** The vertices of all of model {@code model}'s meshes added so far. */
             public int modelVertices(int model) {
                 if (model < 0 || model >= models.size()) {
@@ -782,7 +838,35 @@ public final class WorldStreamTileWriter {
                                         refData,
                                         parents,
                                         tiedGroups)
-                                .withAnimations(animations()));
+                                .withAnimations(animations())
+                                .withLiquids(liquids()));
+            }
+
+            private WorldStreamObjectsFile.Liquids liquids() {
+                int n = liquids.size();
+                var meshes = new int[n];
+                var kinds = new int[n];
+                var colours = new int[n];
+                var grids = new int[n * 2];
+                var corners = new float[n * 3];
+                var heights = new float[n][];
+                var live = new byte[n][];
+                int i = 0;
+                for (var entry : liquids.entrySet()) {
+                    var v = entry.getValue();
+                    int[] head = (int[]) v[0];
+                    meshes[i] = entry.getKey();
+                    kinds[i] = head[0];
+                    colours[i] = head[1];
+                    grids[i * 2] = head[2];
+                    grids[i * 2 + 1] = head[3];
+                    System.arraycopy((float[]) v[1], 0, corners, i * 3, 3);
+                    heights[i] = (float[]) v[2];
+                    live[i] = (byte[]) v[3];
+                    i++;
+                }
+                return new WorldStreamObjectsFile.Liquids(
+                        meshes, kinds, colours, grids, corners, heights, live);
             }
 
             private WorldStreamObjectsFile.Animations animations() {

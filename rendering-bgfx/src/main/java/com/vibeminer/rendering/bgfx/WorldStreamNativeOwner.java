@@ -1034,6 +1034,18 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         renderer.objectCulling(enabled);
     }
 
+    /** Proof seam only: see {@link BgfxWorldStreamRenderer#objectWater}. */
+    void objectWater(boolean enabled) {
+        requireOpen();
+        renderer.objectWater(enabled);
+    }
+
+    /** Building water runs drawn and skipped in the last frame (proofs). */
+    int[] waterCounts() {
+        requireOpen();
+        return new int[] {renderer.waterSubmits(), renderer.waterCulled()};
+    }
+
     /** Object animation on or off (#384); proofs only. */
     void objectAnimation(boolean enabled) {
         requireOpen();
