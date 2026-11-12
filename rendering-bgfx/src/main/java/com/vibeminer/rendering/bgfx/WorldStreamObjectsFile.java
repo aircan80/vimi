@@ -34,27 +34,35 @@ import java.util.concurrent.CancellationException;
 import java.util.function.BooleanSupplier;
 
 /**
- * Immutable per-tile BASIC_EXTERIOR_V1 objects file {@code tile-<txn>.wso}, version 9. Structural
+ * Immutable per-tile BASIC_EXTERIOR_V1 objects file {@code tile-<txn>.wso}, version 13. Structural
  * only: the application's closed source bridge is its sole producer, and the OBJECTS command (or
  * the terrain tile header) names its exact length and SHA-256.
  *
- * <p>Little-endian layout: a 256-byte header, then the model, mesh, range (first index, index
- * count, image, material class), placement (model, portal tie, translation, scale and a row-major
- * rotation) and image (width, height, format) tables, then 32-byte vertices (position, normal, uv
- * floats), one 4-byte vertex colour per vertex (R, G, B, then a zero byte), u16 mesh-relative
- * indices padded to four bytes, and image data. Each image's data is its full mip chain, top level
- * down to 1 x 1 and tightly packed, in its format: RGBA8 texels ({@link ObjectTextureMips}, issue
- * #265) or BC1, BC2 or BC3 blocks ({@link ObjectTextureFormats}, issue #374). Then one group
- * ordinal per mesh (-1 for a mesh of a model without portals), and the portal tables of #383: per
- * set (model, groups, portals, vertices, references), per group (MOGP flags, first reference,
- * reference count), the group boxes (six floats), per portal its vertex count, the portal planes
- * (four floats), the portal vertices (three floats) and per reference (portal, group, side), every
- * index relative to its set. Then the animation section of #384 ({@link Animations}): per entry its
- * model, vertex count and animation byte length, the rest vertex of each of the model's vertices,
- * and the animation's bytes padded to four. Then the liquid section ({@link Liquids}): per entry
- * the mesh whose group holds it, its kind and colour, its grid's vertex counts and corner, one
- * height per grid vertex and one live byte per tile padded to four. Every count, offset, index and
- * float is validated; reserved bytes must be zero.
+ * <p>Little-endian layout: a 256-byte header, then the reference section of version 13 ({@link
+ * References}: per referenced model, then per referenced image, its index and digest; empty when
+ * the file carries everything), then the model, mesh, range (first index, index count, image,
+ * material class), placement (model, portal tie, translation, scale and a row-major rotation) and
+ * image (width, height, format) tables, then 32-byte vertices (position, normal, uv floats), one
+ * 4-byte vertex colour per vertex (R, G, B, then a zero byte), u16 mesh-relative indices padded to
+ * four bytes, and image data. Each image's data is its full mip chain, top level down to 1 x 1 and
+ * tightly packed, in its format: RGBA8 texels ({@link ObjectTextureMips}, issue #265) or BC1, BC2
+ * or BC3 blocks ({@link ObjectTextureFormats}, issue #374). Then one group ordinal per mesh (-1 for
+ * a mesh of a model without portals), and the portal tables of #383: per set (model, groups,
+ * portals, vertices, references), per group (MOGP flags, first reference, reference count), the
+ * group boxes (six floats), per portal its vertex count, the portal planes (four floats), the
+ * portal vertices (three floats) and per reference (portal, group, side), every index relative to
+ * its set. Then the animation section of #384 ({@link Animations}): per entry its model, vertex
+ * count and animation byte length, the rest vertex of each of the model's vertices, and the
+ * animation's bytes padded to four. Then the liquid section ({@link Liquids}): per entry the mesh
+ * whose group holds it, its kind and colour, its grid's vertex counts and corner, one height per
+ * grid vertex and one live byte per tile padded to four.
+ *
+ * <p>A referenced model's meshes keep their table rows, ranges and group ordinals; their vertices,
+ * colours and indices, and the model's portal set tables, animation entry and liquids, are left out
+ * of those sections and come from its asset ({@link WorldStreamAssetPack}); a referenced image's
+ * chain likewise. The header counts every table row, vertex, index and image byte, carried or not;
+ * its animation and liquid counts are those of the sections as written. Every count, offset, index
+ * and float is validated; reserved bytes must be zero.
  */
 final class WorldStreamObjectsFile {
     // Version 5 (#367): range classes add ADDITIVE and the UNLIT flag, on #420's version 4.
