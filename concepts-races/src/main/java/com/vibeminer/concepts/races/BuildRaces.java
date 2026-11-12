@@ -114,6 +114,18 @@ public interface BuildRaces extends AutoCloseable {
                 RaceMediaTypes.Idle.unavailable(null, "Idle assessment unavailable"));
     }
 
+    /**
+     * The Stand idle of a humanoid NPC's composed appearance: the race model's idle, over the NPC's
+     * surface, with each attached item following its attachment point's bone.
+     */
+    default CompletableFuture<RaceMediaTypes.Idle> npcIdle(
+            long extendedDisplayInfoId,
+            com.vibeminer.rendering.models.MeshAppearance appearance,
+            Cancellation token) {
+        return CompletableFuture.completedFuture(
+                RaceMediaTypes.Idle.unavailable(null, "Idle assessment unavailable"));
+    }
+
     CompletableFuture<Void> closeAsync();
 
     @Override

@@ -53,12 +53,25 @@ final class NpcPreviews {
             Set<Integer> visibleParts,
             boolean textured,
             String reason,
-            List<String> facts) {
+            List<String> facts,
+            long extendedDisplayInfoId) {
         Outcome {
             Objects.requireNonNull(resolution);
             Objects.requireNonNull(kind);
             visibleParts = Set.copyOf(visibleParts);
             facts = List.copyOf(facts);
+        }
+
+        Outcome(
+                long npcId,
+                NpcDisplays.Resolution resolution,
+                Kind kind,
+                MeshAppearance appearance,
+                Set<Integer> visibleParts,
+                boolean textured,
+                String reason,
+                List<String> facts) {
+            this(npcId, resolution, kind, appearance, visibleParts, textured, reason, facts, 0);
         }
 
         /** The display whose idle may play: a creature display that is drawn, else null. */
@@ -228,7 +241,8 @@ final class NpcPreviews {
                     answer.result().visibleParts(),
                     true,
                     null,
-                    facts);
+                    facts,
+                    extended);
         }
         String refusal =
                 answer.refusal() != null
@@ -297,6 +311,47 @@ final class NpcPreviews {
                         }
                     });
         };
+    }
+
+    /** An idle for the preview: the animation, or why there is none. */
+    record Idle(com.vibeminer.rendering.models.PreviewAnimation animation, String message) {}
+
+    /**
+     * The Stand idle of a drawn outcome: the display's idle for a creature, the race model's Stand
+     * fitted to the NPC's appearance (its attached items following their bones) for a humanoid.
+     */
+    Idle idle(Outcome outcome, Cancellation token) throws Exception {
+        if (outcome.appearance() == null) {
+            return new Idle(null, null);
+        }
+        if (outcome.kind() == Kind.CREATURE && outcome.idleDisplay() != null) {
+            var models = displays.get();
+            if (models == null) return new Idle(null, null);
+            var idle = models.idle(outcome.idleDisplay(), token).join();
+            return switch (idle.state()) {
+                case AVAILABLE -> new Idle(idle.animation(), idle.message());
+                case UNSUPPORTED -> new Idle(null, "Idle animation unavailable: " + idle.message());
+                case UNAVAILABLE -> new Idle(null, null);
+            };
+        }
+        if (outcome.kind() == Kind.HUMANOID && outcome.extendedDisplayInfoId() > 0) {
+            var handle = races.get();
+            if (handle == null) return new Idle(null, null);
+            var idle =
+                    handle.npcIdle(outcome.extendedDisplayInfoId(), outcome.appearance(), token)
+                            .join();
+            if (idle.animation() != null && idle.animation().matches(outcome.appearance())) {
+                return new Idle(idle.animation(), idle.message());
+            }
+            return new Idle(
+                    null,
+                    idle.message() == null ? null : "Idle animation unavailable: " + idle.message());
+        }
+        return new Idle(
+                null,
+                outcome.kind() == Kind.HUMANOID
+                        ? "Idle animation is not evaluated for an untextured character model."
+                        : null);
     }
 
     private static String rootMessage(Throwable failure) {
