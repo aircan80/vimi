@@ -877,13 +877,23 @@ class WorldStreamLaunchOwnerTest {
     @Test
     void theChildBeatsWhileItStepsOrPresentsAndNotWhenAStepIsStuck() {
         long beat = WorldStreamSession.HEARTBEAT_NANOS;
-        long now = 100 * beat;
-        assertTrue(WorldStreamSession.beating(false, now - beat, now), "a step finished recently");
-        assertFalse(
-                WorldStreamSession.beating(false, now - 2 * beat, now),
-                "a step stuck for two beats");
+        long cap = WorldStreamSession.PRESENT_CAP_NANOS;
+        long now = 1_000 * beat;
         assertTrue(
-                WorldStreamSession.beating(true, now - 60 * beat, now),
-                "a present that blocks (a minimised window) is not a hang");
+                WorldStreamSession.beating(false, 0, now - beat, now), "a step finished recently");
+        assertFalse(
+                WorldStreamSession.beating(false, 0, now - 2 * beat, now),
+                "a step (a draw, a readback) stuck for two beats");
+        assertTrue(
+                WorldStreamSession.beating(true, now - 60 * beat, now - 60 * beat, now),
+                "a native present blocked for a minute (a minimised window) is not a hang");
+        assertTrue(
+                WorldStreamSession.beating(true, now - cap + 1, now - cap, now),
+                "just under the cap it still beats");
+        assertFalse(
+                WorldStreamSession.beating(true, now - cap, now - cap, now),
+                "a present blocked past the cap is a hang");
+        // Readback mode never sets the flag: a stuck readback is only a stale step.
+        assertFalse(WorldStreamSession.beating(false, now - beat, now - 3 * beat, now));
     }
 }
