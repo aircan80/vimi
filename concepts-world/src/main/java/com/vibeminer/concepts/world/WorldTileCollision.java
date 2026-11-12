@@ -319,7 +319,9 @@ public final class WorldTileCollision {
                                     new Local(
                                             group.liquid(),
                                             group.liquid().liquidType(root.flags())),
-                                    kind(group.liquid().liquidType(root.flags())),
+                                    // Resolved by the stream from the LiquidType rows building
+                                    // water is drawn by (WorldPreparedTerrain.collision).
+                                    LiquidSurface.Kind.OTHER,
                                     r,
                                     scale,
                                     transform.originX(),
@@ -548,20 +550,6 @@ public final class WorldTileCollision {
                         : (mesh == null ? 0 : mesh.bytes())
                                 + (liquid == null ? 0 : liquid.retainedBytes()));
         return group;
-    }
-
-    /**
-     * A WMO LiquidType ID's kind: 13 WMO water, 14 WMO ocean, 19 WMO magma, 20 WMO slime (what
-     * {@link WmoLiquid#liquidType} gives for basic IDs); anything else is other.
-     */
-    static LiquidSurface.Kind kind(int liquidType) {
-        return switch (liquidType) {
-            case 13 -> LiquidSurface.Kind.WATER;
-            case 14 -> LiquidSurface.Kind.OCEAN;
-            case 19 -> LiquidSurface.Kind.MAGMA;
-            case 20 -> LiquidSurface.Kind.SLIME;
-            default -> LiquidSurface.Kind.OTHER;
-        };
     }
 
     /** A group's liquid in its own coordinates, for {@link LiquidSurface}. */

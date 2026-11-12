@@ -1615,4 +1615,51 @@ class WorldTerrainLiquidsTest {
             }
         }
     }
+
+    @Test
+    void aBuildingLiquidsSwimmingKindIsItsDrawnAppearance() {
+        // Water and ocean as drawn, whatever the LiquidType ID (the canals' 1344 is water).
+        assertEquals(
+                com.vibeminer.rendering.world.LiquidSurface.Kind.WATER,
+                WorldTerrainLiquids.kind(1344, new int[] {0, 0}));
+        assertEquals(
+                com.vibeminer.rendering.world.LiquidSurface.Kind.OCEAN,
+                WorldTerrainLiquids.kind(14, new int[] {1, 0}));
+        // Flat liquids: magma and slime only for the WMO magma and slime rows.
+        assertEquals(
+                com.vibeminer.rendering.world.LiquidSurface.Kind.MAGMA,
+                WorldTerrainLiquids.kind(19, new int[] {2, 0xFF4000}));
+        assertEquals(
+                com.vibeminer.rendering.world.LiquidSurface.Kind.SLIME,
+                WorldTerrainLiquids.kind(20, new int[] {2, 0x40FF00}));
+        assertEquals(
+                com.vibeminer.rendering.world.LiquidSurface.Kind.OTHER,
+                WorldTerrainLiquids.kind(181, new int[] {2, 0x202020}));
+        // Rows that could not be read: other, as building water is then not drawn.
+        assertEquals(
+                com.vibeminer.rendering.world.LiquidSurface.Kind.OTHER,
+                WorldTerrainLiquids.kind(13, null));
+    }
+
+    @Test
+    void buildingLiquidAppearancesAreLookedUpOncePerTypeAbsencesIncluded() throws Exception {
+        try (var f = new Fixture()) {
+            var liquids = f.scopes.liquids();
+            // 1240 is an authored LiquidType row; 9999 is none.
+            var first = liquids.appearances(java.util.Set.of(1240, 9999), Cancellation.NONE);
+            int lookups = liquids.appearanceLookups.get();
+            assertEquals(2, lookups, "each type looked up once");
+            int captures = f.liquidCaptures;
+            // Drawing and collision ask again on every prepare: the cache answers both.
+            var again = liquids.appearances(java.util.Set.of(1240, 9999), Cancellation.NONE);
+            assertEquals(lookups, liquids.appearanceLookups.get(), "no second lookup");
+            assertEquals(captures, f.liquidCaptures, "no second table scan");
+            assertEquals(first.keySet(), again.keySet());
+            assertFalse(again.containsKey(9999), "the absence is remembered as an absence");
+            for (var e : first.entrySet()) {
+                org.junit.jupiter.api.Assertions.assertArrayEquals(
+                        e.getValue(), again.get(e.getKey()));
+            }
+        }
+    }
 }

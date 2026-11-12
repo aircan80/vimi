@@ -102,17 +102,19 @@ LiquidType ID follows TrinityCore's vmap4 extractor (`WMOGroup::open` in
 `src/tools/vmap4_extractor/wmo.cpp`) exactly: the MOGP liquid field (header
 byte 52; 48 holds the fog IDs) through `GetLiquidTypeId` with the root's flag
 0x4, else 15 meaning none and any other field, 0 included, as field + 1; with
-none, the first tile whose low four bits are not 15. Basic IDs map to WMO water
-13, ocean 14, magma 19 and slime 20, which give the kind; any other ID is kept
-and its kind is "other" until the LiquidType table is consulted (the
-Stormwind canals are LiquidType 1344). Swimming is the same in every kind. Building
+none, the first tile whose low four bits are not 15. The kind comes from the
+same LiquidType and LiquidMaterial rows building water is drawn by: water or
+ocean as drawn, magma or slime for the WMO rows 19 and 20 of a flat liquid,
+other for another flat liquid or a type whose rows cannot be read (the
+Stormwind canals, LiquidType 1344, are water). Swimming is the same in every
+kind. Building
 water is not drawn yet (it needs its own draw in the objects pass); only
 swimming uses it. The older MCLQ chunk liquid is not read; flying ignores
 water.
 
 Real data (build 70862, `-Pprobe.mode=swim -Pprobe.objects=true`, Stormwind
 48,30): the 3 x 3 has 3 building liquids (20 records across tiles): the canals
-(LiquidType 1344, kind other) and two pools (LiquidType 13, water).
+(LiquidType 1344) and two pools (LiquidType 13), all water.
 The canals are one liquid (LiquidType 1344) over 404 x 592 yd at 95.47, with no
 terrain liquid under the points probed: a body over the canal swims in all four
 headings and stays in, stopped by the quay walls after 26 to 35 of the 38 yd it
