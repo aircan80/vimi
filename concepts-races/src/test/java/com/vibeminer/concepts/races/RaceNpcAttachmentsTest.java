@@ -29,7 +29,9 @@ final class RaceNpcAttachmentsTest {
 
     private static PreviewMesh withParts(int... ids) {
         var parts = new java.util.ArrayList<PreviewMesh.Part>();
-        for (int id : ids) parts.add(new PreviewMesh.Part(id, 0, 3));
+        for (int id : ids) {
+            parts.add(new PreviewMesh.Part(id, 0, 3));
+        }
         return new PreviewMesh(new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0}, new int[] {0, 1, 2}, parts);
     }
 
