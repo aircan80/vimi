@@ -776,6 +776,183 @@ class PreviewAnimationTest {
                                 full(3)));
     }
 
+    /** The framing bounds of {@code animation} over {@code rest}, as a pose reports them. */
+    private static float[] framing(PreviewAnimation animation, PreviewMesh rest) {
+        var posed = animation.pose(rest, 0).mesh();
+        return new float[] {
+            posed.minimum(0), posed.minimum(1), posed.minimum(2),
+            posed.maximum(0), posed.maximum(1), posed.maximum(2)
+        };
+    }
+
+    /** Whether {@code outer} contains {@code inner} (minimum x, y, z then maximum x, y, z). */
+    private static boolean contains(float[] outer, float[] inner) {
+        for (int axis = 0; axis < 3; axis++) {
+            if (inner[axis] < outer[axis] || inner[3 + axis] > outer[3 + axis]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** A root swinging its vertices a quarter turn around z, with a moving child. */
+    private static PreviewAnimation swinging(PreviewMesh rest) {
+        int vertices = rest.vertexCount();
+        int[] bones = new int[vertices * 4], weights = new int[vertices * 4];
+        for (int v = 0; v < vertices; v++) {
+            bones[v * 4] = v % 2;
+            weights[v * 4] = 255;
+        }
+        return new PreviewAnimation(
+                "Stand",
+                1000,
+                new long[0],
+                swingBones(),
+                rest,
+                new float[vertices * 3],
+                bones,
+                weights);
+    }
+
+    private static List<Bone> swingBones() {
+        var rotation =
+                new Track(
+                        Interpolation.LINEAR,
+                        -1,
+                        4,
+                        new int[] {0, 500, 1000},
+                        new float[] {0, 0, 0, 1, 0, 0, S, S, 0, 0, 1, 0});
+        var lift =
+                new Track(
+                        Interpolation.LINEAR,
+                        -1,
+                        3,
+                        new int[] {0, 700},
+                        new float[] {0, 0, 0, 0, 0, 3});
+        return List.of(
+                new Bone(-1, 0, 0, 0, null, rotation, null, false),
+                new Bone(0, 1, 0, 0, lift, null, null, false));
+    }
+
+    @Test
+    void derivedAnimationsKeepConservativeFramingWithoutEvaluatingAgain() throws Exception {
+        var rest = mesh(4, 0, 0, 0, 2, 0, 0, 0, 1, -3, 1, 0);
+        var animation = swinging(rest);
+        float[] whole = framing(animation, rest);
+
+        // A subset keeps the whole surface's framing: it holds every pose of its vertices.
+        var subset = animation.subset(new int[] {1, 2});
+        var subsetRest = mesh(0, 2, 0, 0, 0, 1);
+        assertArrayEquals(whole, framing(subset, subsetRest));
+        for (long t = 0; t < 1000; t += 37) {
+            var posed = subset.pose(subsetRest, t).mesh();
+            for (int axis = 0; axis < 3; axis++) {
+                assertEquals(whole[axis], posed.minimum(axis), "minimum at " + t);
+                assertEquals(whole[3 + axis], posed.maximum(axis), "maximum at " + t);
+            }
+        }
+
+        // Added rigid vertices extend the framing by their own poses only: the result holds the
+        // full evaluation of the same surface.
+        var bigger = mesh(4, 0, 0, 0, 2, 0, 0, 0, 1, -3, 1, 0, 9, 0, 0, 0, 0, 6);
+        var extended = animation.withRigidVertices(bigger, new float[18], new int[] {0, 1});
+        int[] bones = {0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0};
+        int[] weights = new int[24];
+        for (int v = 0; v < 6; v++) {
+            weights[v * 4] = 255;
+        }
+        var evaluated =
+                new PreviewAnimation(
+                        "Stand",
+                        1000,
+                        new long[0],
+                        swingBones(),
+                        bigger,
+                        new float[18],
+                        bones,
+                        weights);
+        assertTrue(contains(framing(extended, bigger), framing(evaluated, bigger)));
+        assertTrue(contains(framing(extended, bigger), whole));
+        assertTrue(framing(extended, bigger)[3] >= 9, "the added vertex at x 9 is framed");
+
+        // Written and read, the framing travels with the stream.
+        var copy = PreviewAnimation.read(stream(bytes(animation)));
+        assertArrayEquals(whole, framing(copy, rest));
+    }
+
+    @Test
+    void aCameraFacingAnimationMovingBetweenFramingSamplesReadsBack() throws Exception {
+        // The root rises to 10 at 150 ms and is back at 0 by 300 ms: a camera-facing animation is
+        // framed every 100 ms (a twelfth of its 1200 ms loop), so its framing tops out near 6.7,
+        // and a pose at an eighth of the loop (150 ms) is above it. A read checks only poses on
+        // the framing's own grid, so the stream reads back with the same framing.
+        var rise =
+                new Track(
+                        Interpolation.LINEAR,
+                        -1,
+                        3,
+                        new int[] {0, 150, 300},
+                        new float[] {0, 0, 0, 0, 0, 10, 0, 0, 0});
+        var bones =
+                List.of(
+                        new Bone(-1, 0, 0, 0, rise, null, null, false),
+                        new Bone(
+                                0,
+                                0,
+                                0,
+                                1,
+                                null,
+                                null,
+                                null,
+                                false,
+                                PreviewAnimation.Facing.SPHERICAL),
+                        new Bone(1, 1, 0, 1, null, null, null, false));
+        var rest = mesh(1, 0, 1, 2, 0, 1, 0, 0, 0);
+        var animation =
+                new PreviewAnimation(
+                        "Stand",
+                        1200,
+                        new long[0],
+                        bones,
+                        rest,
+                        new float[0],
+                        rigid(2, 1, 0),
+                        full(3));
+        assertTrue(animation.viewDependent());
+        float[] framed = framingFrom(animation, rest);
+        float[] between = animation.pose(rest, 150, FROM_X).mesh().positions();
+        assertTrue(between[2] > framed[5] + 1, "a pose between the framing's samples is above it");
+        var copy = PreviewAnimation.read(stream(bytes(animation)));
+        assertArrayEquals(framed, framingFrom(copy, rest));
+    }
+
+    /** As {@link #framing}, for a camera-facing animation (posed from +X). */
+    private static float[] framingFrom(PreviewAnimation animation, PreviewMesh rest) {
+        var posed = animation.pose(rest, 0, FROM_X).mesh();
+        return new float[] {
+            posed.minimum(0), posed.minimum(1), posed.minimum(2),
+            posed.maximum(0), posed.maximum(1), posed.maximum(2)
+        };
+    }
+
+    @Test
+    void readRefusesStoredFramingThatDoesNotHoldItsPoses() throws Exception {
+        var rest = mesh(4, 0, 0, 0, 2, 0, 0, 0, 1, -3, 1, 0);
+        byte[] good = bytes(swinging(rest));
+        // The framing is the stream's last six floats: shrink the maximum x below the rest
+        // surface's
+        // pose at time 0, then make one bound non-finite, then invert one.
+        for (var change :
+                List.<java.util.function.Consumer<java.nio.ByteBuffer>>of(
+                        b -> b.putFloat(good.length - 12, 1),
+                        b -> b.putFloat(good.length - 24, Float.NaN),
+                        b -> b.putFloat(good.length - 20, 100))) {
+            byte[] bad = good.clone();
+            change.accept(java.nio.ByteBuffer.wrap(bad));
+            assertThrows(java.io.IOException.class, () -> PreviewAnimation.read(stream(bad)));
+        }
+    }
+
     @Test
     void addedRigidVerticesFollowTheirBoneAndTheOriginalSurfaceIsKept() {
         var root = new Bone(-1, 0, 0, 0, constant(3, 0, 0, 1), null, null, false);
