@@ -971,6 +971,9 @@ tasks.register('worldHotLifecycleUiProof', JavaExec) {
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.vimi.gui.WorldHotLifecycleUiProof'
     jvmArgs '--enable-native-access=ALL-UNNAMED'
+    // -Pproof.out=<dir> writes the viewport at 100% and 50% render scale there (#370).
+    def proofOut = providers.gradleProperty('proof.out')
+    if (proofOut.isPresent()) systemProperty 'proof.out', proofOut.get()
 }
 
 // Authored private cache import and physical file retirement; no live client data.

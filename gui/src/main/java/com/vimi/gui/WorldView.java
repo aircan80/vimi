@@ -219,6 +219,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
             new javafx.scene.control.ChoiceBox<>();
     // The distance the current stream controller was started with.
     private ViewDistance streamingDistance = WorldStreamGpuOwner.VIEW_DISTANCE;
+    // Render scale (#370): remembered with the controls; a change re-requests the frame size.
+    private final javafx.scene.control.ChoiceBox<WorldControls.RenderScale> renderScale =
+            new javafx.scene.control.ChoiceBox<>();
     // Free camera when neither is ticked; at most one of the two is.
     private final CheckBox walkMode = new CheckBox("Walk with collision");
     private final CheckBox flyMode = new CheckBox("Fly with collision");
@@ -703,6 +706,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         try {
             input.controls(controls);
             if (!viewDistanceForced()) viewDistance.setValue(controls.viewDistance());
+            renderScale.setValue(controls.renderScale());
             keyHelp.setText(controls.help());
             showLayoutChoice(controls);
             hud.mapKey(mapKey(controls));
@@ -788,6 +792,32 @@ final class WorldView extends BorderPane implements AutoCloseable {
             // Every slot count is fixed per session: restart the stream at the new size.
             retireStreaming();
             startStreaming();
+        });
+    }
+
+    private void renderScaleSetup(boolean gpuAvailable) {
+        renderScale.setId("world-render-scale");
+        renderScale.setFocusTraversable(false);
+        renderScale.getItems().setAll(WorldControls.RenderScale.values());
+        renderScale.setValue(WorldControls.RenderScale.FULL);
+        renderScale.setTooltip(new javafx.scene.control.Tooltip(
+                "Share of the viewport's native pixel size (including display scaling) the World is"
+                        + " rendered at. Lower is softer but lighter on a slow GPU. Applies at once."));
+        renderScale.setDisable(!gpuAvailable || !gpuEnabled.isSelected());
+        gpuEnabled.selectedProperty().addListener((o, was, on) ->
+                renderScale.setDisable(!gpuAvailable || !on));
+        renderScale.valueProperty().addListener((o, previous, next) -> {
+            if (next == null || next == previous) return;
+            if (!showingControls) {
+                var controls = input.controls().withRenderScale(next);
+                if (!controls.equals(input.controls())) {
+                    controlsEdited = true;
+                    input.controls(controls);
+                    controlsStore.save(controls.encode());
+                }
+            }
+            // The stream resizes in place (#495): the next camera request carries the new size.
+            requestFrame();
         });
     }
 
@@ -899,6 +929,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             startStreaming();
         });
         viewDistanceSetup(gpu != null);
+        renderScaleSetup(gpu != null);
         gpuEnabled.setSelected(gpu != null);
         gpuEnabled.setDisable(gpu == null);
         gpuEnabled.setId("world-gpu-enabled");
@@ -2389,7 +2420,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
         var display = menu.page(WorldGameMenu.Page.DISPLAY);
         display.getChildren().setAll(
                 WorldGameMenu.section("View", showCoordinates, hudButton, fullscreenButton),
-                WorldGameMenu.section("Renderer", new HBox(8, gpuEnabled, objectTextures), viewDistance,
+                WorldGameMenu.section("Renderer", new HBox(8, gpuEnabled, objectTextures),
+                        new HBox(8, viewDistance, renderScale),
                         new HBox(8, gpuActivity, retryGpu, gpuStatus),
                         new HBox(8, textureActivity, textureStatus, retryTextures)));
         // Map layers stay here until a tracking popup takes them; never steal them from one.
@@ -3715,12 +3747,15 @@ final class WorldView extends BorderPane implements AutoCloseable {
      */
     void streamingSize() {
         // Native resolution: the viewport times the window's render scale on each axis (HiDPI),
-        // within the one shared frame cap; the ImageView fits it back to layout size.
+        // times the chosen render scale (#370), within the one shared frame cap; the ImageView
+        // fits it back to layout size.
         var window = getScene() == null ? null : getScene().getWindow();
+        var chosen = renderScale.getValue();
         var frame = com.vibeminer.rendering.world.WorldFrameLimits.frame(
                 viewport.getWidth(), viewport.getHeight(),
                 window == null ? 1 : window.getRenderScaleX(),
-                window == null ? 1 : window.getRenderScaleY(), 1);
+                window == null ? 1 : window.getRenderScaleY(),
+                chosen == null ? 1 : chosen.factor());
         streamingResize.offer(frame.width(), frame.height());
         int width = streamingResize.width(), height = streamingResize.height();
         if (streamingWidth != 0 && (width != streamingWidth || height != streamingHeight)) streamingPolicy++;
