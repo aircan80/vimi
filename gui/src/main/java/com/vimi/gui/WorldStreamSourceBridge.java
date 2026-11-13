@@ -266,6 +266,9 @@ final class WorldStreamSourceBridge {
                                     WorldExteriorObjects.Count.DOODAD_FAILED_MODEL,
                                     WorldExteriorObjects.Count.DOODAD_EMPTY,
                                     WorldExteriorObjects.Count.SET_DOODAD_UNSUPPORTED,
+                                    WorldExteriorObjects.Count.SET_DOODAD_POSITION,
+                                    WorldExteriorObjects.Count.SET_DOODAD_ROTATION,
+                                    WorldExteriorObjects.Count.SET_DOODAD_SCALE,
                                     WorldExteriorObjects.Count.SET_DOODAD_FAILED_MODEL,
                                     WorldExteriorObjects.Count.SET_DOODAD_EMPTY);
             int surfaces =
