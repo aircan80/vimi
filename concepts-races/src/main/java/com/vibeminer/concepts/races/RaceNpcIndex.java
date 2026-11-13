@@ -61,7 +61,7 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 final class RaceNpcIndex {
     /** Bumped when the entry format or what an entry means changes. */
-    static final String REVISION = "npc-appearance-index-v3-capes-tabards";
+    static final String REVISION = "npc-appearance-index-v4-environment-first-stage";
 
     private static final int MAGIC = 0x4e414931; // "NAI1"
 
