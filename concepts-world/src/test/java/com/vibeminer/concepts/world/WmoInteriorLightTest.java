@@ -129,4 +129,51 @@ class WmoInteriorLightTest {
         return new com.vibeminer.formats.world.WmoFormats.Batch(
                 List.of(0, 0, 0, 0, 0, 0), 0, 3, first, last, 0, 0);
     }
+
+    private static int[] outdoor(int[] mocv, int trans, long ambient, int flags) {
+        return WmoInteriorLight.outdoor(i -> mocv[i], mocv.length / 4, trans, ambient, flags);
+    }
+
+    @Test
+    void anOutdoorVertexAddsTwiceItsAdjustedColourWithoutTheAmbient() {
+        // ((100 * 0 >> 6) + 100 - 30) / 2 = 35: the addition is 70, the ambient not added (the
+        // World light carries the exterior ambient).
+        assertArrayEquals(
+                new int[] {WorldExteriorObjects.packColour(70, 70, 70)},
+                outdoor(mocv(100, 100, 100, 0), 0, ambient(30, 30, 30), 0));
+        // Under the ambient it adds nothing; the alpha term brightens it, up to 255.
+        assertArrayEquals(
+                new int[] {
+                    WorldExteriorObjects.packColour(0, 0, 0),
+                    WorldExteriorObjects.packColour(255, 255, 255)
+                },
+                outdoor(mocv(10, 10, 10, 0, 200, 200, 200, 255), 0, ambient(30, 30, 30), 0));
+    }
+
+    @Test
+    void anOutdoorVertexOfAKeepColourBuildingAddsTwiceItsRawColour() {
+        // MOHD 0x8, as every exterior group with a MOCV around Stormwind, Goldshire, Ironforge and
+        // Orgrimmar on 70862: the colour is kept, so the addition is 2c, kept to 255.
+        assertArrayEquals(
+                new int[] {
+                    WorldExteriorObjects.packColour(24, 50, 116),
+                    WorldExteriorObjects.packColour(255, 0, 255)
+                },
+                outdoor(
+                        mocv(12, 25, 58, 255, 200, 0, 128, 255),
+                        0,
+                        ambient(33, 33, 33),
+                        WmoInteriorLight.KEEP_COLOUR));
+    }
+
+    @Test
+    void anOutdoorTransitionVertexTakesTheTransitionFormula() {
+        // (100 - 20) * (1 - 51 / 255) / 2 = 32: the addition is 64; the next vertex is not one.
+        assertArrayEquals(
+                new int[] {
+                    WorldExteriorObjects.packColour(64, 64, 64),
+                    WorldExteriorObjects.packColour(255, 255, 255)
+                },
+                outdoor(mocv(100, 100, 100, 51, 100, 100, 100, 255), 1, ambient(20, 20, 20), 0));
+    }
 }

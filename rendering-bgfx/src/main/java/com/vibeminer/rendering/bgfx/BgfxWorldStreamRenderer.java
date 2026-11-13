@@ -2306,17 +2306,17 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     }
 
     /**
-     * WMO vertex colours (MOCV, #375) added to the building light. Off by default until compared
-     * with the client: only {@code -Dvimi.world.wmoVertexColours=true}, which the application
-     * forwards to this helper, turns them on. The colours are always uploaded; the flag only
-     * reaches the shader (u_wmoSkyTop.w), so turning it on needs no other shader.
+     * WMO vertex colours (MOCV, #375) added to the building light of groups lit as outdoors. On by
+     * default; {@code -Dvimi.world.wmoVertexColours=false}, which the application forwards to this
+     * helper, turns them off. The colours are always uploaded; the flag only reaches the shader
+     * (u_wmoSkyTop.w), so turning it off needs no other shader.
      */
     static final boolean VERTEX_COLOURS =
             vertexColoursEnabled(System.getProperty("vimi.world.wmoVertexColours"));
 
-    /** Only {@code true} (any letter case) turns WMO vertex colours on. */
+    /** Only {@code false} (any letter case) turns WMO vertex colours off. */
     static boolean vertexColoursEnabled(String property) {
-        return "true".equalsIgnoreCase(property);
+        return !"false".equalsIgnoreCase(property);
     }
 
     /** Proof seam: overrides {@link #VERTEX_COLOURS} for this renderer. */

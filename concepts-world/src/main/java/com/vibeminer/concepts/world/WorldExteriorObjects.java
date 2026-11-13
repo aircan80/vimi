@@ -5688,7 +5688,9 @@ public final class WorldExteriorObjects {
                 vertices[at + 7] = uv.get(v * 2 + 1);
             }
             // MOGP 0x4 declares the first MOCV: B, G, R, A per vertex, its count already checked.
-            // An exterior group carries it as an addition to the World light (#375). An interior
+            // A group lit as outdoors carries it as the client adds it to the World light (#375):
+            // twice the colour as FixColorVertexAlpha adjusts it (WmoInteriorLight.outdoor). An
+            // interior
             // group is lit by its own light instead of the sun (#383): its MOCV as the client
             // adjusts it at load plus the MOHD ambient its shader adds (WmoInteriorLight), drawn
             // with INTERIOR_LIGHT; without a MOCV, the ambient alone. The client gives an
@@ -5709,11 +5711,13 @@ public final class WorldExteriorObjects {
                                 root.header().ambientColor(),
                                 root.header().flags());
             } else if (mocv != null) {
-                colours = new int[count];
-                for (int v = 0; v < count; v++) {
-                    colours[v] =
-                            packColour(mocv.get(v * 4), mocv.get(v * 4 + 1), mocv.get(v * 4 + 2));
-                }
+                colours =
+                        WmoInteriorLight.outdoor(
+                                mocv::get,
+                                count,
+                                transVertices(borrow.batches(), borrow.header().batchesA()),
+                                root.header().ambientColor(),
+                                root.header().flags());
             }
             int lightFlag = interiorLit ? INTERIOR_LIGHT : 0;
             // Only candidate batch indices are copied, compacted in recorded batch order.

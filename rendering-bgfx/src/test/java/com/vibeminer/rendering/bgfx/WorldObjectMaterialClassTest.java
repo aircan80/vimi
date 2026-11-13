@@ -101,12 +101,12 @@ class WorldObjectMaterialClassTest {
         assertEquals(0, state & BGFX_STATE_WRITE_A, "the frame's alpha stays opaque");
     }
 
-    /** Issue #375: vertex colours are off unless the helper's property is exactly true. */
+    /** Issue #375: vertex colours are on unless the helper's property is false (any case). */
     @Test
-    void vertexColoursAreAnOptInShaderSwitch() {
-        assertFalse(BgfxWorldStreamRenderer.vertexColoursEnabled(null));
-        assertFalse(BgfxWorldStreamRenderer.vertexColoursEnabled("1"));
-        assertTrue(BgfxWorldStreamRenderer.vertexColoursEnabled("True"));
+    void vertexColoursAreAnOptOutShaderSwitch() {
+        assertTrue(BgfxWorldStreamRenderer.vertexColoursEnabled(null));
+        assertTrue(BgfxWorldStreamRenderer.vertexColoursEnabled("0"));
+        assertFalse(BgfxWorldStreamRenderer.vertexColoursEnabled("False"));
         float[] on = BgfxWorldStreamRenderer.wmoSkyTop(WorldFog.STREAM, true);
         float[] off = BgfxWorldStreamRenderer.wmoSkyTop(WorldFog.STREAM, false);
         assertEquals(1, on[3]);
