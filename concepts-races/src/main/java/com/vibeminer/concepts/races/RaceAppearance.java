@@ -318,7 +318,8 @@ final class RaceAppearance {
                         true,
                         null),
                 entry.omittedItems(),
-                entry.omittedAttachments(),
+                RaceNpcAttachments.undrawnAttachments(
+                        entry.omittedAttachments(), restored.appearance()),
                 null,
                 false);
     }
