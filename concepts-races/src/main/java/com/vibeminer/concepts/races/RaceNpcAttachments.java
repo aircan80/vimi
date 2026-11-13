@@ -166,6 +166,33 @@ final class RaceNpcAttachments {
         return hidden;
     }
 
+    /**
+     * Item slots whose model {@code mesh} draws: the helmet when a part follows the head point, the
+     * shoulders when a part follows either shoulder point. {@link RaceAppearancePlan#npcOmissions}
+     * counts every slot item with a model before anything is attached; these are the ones that were
+     * attached after all.
+     */
+    static int drawnSlots(PreviewMesh mesh) {
+        boolean head = false, shoulders = false;
+        for (var part : mesh.parts()) {
+            if (part.id() < FIRST_PART) {
+                continue;
+            }
+            int attachment = (part.id() - FIRST_PART) / 100;
+            head |= attachment == HEAD;
+            shoulders |= attachment == SHOULDER_RIGHT || attachment == SHOULDER_LEFT;
+        }
+        return (head ? 1 : 0) + (shoulders ? 1 : 0);
+    }
+
+    /**
+     * The item models an NPC appearance leaves undrawn: {@code counted} (every slot item with a
+     * model, and held items) less those {@code appearance} attached.
+     */
+    static int undrawnAttachments(int counted, MeshAppearance appearance) {
+        return Math.max(0, counted - (appearance == null ? 0 : drawnSlots(appearance.mesh())));
+    }
+
     /** The NPC's visible character parts without the groups its helmet hides, plus its items. */
     static Set<Integer> visible(Set<Integer> parts, Set<Integer> hidden, PreviewMesh mesh) {
         var visible = new HashSet<Integer>();

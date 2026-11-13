@@ -206,6 +206,10 @@ with the model cache raised to 256 MiB for the animations' 0.4 MB a model (at mo
 0.8 MB). Of 362 drawn spawns, 248 carry their idle (all non-humanoid creatures with a
 Stand, and humanoids whose surfaces are opaque or alpha-keyed).
 
+Humanoid NPCs draw their eyes (geoset group 33, texture type 19) from the eye colour their
+customization chose: the first stage of the eye draw, whose second, added highlight stage is not
+drawn. Identical creature images on one tile (eyes of one colour, say) are added once.
+
 Creatures are **on by default** since #175 measured them on real data (they need exteriors
 on); start the GUI with `-Dvimi.world.creatures=false` to turn them off. A tile's buildings
 are delivered first, without creatures, and its creatures follow in a later pass that replaces

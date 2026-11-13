@@ -208,9 +208,11 @@ final class RaceAppearancePlan {
 
     /**
      * Counts what an NPC's items leave undrawn, independently of any remembered appearance: slots
-     * past {@link #NPC_SLOT_INVENTORY} (held items) and displays with item models are attachments,
-     * displays recorded as absent are missing, and capes and tabards are undrawn. A display that
-     * cannot be read now is unreadable ({@link RacesService.Unreadable}), never an omission.
+     * past {@link #NPC_SLOT_INVENTORY} (held items) and displays with item models are attachments
+     * (those the appearance then attaches are taken off again: {@link
+     * RaceNpcAttachments#undrawnAttachments}), displays recorded as absent are missing, and capes
+     * and tabards are undrawn. A display that cannot be read now is unreadable ({@link
+     * RacesService.Unreadable}), never an omission.
      */
     NpcOmissions npcOmissions(Npc npc, Cancellation token, List<String> issues) {
         var display = schema("ItemDisplayInfo", token, issues, "GeosetGroupOverride");
@@ -610,12 +612,13 @@ final class RaceAppearancePlan {
 
     /**
      * The NPC's slot items as clothing geometry. Item models (a display with ModelResourcesID:
-     * helms, shoulders, held items) are counted as attachments and not drawn. Robes are never
-     * inferred from the slot: a chest whose display sets the robe group (GeosetGroup[2] above 0,
-     * which RaceClothingGeometry applies to group 13, the robe/kilt) is treated as a robe
-     * (InventoryType 20); any other chest as InventoryType 5. Capes and tabards are left out
-     * ({@link #undrawnNpcSlot}). A display that cannot be read now is unreadable, so the NPC is
-     * asked for again rather than drawn without it.
+     * helms, shoulders, held items) are not clothing: helmets and shoulders are attached ({@link
+     * RaceNpcAttachments}), and the rest is counted as undrawn. Robes are never inferred from the
+     * slot: a chest whose display sets the robe group (GeosetGroup[2] above 0, which
+     * RaceClothingGeometry applies to group 13, the robe/kilt) is treated as a robe (InventoryType
+     * 20); any other chest as InventoryType 5. Capes and tabards are left out ({@link
+     * #undrawnNpcSlot}). A display that cannot be read now is unreadable, so the NPC is asked for
+     * again rather than drawn without it.
      */
     private void npcClothing(Npc npc, List<Item> items, Cancellation token, List<String> issues) {
         var display = schema("ItemDisplayInfo", token, issues, "GeosetGroupOverride");

@@ -54,6 +54,7 @@ public final class WorldTileCreaturesTest {
         appendDrawsOnlyQualifiedSpawnsOfTheTile();
         buildingsKeepTheirBudgetFirst();
         cappedSpawnsSayWhichBoundCappedThem();
+        identicalImagesAreAddedToATileOnce();
         displaysTheAreaDrawsAlreadyCostNoAllowance();
         theAreaChargesEachDisplayOnceWhileAnyTileHoldsIt();
         aModelSettledInAnotherStateIsChargedItsGeometry();
@@ -1485,7 +1486,7 @@ public final class WorldTileCreaturesTest {
         for (int i = 0; i < displays; i++) bigRows.add(WorldSpawnOverlayTest.spawn(i + 1, 1, -100 - i, -100, 10.0));
         var big = textured(256);
         var distinct = new WorldTileCreatures(token -> index(bigRows), () -> "r1",
-                (npc, token) -> qualified((int) (100 + npc), null), (display, token) -> preview(display, 0L, 0L, big));
+                (npc, token) -> qualified((int) (100 + npc), null), (display, token) -> preview(display, 0L, 0L, textured(256, display)));
         var bytes = distinct.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
         require(bytes.capped(WorldTileCreatures.Cap.TEXTURE_BYTES) == bytes.count(WorldTileCreatures.Count.CAPPED)
                         && bytes.capped(WorldTileCreatures.Cap.TEXTURE_BYTES) > 0,
@@ -1505,6 +1506,31 @@ public final class WorldTileCreaturesTest {
     }
 
     /**
+     * Displays whose images are identical (NPCs with one eye colour, say) add them to the tile
+     * once, and only new images count against its texture bytes and room.
+     */
+    private static void identicalImagesAreAddedToATileOnce() {
+        var rows = new ArrayList<Map<String, Object>>();
+        for (int i = 0; i < 3; i++) rows.add(WorldSpawnOverlayTest.spawn(i + 1, 1, -100 - i, -100, 10.0));
+        var shared = textured(256);
+        var creatures = new WorldTileCreatures(token -> index(rows), () -> "r1",
+                (npc, token) -> qualified((int) (100 + npc), null), (display, token) -> preview(display, 0L, 0L, shared));
+        var builder = WorldStreamTileWriter.Exterior.builder();
+        var summary = creatures.append(builder, 0, TILE, Cancellation.NONE);
+        require(summary.models() == 3, "Three displays drawn: " + summary.models());
+        var distinct = new WorldTileCreatures(token -> index(rows), () -> "r1",
+                (npc, token) -> qualified((int) (100 + npc), null),
+                (display, token) -> preview(display, 0L, 0L, textured(256, display)));
+        var own = WorldStreamTileWriter.Exterior.builder();
+        require(distinct.append(own, 0, TILE, Cancellation.NONE).models() == 3, "Three distinct displays drawn");
+        // The same three models, but two images fewer: the shared one is in the file once.
+        long image = 256L * 256 * 4;
+        long saved = own.build().bytes() - builder.build().bytes();
+        // (Each image is stored with its mip chain, so it costs more than its top level.)
+        require(saved >= 2 * image && saved <= 6 * image, "Their identical image is added once: " + saved);
+    }
+
+    /**
      * A display the resident tiles already hold costs nothing for its textures, and nothing for
      * its geometry only when held in the same animation state (#771 puts the animation in the
      * geometry's digest, so an animated and a still copy are two uploads).
@@ -1514,7 +1540,7 @@ public final class WorldTileCreaturesTest {
         for (int i = 0; i < 3; i++) rows.add(WorldSpawnOverlayTest.spawn(i + 1, 1, -100 - i, -100, 10.0));
         var big = textured(256);
         var creatures = new WorldTileCreatures(token -> index(rows), () -> "r1",
-                (npc, token) -> qualified((int) (100 + npc), null), (display, token) -> preview(display, 0L, 0L, big));
+                (npc, token) -> qualified((int) (100 + npc), null), (display, token) -> preview(display, 0L, 0L, textured(256, display)));
         var model = WorldTileCreatures.surfaces(big, Set.of(0), new int[0], false, Cancellation.NONE).model();
         long gpu = WorldTileCreatures.gpuBytes(model), textures = model.pixels() * 4, geometry = gpu - textures;
         var first = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, gpu * 3, Cancellation.NONE);
@@ -1800,7 +1826,7 @@ public final class WorldTileCreaturesTest {
         for (int i = 0; i < displays; i++) rows.add(WorldSpawnOverlayTest.spawn(i + 1, 1, -100 - i, -100, 10.0));
         var big = textured(256);
         var creatures = new WorldTileCreatures(token -> index(rows), () -> "r1",
-                (npc, token) -> qualified((int) (100 + npc), null), (display, token) -> preview(display, 0L, 0L, big));
+                (npc, token) -> qualified((int) (100 + npc), null), (display, token) -> preview(display, 0L, 0L, textured(256, display)));
         var builder = WorldStreamTileWriter.Exterior.builder();
         var summary = creatures.append(builder, 0, TILE, Cancellation.NONE);
         long perModel = WorldTileCreatures.surfaces(big, Set.of(0), new int[0], false, Cancellation.NONE)
@@ -1863,7 +1889,7 @@ public final class WorldTileCreaturesTest {
         for (int i = 0; i < bigs + smalls; i++) rows.add(WorldSpawnOverlayTest.spawn(i + 1, 1, -100 - i, -100, 10.0));
         var creatures = new WorldTileCreatures(token -> index(rows), () -> "r1",
                 (npc, token) -> qualified((int) (100 + npc), null),
-                (display, token) -> preview(display, 0L, 0L, display - 100 <= bigs ? big : small));
+                (display, token) -> preview(display, 0L, 0L, display - 100 <= bigs ? textured(256, display) : textured(1, display)));
         var summary = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
         require(summary.models() == fit + smalls && summary.count(WorldTileCreatures.Count.CAPPED) == bigs - fit,
                 "Big models past the budget are skipped, the later small ones are added: " + summary.models());
@@ -1872,7 +1898,7 @@ public final class WorldTileCreaturesTest {
                 Cancellation.NONE).model());
         var shared = new WorldTileCreatures(token -> index(rows), () -> "r1",
                 (npc, token) -> qualified((int) (100 + npc), null),
-                (display, token) -> preview(display, 0L, 0L, display - 100 <= bigs ? big : small));
+                (display, token) -> preview(display, 0L, 0L, display - 100 <= bigs ? textured(256, display) : textured(1, display)));
         var allowed = shared.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, gpu * 3 + 4096, Cancellation.NONE);
         require(allowed.models() == 3 + smalls && allowed.bytes() <= gpu * 3 + 4096 && allowed.bytes() >= gpu * 3,
                 "Models stop at the allowance and its bytes are reported: " + allowed.models() + " " + allowed.bytes());
@@ -2201,6 +2227,15 @@ public final class WorldTileCreaturesTest {
     static MeshAppearance textured(int side) {
         int[] argb = new int[side * side];
         java.util.Arrays.fill(argb, 0xff808080);
+        return appearance(true, new MeshAppearance.Texture(side, side, argb));
+    }
+
+    /** As above, its colour set by {@code seed}: distinct displays get distinct images. */
+    static MeshAppearance textured(int side, long seed) {
+        int[] argb = new int[side * side];
+        // Steps of 8 per channel, so the colours stay distinct after any 5-bit reduction.
+        int r = (int) (seed % 32) * 8, g = (int) (seed / 32 % 32) * 8;
+        java.util.Arrays.fill(argb, 0xff000000 | r << 16 | g << 8 | 0x80);
         return appearance(true, new MeshAppearance.Texture(side, side, argb));
     }
 

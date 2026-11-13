@@ -285,7 +285,11 @@ public final class RacesService implements BuildRaces {
                                                     : new RaceNpcs.Appearance(
                                                             result,
                                                             planned.omittedItems(),
-                                                            planned.attachments(),
+                                                            // Helmets and shoulders it attached
+                                                            // are drawn, not omitted.
+                                                            RaceNpcAttachments.undrawnAttachments(
+                                                                    planned.attachments(),
+                                                                    result.appearance()),
                                                             null,
                                                             false));
                         })

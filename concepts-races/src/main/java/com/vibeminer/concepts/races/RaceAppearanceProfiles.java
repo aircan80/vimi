@@ -124,6 +124,31 @@ final class RaceAppearanceProfiles {
         return batch.textureCount() == 2 && batch.shaderId() == 0x8000;
     }
 
+    /** M2 texture type 19: character eyes (Shadowlands and later). */
+    static final long EYES_TEXTURE_TYPE = 19;
+
+    /**
+     * A character eye draw (#385): two textures, the first of type 19, whose shader ID (bit 0x8000
+     * clear) decodes to pixel shader {@code Combiners_Mod_Add} and vertex shader {@code
+     * Diffuse_T1_T2}, as WebWowViewerCpp's {@code getPixelShaderId}/{@code getVertexShaderId}
+     * (wowViewerLib/src/engine/objects/m2/m2Object.cpp) decode it: two textures with bits 0x70 set
+     * and {@code shaderId & 7} 3 give {@code Combiners_Mod_Add}; bit 0x80 and bit 8 clear give
+     * {@code Diffuse_T1_T2}. Its first stage is the eye colour (type 19, filled from the NPC's eye
+     * customization like the hair from type 6), modulated as any diffuse; the second is added on
+     * top through the second UV set, a highlight the static preview does not draw. The eyes geoset
+     * is group 33 (wowdev Character_Customization, Shadowlands 9.0.1).
+     */
+    static boolean eyesFirstStage(M2Types.Batch batch, M2Types.Texture first) {
+        int shader = batch.shaderId();
+        return batch.textureCount() == 2
+                && first.type() == EYES_TEXTURE_TYPE
+                && (shader & 0x8000) == 0
+                && (shader & 0x70) != 0
+                && (shader & 7) == 3
+                && (shader & 0x80) == 0
+                && (shader & 8) == 0;
+    }
+
     static MeshAppearance.Surface surface(
             M2Types.Batch batch,
             M2Types.Material material,

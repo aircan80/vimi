@@ -468,4 +468,27 @@ final class RaceAppearanceProfilesTest {
                             profile, skinExtra.model(), batch(0), skinExtra.facts(), 1));
         }
     }
+
+    private static M2Types.Batch eyeBatch(int shader, int count) {
+        return new M2Types.Batch(16, 0, shader, 0, 0, -1, 0, 0, count, 0, 65535, 0, 0);
+    }
+
+    @Test
+    void theEyeDrawIsTwoTexturesOfTypeNineteenModAddOverT1T2() {
+        var eyes = new M2Types.Texture(0, 19, 0, null, null);
+        // 0x4013 (16403), as the race models' eyes record it: Combiners_Mod_Add over Diffuse_T1_T2.
+        assertTrue(RaceAppearanceProfiles.eyesFirstStage(eyeBatch(0x4013, 2), eyes));
+        assertTrue(RaceAppearanceProfiles.eyesFirstStage(eyeBatch(0x0013, 2), eyes));
+        // Another texture type, one texture, another combiner or vertex shader, or a table
+        // effect (bit 0x8000): not the eye draw.
+        assertFalse(
+                RaceAppearanceProfiles.eyesFirstStage(
+                        eyeBatch(0x4013, 2), new M2Types.Texture(0, 6, 0, null, null)));
+        assertFalse(RaceAppearanceProfiles.eyesFirstStage(eyeBatch(0x4013, 1), eyes));
+        assertFalse(RaceAppearanceProfiles.eyesFirstStage(eyeBatch(0x4011, 2), eyes));
+        assertFalse(RaceAppearanceProfiles.eyesFirstStage(eyeBatch(0x4003, 2), eyes));
+        assertFalse(RaceAppearanceProfiles.eyesFirstStage(eyeBatch(0x4093, 2), eyes));
+        assertFalse(RaceAppearanceProfiles.eyesFirstStage(eyeBatch(0x401B, 2), eyes));
+        assertFalse(RaceAppearanceProfiles.eyesFirstStage(eyeBatch(0x8013, 2), eyes));
+    }
 }
