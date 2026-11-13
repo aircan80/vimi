@@ -4523,10 +4523,64 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
-    void moddFlagsThatNeverChangeReferenceOrTransformAreAdmitted() {
-        // Zephras Isle records 0x10, 0x12, 0x16 and 0x1e; 0x1 to 0x10 are admitted uninterpreted,
-        // unseen higher bits stay refused.
-        int[] flags = {0x01, 0x02, 0x04, 0x08, 0x10, 0x12, 0x16, 0x1e, 0x20, 0x40, 0x80};
+    void setDoodadsLeftOutAreCountedByReason() {
+        // One drawn, then one of each reason: no model (MODI entry past the table), a position
+        // that is not finite, a quaternion off unit length, a zero scale and a scale that, times
+        // the building's 2.0, passes MAX_SCALE.
+        var defs =
+                List.of(
+                        new Modd(0, 0, 0, 0, new double[] {0, 0, 0, 1}, 1),
+                        new Modd(7, 0, 0, 0, new double[] {0, 0, 0, 1}, 1),
+                        new Modd(0, Float.NaN, 0, 0, new double[] {0, 0, 0, 1}, 1),
+                        new Modd(0, 0, 0, 0, new double[] {0, 0, 0, 1.01}, 1),
+                        new Modd(0, 0, 0, 0, new double[] {0, 0, 0, 1}, 0),
+                        new Modd(
+                                0,
+                                0,
+                                0,
+                                0,
+                                new double[] {0, 0, 0, 1},
+                                (float) WorldExteriorObjects.MAX_SCALE));
+        var chunks = doodadChunks(new int[][] {{0, defs.size()}}, new long[] {MODEL}, defs);
+        try (var f = new Fixture(List.of())) {
+            putModel(f, MODEL, model());
+            f.files.sources.put(
+                    ROOT, root(1, new long[] {GROUP}, List.of(new Material(0, IMAGE, 0)), chunks));
+            // MODF flag 0x4: the building's own scale (2.0) applies.
+            var building = new Modf(ROOT, 77, 0xc, 100, 20, 300, 0, 0, 0, 2048);
+            try (var set = run(f, obj0(List.of(building), List.of(), 0))) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.SET_DOODAD_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.SET_DOODAD_UNSUPPORTED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.SET_DOODAD_POSITION));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.SET_DOODAD_ROTATION));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.SET_DOODAD_SCALE));
+            }
+        }
+    }
+
+    @Test
+    void aRootWithEmptyDoodadChunksIsNotAnUnsupportedSet() {
+        // MODS and MODD present but with no definition, and no MODI: nothing to place, so not
+        // SET_UNSUPPORTED (70862 has about a hundred such roots on each continent).
+        var empty = join(chunk("MODS", buffer(32).array()), chunk("MODD", new byte[0]));
+        try (var f = new Fixture(List.of())) {
+            f.files.sources.put(
+                    ROOT, root(1, new long[] {GROUP}, List.of(new Material(0, IMAGE, 0)), empty));
+            try (var set = run(f, obj0(List.of(Modf.of(ROOT, 1, 0x8)), List.of(), 0))) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.SET_UNSUPPORTED));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.SET_DOODAD_DRAWN));
+            }
+        }
+    }
+
+    @Test
+    void moddFlagsNeverDecideWhetherASetDoodadIsPlaced() {
+        // Every high-byte value is admitted uninterpreted: Zephras Isle records 0x10, 0x12, 0x16
+        // and 0x1e, and 70862 records 0x30 and 0x92 around Stormwind and Goldshire.
+        int[] flags = {
+            0x01, 0x02, 0x04, 0x08, 0x10, 0x12, 0x16, 0x1e, 0x20, 0x30, 0x40, 0x80, 0x92, 0xff
+        };
         var defs = new ArrayList<Modd>();
         for (int flag : flags) {
             defs.add(new Modd(flag << 24, 0, 0, 0, new double[] {0, 0, 0, 1}, 1));
@@ -4537,8 +4591,8 @@ class WorldExteriorObjectsTest {
             f.files.sources.put(
                     ROOT, root(1, new long[] {GROUP}, List.of(new Material(0, IMAGE, 0)), chunks));
             try (var set = run(f, obj0(List.of(Modf.of(ROOT, 1, 0x8)), List.of(), 0))) {
-                assertEquals(8, set.count(WorldExteriorObjects.Count.SET_DOODAD_DRAWN));
-                assertEquals(3, set.count(WorldExteriorObjects.Count.SET_DOODAD_UNSUPPORTED));
+                assertEquals(flags.length, set.count(WorldExteriorObjects.Count.SET_DOODAD_DRAWN));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.SET_DOODAD_UNSUPPORTED));
             }
         }
     }
@@ -4775,7 +4829,7 @@ class WorldExteriorObjectsTest {
                         new Modd(5, 0, 0, 0, new double[] {0, 0, 0, 1}, 1), // outside MODI
                         new Modd(0, 0, 0, 0, new double[] {0, 0, 0, 2}, 1), // not unit
                         new Modd(0, 0, 0, 0, new double[] {h, 0, 0, h}, 1), // pitched: drawn
-                        new Modd(0x20000000, 0, 0, 0, new double[] {0, 0, 0, 1}, 1)); // flag 0x20
+                        new Modd(0x20000000, 0, 0, 0, new double[] {0, 0, 0, 1}, 1)); // 0x20: drawn
         var chunks =
                 doodadChunks(new int[][] {{0, 2}, {2, 5}, {4, 1}}, new long[] {MODEL, 0}, defs);
         var building = new Modf(ROOT, 77, 0xc, 100, 20, 300, 0, 90, 0, 2048);
@@ -4793,8 +4847,10 @@ class WorldExteriorObjectsTest {
                                 Map.entry(WorldExteriorObjects.Count.GROUP_DRAWN, 1),
                                 Map.entry(WorldExteriorObjects.Count.BATCH_DRAWN, 1),
                                 Map.entry(WorldExteriorObjects.Count.IMAGE_DECODED, 1),
-                                Map.entry(WorldExteriorObjects.Count.SET_DOODAD_DRAWN, 5),
-                                Map.entry(WorldExteriorObjects.Count.SET_DOODAD_UNSUPPORTED, 4),
+                                Map.entry(WorldExteriorObjects.Count.SET_DOODAD_DRAWN, 6),
+                                // No model: MODI entry 0 is zero, and 5 is outside MODI.
+                                Map.entry(WorldExteriorObjects.Count.SET_DOODAD_UNSUPPORTED, 2),
+                                Map.entry(WorldExteriorObjects.Count.SET_DOODAD_ROTATION, 1),
                                 Map.entry(WorldExteriorObjects.Count.SET_UNSUPPORTED, 1),
                                 Map.entry(WorldExteriorObjects.Count.MODEL_DRAWN, 1),
                                 Map.entry(WorldExteriorObjects.Count.MODEL_BATCH_DRAWN, 1),
@@ -4806,6 +4862,7 @@ class WorldExteriorObjectsTest {
                         List.of(
                                 WorldExteriorObjects.Kind.BUILDING,
                                 WorldExteriorObjects.Kind.BUILDING,
+                                WorldExteriorObjects.Kind.SET_DOODAD,
                                 WorldExteriorObjects.Kind.SET_DOODAD,
                                 WorldExteriorObjects.Kind.SET_DOODAD,
                                 WorldExteriorObjects.Kind.SET_DOODAD,
@@ -4839,9 +4896,11 @@ class WorldExteriorObjectsTest {
                 assertEquals(-heading.m01(), pitched.rotation().m02(), 1e-12);
                 assertEquals(-heading.m11(), pitched.rotation().m12(), 1e-12);
                 assertEquals(0, pitched.rotation().m22(), 1e-12);
-                assertEquals(78, set.placements().get(5).uniqueId());
-                assertEquals(0, set.placements().get(5).ordinal());
-                assertEquals(1, set.placements().get(6).ordinal());
+                assertEquals(6, set.placements().get(5).ordinal(), "flag 0x20 is placed");
+                assertEquals(77, set.placements().get(5).uniqueId());
+                assertEquals(78, set.placements().get(6).uniqueId());
+                assertEquals(0, set.placements().get(6).ordinal());
+                assertEquals(1, set.placements().get(7).ordinal());
             }
         }
     }

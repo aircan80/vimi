@@ -352,18 +352,20 @@ public final class WorldExteriorObjects {
      */
     private static final int DOODAD_DIRECT_ID = 0x40, DOODAD_ADMITTED = 0x2 | 0x20 | 0x200 | 0x1000;
 
-    /**
-     * MODD flags (the high byte over the 24-bit reference) admitted without being interpreted: 0x1
-     * accepts projected textures, 0x2 selects interior rather than exterior lighting, and 0x4, 0x8
-     * and 0x10 are undocumented (0x10 lies in the bits wowdev records as unused as of 7.0.1.20994).
-     * No reviewed source lets any of them change the model reference or the transform: wowdev WMO
-     * (MODD, SMODoodadDef) keeps them apart from nameIndex, position, orientation and scale, and
-     * wow.export 4474fa4 reads them in WMOLoader.js but never uses them; WMORendererGL.js:380-418
-     * resolves the model from the reference alone and places it from position, rotation and scale.
-     * Zephras Isle records 0x10, 0x12, 0x16 and 0x1e on 1,337 set doodads. 0x20 to 0x80 are not
-     * seen and stay refused.
+    /*
+     * MODD flags (the high byte over the 24-bit reference) never decide whether a set doodad is
+     * placed, so every value is admitted, uninterpreted: 0x1 accepts projected textures, 0x2
+     * selects interior rather than exterior lighting, 0x4 and 0x8 are undocumented, and wowdev
+     * records the four bits above as unused as of 7.0.1.20994. No reviewed source lets any of them
+     * change the model reference or the transform: wowdev WMO (MODD, SMODoodadDef) keeps them apart
+     * from nameIndex, position, orientation and scale; wow.export 4474fa4 reads them in
+     * WMOLoader.js but never uses them (WMORendererGL.js:380-418 resolves the model from the
+     * reference alone); and WebWowViewerCpp declares all eight bits (SMODoodadDef in
+     * wmoFileHeader.h) and creates the doodad whatever they are (WmoObject::getDoodad,
+     * wmoObject.cpp), reading 0x10 only to pick the doodad's MDDI interior-lighting value. On
+     * 70862, 0x30 and 0x92 are common around Stormwind and Goldshire; Zephras Isle records 0x10,
+     * 0x12, 0x16 and 0x1e.
      */
-    private static final int SET_DOODAD_ADMITTED = 0x1 | 0x2 | 0x4 | 0x8 | 0x10;
 
     // MODD 0x2 selects interior rather than exterior lighting; vimi lights every set doodad as
     // exterior (BASIC profile, fixed light), so the flag is admitted but not honoured.
@@ -609,17 +611,21 @@ public final class WorldExteriorObjects {
         DOODAD_FAILED_MODEL,
         DOODAD_EMPTY,
         SET_DOODAD_DRAWN,
-        /**
-         * Name-table (MODN) reference, zero or out-of-range MODI entry, a MODD flag outside 0x1F,
-         * or a bad transform.
-         */
+        /** No model: a set range past MODD, or a zero or out-of-range MODI entry. */
         SET_DOODAD_UNSUPPORTED,
+        /** A MODD or placed position that is not finite. */
+        SET_DOODAD_POSITION,
+        /** A MODD quaternion that is not finite or not unit length (beyond 1e-3). */
+        SET_DOODAD_ROTATION,
+        /** A MODD scale that is not finite and positive, or a placed scale over MAX_SCALE. */
+        SET_DOODAD_SCALE,
         SET_DOODAD_CAPPED,
         SET_DOODAD_FAILED_MODEL,
         SET_DOODAD_EMPTY,
         /**
          * A drawn building whose declared doodad sets are oversized, name-only or lack the MODF
-         * doodad set.
+         * doodad set. A root that declares no doodad definitions at all has nothing to place and is
+         * not counted.
          */
         SET_UNSUPPORTED,
         MODEL_DRAWN,
@@ -3794,8 +3800,10 @@ public final class WorldExteriorObjects {
         private void placeSetsOf(
                 Placement building, WmoFormats.Doodads declared, ByGroupFilter filter) {
             {
-                if (declared == null || !declared.declared()) {
-                    return; // the root declares no doodads
+                if (declared == null
+                        || !declared.declared()
+                        || declared.retained() && declared.definitions().isEmpty()) {
+                    return; // the root declares no doodads, or empty doodad chunks
                 }
                 if (!declared.retained()
                         || !declared.fileIdsPresent()
@@ -3871,15 +3879,20 @@ public final class WorldExteriorObjects {
             double qx = def.qx(), qy = def.qy(), qz = def.qz(), qw = def.qw();
             double norm = StrictMath.sqrt(qx * qx + qy * qy + qz * qz + qw * qw);
             double scale = building.scale() * def.scale();
-            if (id <= 0
-                    || (def.flags() & ~SET_DOODAD_ADMITTED) != 0
-                    || !finite(def.x(), def.y(), def.z())
-                    || !Double.isFinite(norm)
-                    || Math.abs(norm - 1) > 1e-3
-                    || !Float.isFinite(def.scale())
-                    || !(def.scale() > 0)
-                    || !(scale <= MAX_SCALE)) {
+            if (id <= 0) {
                 count(Count.SET_DOODAD_UNSUPPORTED);
+                return;
+            }
+            if (!finite(def.x(), def.y(), def.z())) {
+                count(Count.SET_DOODAD_POSITION);
+                return;
+            }
+            if (!Double.isFinite(norm) || Math.abs(norm - 1) > 1e-3) {
+                count(Count.SET_DOODAD_ROTATION);
+                return;
+            }
+            if (!Float.isFinite(def.scale()) || !(def.scale() > 0) || !(scale <= MAX_SCALE)) {
+                count(Count.SET_DOODAD_SCALE);
                 return;
             }
             // The building's full rotation (heading, pitch, roll) and scale carry the MODD
@@ -3890,7 +3903,7 @@ public final class WorldExteriorObjects {
             double y = building.y() + s * (m[3] * a + m[4] * b + m[5] * c);
             double z = building.z() + s * (m[6] * a + m[7] * b + m[8] * c);
             if (!finite(x, y, z)) {
-                count(Count.SET_DOODAD_UNSUPPORTED);
+                count(Count.SET_DOODAD_POSITION);
                 return;
             }
             // A root drawn by group: only the set doodads standing in this tile (the tile they
