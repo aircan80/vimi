@@ -465,7 +465,7 @@ final class RaceAppearance {
                     new StringBuilder(
                                     npc == null
                                             ? "race-static-appearance-v3-eyes\n"
-                                            : "npc-baked-appearance-v6-capes-tabards\n")
+                                            : "npc-baked-appearance-v7-environment-first-stage\n")
                             .append(MeshAppearanceCodec.REVISION)
                             .append('\n')
                             .append(M2RestDrawSkinReader.REVISION)
@@ -958,8 +958,17 @@ final class RaceAppearance {
                                                 .get(
                                                         models0.textureCombos()
                                                                 .get(batch.textureComboIndex())));
+                // The base stage of an environment-effect draw (effect 0x8000, #690): in a player
+                // preview's legacy profile, and for every NPC in any profile, as an NPC's eyes
+                // and its attached helmets and shoulders already draw their first stage. Like the
+                // eyes, it is checked below like any single-texture draw.
+                boolean environment =
+                        !eyes
+                                && (plan.npc() || !contextual)
+                                && RaceAppearanceProfiles.environmentFirstStage(batch);
                 if (contextual
                         && !eyes
+                        && !environment
                         && !RaceAppearanceProfiles.reviewedDraw(
                                 plan.profile(),
                                 model.model(),
@@ -969,13 +978,7 @@ final class RaceAppearance {
                                 assumeExternal)) {
                     continue;
                 }
-                // The static character preview only, like the weight assumption: an NPC (and so a
-                // World creature) is unchanged.
-                boolean firstStage =
-                        eyes
-                                || !contextual
-                                        && !plan.npc()
-                                        && RaceAppearanceProfiles.environmentFirstStage(batch);
+                boolean firstStage = eyes || environment;
                 var m = model.model();
                 // An NPC's cape (texture type 2) is also drawn from its alpha-keyed Combiners_Mod
                 // draw (RaceAppearanceProfiles.capeDraw); every other legacy draw keeps shader 0.
@@ -1020,9 +1023,11 @@ final class RaceAppearance {
                 // composite's key names the model, bake and layers, not the content of the attached
                 // or named files, so a change to only such a file is caught by the index (which
                 // states them again) but not by restoring a saved composite under the same key.
+                // An NPC's environment draw may sample such a file by its base stage (the Night
+                // Elf accessories, groups 16, 36 and 37); a player preview's never does.
                 if (texture.type() == 0
                         && textureTypes.get(0) == null
-                        && !firstStage
+                        && (!firstStage || environment && plan.npc())
                         && texture.fileDataId() != null
                         && texture.fileDataId() > 0
                         && !seen.contains(batch.sectionIndex())) {
@@ -1091,7 +1096,9 @@ final class RaceAppearance {
                     continue;
                 }
                 bindings.add(RaceAppearanceProfiles.surface(batch, material, texture, mapped));
-                environmentNotDrawn |= firstStage && !eyes;
+                // For an NPC the left-out reflection is a known limit, not a stated fact: its
+                // composite keeps its header and its notes.
+                environmentNotDrawn |= environment && !plan.npc();
                 if (weight != 65535 && !facts.staticWeights().get(weight)) {
                     assumedWeights = true;
                 }

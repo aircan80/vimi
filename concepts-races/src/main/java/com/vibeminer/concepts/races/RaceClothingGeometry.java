@@ -51,6 +51,11 @@ final class RaceClothingGeometry {
         boolean chest =
                 items.stream()
                         .anyMatch(item -> item.inventoryType() == 5 || item.inventoryType() == 20);
+        // Trousers are a dress only without a chest. The decompiled code also requires the
+        // character component's high flag word to be clear (HIWORD(pCharComponent->flags)), a
+        // client runtime state with no recorded meaning and no NPC table field: it is not
+        // evaluated, so trousers that set the robe group are a dress here, as the trousers case
+        // below already draws their group 13 without that check.
         boolean dress =
                 robe
                         || !chest

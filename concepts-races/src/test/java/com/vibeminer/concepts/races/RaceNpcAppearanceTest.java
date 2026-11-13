@@ -1762,16 +1762,6 @@ final class RaceNpcAppearanceTest {
                         RaceAppearance.appearanceKey("environment-1", false));
         assertEquals(null, other.appearance());
         assertEquals(RaceAppearancePlan.UNREVIEWED_SURFACES, other.message());
-        // An NPC (and so a World creature) never draws a first stage alone.
-        var npc =
-                render(
-                        twoStage(0x8000),
-                        variant,
-                        true,
-                        new com.vibeminer.generated.MemoryGeneratedStore(),
-                        RaceAppearance.appearanceKey("environment-npc", true));
-        assertEquals(null, npc.appearance());
-        assertEquals(RaceAppearancePlan.UNREVIEWED_SURFACES, npc.message());
         // A first stage whose weight track is proven partial stays refused.
         var partial =
                 render(
@@ -1791,6 +1781,45 @@ final class RaceNpcAppearanceTest {
                         new com.vibeminer.generated.MemoryGeneratedStore(),
                         RaceAppearance.appearanceKey("environment-full", false));
         assertTrue(full.appearance() != null, full.message());
+    }
+
+    @Test
+    void anNpcDrawsAnEnvironmentDrawsBaseStageAndKeepsTheReflectionAKnownLimit() throws Exception {
+        var variant = new RaceMediaTypes.Variant(3, 0, 1, 1, 1234);
+        // As a player preview does, and as its eyes and helmets do: the first stage is drawn.
+        var generated = new com.vibeminer.generated.MemoryGeneratedStore();
+        var key = RaceAppearance.appearanceKey("environment-npc", true);
+        var npc = render(twoStage(0x8000), variant, true, generated, key);
+        assertTrue(npc.appearance() != null, npc.message());
+        assertEquals(1, npc.appearance().surfaces().size());
+        // The left-out reflection is not stated for an NPC, and its composite keeps the header
+        // without the fact (VAC5 to VAC8 carry it).
+        assertFalse(
+                npc.issues().contains(RaceAppearancePlan.ENVIRONMENT_NOT_DRAWN),
+                npc.issues().toString());
+        int magic = savedMagic(generated, key);
+        assertTrue(magic >= 0x56414331 && magic < 0x56414335, Integer.toHexString(magic));
+        var restored = render(twoStage(0x8000), variant, true, generated, key);
+        assertTrue(restored.restored());
+        assertFalse(restored.issues().contains(RaceAppearancePlan.ENVIRONMENT_NOT_DRAWN));
+        // Any other two-texture shader, and a first stage proven partial, stay refused.
+        var other =
+                render(
+                        twoStage(0x8001),
+                        variant,
+                        true,
+                        new com.vibeminer.generated.MemoryGeneratedStore(),
+                        RaceAppearance.appearanceKey("environment-npc-1", true));
+        assertEquals(null, other.appearance());
+        assertEquals(RaceAppearancePlan.UNREVIEWED_SURFACES, other.message());
+        var partial =
+                render(
+                        twoStage(0x8000, withWeight(false, 0)),
+                        variant,
+                        true,
+                        new com.vibeminer.generated.MemoryGeneratedStore(),
+                        RaceAppearance.appearanceKey("environment-npc-partial", true));
+        assertEquals(null, partial.appearance());
     }
 
     @Test

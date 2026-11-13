@@ -1534,6 +1534,20 @@ public final class WorldMeasurementProbe {
         // NPCs already listed or rendered (-Pprobe.npcItems, -Pprobe.npcImages).
         private final java.util.Set<Long> looked = ConcurrentHashMap.newKeySet();
 
+        /** The visible parts of a built appearance with no drawn surface, by part ID. */
+        static List<Integer> unsurfaced(com.vibeminer.concepts.races.RaceAppearanceTypes.Result result) {
+            var mesh = result.appearance().mesh();
+            var bound = new java.util.HashSet<Integer>();
+            for (var surface : result.appearance().surfaces()) bound.add(surface.sectionIndex());
+            var out = new ArrayList<Integer>();
+            for (int ordinal = 0; ordinal < mesh.parts().size(); ordinal++) {
+                int part = mesh.parts().get(ordinal).id();
+                if (result.visibleParts().contains(part) && !bound.contains(ordinal)) out.add(part);
+            }
+            java.util.Collections.sort(out);
+            return out;
+        }
+
         /**
          * With -Pprobe.npcItems=true, lists each built NPC's slot items by InventoryType and its
          * item notes once; -Pprobe.npcImages=<extended display IDs> writes front and back CPU
@@ -1552,6 +1566,7 @@ public final class WorldMeasurementProbe {
                 say("PROBE npc " + id + " items " + types + " omitted " + answer.omittedItems()
                         + " capeOrTabardParts " + result.visibleParts().stream()
                                 .filter(p -> p / 100 == 12 || p / 100 == 15 || p / 100 == 22).sorted().toList()
+                        + " sectionsWithoutSurface " + unsurfaced(result)
                         + (notes.isEmpty() ? "" : " notes " + notes));
             }
             boolean wanted = false;

@@ -125,11 +125,11 @@ appearances, with no helper, GPU or JavaFX. It differs from the other modes in t
   generated store, as the application does, so a second run starts warm. Nothing is staged,
   published or downloaded.
 
-With `-Pprobe.npcItems=true` it lists each built humanoid NPC once (its extended display ID, slot
-items by InventoryType, item records not drawn and its tabard, cape and torso geosets), and
-`-Pprobe.npcImages=<extended display IDs>` writes front, back and rear CPU renders of those NPCs
-(`npc-<ID>-front.png`, `npc-<ID>-back.png`, `npc-<ID>-rear.png`) to the probe output for close-up
-review. The renders show game data: keep them local.
+With `-Pprobe.npcItems=true` it lists each built humanoid NPC once: its extended display ID, slot
+items by InventoryType, item records not drawn, its tabard, cape and torso geosets, and its visible
+parts without a drawn surface. `-Pprobe.npcImages=<extended display IDs>` writes front, back and
+rear CPU renders of those NPCs (`npc-<ID>-front.png`, `npc-<ID>-back.png`, `npc-<ID>-rear.png`) to
+the probe output for close-up review. The renders show game data: keep them local.
 
 It also reports, per distinct creature display it previewed (#377, #455), the Stand pose outcome
 (Stand pose, or rest pose with the reason), the geoset case (the model's

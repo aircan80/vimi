@@ -173,8 +173,9 @@ final class RaceAppearanceProfiles {
     /**
      * An NPC cape's draw (texture type 2, {@link RaceAppearancePlan#CAPE_TEXTURE_TYPE}; geoset
      * group 15): one texture, one- or two-sided (material flag 0x4, wowdev M2), either shader 0,
-     * opaque or alpha-keyed, or {@link #modDiffuse} with the alpha-key blend (1), which is how the
-     * character models record their capes (70862: shader 16, blend 1).
+     * opaque or alpha-keyed, or shader 16 with the alpha-key blend (1), which is how the character
+     * models record their capes (70862) and decodes as {@link #modDiffuse}. Other shaders of that
+     * decode are not admitted: none was observed on a cape.
      */
     static boolean capeDraw(
             M2Types.Batch batch, M2Types.Texture texture, M2Types.Material material) {
@@ -182,7 +183,9 @@ final class RaceAppearanceProfiles {
                 && batch.textureCount() == 1
                 && (material.flags() == 0 || material.flags() == 4)
                 && (batch.shaderId() == 0 && material.blendMode() <= 1
-                        || modDiffuse(batch) && material.blendMode() == 1);
+                        || batch.shaderId() == 16
+                                && modDiffuse(batch)
+                                && material.blendMode() == 1);
     }
 
     static MeshAppearance.Surface surface(

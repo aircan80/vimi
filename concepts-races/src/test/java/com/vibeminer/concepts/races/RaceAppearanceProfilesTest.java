@@ -515,6 +515,8 @@ final class RaceAppearanceProfilesTest {
         var hair = new M2Types.Texture(0, 6, 0, null, null);
         var keyed = new M2Types.Material(0, 1);
         assertTrue(RaceAppearanceProfiles.capeDraw(batch(16), cape, keyed));
+        // Pinned to shader 16, the one observed on capes: 0x40 decodes the same but is not.
+        assertFalse(RaceAppearanceProfiles.capeDraw(batch(0x40), cape, keyed));
         assertFalse(RaceAppearanceProfiles.capeDraw(batch(16), hair, keyed));
         assertFalse(RaceAppearanceProfiles.capeDraw(batch(16), cape, new M2Types.Material(0, 0)));
     }
