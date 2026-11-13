@@ -425,6 +425,21 @@ final class RaceNpcAppearanceTest {
             com.vibeminer.generated.GeneratedStore generated,
             com.vibeminer.generated.GeneratedKey key,
             List<RaceAppearancePlan.Layer> extraLayers) {
+        return render(files, variant, npc, generated, key, extraLayers, null);
+    }
+
+    /**
+     * As above; with {@code recorded}, rendered as a resolved NPC (no items, bake 100), whose
+     * composite's recorded attached files (the NPC index) {@code recorded} then receives.
+     */
+    private static RaceAppearanceTypes.Result render(
+            com.vibeminer.files.BuildFiles files,
+            RaceMediaTypes.Variant variant,
+            boolean npc,
+            com.vibeminer.generated.GeneratedStore generated,
+            com.vibeminer.generated.GeneratedKey key,
+            List<RaceAppearancePlan.Layer> extraLayers,
+            java.util.function.Consumer<java.util.Set<Long>> recorded) {
         var build = BUILD;
         var tables =
                 new MemoryTables()
@@ -469,14 +484,31 @@ final class RaceNpcAppearanceTest {
                             RaceAppearanceProfiles.Profile.LEGACY,
                             npc);
             var prepared =
-                    new RaceAppearance.Prepared(base, plan, key, List.of(), null, null, null);
-            return new RaceAppearance(
-                            service,
-                            new RaceMedia(service, tables, files, generated),
-                            tables,
-                            files,
-                            generated)
-                    .render(prepared, Cancellation.NONE);
+                    recorded == null
+                            ? new RaceAppearance.Prepared(
+                                    base, plan, key, List.of(), null, null, null)
+                            : new RaceAppearance.Prepared(
+                                    base,
+                                    plan,
+                                    key,
+                                    List.of(),
+                                    null,
+                                    null,
+                                    null,
+                                    1,
+                                    new RaceAppearancePlan.Npc(List.of(), 100));
+            var result =
+                    new RaceAppearance(
+                                    service,
+                                    new RaceMedia(service, tables, files, generated),
+                                    tables,
+                                    files,
+                                    generated)
+                            .render(prepared, Cancellation.NONE);
+            if (recorded != null) {
+                recorded.accept(service.npcIndex.attachments(key, Cancellation.NONE));
+            }
+            return result;
         } finally {
             service.closeAsync().join();
             tables.closeAsync().join();
@@ -1063,6 +1095,94 @@ final class RaceNpcAppearanceTest {
         assertTrue(
                 npc.issues().contains("Texture files the model names itself: [700]."),
                 npc.issues().toString());
+    }
+
+    /** The authored model and SKIN, the four-texel bake (100) and, with {@code named}, file 700. */
+    private static com.vibeminer.formats.AssetFilesFixture namedFiles(boolean named)
+            throws Exception {
+        var files =
+                new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
+                        .add(1234, "1".repeat(32), golden("authored-274.m2"))
+                        .add(900, "2".repeat(32), golden("authored-274.skin"))
+                        .add(100, "3".repeat(32), bake());
+        return named ? files.add(700, "7".repeat(32), bake()) : files;
+    }
+
+    /**
+     * #385: an NPC samples the file its model names (an accessory), records it with its composite's
+     * attached files so the index states it again, and is saved. A file lastingly missing leaves
+     * only its surfaces out and the NPC is still saved; one that cannot be read yet leaves the NPC
+     * incomplete: shown, not saved.
+     */
+    @Test
+    void anNpcRecordsTheFileItsModelNamesAndOnlyAnUnreadOneKeepsItUnsaved() throws Exception {
+        var variant = new RaceMediaTypes.Variant(3, 0, 1, 1, 1234);
+        var key = RaceAppearance.appearanceKey("named-npc", true);
+        var recorded = new java.util.concurrent.atomic.AtomicReference<java.util.Set<Long>>();
+        var generated = new com.vibeminer.generated.MemoryGeneratedStore();
+        var drawn =
+                render(namedFiles(true), variant, true, generated, key, List.of(), recorded::set);
+        assertTrue(drawn.appearance() != null, drawn.message());
+        assertEquals(2, drawn.appearance().textures().size(), "the bake and the model's own file");
+        assertTrue(saved(generated, key), "the NPC is saved");
+        assertTrue(
+                recorded.get() != null && recorded.get().contains(700L),
+                "recorded: " + recorded.get());
+
+        // Lastingly missing, it leaves out only its own surfaces (here every surface, so this
+        // model is refused for lack of a reviewed draw, a lasting fact, not marked incomplete).
+        var missing =
+                render(
+                        namedFiles(false),
+                        variant,
+                        true,
+                        new com.vibeminer.generated.MemoryGeneratedStore(),
+                        key,
+                        List.of(),
+                        recorded::set);
+        assertTrue(
+                missing.issues().stream()
+                        .anyMatch(
+                                issue ->
+                                        issue.startsWith("Texture #700 the model names is")
+                                                && issue.endsWith("so its surfaces are left out.")),
+                missing.issues().toString());
+        assertTrue(
+                missing.issues().stream()
+                        .noneMatch(issue -> issue.startsWith(RaceAppearance.INCOMPLETE)),
+                missing.issues().toString());
+    }
+
+    /** Which named files leave an appearance incomplete (#104, #385). */
+    @Test
+    void aNamedFileLeavesOnlyAnUnreadNpcFileOrAnyPlayerFileIncomplete() {
+        // npc, decoded, retryable, over budget
+        assertEquals(
+                RaceAppearance.NamedFile.DRAWN, RaceAppearance.namedFile(true, true, false, false));
+        assertEquals(
+                RaceAppearance.NamedFile.DRAWN,
+                RaceAppearance.namedFile(false, true, false, false));
+        // An NPC: a lastingly unreadable or over-budget file is left out, the NPC stays complete.
+        assertEquals(
+                RaceAppearance.NamedFile.LEFT_OUT,
+                RaceAppearance.namedFile(true, false, false, false));
+        assertEquals(
+                RaceAppearance.NamedFile.LEFT_OUT,
+                RaceAppearance.namedFile(true, true, false, true));
+        // Not readable yet: incomplete, asked for again.
+        assertEquals(
+                RaceAppearance.NamedFile.INCOMPLETE,
+                RaceAppearance.namedFile(true, false, true, false));
+        // A player preview: anything not drawn leaves it incomplete, as before.
+        assertEquals(
+                RaceAppearance.NamedFile.INCOMPLETE,
+                RaceAppearance.namedFile(false, false, false, false));
+        assertEquals(
+                RaceAppearance.NamedFile.INCOMPLETE,
+                RaceAppearance.namedFile(false, true, false, true));
+        assertEquals(
+                RaceAppearance.NamedFile.INCOMPLETE,
+                RaceAppearance.namedFile(false, false, true, false));
     }
 
     /**
