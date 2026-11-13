@@ -722,6 +722,46 @@ class WorldStreamLaunchOwnerTest {
         }
     }
 
+    @Test
+    void aChildThatBecomesReadyDuringAStartupCheckIsNotFailed() throws Exception {
+        // The interleaving behind the Windows CI failure, made certain: the child becomes ready
+        // and the clock jumps far past the cap after the watcher found it not ready but before it
+        // read the clock. The clock does both when the watcher reads it.
+        long base = 1_000_000_000L;
+        var handle =
+                new java.util.concurrent.atomic.AtomicReference<WorldStreamLaunchOwner.Handle>();
+        var raced = new java.util.concurrent.CountDownLatch(1);
+        java.util.function.LongSupplier clock =
+                () -> {
+                    var owner = handle.get();
+                    if (owner != null
+                            && Thread.currentThread()
+                                    .getName()
+                                    .equals("world-v2-parent-startup-deadline")) {
+                        owner.initialized();
+                        raced.countDown();
+                        return base + TimeUnit.SECONDS.toNanos(5);
+                    }
+                    return base;
+                };
+        var owner =
+                WorldStreamLaunchOwner.launchForTest(
+                        WorldStreamPreparedFiles.create(directory, SESSION, null),
+                        arguments -> new Child(),
+                        (process, handle2) -> {},
+                        0,
+                        1000,
+                        250,
+                        clock);
+        handle.set(owner);
+        assertTrue(raced.await(3, TimeUnit.SECONDS), "the watcher read the clock");
+        // A failure would follow at once on the watcher; allow it ample time to show.
+        Thread.sleep(100);
+        assertFalse(owner.stopping(), "a child ready during the check is not failed");
+        assertEquals(null, owner.failure());
+        owner.closeAsync().get(3, TimeUnit.SECONDS);
+    }
+
     /** Lets the startup watcher (which polls every 5 ms) see the latest clock and progress. */
     private static void watched() throws InterruptedException {
         Thread.sleep(15);
