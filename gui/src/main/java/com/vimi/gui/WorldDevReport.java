@@ -45,7 +45,7 @@ final class WorldDevReport {
      * @param renderer the explorer status line (renderer capabilities, or the latest view message)
      * @param position the position line ("Tile 28,31 · x … · 60 yards/s · 9 / 9 tiles")
      * @param look the mouse-look capture status; empty when capture works
-     * @param motion the motion status ("Free flight · no collision")
+     * @param motion the motion status ("Free camera · no collision")
      * @param held the keys held right now
      * @param keys the key help line
      * @param audio the recorded area audio status
