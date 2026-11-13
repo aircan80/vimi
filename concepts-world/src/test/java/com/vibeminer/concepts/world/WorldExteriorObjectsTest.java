@@ -7087,6 +7087,34 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
+    void aRootDrawnByGroupTiesItsSetDoodadsAfterAnEarlierModelIsRemoved() {
+        // As aFallbacksSetDoodadsAreTiedToItsDrawnInteriors, with an interior-only root placed
+        // first whose one interior group draws nothing (its image is missing): admitting
+        // interiors removes its model and renumbers the later ones, the root drawn by group's
+        // among them. Its set doodads are placed after that, from the placement copied before:
+        // the tie follows the model the building draws now, never the copy's stale index (on
+        // 70862 Azeroth tile 46,34 the stale index was past the model list).
+        var inTile =
+                new Modf(BIG, 79, 0x8, 10400, 0, 4150, 0, 0, 0, 1024)
+                        .bounded(10300, -10, 4120, 10500, 10, 4180);
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8), inTile))) {
+            putModel(f, MODEL, model());
+            f.files.sources.put(
+                    ROOT, root(1, new long[] {INTERIOR}, List.of(new Material(0, 4444, 0))));
+            putSplitWithPortals(
+                    f, doodadChunks(new int[][] {{0, 2}}, new long[] {MODEL}, standing(5, -50)));
+            f.files.sources.put(BIG + 3, withDoodadRefs(bigGroup(ROOM, 3), 0));
+            try (var set = f.runOpenWorld()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_EMPTY));
+                assertEquals(List.of(0, 1, 2, 3, 4), groupsOf(set, BIG));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_WHOLE_LARGE));
+                assertEquals(Map.of(0, 2, 1, -1), portalGroups(set));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.SET_DOODAD_IN_GROUP));
+            }
+        }
+    }
+
+    @Test
     void onInstanceMapsAFallbacksInteriorsNeedItsPortalSet() {
         // On an instance map a single-tile root over the building pool is drawn whole from the
         // large allowance too, as roots drawn by group: its interiors draw with the root's portal

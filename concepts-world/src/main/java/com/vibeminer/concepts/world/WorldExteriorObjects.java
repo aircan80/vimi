@@ -3504,6 +3504,48 @@ public final class WorldExteriorObjects {
          * in it, outside every interior group's box, and those inside an interior group it draws.
          */
         private void placeByGroupSetDoodads() {
+            // The copies' model() is only a flag (removeModels renumbers the placements after
+            // they were taken, when interiors are admitted): each drawn copy's current model is
+            // its placement's in the set now, found by obj0 ordinal, unique ID and root.
+            byGroupModels = new HashMap<>();
+            for (var placement : placements) {
+                if (placement.kind() == Kind.BUILDING) {
+                    byGroupModels.put(placement.ordinal(), placement);
+                }
+            }
+            try {
+                placeByGroupSetDoodadsResolved();
+            } finally {
+                byGroupModels = null;
+            }
+        }
+
+        /**
+         * The current placement of each building by obj0 ordinal while {@link
+         * #placeByGroupSetDoodads} runs, else null ({@link #currentModel}).
+         */
+        private Map<Integer, Placement> byGroupModels;
+
+        /**
+         * The model {@code building} draws now, or -1 when it draws none. Outside {@link
+         * #placeByGroupSetDoodads} a building's placement is current. Inside it the placement may
+         * be a copy taken before models were removed and renumbered: its model is then that of the
+         * set's placement with the same ordinal, unique ID and root, or -1 when that placement was
+         * removed.
+         */
+        private int currentModel(Placement building) {
+            if (building.model() < 0 || byGroupModels == null) {
+                return building.model();
+            }
+            var current = byGroupModels.get(building.ordinal());
+            return current != null
+                            && current.uniqueId() == building.uniqueId()
+                            && current.rootId() == building.rootId()
+                    ? current.model()
+                    : -1;
+        }
+
+        private void placeByGroupSetDoodadsResolved() {
             var ordered = new ArrayList<Placement>(byGroupBuildings.size());
             for (var building : byGroupBuildings) {
                 if (building.model() >= 0) {
@@ -5550,10 +5592,11 @@ public final class WorldExteriorObjects {
          * culled with the room instead of always drawing.
          */
         private int portalGroup(Placement building, WmoFormats.Doodads declared, int ordinal) {
-            if (building.model() < 0) {
+            int model = currentModel(building);
+            if (model < 0) {
                 return -1;
             }
-            var set = models.get(building.model()).portals();
+            var set = models.get(model).portals();
             var groups = doodadGroups.get(declared);
             if (set == null || groups == null) {
                 return -1;
