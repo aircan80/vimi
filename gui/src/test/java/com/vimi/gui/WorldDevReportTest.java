@@ -18,7 +18,7 @@ public final class WorldDevReportTest {
 
     static WorldDevReport.Texts texts(String gpu) {
         return new WorldDevReport.Texts(DETAIL, gpu,
-                "Terrain explorer · persistent GPU terrain", POSITION, "", "Free flight · no collision",
+                "Terrain explorer · persistent GPU terrain", POSITION, "", "Free camera · no collision",
                 "W, Shift", "W A S D move · E/Space up", "Recorded silence before the next music track");
     }
 
@@ -97,7 +97,7 @@ public final class WorldDevReportTest {
 
     private static void inputAndAudioPages() {
         var input = WorldDevReport.format(WorldDevReport.lines(WorldDevReport.Page.INPUT, texts(DETAIL)));
-        require(input.startsWith("look      cursor capture OK\nmotion    Free flight · no collision\n"
+        require(input.startsWith("look      cursor capture OK\nmotion    Free camera · no collision\n"
                         + "held      W, Shift\nkeys      W A S D move\nkeys      E/Space up"),
                 "Input page:\n" + input);
         var audio = WorldDevReport.lines(WorldDevReport.Page.AUDIO, texts(DETAIL));

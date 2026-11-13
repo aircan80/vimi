@@ -119,7 +119,7 @@ public final class WorldDevOverlayUiTest {
         press(KeyCode.F3);
         require(overlay().page() == WorldDevReport.Page.INPUT
                         && overlay().text().contains("look      cursor capture OK")
-                        && overlay().text().contains("motion    Free flight"),
+                        && overlay().text().contains("motion    Free camera"),
                 "Input page:\n" + overlay().text());
         press(KeyCode.F3);
         require(overlay().page() == WorldDevReport.Page.AUDIO
