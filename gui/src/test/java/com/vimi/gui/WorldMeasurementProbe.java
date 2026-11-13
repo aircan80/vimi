@@ -243,6 +243,7 @@ public final class WorldMeasurementProbe {
                             case "raceSkin" -> raceSkin(opened);
                             case "fetch" -> fetch(opened);
                             case "m2" -> m2(opened);
+                            case "talentTokens" -> talentTokens(opened);
                             case "creatures" -> creatures(opened, handle, catalog);
                             case "npcSlots" -> npcSlots(opened);
                             case "displays" -> displays(opened);
@@ -867,6 +868,70 @@ public final class WorldMeasurementProbe {
                     + ", transform lookup " + m.textureTransforms() + ", coordinates " + m.textureCoordinates()
                     + ", declarations " + declared);
         }
+    }
+
+    /**
+     * Class talent descriptions at every recorded rank (#326): unresolved substitutions grouped by
+     * token kind and cause, and every rendered description in talent-descriptions.txt under
+     * probe.out, for before and after comparisons.
+     */
+    private static void talentTokens(WorldMeasurementOpen opened) throws Exception {
+        var talents = new com.vibeminer.concepts.talents.TalentsService(opened.tables(), opened.build.version());
+        try {
+            var catalog = talents.catalog(Cancellation.NONE).get(5, TimeUnit.MINUTES);
+            var byKind = new TreeMap<String, Integer>();
+            var byCause = new TreeMap<String, Integer>();
+            var tokens = new TreeMap<String, Integer>();
+            var text = new StringBuilder();
+            int descriptions = 0, unresolvedDescriptions = 0, unresolved = 0;
+            for (var playerClass : catalog.classes()) {
+                var trees = talents.trees(playerClass.id(), Cancellation.NONE).get(5, TimeUnit.MINUTES);
+                for (var tree : trees.trees()) {
+                    for (var talent : tree.talents()) {
+                        for (int rank = 1; rank <= talent.maxRanks(); rank++) {
+                            var description = talents.description(talent, rank, Cancellation.NONE)
+                                    .get(5, TimeUnit.MINUTES);
+                            descriptions++;
+                            int missing = 0;
+                            for (var substitution : description.substitutions()) {
+                                if (substitution.value() != null) continue;
+                                missing++;
+                                String kind = tokenKind(substitution.token());
+                                byKind.merge(kind, 1, Integer::sum);
+                                byCause.merge(kind + ": " + substitution.issue(), 1, Integer::sum);
+                                tokens.merge(substitution.token(), 1, Integer::sum);
+                            }
+                            unresolved += missing;
+                            if (missing > 0) unresolvedDescriptions++;
+                            text.append(playerClass.name()).append(" | ").append(talent.name()).append(" r")
+                                    .append(rank).append(" | spell ").append(description.spellId()).append('\n')
+                                    .append("  raw: ").append(description.raw()).append('\n')
+                                    .append("  shown: ").append(description.display()).append('\n');
+                        }
+                    }
+                }
+            }
+            Files.writeString(Path.of(System.getProperty("probe.out")).resolve("talent-descriptions.txt"), text);
+            say("PROBE talentTokens: " + descriptions + " rank descriptions, " + unresolvedDescriptions
+                    + " with an unresolved value, " + unresolved + " unresolved substitutions");
+            say("PROBE talentTokens by kind " + byKind);
+            byCause.forEach((cause, count) -> say("PROBE talentTokens cause " + count + " " + cause));
+            tokens.forEach((token, count) -> say("PROBE talentTokens token " + count + " " + token));
+        } finally {
+            talents.closeAsync().get(1, TimeUnit.MINUTES);
+        }
+    }
+
+    /** The kind of a raw spell text token, for grouping: ${}, $?, $<>, $@, or its value letter. */
+    static String tokenKind(String raw) {
+        if (raw.startsWith("${")) return "${...}";
+        if (raw.startsWith("$?")) return "$?conditional";
+        if (raw.startsWith("$<")) return "$<name>";
+        if (raw.startsWith("$@")) return "$@embedded";
+        var matcher = Pattern.compile("^\\$(?:[/*][^;]*;)?\\$?[0-9]*([A-Za-z]+)").matcher(raw);
+        if (!matcher.find()) return "other";
+        String letters = matcher.group(1);
+        return "$" + (letters.length() == 1 ? letters.toLowerCase(Locale.ROOT) : letters);
     }
 
     /** Rows of {@code table} whose {@code column} equals one of {@code values}, as name=value maps. */

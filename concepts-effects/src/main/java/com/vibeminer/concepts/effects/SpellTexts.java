@@ -593,8 +593,10 @@ public final class SpellTexts implements AutoCloseable {
 
     /**
      * {@code $a}: the effect's EffectRadiusIndex[0] SpellRadius row (layout F9A913EE, verified
-     * names). Only a single fixed radius is shown: no second radius index, no per-level growth, and
-     * min/max either unset or equal to the radius.
+     * names), or its EffectRadiusIndex[1] row when [0] is unset (the radius of the effect's second
+     * implicit target, as in WoWTools.SpellDescParser's supplier). Only a single fixed radius is
+     * shown: never two different radius rows, no per-level growth, and min/max either unset or
+     * equal to the radius.
      */
     private SpellText.Value radius(
             Columns effects,
@@ -611,13 +613,15 @@ public final class SpellTexts implements AutoCloseable {
                 new Source("SpellEffect", effect.id(), "EffectRadiusIndex[0]", first.toString()));
         sources.add(
                 new Source("SpellEffect", effect.id(), "EffectRadiusIndex[1]", second.toString()));
-        if (first == 0) {
+        if (first == 0 && second == 0) {
             return new SpellText.Value(null, sources, "Effect records no radius");
         }
         // Both radius indexes usually name the same row; a different second radius is not shown.
-        if (second != 0 && !second.equals(first)) {
+        if (first != 0 && second != 0 && !second.equals(first)) {
             return new SpellText.Value(null, sources, "Effect records a second, different radius");
         }
+        // The only recorded radius, for whichever implicit target names it.
+        long chosen = first != 0 ? first : second;
         var ref = TableTypes.Ref.forName("SpellRadius");
         var schema = tables.schema(ref, priority, token).join();
         var columns = new Columns(schema);
@@ -625,10 +629,10 @@ public final class SpellTexts implements AutoCloseable {
             return new SpellText.Value(
                     null, sources, "SpellRadius profile is unavailable: " + schema.table().state());
         }
-        var result = tables.get(ref, first, priority, token).join();
+        var result = tables.get(ref, chosen, priority, token).join();
         if (result.outcome() != TableTypes.RowOutcome.FOUND
                 || result.row() == null
-                || result.row().row().id() != first) {
+                || result.row().row().id() != chosen) {
             return new SpellText.Value(null, sources, "SpellRadius record is unavailable");
         }
         var row = result.row().row();

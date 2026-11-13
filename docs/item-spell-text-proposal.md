@@ -71,6 +71,12 @@ Update (#322): the supplement is now pinned at WoWDBDefs
 lists 1.60.1.70790 for `4FDF0951`; the column block is unchanged. The figures
 above describe the original pin.
 
+Update (#326): the supplement is now pinned at WoWDBDefs
+`86c0801007bbcb767f4bc275413d24bc6b2d486c` (25,974 bytes, SHA-256
+`ba38bda4fb8562d2fbdc571f92cfdd804051bd5ba76dced8817b41b9f5d266c3`). Against the
+previous pin, only the `4FDF0951` build line changes: it adds 1.60.1.70840,
+1.60.1.70862 and 1.60.1.70888. The column block is unchanged.
+
 Proposed additive `TableDefinitions.withSupplementalDefinitions()` enables this
 one separately pinned local resource. The existing constructor remains unchanged.
 Selection requires matching manifest name/hash/FileDataID and one of the three
@@ -111,7 +117,7 @@ Primary references:
   formats negative effect points as absolute integers and duration in seconds.
 - [Its supplier](https://github.com/Marlamin/WoWTools.SpellDescParser/blob/d1a5616c83a86a3f3ff549704e19ef752c66f604/SpellDescTest/SpellDataSupplier.cs)
   follows SpellMisc.DurationIndex into SpellDuration.Duration.
-- [Pinned duration definition](https://github.com/wowdev/WoWDBDefs/blob/07c3f55b3f6b666e0fca31dd80e6dbbf8a61003b/definitions/SpellDuration.dbd) (originally [93405a6](https://github.com/wowdev/WoWDBDefs/blob/93405a655ab55efdcc04ade02bc78f266b565650/definitions/SpellDuration.dbd)).
+- [Pinned duration definition](https://github.com/wowdev/WoWDBDefs/blob/86c0801007bbcb767f4bc275413d24bc6b2d486c/definitions/SpellDuration.dbd) (originally [93405a6](https://github.com/wowdev/WoWDBDefs/blob/93405a655ab55efdcc04ade02bc78f266b565650/definitions/SpellDuration.dbd)).
 - [Aura constants](https://github.com/TrinityCore/TrinityCore/blob/master/src/server/game/Spells/Auras/SpellAuraDefines.h)
   identify aura33; this alone does not authorize general gameplay calculations.
 

@@ -31,7 +31,14 @@ class SupplementalDefinitionsTest {
                 resolve(original, "1.60.1.70755", "4FDF0951").state());
         var enabled = original.withSupplementalDefinitions();
         for (String build :
-                List.of("1.60.1.70707", "1.60.1.70753", "1.60.1.70755", "1.60.1.70790")) {
+                List.of(
+                        "1.60.1.70707",
+                        "1.60.1.70753",
+                        "1.60.1.70755",
+                        "1.60.1.70790",
+                        "1.60.1.70840",
+                        "1.60.1.70862",
+                        "1.60.1.70888")) {
             for (String layout : new String[] {null, "4FDF0951", "4fdf0951"}) {
                 var result = resolve(enabled, build, layout);
                 assertEquals(TableDefinitions.State.RESOLVED, result.state());
@@ -73,7 +80,8 @@ class SupplementalDefinitionsTest {
         var bundled = BundledDefinitions.open(TOKEN).join();
         var enabled = new TableDefinitions(bundled).withSupplementalDefinitions();
         // Builds the pinned document or the build list does not name stay without a definition.
-        for (String unlisted : List.of("1.60.1.70754", "1.60.1.70800", "1.60.2.70790")) {
+        for (String unlisted :
+                List.of("1.60.1.70754", "1.60.1.70800", "1.60.1.70863", "1.60.2.70790")) {
             assertEquals(
                     TableDefinitions.State.FETCHING_OFF,
                     resolve(enabled, unlisted, "4FDF0951").state(),
@@ -107,6 +115,7 @@ class SupplementalDefinitionsTest {
         }
         assertTrue(SupplementalDefinitions.verify(bytes).listsBuild("1.60.1.70755", TOKEN));
         assertTrue(SupplementalDefinitions.verify(bytes).listsBuild("1.60.1.70790", TOKEN));
+        assertTrue(SupplementalDefinitions.verify(bytes).listsBuild("1.60.1.70862", TOKEN));
         assertThrows(
                 DefinitionException.class,
                 () ->
