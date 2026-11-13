@@ -31,13 +31,24 @@ final class RaceNpcAppearanceTest {
                 table(
                         "ItemDisplayInfo",
                         "9F3AB8A9",
-                        "GeosetGroupOverride,GeosetGroup:6,ModelResourcesID:2",
-                        row(600, "0", "2", "0", "0", "0", "0", "0", "0", "0"),
-                        row(601, "0", "0", "0", "0", "0", "0", "0", "55", "0"),
-                        row(602, "0", "0", "0", "1", "0", "0", "0", "0", "0"),
+                        "GeosetGroupOverride,GeosetGroup:6,ModelResourcesID:2,"
+                                + "ModelMaterialResourcesID:2,Flags",
+                        row(600, "0", "2", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0"),
+                        row(601, "0", "0", "0", "0", "0", "0", "0", "55", "0", "0", "0", "0"),
+                        row(602, "0", "0", "0", "1", "0", "0", "0", "0", "0", "0", "0", "0"),
                         // 673605 on 70862: GeosetGroup -1 leaves groups 22 and 28 alone.
-                        row(603, "0", "0", "0", "0", "-1", "-1", "0", "0", "0"),
-                        row(604, "0", "0", "0", "0", "-2", "0", "0", "0", "0")));
+                        row(603, "0", "0", "0", "0", "-1", "-1", "0", "0", "0", "0", "0", "0"),
+                        row(604, "0", "0", "0", "0", "-2", "0", "0", "0", "0", "0", "0", "0"),
+                        // A tabard (GeosetGroup[0] 1: geoset 1202) and a belt that clips it.
+                        row(610, "0", "1", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0"),
+                        row(614, "0", "1", "0", "0", "0", "0", "0", "0", "0", "0", "0", "512"),
+                        // Capes of style 2 (1503): with material resource 900 (files 10000,
+                        // 10001 and 10003 by gender), with 901 (no file), and with an override.
+                        row(611, "0", "2", "0", "0", "0", "0", "0", "0", "0", "900", "0", "0"),
+                        row(612, "0", "2", "0", "0", "0", "0", "0", "0", "0", "901", "0", "0"),
+                        row(613, "7", "2", "0", "0", "0", "0", "0", "0", "0", "900", "0", "0"),
+                        // A cape of GeosetGroup[0] 0 shows no geoset and needs no texture.
+                        row(615, "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0")));
         replace(
                 seed,
                 table(
@@ -171,22 +182,35 @@ final class RaceNpcAppearanceTest {
                                                 refused)));
     }
 
+    /** The NPC's omissions as the Orc male of class 1 wears them. */
+    private static RaceAppearancePlan.NpcOmissions omissions(
+            RacesService service,
+            RaceMedia media,
+            RaceAppearancePlan plans,
+            RaceAppearancePlan.Npc npc) {
+        return plans.npcOmissions(npc, 2, 1, 0, Cancellation.NONE, new ArrayList<>());
+    }
+
+    private static RaceAppearancePlan.Plan plan(RaceAppearancePlan.Npc npc, List<String> issues)
+            throws Exception {
+        return with(
+                (service, media, plans) ->
+                        plans.build(2, 1, ORC_MALE, Cancellation.NONE, issues, null, npc));
+    }
+
     @Test
-    void itemModelsHeldItemsCapesAndTabardsAreCountedNotRefused() throws Exception {
+    void itemModelsAndHeldItemsAreCountedNotRefused() throws Exception {
         var npc =
                 new RaceAppearancePlan.Npc(
                         List.of(
                                 new RaceNpcs.Item(0, 601), // helm with an item model
                                 new RaceNpcs.Item(6, 600), // boots without one
                                 new RaceNpcs.Item(15, 650), // a held item past the slot table
-                                new RaceNpcs.Item(9, 600), // a tabard (19)
-                                new RaceNpcs.Item(10, 600)), // a cape (16)
+                                new RaceNpcs.Item(9, 601), // a tabard with an item model
+                                new RaceNpcs.Item(10, 601)), // a cape with an item model
                         4242);
-        var omissions =
-                with(
-                        (service, media, plans) ->
-                                plans.npcOmissions(npc, Cancellation.NONE, new ArrayList<>()));
-        assertEquals(new RaceAppearancePlan.NpcOmissions(2, 0, 2), omissions);
+        var omissions = with((service, media, plans) -> omissions(service, media, plans, npc));
+        assertEquals(new RaceAppearancePlan.NpcOmissions(4, 0, 0), omissions);
         var plan =
                 with(
                         (service, media, plans) ->
@@ -198,10 +222,91 @@ final class RaceNpcAppearanceTest {
                                         new ArrayList<>(),
                                         null,
                                         npc));
-        // Only the helm and the boots are clothing; the cape and tabard are left out.
+        // The helm and the boots are clothing; a cape or tabard item model is an attachment.
         assertEquals(
                 List.of(1, 8),
                 plan.items().stream().map(RaceAppearancePlan.Item::inventoryType).toList());
+        assertTrue(plan.canvases().stream().noneMatch(canvas -> canvas.type() == 2));
+    }
+
+    @Test
+    void aTabardIsClothingWithItsFlagsAndBeltFlagsAndNeedsNoTextureOfItsOwn() throws Exception {
+        var npc =
+                new RaceAppearancePlan.Npc(
+                        List.of(new RaceNpcs.Item(4, 614), new RaceNpcs.Item(9, 610)), 4242);
+        assertEquals(
+                new RaceAppearancePlan.NpcOmissions(0, 0, 0),
+                with((service, media, plans) -> omissions(service, media, plans, npc)));
+        var plan = plan(npc, new ArrayList<>());
+        // Slot 4 is the waist (6), slot 9 the tabard (19); the belt's Flags 0x200 go with it.
+        assertEquals(
+                List.of(6, 19),
+                plan.items().stream().map(RaceAppearancePlan.Item::inventoryType).toList());
+        assertEquals(512, plan.items().get(0).flags());
+        assertEquals(0, plan.items().get(1).flags());
+        assertEquals(List.of(1, 0, 0, 0, 0, 0), plan.items().get(1).geosets());
+        // The tabard's art is on the bake: no layer or canvas of its own.
+        assertTrue(plan.canvases().stream().noneMatch(canvas -> canvas.type() == 2));
+        assertEquals(
+                List.of(4242L),
+                plan.layers().stream().map(RaceAppearancePlan.Layer::fileDataId).toList());
+    }
+
+    @Test
+    void aCapeDrawsItsOwnTextureAsTheWholeTypeTwoCanvas() throws Exception {
+        var npc = new RaceAppearancePlan.Npc(List.of(new RaceNpcs.Item(10, 611)), 4242);
+        assertEquals(
+                new RaceAppearancePlan.NpcOmissions(0, 0, 0),
+                with((service, media, plans) -> omissions(service, media, plans, npc)));
+        var plan = plan(npc, new ArrayList<>());
+        assertEquals(
+                List.of(16),
+                plan.items().stream().map(RaceAppearancePlan.Item::inventoryType).toList());
+        assertEquals(List.of(2, 0, 0, 0, 0, 0), plan.items().getFirst().geosets());
+        assertEquals(
+                List.of(new RaceAppearancePlan.Canvas(2, 256, 256)),
+                plan.canvases().stream().filter(canvas -> canvas.type() == 2).toList());
+        var cape = plan.layers().stream().filter(layer -> layer.type() == 2).toList();
+        assertEquals(1, cape.size());
+        // Material resource 900's male file (GenderIndex 0) is 10000, drawn over the whole canvas.
+        assertEquals(10000, cape.getFirst().fileDataId());
+        assertEquals(
+                List.of(0, 0, 256, 256, 1),
+                List.of(
+                        cape.getFirst().x(),
+                        cape.getFirst().y(),
+                        cape.getFirst().width(),
+                        cape.getFirst().height(),
+                        cape.getFirst().blend()));
+    }
+
+    @Test
+    void aCapeWithoutASingleTextureOrAnOverriddenCapeIsLeftOutAndCounted() throws Exception {
+        for (long display : new long[] {612, 613}) {
+            var npc = new RaceAppearancePlan.Npc(List.of(new RaceNpcs.Item(10, display)), 4242);
+            assertEquals(
+                    new RaceAppearancePlan.NpcOmissions(0, 0, 1),
+                    with((service, media, plans) -> omissions(service, media, plans, npc)),
+                    "display " + display);
+            var issues = new ArrayList<String>();
+            var plan = plan(npc, issues);
+            assertTrue(plan.items().isEmpty(), "display " + display);
+            assertTrue(plan.canvases().stream().noneMatch(canvas -> canvas.type() == 2));
+            assertTrue(
+                    issues.contains(
+                            display == 612
+                                    ? RaceAppearancePlan.NO_CAPE_TEXTURE
+                                    : RaceAppearancePlan.CAPE_TABARD_OVERRIDE),
+                    issues.toString());
+        }
+        // A cape that shows no geoset (GeosetGroup[0] 0) needs no texture and is no omission.
+        var plain = new RaceAppearancePlan.Npc(List.of(new RaceNpcs.Item(10, 615)), 4242);
+        assertEquals(
+                new RaceAppearancePlan.NpcOmissions(0, 0, 0),
+                with((service, media, plans) -> omissions(service, media, plans, plain)));
+        assertTrue(
+                plan(plain, new ArrayList<>()).canvases().stream()
+                        .noneMatch(canvas -> canvas.type() == 2));
     }
 
     @Test
@@ -210,11 +315,7 @@ final class RaceNpcAppearanceTest {
         var npc = new RaceAppearancePlan.Npc(List.of(new RaceNpcs.Item(3, 999)), 4242);
         assertThrows(
                 RacesService.Unreadable.class,
-                () ->
-                        with(
-                                (service, media, plans) ->
-                                        plans.npcOmissions(
-                                                npc, Cancellation.NONE, new ArrayList<>())));
+                () -> with((service, media, plans) -> omissions(service, media, plans, npc)));
         assertThrows(
                 RacesService.Unreadable.class,
                 () ->
@@ -237,8 +338,7 @@ final class RaceNpcAppearanceTest {
                                         "ItemDisplayInfo",
                                         TableTypes.RowOutcome.ABSENT,
                                         null),
-                        (service, media, plans) ->
-                                plans.npcOmissions(npc, Cancellation.NONE, new ArrayList<>()));
+                        (service, media, plans) -> omissions(service, media, plans, npc));
         assertEquals(new RaceAppearancePlan.NpcOmissions(0, 1, 0), absent);
     }
 

@@ -372,6 +372,9 @@ final class RaceAppearance {
     RaceAppearancePlan.NpcOmissions npcOmissions(RaceNpcs.Spec spec, Cancellation token) {
         return plans.npcOmissions(
                 new RaceAppearancePlan.Npc(spec.items(), spec.bakeFileDataId()),
+                spec.raceId(),
+                spec.classId(),
+                spec.variant().sex(),
                 token,
                 new ArrayList<>());
     }
@@ -462,7 +465,7 @@ final class RaceAppearance {
                     new StringBuilder(
                                     npc == null
                                             ? "race-static-appearance-v3-eyes\n"
-                                            : "npc-baked-appearance-v5-eyes\n")
+                                            : "npc-baked-appearance-v6-capes-tabards\n")
                             .append(MeshAppearanceCodec.REVISION)
                             .append('\n')
                             .append(M2RestDrawSkinReader.REVISION)
@@ -973,13 +976,27 @@ final class RaceAppearance {
                                 || !contextual
                                         && !plan.npc()
                                         && RaceAppearanceProfiles.environmentFirstStage(batch);
+                var m = model.model();
+                // An NPC's cape (texture type 2) is also drawn from its alpha-keyed Combiners_Mod
+                // draw (RaceAppearanceProfiles.capeDraw); every other legacy draw keeps shader 0.
+                boolean cape =
+                        plan.npc()
+                                && batch.materialIndex() >= 0
+                                && batch.materialIndex() < m.materials().size()
+                                && combo >= 0
+                                && combo < m.textureCombos().size()
+                                && m.textureCombos().get(combo) >= 0
+                                && m.textureCombos().get(combo) < m.textures().size()
+                                && RaceAppearanceProfiles.capeDraw(
+                                        batch,
+                                        m.textures().get(m.textureCombos().get(combo)),
+                                        m.materials().get(batch.materialIndex()));
                 if (!firstStage
                                 && (batch.textureCount() != 1
-                                        || !contextual && batch.shaderId() != 0)
+                                        || !contextual && batch.shaderId() != 0 && !cape)
                         || batch.colorIndex() != -1) {
                     continue;
                 }
-                var m = model.model();
                 var material = m.materials().get(batch.materialIndex());
                 if (material.blendMode() > 1 || material.flags() != 0 && material.flags() != 4) {
                     continue;
@@ -1697,7 +1714,12 @@ final class RaceAppearance {
                     layouts.contains("481C4281") && field.equals("ItemDisplayInfoID");
             case "ItemDisplayInfo" ->
                     layouts.contains("9F3AB8A9")
-                            && Set.of("GeosetGroup", "GeosetGroupOverride", "ModelResourcesID")
+                            && Set.of(
+                                            "GeosetGroup",
+                                            "GeosetGroupOverride",
+                                            "ModelResourcesID",
+                                            "ModelMaterialResourcesID",
+                                            "Flags")
                                     .contains(field);
             case "ItemDisplayInfoMaterialRes" ->
                     layouts.contains("AA462C0E")
