@@ -30,6 +30,9 @@ final class RaceAppearanceProfiles {
         return profile == Profile.NIGHT_ELF_MALE || profile == Profile.NIGHT_ELF_FEMALE;
     }
 
+    /** M2 texture type 20: character jewelry and accessories (Shadowlands and later). */
+    static final long ACCESSORY_TEXTURE_TYPE = 20;
+
     static boolean reviewedDraw(
             Profile profile,
             M2Types.Model model,
@@ -80,6 +83,14 @@ final class RaceAppearanceProfiles {
                     && texture.flags() == 0
                     && material.flags() == 0
                     && material.blendMode() == 0;
+        }
+        if (texture.type() == 0 || texture.type() == ACCESSORY_TEXTURE_TYPE) {
+            // Accessories (facial jewelry, piercings, necklaces: geoset groups 16, 35, 36) in a
+            // file the model names, or the jewelry canvas (type 20): a plain single-texture
+            // draw, opaque or alpha-keyed, one- or two-sided (material flag 0x4, wowdev M2).
+            return batch.shaderId() == 0
+                    && (material.flags() == 0 || material.flags() == 4)
+                    && material.blendMode() <= 1;
         }
         return texture.type() == 6
                 && texture.flags() == 3

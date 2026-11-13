@@ -478,6 +478,8 @@ final class RaceAppearance {
                             .append('\n')
                             .append(
                                     "choice-vector-v1\nmostly-neutral-refused-v1\nenvironment-first-stage-v2\n")
+                            // NPCs sample the files their model names (accessories, #385).
+                            .append(npc == null ? "" : "npc-model-named-textures-v1\n")
                             .append(selection.byOption())
                             .append('\n')
                             .append(plan)
@@ -510,6 +512,30 @@ final class RaceAppearance {
             }
             return prepareFailure(issues, unavailable.getMessage());
         }
+    }
+
+    /** What becomes of a texture file the model names itself ({@link #namedFile}). */
+    enum NamedFile {
+        /** Decoded within the budget: its surfaces are drawn. */
+        DRAWN,
+        /** An NPC's file lastingly unreadable, or over the budget: its surfaces are left out. */
+        LEFT_OUT,
+        /** Not drawn now: the appearance is shown, not saved, and asked for again. */
+        INCOMPLETE
+    }
+
+    /**
+     * A named file's outcome: drawn when decoded within the budget. For an NPC (its accessories,
+     * #385), a file that will not become readable or that is over the budget only leaves its
+     * surfaces out, so the NPC stays complete and saved; one that cannot be read yet, and any file
+     * a player preview could not draw, leaves the appearance incomplete. Pure.
+     */
+    static NamedFile namedFile(
+            boolean npc, boolean decoded, boolean retryable, boolean overBudget) {
+        if (decoded && !overBudget) {
+            return NamedFile.DRAWN;
+        }
+        return npc && (decoded || !retryable) ? NamedFile.LEFT_OUT : NamedFile.INCOMPLETE;
     }
 
     private static Prepared prepareFailure(List<String> issues, String message) {
@@ -902,6 +928,9 @@ final class RaceAppearance {
             // Textures the model names itself, by file, as decoded for this preview (null: not).
             var hardcoded = new HashMap<Long, Integer>();
             boolean unsaved = false;
+            // NPC only: files the model names that the appearance sampled (recorded with the
+            // composite's attached files, so the index states them again).
+            var namedFiles = new java.util.TreeSet<Long>();
             boolean assumeExternal = assumesExternalWeights(plan);
             boolean assumedWeights = false;
             boolean environmentNotDrawn = false;
@@ -968,10 +997,14 @@ final class RaceAppearance {
                 Integer mapped = textureTypes.get((int) texture.type());
                 // A texture the model names itself (type 0, its TXID file): the same reviewed
                 // single-stage diffuse draw, sampled from that file rather than a composed canvas
-                // (#104). A player preview only; an NPC (a World creature) is unchanged.
+                // (#104). An NPC's accessories (piercings, necklaces, facial jewelry: geoset groups
+                // 16, 35 and 36) use it too; for an NPC the file is recorded with the composite's
+                // attached files, so the index checks it like an item's. A known limit: the
+                // composite's key names the model, bake and layers, not the content of the attached
+                // or named files, so a change to only such a file is caught by the index (which
+                // states them again) but not by restoring a saved composite under the same key.
                 if (texture.type() == 0
                         && textureTypes.get(0) == null
-                        && !plan.npc()
                         && !firstStage
                         && texture.fileDataId() != null
                         && texture.fileDataId() > 0
@@ -982,12 +1015,33 @@ final class RaceAppearance {
                                 images.decodeLargestWithin(
                                                 files,
                                                 FileTypes.FileRef.id(texture.fileDataId()),
-                                                2048,
+                                                plan.npc()
+                                                        ? RaceAppearancePlan.NPC_TEXTURE_SIDE
+                                                        : 2048,
                                                 token)
                                         .join();
                         var image = own.image();
                         long pixels = image == null ? 0 : (long) image.width() * image.height();
-                        if (image == null || pixels > 8_388_608L - decodedPixels) {
+                        var outcome =
+                                namedFile(
+                                        plan.npc(),
+                                        image != null,
+                                        image == null && retryable(own),
+                                        pixels > 8_388_608L - decodedPixels);
+                        if (outcome == NamedFile.LEFT_OUT) {
+                            // A lasting fact of the file (missing, refused) or the budget: the
+                            // NPC's accessory is left out, and the NPC is still complete.
+                            note(
+                                    issues,
+                                    "Texture #"
+                                            + texture.fileDataId()
+                                            + " the model names is "
+                                            + (image == null
+                                                    ? own.state()
+                                                    : "over the texture budget")
+                                            + ", so its surfaces are left out.");
+                            hardcoded.put(texture.fileDataId(), null);
+                        } else if (outcome == NamedFile.INCOMPLETE) {
                             complete = false;
                             note(
                                     issues,
@@ -1006,9 +1060,13 @@ final class RaceAppearance {
                             mapped = textures.size();
                             textures.add(argbTexture(image, token));
                             hardcoded.put(texture.fileDataId(), mapped);
-                            // A file named by the model is not among the saved composite's
-                            // sources: such a preview is shown but not saved or remembered.
-                            unsaved = true;
+                            if (plan.npc()) {
+                                namedFiles.add(texture.fileDataId());
+                            } else {
+                                // A file named by the model is not among a player composite's
+                                // sources: such a preview is shown but not saved or remembered.
+                                unsaved = true;
+                            }
                         }
                     }
                 }
@@ -1030,7 +1088,8 @@ final class RaceAppearance {
                                         .map(java.util.Map.Entry::getKey)
                                         .sorted()
                                         .toList()
-                                + "; this preview is not saved.");
+                                // An NPC records them with its attached files and is saved.
+                                + (plan.npc() ? "." : "; this preview is not saved."));
             }
             if (bindings.isEmpty()) {
                 // Without the model's facts its draws could not be checked: not a lasting fact.
@@ -1077,6 +1136,11 @@ final class RaceAppearance {
                 // An item or texture not readable yet: shown, but not saved or remembered.
                 complete &= attached.complete();
                 attachedFiles = attached.files();
+                if (!namedFiles.isEmpty()) {
+                    var all = new java.util.TreeSet<>(attachedFiles);
+                    all.addAll(namedFiles);
+                    attachedFiles = Set.copyOf(all);
+                }
                 attached.notes().forEach(text -> note(issues, text));
                 npcFacts(appearance, issues);
             }
