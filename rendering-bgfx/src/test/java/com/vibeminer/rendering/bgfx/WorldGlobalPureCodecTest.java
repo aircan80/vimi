@@ -102,6 +102,20 @@ class WorldGlobalPureCodecTest {
     }
 
     @Test
+    void sceneFileCarriesRecordedUvsFarPastTheTextureButNotPositions() {
+        // Texture coordinates are the recorded MOTV floats; Molten Core has (-8192, 8192).
+        assertTrue(WorldGlobalFileCodec.uv(-8192f) && WorldGlobalFileCodec.uv(8192f));
+        assertTrue(WorldGlobalFileCodec.uv(GlobalInteriorLimits.UV));
+        assertFalse(WorldGlobalFileCodec.uv(Math.nextUp(GlobalInteriorLimits.UV)));
+        assertFalse(
+                WorldGlobalFileCodec.uv(Float.NaN)
+                        || WorldGlobalFileCodec.uv(Float.NEGATIVE_INFINITY));
+        // Positions keep their own bound.
+        assertTrue(WorldGlobalFileCodec.position(GlobalInteriorLimits.POSITION));
+        assertFalse(WorldGlobalFileCodec.position(8192f));
+    }
+
+    @Test
     void exactLayoutMaximumAndPolicyMaskHaveIndependentByteTotals() {
         var first = new WorldGlobalLayout.Counts(24, 8, 64, 18, 32768, 98304, 32768, 1179648);
         // The first profile's maximum, now with 96-byte image records and 32-bit indices.
