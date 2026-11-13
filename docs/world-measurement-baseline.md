@@ -145,6 +145,12 @@ and by the stated reason when the item is left out. `-Pprobe.npcImages` renders 
 creatures mode. Like creatures mode, it uses the copy's loaded community keys and may add derived
 entries to the copy's generated store.
 
+**Talent tokens mode** (#326, `-Pprobe.mode=talentTokens`) renders every class talent description
+at every recorded rank through the production talent reader. It counts the unresolved
+substitutions by token kind (`$d`, `$s`, `${...}`, `$<name>` and so on) and by stated cause, lists
+each unresolved raw token, and writes every raw and rendered description to
+`gui/build/world-measurement/talent-descriptions.txt` so two runs can be compared.
+
 **Displays mode** (#377, #455, `-Pprobe.mode=displays`) is the same display census over the whole
 build, independent of spawns and of the Creature table:
 - from the tables, every creature display (no extended display info) by geoset case;

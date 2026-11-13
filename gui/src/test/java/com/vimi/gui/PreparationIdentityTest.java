@@ -50,7 +50,7 @@ public final class PreparationIdentityTest {
                         .equals("cc3119202a5f74b5af9318212d2468d3e51659cf7f9f85446cb72bb9d15555dd"),
                 "bundled source-list hash");
         require(
-                lines.get(12).startsWith("spell-duration-4fdf0951-v2:"),
+                lines.get(12).startsWith("spell-duration-4fdf0951-v3:"),
                 "supplemental definitions line");
         require(lines.get(14).equals("keys"), "key fingerprint line");
         System.out.println("Preparation identity: normal-case table inventory identity pinned");

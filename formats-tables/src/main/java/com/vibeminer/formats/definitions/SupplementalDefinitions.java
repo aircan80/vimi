@@ -7,16 +7,23 @@ import java.util.Set;
 
 /** One explicit local supplemental profile; never replaces or relabels the pinned provider. */
 public final class SupplementalDefinitions {
-    public static final String REVISION = "07c3f55b3f6b666e0fca31dd80e6dbbf8a61003b";
+    public static final String REVISION = "86c0801007bbcb767f4bc275413d24bc6b2d486c";
     public static final String SHA256 =
-            "2132081964f513ff61292f1ed6d3fcd5c424c27e04e14a68ce635b804457734b";
-    public static final String IDENTITY = "spell-duration-4fdf0951-v2:" + REVISION + ":" + SHA256;
+            "ba38bda4fb8562d2fbdc571f92cfdd804051bd5ba76dced8817b41b9f5d266c3";
+    public static final String IDENTITY = "spell-duration-4fdf0951-v3:" + REVISION + ":" + SHA256;
     public static final String SOURCE_URL =
             "https://raw.githubusercontent.com/wowdev/WoWDBDefs/"
                     + REVISION
                     + "/definitions/SpellDuration.dbd";
     private static final Set<String> BUILDS =
-            Set.of("1.60.1.70707", "1.60.1.70753", "1.60.1.70755", "1.60.1.70790");
+            Set.of(
+                    "1.60.1.70707",
+                    "1.60.1.70753",
+                    "1.60.1.70755",
+                    "1.60.1.70790",
+                    "1.60.1.70840",
+                    "1.60.1.70862",
+                    "1.60.1.70888");
 
     private SupplementalDefinitions() {}
 
@@ -47,7 +54,7 @@ public final class SupplementalDefinitions {
     }
 
     static DbdDocument verify(byte[] bytes) {
-        if (bytes.length != 25932 || !Json.sha256(bytes).equals(SHA256)) {
+        if (bytes.length != 25974 || !Json.sha256(bytes).equals(SHA256)) {
             throw new DefinitionException(
                     "DEFINITION_CORRUPT", "Supplemental definition failed pinned hash");
         }

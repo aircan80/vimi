@@ -918,6 +918,8 @@ check.dependsOn preparedBuildReaderTest
 // -Pprobe.npcImages=<extended display IDs> writes CPU renders of those NPCs.
 // -Pprobe.mode=npcSlots counts NPC slot items over the whole build and builds the appearances of
 // NPCs wearing a tabard or a cape (-Pprobe.limit of each, every -Pprobe.stride-th).
+// -Pprobe.mode=talentTokens renders every class talent at every recorded rank, counts unresolved
+// description substitutions by token kind and cause, and writes talent-descriptions.txt (#326).
 tasks.register('worldMeasurementProbe', JavaExec) {
     group = 'verification'
     description = 'Measures the real World pipeline on the local build; see docs/world-measurement-baseline.md.'

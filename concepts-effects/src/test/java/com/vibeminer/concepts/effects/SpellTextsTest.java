@@ -645,6 +645,14 @@ final class SpellTextsTest {
         // Unknown: no charges or stacks, not periodic, a period with thousandths, no radius,
         // a different second radius, per-level radius and a radius range.
         assertEquals(
+                "Within ? yds.",
+                auraPreview(
+                                "Within $a1 yds.",
+                                List.of(areaEffect(101, "0", "0", "0")),
+                                List.of(),
+                                List.of(row(13, "13", "10", "0", "0", "10")))
+                        .display());
+        assertEquals(
                 "Next ? swings, up to ? stacks.",
                 auraPreview(
                                 "Next $n swings, up to $u stacks.",
@@ -662,7 +670,7 @@ final class SpellTextsTest {
                 List.of(
                         List.of(
                                 areaEffect(101, "0", "0", "13"),
-                                row(13, "13", "10", "0", "0", "10")),
+                                row(13, "13", "10", "1", "0", "10")),
                         List.of(
                                 areaEffect(101, "0", "11", "13"),
                                 row(11, "11", "45", "0", "0", "45")),
@@ -682,6 +690,73 @@ final class SpellTextsTest {
                             .display(),
                     radius.toString());
         }
+    }
+
+    @Test
+    void radiusFallsBackToTheOnlyRecordedSecondTargetRadius() {
+        // Holy Nova on 70862: EffectRadiusIndex [0] is 0 and [1] is 13 (10 yards).
+        var result =
+                auraPreview(
+                        "Within $a1 yards.",
+                        List.of(areaEffect(101, "0", "0", "13")),
+                        List.of(),
+                        List.of(row(13, "13", "10", "0", "0", "10")));
+        assertEquals("Within 10 yards.", result.display());
+        assertEquals(SpellTexts.State.RESOLVED, result.state());
+        assertTrue(
+                result.substitutions().getFirst().sources().stream()
+                        .anyMatch(s -> s.table().equals("SpellRadius") && s.rowId() == 13));
+        // The same row named by both indexes is one radius.
+        assertEquals(
+                "Within 10 yards.",
+                auraPreview(
+                                "Within $a1 yards.",
+                                List.of(areaEffect(101, "0", "13", "13")),
+                                List.of(),
+                                List.of(row(13, "13", "10", "0", "0", "10")))
+                        .display());
+        // A missing SpellRadius row for the second index stays unknown.
+        var missing =
+                auraPreview(
+                        "Within $a1 yards.",
+                        List.of(areaEffect(101, "0", "0", "14")),
+                        List.of(),
+                        List.of(row(13, "13", "10", "0", "0", "10")));
+        assertEquals("Within ? yards.", missing.display());
+        assertEquals(
+                "SpellRadius record is unavailable", missing.substitutions().getFirst().issue());
+    }
+
+    @Test
+    void periodAndRadiusWithoutAnIndexReadTheFirstEffect() {
+        // Wrack on 70862: "inflicting $s1 Shadow damage every $t sec".
+        var result =
+                auraPreview(
+                        "Every $t sec within $a yds.",
+                        List.of(areaEffect(101, "1000", "11", "11")),
+                        List.of(),
+                        List.of(row(11, "11", "45", "0", "0", "45")));
+        assertEquals("Every 1 sec within 45 yds.", result.display());
+        assertEquals(SpellTexts.State.RESOLVED, result.state());
+        assertEquals(0, result.substitutions().getFirst().effectIndex());
+        // The first effect not periodic: unknown, never another effect's period.
+        var flat =
+                auraPreview(
+                        "Every $t sec.",
+                        List.of(areaEffect(101, "0", "0", "0")),
+                        List.of(),
+                        List.of());
+        assertEquals("Every ? sec.", flat.display());
+        assertEquals("Effect is not periodic", flat.substitutions().getFirst().issue());
+        // An index-less amount is still unsupported.
+        assertEquals(
+                "Deals ? damage.",
+                auraPreview(
+                                "Deals $s damage.",
+                                List.of(areaEffect(101, "0", "0", "0")),
+                                List.of(),
+                                List.of())
+                        .display());
     }
 
     @Test

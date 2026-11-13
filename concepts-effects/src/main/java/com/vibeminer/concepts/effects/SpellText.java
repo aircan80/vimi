@@ -852,7 +852,10 @@ final class SpellText {
                         new Unknown(raw.substring(at, end), "Effect index is unsupported"), end);
             }
         }
-        if ((amountKind(kind) || kind == 't' || kind == 'a') && index == null) {
+        if ((kind == 't' || kind == 'a') && index == null) {
+            // No index names the first effect, as WoWTools.SpellDescParser's supplier reads it.
+            index = 0;
+        } else if (amountKind(kind) && index == null) {
             return new Found(new Unknown(raw.substring(at, end), "Unsupported spell token"), end);
         }
         return new Found(
