@@ -726,10 +726,13 @@ class WorldStreamLaunchOwnerTest {
     void aChildThatBecomesReadyDuringAStartupCheckIsNotFailed() throws Exception {
         // The interleaving behind the Windows CI failure, made certain: the child becomes ready
         // and the clock jumps far past the cap after the watcher found it not ready but before it
-        // read the clock. The clock does both when the watcher reads it.
+        // read the clock. The clock does both on the watcher's second read once the owner is
+        // known, which is always a read inside the watcher's check loop: the loop reads the clock
+        // at least once before it, whether or not the watcher also read its start time then.
         long base = 1_000_000_000L;
         var handle =
                 new java.util.concurrent.atomic.AtomicReference<WorldStreamLaunchOwner.Handle>();
+        var reads = new java.util.concurrent.atomic.AtomicInteger();
         var raced = new java.util.concurrent.CountDownLatch(1);
         java.util.function.LongSupplier clock =
                 () -> {
@@ -737,7 +740,8 @@ class WorldStreamLaunchOwnerTest {
                     if (owner != null
                             && Thread.currentThread()
                                     .getName()
-                                    .equals("world-v2-parent-startup-deadline")) {
+                                    .equals("world-v2-parent-startup-deadline")
+                            && reads.incrementAndGet() >= 2) {
                         owner.initialized();
                         raced.countDown();
                         return base + TimeUnit.SECONDS.toNanos(5);
