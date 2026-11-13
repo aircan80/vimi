@@ -51,6 +51,12 @@ public final class WorldObjectPicking {
      */
     public static final int INTERIOR_LIGHT = 0x400;
 
+    /**
+     * Flags for a texture clamped along U or V instead of repeated (MOMT F_CLAMP_S 0x40 and
+     * F_CLAMP_T 0x80). Sampling only, never what is hit.
+     */
+    public static final int CLAMP_S = 0x800, CLAMP_T = 0x1000;
+
     /** The kind of a range class, without its flags. */
     public static int kind(int rangeClass) {
         return rangeClass & 0xff;
@@ -58,7 +64,7 @@ public final class WorldObjectPicking {
 
     /** Whether a range class is a known kind with only known flags. */
     public static boolean validClass(int rangeClass) {
-        return (rangeClass & ~(UNLIT | TWO_SIDED | INTERIOR_LIGHT | 0xff)) == 0
+        return (rangeClass & ~(UNLIT | TWO_SIDED | INTERIOR_LIGHT | CLAMP_S | CLAMP_T | 0xff)) == 0
                 && kind(rangeClass) <= ADDITIVE;
     }
 

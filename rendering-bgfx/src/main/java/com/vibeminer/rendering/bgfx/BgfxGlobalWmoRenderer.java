@@ -303,7 +303,10 @@ final class BgfxGlobalWmoRenderer implements GlobalWmoNativeScene {
                     bgfx_set_vertex_buffer(0, vertices, 0, vertexCount);
                     bgfx_set_index_buffer(indices, batch.firstIndex(), batch.indexCount());
                     bgfx_set_texture(
-                            0, sampler, textures[materialImages[batch.material()]], SAMPLER_STATE);
+                            0,
+                            sampler,
+                            textures[materialImages[batch.material()]],
+                            SAMPLER_STATE | BgfxWorldStreamRenderer.clampFlags(rangeClass));
                     bgfx_set_state(state(rangeClass), 0);
                     bgfx_submit(0, program, 0, BGFX_DISCARD_ALL);
                 }

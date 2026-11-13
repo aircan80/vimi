@@ -228,13 +228,13 @@ class WorldStreamObjectsReferencesTest {
     }
 
     @Test
-    void anInlineFileIsTheVersion13LayoutWithoutAReferenceSection() throws IOException {
+    void anInlineFileIsTheCurrentLayoutWithoutAReferenceSection() throws IOException {
         var data = rich();
         var reference = WorldStreamObjectsFile.write(directory, IDENTITY, data, () -> false);
         assertEquals(data.bytes(), reference.length());
         var bytes = Files.readAllBytes(directory.resolve(WorldStreamObjectsFile.basename(42)));
         var head = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
-        assertEquals(13, head.getInt(8));
+        assertEquals(WorldStreamObjectsFile.VERSION, head.getInt(8));
         assertEquals(0, head.getInt(200));
         assertEquals(0, head.getInt(204));
     }

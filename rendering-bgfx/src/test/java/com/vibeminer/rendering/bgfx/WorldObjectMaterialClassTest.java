@@ -130,7 +130,11 @@ class WorldObjectMaterialClassTest {
         assertTrue(
                 WorldObjectPicking.validClass(WorldStreamObjectsFile.INTERIOR_LIGHT),
                 "interior light (#383)");
-        assertFalse(WorldObjectPicking.validClass(0x800), "unknown flag");
+        assertTrue(
+                WorldObjectPicking.validClass(
+                        WorldObjectPicking.CLAMP_S | WorldObjectPicking.CLAMP_T),
+                "clamp addressing (#474)");
+        assertFalse(WorldObjectPicking.validClass(0x2000), "unknown flag");
         assertFalse(WorldObjectPicking.validClass(-1));
         assertEquals(
                 WorldStreamObjectsFile.CUTOUT,
@@ -154,5 +158,35 @@ class WorldObjectMaterialClassTest {
                 BgfxWorldStreamRenderer.STEP_ADDITIVE,
                 BgfxWorldStreamRenderer.step(WorldStreamObjectsFile.ADDITIVE));
         assertTrue(BgfxWorldStreamRenderer.STEP_BLENDED < BgfxWorldStreamRenderer.STEP_ADDITIVE);
+    }
+
+    /** Issue #474: MOMT F_CLAMP_S and F_CLAMP_T clamp a range's sampling along U and V. */
+    @Test
+    void clampedRangesSampleWithClampedAddressing() {
+        int plain = BgfxWorldStreamRenderer.objectSamplerFlags(WorldStreamObjectsFile.OPAQUE);
+        assertEquals(BgfxWorldStreamRenderer.OBJECT_SAMPLER_FLAGS, plain);
+        int s =
+                BgfxWorldStreamRenderer.objectSamplerFlags(
+                        WorldStreamObjectsFile.CUTOUT
+                                | com.vibeminer.rendering.world.WorldObjectPicking.CLAMP_S);
+        assertEquals(
+                BgfxWorldStreamRenderer.OBJECT_SAMPLER_FLAGS
+                        | org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_U_CLAMP,
+                s);
+        int both =
+                BgfxWorldStreamRenderer.objectSamplerFlags(
+                        com.vibeminer.rendering.world.WorldObjectPicking.CLAMP_S
+                                | com.vibeminer.rendering.world.WorldObjectPicking.CLAMP_T);
+        assertEquals(
+                BgfxWorldStreamRenderer.OBJECT_SAMPLER_FLAGS
+                        | org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_U_CLAMP
+                        | org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_V_CLAMP,
+                both);
+        // The material uniform slot ignores clamping.
+        assertEquals(
+                BgfxWorldStreamRenderer.ObjectFrame.materialSlot(WorldStreamObjectsFile.CUTOUT),
+                BgfxWorldStreamRenderer.ObjectFrame.materialSlot(
+                        WorldStreamObjectsFile.CUTOUT
+                                | com.vibeminer.rendering.world.WorldObjectPicking.CLAMP_T));
     }
 }

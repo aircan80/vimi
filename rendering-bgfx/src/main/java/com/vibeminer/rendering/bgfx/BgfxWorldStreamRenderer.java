@@ -3060,6 +3060,25 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                     | org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MAG_ANISOTROPIC;
 
     /**
+     * The sampler flags of a range: {@link #OBJECT_SAMPLER_FLAGS}, clamped along U and V as its
+     * class says (MOMT F_CLAMP_S and F_CLAMP_T, {@link
+     * com.vibeminer.rendering.world.WmoMaterialClass}). Sampler state only: no shader changes.
+     */
+    static int objectSamplerFlags(int rangeClass) {
+        return OBJECT_SAMPLER_FLAGS | clampFlags(rangeClass);
+    }
+
+    /** The bgfx clamp addressing flags a range class asks for. */
+    static int clampFlags(int rangeClass) {
+        return ((rangeClass & com.vibeminer.rendering.world.WorldObjectPicking.CLAMP_S) != 0
+                        ? BGFX_SAMPLER_U_CLAMP
+                        : 0)
+                | ((rangeClass & com.vibeminer.rendering.world.WorldObjectPicking.CLAMP_T) != 0
+                        ? BGFX_SAMPLER_V_CLAMP
+                        : 0);
+    }
+
+    /**
      * Whether cutout ranges use alpha to coverage on a multisampled target. They do not: on an
      * integrated GPU (Intel UHD 770) it took Goldshire's rotate p95 from 18 to 30 ms, all of it in
      * the cutout object ranges. Keeping it only for placements near the camera does not help: the
@@ -3979,7 +3998,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 0,
                 wmoSampler,
                 objects.textures[objects.ranges[r * stride + 2]],
-                OBJECT_SAMPLER_FLAGS);
+                objectSamplerFlags(kind));
         bgfx_set_state(
                 sortedPass
                         ? WorldStreamObjectsFile.kind(kind) == WorldStreamObjectsFile.ADDITIVE
