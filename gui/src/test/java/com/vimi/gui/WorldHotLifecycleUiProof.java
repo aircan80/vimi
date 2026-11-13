@@ -101,6 +101,27 @@ public final class WorldHotLifecycleUiProof {
             fx(() -> { textures(owner.get()).setValue(standard); return null; });
             await(() -> ready(owner.get()) && onlyChild() != nearAgain, "NEAR + STANDARD restream presents");
             long second = onlyChild();
+            // #370: the render scale resizes the running stream in place: the same child presents
+            // half-size frames at 50% and native ones again at 100%.
+            var native0 = fx(() -> presented(owner.get()));
+            var nativeAsked = fx(() -> expected(owner.get(), 1));
+            check(native0.equals(nativeAsked), "Native frame " + native0 + " = " + nativeAsked);
+            snapshot(owner.get(), "render-scale-100.png");
+            fx(() -> { scale(owner.get()).setValue(WorldControls.RenderScale.LOW); return null; });
+            await(() -> fx(() -> presented(owner.get()).equals(expected(owner.get(), .5))), "50% frames present");
+            check(onlyChild() == second, "The 50% render scale applies without a new session");
+            snapshot(owner.get(), "render-scale-50.png");
+            fx(() -> { scale(owner.get()).setValue(WorldControls.RenderScale.FULL); return null; });
+            await(() -> fx(() -> presented(owner.get()).equals(native0)), "native frames present again");
+            check(onlyChild() == second, "Back to native in the same session");
+            if (System.getProperty("proof.out") != null) {
+                fx(() -> { ((WorldGameMenu)get(owner.get(),"menu")).open(WorldGameMenu.Page.DISPLAY); return null; });
+                Thread.sleep(300);
+                var menuShot = fx(() -> owner.get().snapshot(null, null));
+                write(menuShot, "render-scale-menu.png");
+                fx(() -> { ((WorldGameMenu)get(owner.get(),"menu")).close(); return null; });
+            }
+            System.out.println("Render scale: native " + native0 + ", 50% " + fx(() -> expected(owner.get(), .5)) + ", same session");
             fx(() -> { owner.get().setVisible(false); return null; });
             await(() -> children().isEmpty() && pool.stats().leaseClaims() == 0, "hidden owner and source claims drain");
             fx(() -> { owner.get().setVisible(true); return null; });
@@ -111,7 +132,7 @@ public final class WorldHotLifecycleUiProof {
             world.closeAsync().get(10, TimeUnit.SECONDS);
             pool.closeAsync().get(5, TimeUnit.SECONDS);
             check(children().isEmpty() && pool.stats().leaseClaims() == 0, "Final child/source ownership is empty");
-            System.out.println("Actual authored HOT World UI: initial qualification/frame, software/on, NEAR/FAR restream, hide/resume, final drain PASS");
+            System.out.println("Actual authored HOT World UI: initial qualification/frame, software/on, NEAR/FAR restream, render scale in place, hide/resume, final drain PASS");
         } finally {
             files.release.countDown();
             if (owner.get() != null) fx(() -> { owner.get().close(); if(window.get()!=null)window.get().close(); return null; });
@@ -144,6 +165,37 @@ public final class WorldHotLifecycleUiProof {
             return controller != null && controller.snapshot().phase() == WorldStreamSourceController.Phase.READY
                     && ((ImageView)get(view,"image")).getImage() != null;
         });
+    }
+    @SuppressWarnings("unchecked")
+    private static javafx.scene.control.ChoiceBox<WorldControls.RenderScale> scale(WorldView view) {
+        return (javafx.scene.control.ChoiceBox<WorldControls.RenderScale>)get(view,"renderScale");
+    }
+    /** The presented frame's pixel size. */
+    private static com.vibeminer.rendering.world.WorldFrameLimits.Size presented(WorldView view) {
+        var image=((ImageView)get(view,"image")).getImage();
+        return new com.vibeminer.rendering.world.WorldFrameLimits.Size((int)image.getWidth(),(int)image.getHeight());
+    }
+    /** The frame the viewport asks for at {@code render} of its native size. */
+    private static com.vibeminer.rendering.world.WorldFrameLimits.Size expected(WorldView view, double render) {
+        var viewport=(javafx.scene.layout.Region)get(view,"viewport");
+        var window=view.getScene().getWindow();
+        return com.vibeminer.rendering.world.WorldFrameLimits.frame(viewport.getWidth(),viewport.getHeight(),
+                window.getRenderScaleX(),window.getRenderScaleY(),render);
+    }
+    /** -Dproof.out=<dir>: writes the viewport as shown, for a local look; nothing is committed. */
+    private static void snapshot(WorldView view, String name) throws Exception {
+        String out=System.getProperty("proof.out");
+        if (out==null || out.isBlank()) return;
+        write(fx(() -> ((javafx.scene.layout.Region)get(view,"viewport")).snapshot(null,null)), name);
+    }
+    private static void write(javafx.scene.image.WritableImage image, String name) throws Exception {
+        String out=System.getProperty("proof.out");
+        int w=(int)image.getWidth(), h=(int)image.getHeight();
+        var data=new int[w*h];
+        image.getPixelReader().getPixels(0,0,w,h,javafx.scene.image.PixelFormat.getIntArgbInstance(),data,0,w);
+        var buffered=new java.awt.image.BufferedImage(w,h,java.awt.image.BufferedImage.TYPE_INT_ARGB);
+        buffered.setRGB(0,0,w,h,data,0,w);
+        javax.imageio.ImageIO.write(buffered,"png",java.nio.file.Path.of(out,name).toFile());
     }
     @SuppressWarnings("unchecked")
     private static javafx.scene.control.ChoiceBox<com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance> distance(WorldView view) {

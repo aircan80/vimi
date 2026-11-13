@@ -136,7 +136,10 @@ All keys can be changed in **Esc → Controls**. The AZERTY layout preset moves
 movement to `Z` `Q` `S` `D` and down to `A` or `X`, and leaves the number-key
 speed presets unbound (use `Shift` + wheel).
 
-**View distance** (Near or Far) is on the Display page of the game menu. Some
+**View distance** (Near or Far) and **Render scale** are on the Display page of
+the game menu. The World renders at the viewport's native pixel size, display
+scaling included; a render scale of 85%, 70% or 50% renders fewer pixels and
+scales them up, for slower GPUs. A new render scale applies at once. Some
 features are still behind test switches, which are Java system properties. From
 source, build the launcher and pass them in `JAVA_OPTS`:
 

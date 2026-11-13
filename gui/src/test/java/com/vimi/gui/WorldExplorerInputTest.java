@@ -52,6 +52,7 @@ public final class WorldExplorerInputTest {
         wheelReadyCoversStreamingMode();
         controlsEncodeDecodeLeniently();
         viewDistanceIsRememberedWithTheControls();
+        renderScaleIsRememberedWithTheControls();
         onlyAStillPrimaryClickInspects();
         shiftWheelStepsTheSpeedPresets();
         reboundKeysDriveTheirActions();
@@ -869,6 +870,35 @@ public final class WorldExplorerInputTest {
                 "An unknown view distance opens NEAR");
         require(new WorldControls(.006, false, null, java.util.Map.of(), null).viewDistance() == near,
                 "A null view distance is NEAR");
+    }
+
+    private static void renderScaleIsRememberedWithTheControls() {
+        var full = WorldControls.RenderScale.FULL;
+        var low = WorldControls.RenderScale.LOW;
+        require(WorldControls.DEFAULTS.renderScale() == full, "Native (100%) is the default render scale");
+        var chosen = WorldControls.DEFAULTS.withSpeed(WorldControls.Speed.TURBO).withRenderScale(low)
+                .withViewDistance(com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance.FAR);
+        require(WorldControls.decode(chosen.encode()).equals(chosen), "50% round-trips: " + chosen.encode());
+        require(chosen.withInvertY(true).withSensitivity(.01).withKeys(WorldControls.Layout.AZERTY.keys())
+                        .withViewDistance(com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance.NEAR)
+                        .renderScale() == low, "Other edits keep the render scale");
+        require(WorldControls.decode("v1;sensitivity=0.01;view=FAR").renderScale() == full,
+                "A value saved before the setting existed opens native");
+        require(WorldControls.decode("v1;render=TINY").renderScale() == full
+                        && WorldControls.decode("v1;render=").renderScale() == full,
+                "An unknown render scale opens native");
+        require(new WorldControls(.006, false, null, java.util.Map.of(), null, null).renderScale() == full,
+                "A null render scale is native");
+        // Every choice is inside the shared frame limits' range, so none is clamped to another.
+        for (var scale : WorldControls.RenderScale.values())
+            require(scale.factor() >= com.vibeminer.rendering.world.WorldFrameLimits.MIN_RENDER_SCALE
+                    && scale.factor() <= 1, "In range: " + scale);
+        require(com.vibeminer.rendering.world.WorldFrameLimits.frame(1000, 600, 1.5, 1.5, low.factor())
+                        .equals(new com.vibeminer.rendering.world.WorldFrameLimits.Size(750, 450)),
+                "50% of a 1000x600 viewport at 150% display scaling is 750x450");
+        require(full.toString().equals("Render scale: 100% (native)")
+                        && WorldControls.RenderScale.MEDIUM.toString().equals("Render scale: 70%"),
+                "The choices name their percentages");
     }
 
     private static void controlsEncodeDecodeLeniently() {

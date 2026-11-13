@@ -476,7 +476,7 @@ public final class WorldNavigationUiTest {
                 "audio",new String[] {"#world-audio","#world-music","#world-ambience","#world-music-volume",
                         "#world-ambience-volume","#world-audio-variant","#world-audio-status"},
                 "display",new String[] {"#world-show-coordinates","#world-hide-hud","#world-fullscreen","#world-gpu-enabled",
-                        "#world-object-textures","#world-view-distance","#world-gpu-activity","#world-gpu-retry","#world-gpu-status",
+                        "#world-object-textures","#world-view-distance","#world-render-scale","#world-gpu-activity","#world-gpu-retry","#world-gpu-status",
                         "#world-texture-activity","#world-texture-status","#world-texture-retry"},
                 "bookmarks",new String[] {"#world-save-bookmark"},
                 "instances",new String[] {"#world-instance-status","#world-instance-entrances","#world-instance-enter",
@@ -1025,6 +1025,27 @@ public final class WorldNavigationUiTest {
         require((int)get(view,"streamingWidth")==settled.width() && (int)get(view,"streamingHeight")==settled.height()
                 && (long)get(view,"streamingPolicy")==2,"The settled size is sent once, with one policy bump");
         require(!pulse(view),"Nothing more owed");
+        // #370: a render-scale change is a size change like any other: one quiet pulse, one bump,
+        // the frame at that share of the native size, and no stream restart.
+        @SuppressWarnings("unchecked")
+        var render=(javafx.scene.control.ChoiceBox<WorldControls.RenderScale>)view.lookup("#world-render-scale");
+        render.setValue(WorldControls.RenderScale.LOW);
+        invoke(view,"streamingSize");
+        require((int)get(view,"streamingWidth")==settled.width() && (long)get(view,"streamingPolicy")==2,
+                "The old size holds until the new one settles");
+        require(!pulse(view) && pulse(view),"After one quiet pulse the scaled size settles");
+        invoke(view,"streamingSize");
+        var window=view.getScene().getWindow();
+        var half=com.vibeminer.rendering.world.WorldFrameLimits.frame(690,420,window.getRenderScaleX(),window.getRenderScaleY(),.5);
+        require((int)get(view,"streamingWidth")==half.width() && (int)get(view,"streamingHeight")==half.height()
+                        && (long)get(view,"streamingPolicy")==3,
+                "50% requests half the native size with one policy bump: "+get(view,"streamingWidth")+"x"
+                        +get(view,"streamingHeight")+", expected "+half.width()+"x"+half.height());
+        render.setValue(WorldControls.RenderScale.FULL);
+        invoke(view,"streamingSize");
+        require(!pulse(view) && pulse(view),"Back to native settles after one quiet pulse");
+        invoke(view,"streamingSize");
+        require((int)get(view,"streamingWidth")==settled.width() && (long)get(view,"streamingPolicy")==4,"Back to native");
         invoke(view,"resetStreamingSize");
         require((long)get(view,"streamingPolicy")==1 && (int)get(view,"streamingWidth")==0,"A new stream resets");
     }
@@ -1083,6 +1104,18 @@ public final class WorldNavigationUiTest {
         require(distance.getConverter().toString(far).equals("View distance: Far (5 x 5 tiles)")
                         && distance.getConverter().toString(near).equals("View distance: Near (3 x 3 tiles)"),
                 "The choices name their neighbourhoods");
+        // #370: the render scale is remembered with the controls too; loading it never saves.
+        @SuppressWarnings("unchecked")
+        var render=(javafx.scene.control.ChoiceBox<WorldControls.RenderScale>)view.lookup("#world-render-scale");
+        require(render.getValue()==WorldControls.RenderScale.FULL,"The render scale opens native");
+        int before=saved.size();
+        view.showControls(stored.withInvertY(false).withRenderScale(WorldControls.RenderScale.MEDIUM));
+        require(saved.size()==before && render.getValue()==WorldControls.RenderScale.MEDIUM,
+                "A stored 70% shows without saving: "+saved);
+        render.setValue(WorldControls.RenderScale.LOW);
+        require(saved.size()==before+1 && WorldControls.decode(saved.getLast()).renderScale()==WorldControls.RenderScale.LOW
+                        && WorldControls.decode(saved.getLast()).viewDistance()==near,
+                "Choosing 50% saves the whole value: "+saved);
         view.showControls(WorldControls.DEFAULTS);
         view.controls(WorldControls.memory());
         controlsLoadRace(view, invert);

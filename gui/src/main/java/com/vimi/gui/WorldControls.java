@@ -12,7 +12,7 @@ import javafx.scene.input.KeyCode;
 
 /**
  * World explorer control preferences: mouse-look sensitivity and invert-Y, the flight speed
- * preset, and the key bindings. They persist with the other World settings in the library
+ * preset, the key bindings, and the Display page's view distance and render scale. They persist with the other World settings in the library
  * database ({@link WorldBookmarkStore}) as one versioned text value. Decoding is lenient: an
  * unknown key, action or key code is ignored, and a missing or malformed value falls back to its
  * default, so a damaged entry never blocks the explorer.
@@ -27,7 +27,8 @@ record WorldControls(
         boolean invertY,
         Speed speed,
         Map<KeyCode, Action> keys,
-        com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance viewDistance) {
+        com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance viewDistance,
+        RenderScale renderScale) {
     /** Radians of look per pixel of mouse movement. */
     static final double MIN_SENSITIVITY = .001, MAX_SENSITIVITY = .02, DEFAULT_SENSITIVITY = .006;
 
@@ -127,6 +128,34 @@ record WorldControls(
         }
     }
 
+    /**
+     * The Display page's render scale (#370): the share of the viewport's native (HiDPI) pixel size
+     * the World frame is rendered at, for slow GPUs. The frame is scaled back up to the viewport.
+     * Every choice stays within {@link com.vibeminer.rendering.world.WorldFrameLimits}'s range.
+     */
+    enum RenderScale {
+        FULL(100),
+        HIGH(85),
+        MEDIUM(70),
+        LOW(50);
+
+        final int percent;
+
+        RenderScale(int percent) {
+            this.percent = percent;
+        }
+
+        /** The factor passed to {@link com.vibeminer.rendering.world.WorldFrameLimits#frame}. */
+        double factor() {
+            return percent / 100.0;
+        }
+
+        @Override
+        public String toString() {
+            return this == FULL ? "Render scale: 100% (native)" : "Render scale: " + percent + "%";
+        }
+    }
+
     /** Key layout presets; QWERTZ keeps the QWERTY positions for every bound key. */
     enum Layout {
         QWERTY("QWERTY / QWERTZ"),
@@ -222,6 +251,8 @@ record WorldControls(
         // The Display page's view distance (#173): NEAR unless chosen.
         viewDistance = viewDistance == null
                 ? com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance.NEAR : viewDistance;
+        // The Display page's render scale (#370): native unless chosen.
+        renderScale = renderScale == null ? RenderScale.FULL : renderScale;
         var copy = new LinkedHashMap<KeyCode, Action>();
         Objects.requireNonNull(keys)
                 .forEach(
@@ -231,30 +262,44 @@ record WorldControls(
         keys = Collections.unmodifiableMap(copy);
     }
 
-    /** Controls at the default view distance (NEAR). */
+    /** Controls at the default view distance (NEAR) and render scale (native). */
     WorldControls(double sensitivity, boolean invertY, Speed speed, Map<KeyCode, Action> keys) {
-        this(sensitivity, invertY, speed, keys, null);
+        this(sensitivity, invertY, speed, keys, null, null);
+    }
+
+    /** Controls at the default render scale (native). */
+    WorldControls(
+            double sensitivity,
+            boolean invertY,
+            Speed speed,
+            Map<KeyCode, Action> keys,
+            com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance viewDistance) {
+        this(sensitivity, invertY, speed, keys, viewDistance, null);
     }
 
     WorldControls withSensitivity(double next) {
-        return new WorldControls(next, invertY, speed, keys, viewDistance);
+        return new WorldControls(next, invertY, speed, keys, viewDistance, renderScale);
     }
 
     WorldControls withInvertY(boolean next) {
-        return new WorldControls(sensitivity, next, speed, keys, viewDistance);
+        return new WorldControls(sensitivity, next, speed, keys, viewDistance, renderScale);
     }
 
     WorldControls withSpeed(Speed next) {
-        return new WorldControls(sensitivity, invertY, next, keys, viewDistance);
+        return new WorldControls(sensitivity, invertY, next, keys, viewDistance, renderScale);
     }
 
     WorldControls withKeys(Map<KeyCode, Action> next) {
-        return new WorldControls(sensitivity, invertY, speed, next, viewDistance);
+        return new WorldControls(sensitivity, invertY, speed, next, viewDistance, renderScale);
     }
 
     WorldControls withViewDistance(
             com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance next) {
-        return new WorldControls(sensitivity, invertY, speed, keys, next);
+        return new WorldControls(sensitivity, invertY, speed, keys, next, renderScale);
+    }
+
+    WorldControls withRenderScale(RenderScale next) {
+        return new WorldControls(sensitivity, invertY, speed, keys, viewDistance, next);
     }
 
     /** Adds {@code code} to {@code action}, taking it from whatever it drove before. */
@@ -332,12 +377,13 @@ record WorldControls(
     String encode() {
         return String.format(
                 Locale.ROOT,
-                "%s;sensitivity=%s;invertY=%b;speed=%s;view=%s;keys=%s;actions=%s",
+                "%s;sensitivity=%s;invertY=%b;speed=%s;view=%s;render=%s;keys=%s;actions=%s",
                 VERSION,
                 sensitivity,
                 invertY,
                 speed.name(),
                 viewDistance.name(),
+                renderScale.name(),
                 keys.entrySet().stream()
                         .map(e -> e.getKey().name() + ":" + e.getValue().name())
                         .collect(Collectors.joining(",")),
@@ -358,6 +404,7 @@ record WorldControls(
         boolean invertY = false;
         Speed speed = Speed.FLY;
         var view = com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance.NEAR;
+        var render = RenderScale.FULL;
         Map<KeyCode, Action> keys = DEFAULTS.keys;
         String storedKeys = null, storedActions = null;
         for (int i = 1; i < parts.length; i++) {
@@ -377,13 +424,14 @@ record WorldControls(
                 case "view" -> view = named(
                         com.vibeminer.rendering.bgfx.WorldStreamTransport.ViewDistance.class,
                         value, view);
+                case "render" -> render = named(RenderScale.class, value, render);
                 case "keys" -> storedKeys = value;
                 case "actions" -> storedActions = value;
                 default -> {}
             }
         }
         if (storedKeys != null) keys = merged(storedKeys, storedActions);
-        return new WorldControls(sensitivity, invertY, speed, keys, view);
+        return new WorldControls(sensitivity, invertY, speed, keys, view, render);
     }
 
     private static Map<KeyCode, Action> merged(String storedKeys, String storedActions) {
