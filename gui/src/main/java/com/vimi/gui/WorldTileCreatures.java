@@ -1529,6 +1529,8 @@ final class WorldTileCreatures implements AutoCloseable {
         final HashSet<Long> idleLoaded = new HashSet<>();
         // Builder model indices whose Stand pose left out billboard triangles.
         final HashSet<Integer> billboardModels = new HashSet<>();
+        // Images added to this tile's builder, by their pixels: an identical one is reused.
+        final HashMap<ImageKey, Integer> tileImages = new HashMap<>();
 
         Placing(WorldStreamTileWriter.Exterior.Builder builder, long allowance, WorldSpawns.Index spawns,
                 Chooser tileChooser, Cancellation token) {
@@ -1618,23 +1620,33 @@ final class WorldTileCreatures implements AutoCloseable {
                 boolean free = shared && (held.models().contains(new AreaKey(display, false))
                         || canAnimate && held.models().contains(new AreaKey(display, true)));
                 long cost = !shared ? charge.total() : free ? 0 : charge.geometry();
+                // Only images the tile does not hold yet cost texture room (tileImages).
+                int newImages = 0;
+                long newPixels = 0;
+                for (var image : m.images()) {
+                    if (!tileImages.containsKey(ImageKey.of(image))) {
+                        newImages++;
+                        newPixels += com.vibeminer.rendering.world.ObjectTextureMips.chainPixels(
+                                image.width(), image.height());
+                    }
+                }
                 Cap bound = added.size() == TILE_MODELS ? Cap.MODELS
-                        : textureBytes + m.pixels() * 4 > TILE_TEXTURE_BYTES ? Cap.TEXTURE_BYTES
+                        : textureBytes + newPixels * 4 > TILE_TEXTURE_BYTES ? Cap.TEXTURE_BYTES
                         : cost > allowance - setBytes ? Cap.AREA_BYTES
                         : m.ranges().length / 3 > builder.drawRoom() ? Cap.SET_DRAWS
-                        : !builder.fits(m.images().size(), m.pixels(), 1, m.vertexCount(), m.indices().length,
+                        : !builder.fits(newImages, newPixels, 1, m.vertexCount(), m.indices().length,
                                 m.ranges().length / 3) ? Cap.SET_ROOM
                         : null;
                 if (bound != null) {
                     cap(bound);
                     return;
                 }
-                model = add(builder, m);
+                model = add(builder, m, tileImages);
                 modelDisplays.put(model, display);
                 modelCharges.put(model, charge);
                 if (free) geometryFree.add(model);
                 if (!animation || !m.animatableSurfaces()) stillModels.add(model);
-                textureBytes += m.pixels() * 4;
+                textureBytes += newPixels * 4;
                 setBytes += cost;
                 added.put(display, model);
                 if (m.restPose() != null) restModels.add(model);
@@ -2063,11 +2075,34 @@ final class WorldTileCreatures implements AutoCloseable {
         return false;
     }
 
-    private static int add(WorldStreamTileWriter.Exterior.Builder builder, Model model) {
+    /**
+     * One image by its pixels, so a tile adds identical images once: NPCs share textures composed
+     * from the same customization choice (eyes of one colour, #385), as creatures share a skin.
+     */
+    record ImageKey(int width, int height, byte[] rgba, int hash) {
+        static ImageKey of(Image image) {
+            return new ImageKey(image.width(), image.height(), image.rgba(), java.util.Arrays.hashCode(image.rgba()));
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            return other instanceof ImageKey key && key.width == width && key.height == height
+                    && key.hash == hash && java.util.Arrays.equals(key.rgba, rgba);
+        }
+
+        @Override
+        public int hashCode() {
+            return hash;
+        }
+    }
+
+    private static int add(WorldStreamTileWriter.Exterior.Builder builder, Model model,
+            Map<ImageKey, Integer> tileImages) {
         var images = new int[model.images().size()];
         for (int i = 0; i < images.length; i++) {
             var image = model.images().get(i);
-            images[i] = builder.image(image.width(), image.height(), ByteBuffer.wrap(image.rgba()));
+            images[i] = tileImages.computeIfAbsent(ImageKey.of(image),
+                    key -> builder.image(image.width(), image.height(), ByteBuffer.wrap(image.rgba())));
         }
         var ranges = model.ranges().clone();
         for (int r = 2; r < ranges.length; r += 3) ranges[r] = images[ranges[r]];
