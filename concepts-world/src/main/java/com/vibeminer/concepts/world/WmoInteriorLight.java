@@ -5,7 +5,8 @@ import java.util.function.IntUnaryOperator;
 /**
  * The vertex light of an interior WMO group: its first MOCV as the client adjusts it at load
  * ({@code CMapObjGroup::FixColorVertexAlpha}), plus the building's MOHD ambient colour that its
- * shader adds back.
+ * shader adds back. A group lit as outdoors takes the same adjustment, added twice to the World
+ * light ({@link #outdoor}).
  *
  * <p>Sources: the wowdev.wiki WMO page (MOHD flags, MOCV, FixColorVertexAlpha), and the open-source
  * WebWowViewerCpp port of that function ({@code WmoGroupGeom::fixColorVertexAlpha}) and its WMO
@@ -75,6 +76,38 @@ final class WmoInteriorLight {
                             light(fixed(b, a, ab, trans, flags), ab),
                             light(fixed(g, a, ag, trans, flags), ag),
                             light(fixed(r, a, ar, trans, flags), ar));
+        }
+        return colours;
+    }
+
+    /**
+     * Each vertex's addition to the outdoor light of a group lit as outdoors (an exterior group, or
+     * an interior one also flagged exterior or exterior lit), packed as {@link
+     * WorldExteriorObjects#packColour} packs a colour: twice its MOCV as FixColorVertexAlpha
+     * adjusts it, kept to 255 (a light of 1.0). The client adjusts every group's MOCV the same way
+     * at load, marking an outdoor group's vertices outdoor (alpha 255), and its WMO shader adds
+     * {@code vColor.rgb * 2} to the exterior ambient ({@code applyAndMixAmbients}, WebWowViewerCpp
+     * commonLightFunctions.slang), as it adds it to the interior ambient. The World light here is
+     * the exterior ambient plus the sun, to which this is added. Arguments as for {@link #colours}.
+     *
+     * <p>A transition vertex (the first {@code transBatchCount} batches) keeps its MOCV alpha in
+     * the client, which blends it between the interior and the exterior light by that alpha; it
+     * takes the transition formula here and is lit as outdoors.
+     */
+    static int[] outdoor(
+            IntUnaryOperator mocv, int count, int transVertices, long ambient, int flags) {
+        int ab = (int) (ambient & 0xff), ag = (int) (ambient >> 8 & 0xff);
+        int ar = (int) (ambient >> 16 & 0xff);
+        var colours = new int[count];
+        for (int v = 0; v < count; v++) {
+            int b = mocv.applyAsInt(v * 4) & 0xff, g = mocv.applyAsInt(v * 4 + 1) & 0xff;
+            int r = mocv.applyAsInt(v * 4 + 2) & 0xff, a = mocv.applyAsInt(v * 4 + 3) & 0xff;
+            boolean trans = v < transVertices;
+            colours[v] =
+                    WorldExteriorObjects.packColour(
+                            Math.min(255, 2 * fixed(b, a, ab, trans, flags)),
+                            Math.min(255, 2 * fixed(g, a, ag, trans, flags)),
+                            Math.min(255, 2 * fixed(r, a, ar, trans, flags)));
         }
         return colours;
     }

@@ -2238,9 +2238,10 @@ class WorldExteriorObjectsTest {
     }
 
     /**
-     * Issue #375: an exterior group's first MOCV (B, G, R, A per vertex) is carried as {@code r | g
-     * << 8 | b << 16} only under MOGP flag 0x4; the alpha byte is dropped. Without the flag, or
-     * without the chunk, the mesh has no colours.
+     * Issue #375: an exterior group's first MOCV (B, G, R, A per vertex) is carried, packed {@code
+     * r | g << 8 | b << 16}, only under MOGP flag 0x4, as the outdoor light the client adds: twice
+     * the colour as FixColorVertexAlpha adjusts it ({@link WmoInteriorLight#outdoor}). Without the
+     * flag, or without the chunk, the mesh has no colours.
      */
     @Test
     void vertexColoursAreCarriedOnlyUnderTheirGroupFlag() {
@@ -2261,7 +2262,10 @@ class WorldExteriorObjectsTest {
         try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
             f.files.sources.put(GROUP, groupWithColours(EXT | 0x4, mocv));
             try (var set = f.run()) {
-                assertArrayEquals(new int[] {0x102030, 0x010203, 0xff8000}, colours(set));
+                // The fixture's MOHD: no flags, ambient 0x0b. Vertex 0, alpha 255: R 2 * (((48 *
+                // 255 >> 6) + 48 - 11) / 2) = 228, G 148, B 68. Vertex 1, alpha 0: every channel
+                // is under the ambient, so 0. Vertex 2, alpha 127: B and G clamp to 255, R 0.
+                assertArrayEquals(new int[] {0x4494e4, 0x000000, 0xffff00}, colours(set));
                 assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_VERTEX_COLOURS));
                 assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
             }
@@ -2315,7 +2319,7 @@ class WorldExteriorObjectsTest {
      * channel in the fixture), never darker than the ambient ({@link WmoInteriorLight}). Its ranges
      * carry {@link WorldExteriorObjects#INTERIOR_LIGHT}, and it is counted as an interior light
      * group, not in the exterior colour or winding evidence. The same group as an exterior one
-     * carries the same colours and no flag.
+     * carries its outdoor addition and no flag.
      */
     @Test
     void instanceInteriorGroupsAreLitByTheirAdjustedVertexColoursAndAmbient() {
@@ -2354,7 +2358,9 @@ class WorldExteriorObjectsTest {
             f.files.sources.put(ROOT, root(GROUP));
             f.files.sources.put(GROUP, colouredWithArea(EXT | 0x4, mocv));
             try (var set = f.runInstance()) {
-                assertArrayEquals(new int[] {0x102030, 0x010203, 0xfa0506}, colours(set));
+                // Outdoors: twice the adjusted colour, without the ambient (B 250, alpha 0: 2 *
+                // ((250 - 11) / 2) = 238).
+                assertArrayEquals(new int[] {0x4494e4, 0x000000, 0xee0000}, colours(set));
                 assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_VERTEX_COLOURS));
                 assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_LIGHT));
                 assertEquals(
@@ -2462,8 +2468,8 @@ class WorldExteriorObjectsTest {
      * A group whose MOGP flags say both exterior (0x8) and interior (0x2000) is lit as outdoors, as
      * the client lights it: FixColorVertexAlpha marks its vertices outdoor (alpha 255) and the WMO
      * shader blends them fully to the exterior light. Its MOCV is the addition to the World light
-     * an exterior group carries (#375), with no {@link WorldExteriorObjects#INTERIOR_LIGHT}.
-     * Exterior lit (0x40) does the same.
+     * an exterior group carries (#375, {@link WmoInteriorLight#outdoor}), with no {@link
+     * WorldExteriorObjects#INTERIOR_LIGHT}. Exterior lit (0x40) does the same.
      */
     @Test
     void aGroupFlaggedExteriorAndInteriorIsLitAsOutdoors() {
@@ -2476,7 +2482,7 @@ class WorldExteriorObjectsTest {
                 try (var set = f.runInstance()) {
                     var mesh = interiorMesh(set);
                     assertEquals(flags, mesh.groupFlags() & flags);
-                    assertArrayEquals(new int[] {0x102030, 0x010203, 0x040506}, colours(mesh));
+                    assertArrayEquals(new int[] {0x4494e4, 0x000000, 0x000000}, colours(mesh));
                     assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_LIGHT));
                     assertEquals(
                             1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_EXTERIOR_LIT));

@@ -1386,9 +1386,12 @@ final class GpuPreviewService {
         return List.copyOf(result);
     }
 
-    /** Application switches the helper reads itself, forwarded as system properties. */
+    /**
+     * Application switches the helper reads itself, forwarded as system properties. WMO vertex
+     * colours are on by default in the helper too, so only turning them off is forwarded.
+     */
     static List<String> forwardedProperties(boolean wmoVertexColours) {
-        return wmoVertexColours ? List.of("-Dvimi.world.wmoVertexColours=true") : List.of();
+        return wmoVertexColours ? List.of() : List.of("-Dvimi.world.wmoVertexColours=false");
     }
 
     static ArrayList<String> nativeCommand() { // package-private for tests
