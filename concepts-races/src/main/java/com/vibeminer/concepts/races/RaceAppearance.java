@@ -460,8 +460,8 @@ final class RaceAppearance {
             StringBuilder identity =
                     new StringBuilder(
                                     npc == null
-                                            ? "race-static-appearance-v2\n"
-                                            : "npc-baked-appearance-v4-attachments\n")
+                                            ? "race-static-appearance-v3-eyes\n"
+                                            : "npc-baked-appearance-v5-eyes\n")
                             .append(MeshAppearanceCodec.REVISION)
                             .append('\n')
                             .append(M2RestDrawSkinReader.REVISION)
@@ -910,7 +910,23 @@ final class RaceAppearance {
             }
             for (var batch : skin.skin().batches()) {
                 boolean contextual = plan.profile() != RaceAppearanceProfiles.Profile.LEGACY;
+                var models0 = model.model();
+                // The eyes' first stage (type 19): drawn in every profile, checked below like any
+                // single-texture draw (blend, flags, transform, weight, texture type).
+                int combo = batch.textureComboIndex();
+                boolean eyes =
+                        combo >= 0
+                                && combo < models0.textureCombos().size()
+                                && models0.textureCombos().get(combo) >= 0
+                                && models0.textureCombos().get(combo) < models0.textures().size()
+                                && RaceAppearanceProfiles.eyesFirstStage(
+                                        batch,
+                                        models0.textures()
+                                                .get(
+                                                        models0.textureCombos()
+                                                                .get(batch.textureComboIndex())));
                 if (contextual
+                        && !eyes
                         && !RaceAppearanceProfiles.reviewedDraw(
                                 plan.profile(),
                                 model.model(),
@@ -923,9 +939,10 @@ final class RaceAppearance {
                 // The static character preview only, like the weight assumption: an NPC (and so a
                 // World creature) is unchanged.
                 boolean firstStage =
-                        !contextual
-                                && !plan.npc()
-                                && RaceAppearanceProfiles.environmentFirstStage(batch);
+                        eyes
+                                || !contextual
+                                        && !plan.npc()
+                                        && RaceAppearanceProfiles.environmentFirstStage(batch);
                 if (!firstStage
                                 && (batch.textureCount() != 1
                                         || !contextual && batch.shaderId() != 0)
@@ -998,7 +1015,7 @@ final class RaceAppearance {
                     continue;
                 }
                 bindings.add(RaceAppearanceProfiles.surface(batch, material, texture, mapped));
-                environmentNotDrawn |= firstStage;
+                environmentNotDrawn |= firstStage && !eyes;
                 if (weight != 65535 && !facts.staticWeights().get(weight)) {
                     assumedWeights = true;
                 }
