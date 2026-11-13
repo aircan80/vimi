@@ -269,10 +269,13 @@ final class WorldStreamLaunchOwner {
         private void start(Starter starter, Attachment attachment) {
             try {
                 if (startupMillis > 0) {
+                    // Startup is timed from the launch, not from whenever the watcher thread first
+                    // runs.
+                    long started = clock.getAsLong();
                     try {
                         Thread.ofVirtual()
                                 .name("world-v2-parent-startup-deadline")
-                                .start(this::watchStartup);
+                                .start(() -> watchStartup(started));
                     } catch (RuntimeException | Error error) {
                         startupDone = true;
                         throw error;
@@ -443,16 +446,19 @@ final class WorldStreamLaunchOwner {
          * Startup fails when the child stays quiet (no {@link #progress}) for {@code
          * startupMillis}, or is still not ready after {@link #STARTUP_CAP} times that however busy
          * it looks. A child that exits fails at once through its exit, never waiting out either
-         * bound.
+         * bound. {@code started} is the clock at launch.
+         *
+         * <p>The child may become ready while a check is under way: readiness is read again after
+         * the clock, so a check that sees a time after the child became ready also sees that it
+         * did, and a ready child is never failed for a startup deadline.
          */
-        private void watchStartup() {
+        private void watchStartup(long started) {
             try {
-                long started = clock.getAsLong();
                 long quiet = TimeUnit.MILLISECONDS.toNanos(startupMillis);
                 while (!initialized.get() && !stopping.get()) {
                     long now = clock.getAsLong();
                     String reason = startupExpired(started, lastProgress, now, quiet);
-                    if (reason != null) {
+                    if (reason != null && !initialized.get()) {
                         failure =
                                 new IOException(
                                         "World initialization deadline exceeded: " + reason);
