@@ -66,6 +66,32 @@ final class RaceAppearanceProfilesTest {
             boolean coordinates,
             boolean external)
             throws Exception {
+        return fixture(
+                hair,
+                partial,
+                version,
+                materialFlags,
+                blend,
+                textureFlags,
+                transform,
+                coordinates,
+                external,
+                null);
+    }
+
+    /** As above, with the texture's type set to {@code textureType} when it is not null. */
+    private static Fixture fixture(
+            boolean hair,
+            boolean partial,
+            int version,
+            int materialFlags,
+            int blend,
+            int textureFlags,
+            int transform,
+            boolean coordinates,
+            boolean external,
+            Integer textureType)
+            throws Exception {
         var raw = bytes(partial);
         var b = ByteBuffer.wrap(raw).order(ByteOrder.LITTLE_ENDIAN);
         if (external) {
@@ -74,7 +100,7 @@ final class RaceAppearanceProfilesTest {
         }
         b.putInt(12, version);
         int tex = b.getInt(8 + 84) + 8;
-        b.putInt(tex, hair ? 6 : 1);
+        b.putInt(tex, textureType != null ? textureType : hair ? 6 : 1);
         b.putInt(tex + 4, textureFlags);
         int material = b.getInt(8 + 116) + 8;
         b.putShort(material, (short) materialFlags).putShort(material + 2, (short) blend);
@@ -399,5 +425,47 @@ final class RaceAppearanceProfilesTest {
                     "field " + field);
         }
         assertTrue(RaceAppearanceProfiles.dwarfDraw(profile, f.model(), original, f.facts(), 1));
+    }
+
+    @Test
+    void accessoriesDrawInTheReviewedProfilesOneOrTwoSided() throws Exception {
+        for (var profile :
+                List.of(
+                        RaceAppearanceProfiles.Profile.DWARF_MALE,
+                        RaceAppearanceProfiles.Profile.NIGHT_ELF_FEMALE)) {
+            for (int type : new int[] {0, 20}) {
+                for (int flags : new int[] {0, 4}) {
+                    for (int blend : new int[] {0, 1}) {
+                        var f =
+                                fixture(
+                                        false, false, 272, flags, blend, 0, 65535, false, false,
+                                        type);
+                        assertTrue(
+                                RaceAppearanceProfiles.reviewedDraw(
+                                        profile, f.model(), batch(0), f.facts(), 1),
+                                profile + " type " + type + " flags " + flags + " blend " + blend);
+                        assertFalse(
+                                RaceAppearanceProfiles.reviewedDraw(
+                                        profile, f.model(), batch(16), f.facts(), 1),
+                                "another shader");
+                    }
+                }
+                var blended = fixture(false, false, 272, 0, 2, 0, 65535, false, false, type);
+                assertFalse(
+                        RaceAppearanceProfiles.reviewedDraw(
+                                profile, blended.model(), batch(0), blended.facts(), 1),
+                        "alpha blended");
+                var unlit = fixture(false, false, 272, 1, 0, 0, 65535, false, false, type);
+                assertFalse(
+                        RaceAppearanceProfiles.reviewedDraw(
+                                profile, unlit.model(), batch(0), unlit.facts(), 1),
+                        "unlit");
+            }
+            // Another texture type is not an accessory.
+            var skinExtra = fixture(false, false, 272, 4, 0, 0, 65535, false, false, 8);
+            assertFalse(
+                    RaceAppearanceProfiles.reviewedDraw(
+                            profile, skinExtra.model(), batch(0), skinExtra.facts(), 1));
+        }
     }
 }

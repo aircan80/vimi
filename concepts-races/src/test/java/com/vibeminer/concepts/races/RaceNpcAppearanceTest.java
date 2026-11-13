@@ -1045,7 +1045,8 @@ final class RaceNpcAppearanceTest {
                                         issue.startsWith(
                                                 RaceAppearance.INCOMPLETE + "texture #700")),
                 refused.issues().toString());
-        // An NPC is unchanged: no texture the model names is sampled for it.
+        // An NPC samples it too (its accessories: #385), and is saved: the file is recorded with
+        // the composite's attached files.
         var npc =
                 render(
                         new com.vibeminer.formats.AssetFilesFixture(BUILD, "enUS")
@@ -1057,9 +1058,10 @@ final class RaceNpcAppearanceTest {
                         true,
                         new com.vibeminer.generated.MemoryGeneratedStore(),
                         RaceAppearance.appearanceKey("hardcoded", true));
+        assertTrue(npc.appearance() != null, npc.message());
+        assertEquals(2, npc.appearance().textures().size(), "the bake and the model's own file");
         assertTrue(
-                npc.issues().stream()
-                        .noneMatch(issue -> issue.startsWith("Texture files the model names")),
+                npc.issues().contains("Texture files the model names itself: [700]."),
                 npc.issues().toString());
     }
 
