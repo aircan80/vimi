@@ -44,12 +44,16 @@ public final class GlobalInteriorLimits {
 
     public static final int GROUP_INDICES = GROUP_TRIANGLES * 3;
 
+    /** Largest absolute WMO-local position the scene file carries. */
+    public static final float POSITION = 4096;
+
     /**
-     * Largest absolute WMO-local position and texture coordinate the scene file carries. Texture
-     * coordinates repeat; many cave and dungeon groups tile far past 16, and at 4096 a 32-bit float
-     * still resolves about an eighth of a texel on a 256-pixel image.
+     * Largest absolute texture coordinate the scene file carries. Texture coordinates are the
+     * group's MOTV 32-bit floats, carried bit for bit through the scene file to a 32-bit float
+     * vertex attribute, so any finite value draws exactly as recorded; this is only a sanity bound,
+     * the same as the outdoor objects file's vertex bound. Real groups reach 8192 (Molten Core).
      */
-    public static final float POSITION = 4096, UV = 4096;
+    public static final float UV = 1_000_000;
 
     /** Raw source sizes read for the root, each group and each image. */
     public static final int ROOT_BYTES = 1 << 20, GROUP_BYTES = 8 << 20, IMAGE_BYTES = 1 << 20;

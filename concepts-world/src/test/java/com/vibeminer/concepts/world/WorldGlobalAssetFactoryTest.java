@@ -1033,6 +1033,29 @@ class WorldGlobalAssetFactoryTest {
     }
 
     @Test
+    void wholeNumberUvsFarOutsideTheTextureDrawBitForBit() throws Exception {
+        // Molten Core on 1.60.1.70862: two groups record vertices at exactly (-8192, 8192). Under
+        // repeat addressing that is the texel at (0, 0), and the triangles to them span many
+        // repeats, as in the client; the scene file keeps the recorded floats unchanged.
+        try (var f = new Fixture()) {
+            ByteBuffer.wrap(f.files.sources.get(201L))
+                    .order(ByteOrder.LITTLE_ENDIAN)
+                    .putFloat(184, -8192f)
+                    .putFloat(188, 8192f);
+            assertEquals(3, f.inspect().vertices());
+            assertEquals(0, f.inspect().skippedGroups());
+            try (var asset = f.factory.createOwned(f.scope, SELECT, Cancellation.NONE)) {
+                asset.withBorrow(
+                        b -> {
+                            assertEquals(-8192f, b.vertex(0, 3));
+                            assertEquals(8192f, b.vertex(0, 4));
+                            return null;
+                        });
+            }
+        }
+    }
+
+    @Test
     void outOfRangePositionsOrUvsSkipTheGroupAndAnEmptyInteriorIsRefused() throws Exception {
         try (var f = new Fixture()) {
             // Tiled texture coordinates far past 16 are ordinary and draw.
@@ -1045,13 +1068,13 @@ class WorldGlobalAssetFactoryTest {
             }
             assertEquals(0, f.scopes.payloadCredits());
         }
-        for (boolean uv : List.of(false, true)) {
+        for (int bad = 0; bad < 3; bad++) {
             try (var f = new Fixture()) {
                 var g = ByteBuffer.wrap(f.files.sources.get(201L)).order(ByteOrder.LITTLE_ENDIAN);
-                if (uv) {
-                    g.putFloat(184, GlobalInteriorLimits.UV * 2);
-                } else {
-                    g.putFloat(96, GlobalInteriorLimits.POSITION + 1);
+                switch (bad) {
+                    case 0 -> g.putFloat(96, GlobalInteriorLimits.POSITION + 1);
+                    case 1 -> g.putFloat(184, GlobalInteriorLimits.UV * 2);
+                    default -> g.putFloat(184, Float.NaN);
                 }
                 // The only group is skipped, so nothing is left to draw: a bounded refusal.
                 var refused = assertThrows(WorldTerrainStreaming.Refusal.class, f::inspect);
