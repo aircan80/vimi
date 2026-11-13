@@ -79,7 +79,8 @@ final class WorldStreamObjectsFile {
     // Version 13 (#380 stage 4): models and images may be named by asset digest instead of carried
     // ({@link References}); their counts at header bytes 200-207, the reference section right
     // after the header, and their payloads come from an asset pack ({@link WorldStreamAssetPack}).
-    static final int VERSION = 13, HEADER_BYTES = 256;
+    // Version 14 (#474): the CLAMP_S and CLAMP_T range flags (MOMT F_CLAMP_S, F_CLAMP_T).
+    static final int VERSION = 14, HEADER_BYTES = 256;
     // The tables are the sums of the producer's pools (ExteriorObjectLimits): opaque buildings,
     // their cutout and blended surfaces, and doodads. Creature models share whatever room remains.
     static final int MAX_MODELS = ExteriorObjectLimits.MODELS;

@@ -567,7 +567,7 @@ final class WorldStreamObjectsFileTest {
         // classes of #367) fails its header check instead of being misread.
         var clean = Files.readAllBytes(objectsPath());
         assertEquals(WorldStreamObjectsFile.VERSION, clean[8]);
-        assertEquals(13, WorldStreamObjectsFile.VERSION);
+        assertEquals(14, WorldStreamObjectsFile.VERSION);
         // Version 5 (#367, before the vertex colours of #375), version 6 (#375, before the
         // portal tables and mesh groups of #383), version 7 (before the INTERIOR_LIGHT range
         // flag of #383) and version 8 (before placement portal ties) are stale as well.
@@ -1724,16 +1724,17 @@ final class WorldStreamObjectsFileTest {
         assertEquals(
                 WorldStreamObjectsFile.ADDITIVE | WorldStreamObjectsFile.UNLIT, read.ranges[11]);
         assertEquals(WorldStreamObjectsFile.OPAQUE | WorldStreamObjectsFile.UNLIT, read.ranges[15]);
-        assertEquals(13, WorldStreamObjectsFile.VERSION);
+        assertEquals(14, WorldStreamObjectsFile.VERSION);
         assertEquals(h, read.placements[8], 0);
         // An unknown class, a scaled matrix or a reflection is refused.
-        // Modulate (4) and unknown flag bits stay refused: 0x800 alone and beside a known kind
-        // (0x200 is TWO_SIDED since version 6, 0x400 INTERIOR_LIGHT since version 8).
+        // Modulate (4) and unknown flag bits stay refused: 0x2000 alone and beside a known kind
+        // (0x200 is TWO_SIDED since version 6, 0x400 INTERIOR_LIGHT since version 8, 0x800 and
+        // 0x1000 CLAMP_S and CLAMP_T since version 14).
         for (int unknown :
                 new int[] {
                     4,
-                    0x800,
-                    WorldStreamObjectsFile.OPAQUE | 0x800,
+                    0x2000,
+                    WorldStreamObjectsFile.OPAQUE | 0x2000,
                     4 | WorldStreamObjectsFile.INTERIOR_LIGHT
                 }) {
             var badClass = WorldStreamTileWriter.Exterior.builder();

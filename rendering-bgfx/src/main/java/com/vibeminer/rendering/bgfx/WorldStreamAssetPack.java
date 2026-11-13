@@ -44,7 +44,8 @@ import java.util.function.BooleanSupplier;
 final class WorldStreamAssetPack {
     private WorldStreamAssetPack() {}
 
-    static final int VERSION = 1, HEADER_BYTES = 256;
+    // Version 2 (#474): model assets' range classes may carry CLAMP_S and CLAMP_T.
+    static final int VERSION = 2, HEADER_BYTES = 256;
 
     /** At most one asset per model and image an objects file can hold. */
     static final int MAX_ENTRIES =

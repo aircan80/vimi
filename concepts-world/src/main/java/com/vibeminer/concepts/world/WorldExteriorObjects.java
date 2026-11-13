@@ -713,7 +713,8 @@ public final class WorldExteriorObjects {
         TRIANGLE_WINDING_OPPOSES,
         /**
          * Admitted batches whose MOMT flags set a bit this profile does not apply (anything but
-         * F_UNLIT 0x1 and F_UNCULLED 0x4). Not an outcome bucket; the batch is drawn without it.
+         * F_UNLIT 0x1, F_UNCULLED 0x4, F_CLAMP_S 0x40 and F_CLAMP_T 0x80; {@link
+         * WmoMaterialClass}). Not an outcome bucket; the batch is drawn without it.
          */
         BATCH_FLAGS_IGNORED,
         /**
