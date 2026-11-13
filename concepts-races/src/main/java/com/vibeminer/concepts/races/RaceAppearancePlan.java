@@ -37,9 +37,18 @@ final class RaceAppearancePlan {
      */
     static final int KEEP_GROUP = -1;
 
-    record Item(long itemId, int inventoryType, long displayId, List<Integer> geosets) {
+    /**
+     * A worn item: its InventoryType, display and GeosetGroup values (empty when they are not
+     * applied), and the display's Flags where the geoset rule reads them (an NPC's belt and tabard,
+     * {@link RaceClothingGeometry}); 0 otherwise.
+     */
+    record Item(long itemId, int inventoryType, long displayId, List<Integer> geosets, long flags) {
         Item {
             geosets = List.copyOf(geosets);
+        }
+
+        Item(long itemId, int inventoryType, long displayId, List<Integer> geosets) {
+            this(itemId, inventoryType, displayId, geosets, 0);
         }
     }
 
@@ -183,10 +192,25 @@ final class RaceAppearancePlan {
      * {@code CreatureDisplayInfoExtra}'s former inline NPC item columns (wowdev
      * DB/CreatureDisplayInfoExtra, Wrath columns 9 to 19: Helm, Shoulder, Shirt, Cuirass, Belt,
      * Legs, Boots, Wrist, Gloves, Tabard, Cape); "In Legion+ NPC armor has been moved to
-     * DB/NpcModelItemSlotDisplayInfo.db2". Not documented for the slot table itself: to be checked
-     * on real data before NPCs draw (#385). Slots past the table (held items) are attachments.
+     * DB/NpcModelItemSlotDisplayInfo.db2". The same order is the client's character component item
+     * list in wowdev's decompiled geoset code (DB/ItemDisplayInfo/GeosRenderPrep: itemids[9] is the
+     * tabard, itemids[10] the cloak). Slots past the table (held items) are attachments.
      */
     static final int[] NPC_SLOT_INVENTORY = {1, 3, 4, 5, 6, 7, 8, 9, 10, 19, 16};
+
+    /** InventoryType of a waist (belt), a cape (cloak) and a tabard. */
+    static final int WAIST = 6, CAPE = 16, TABARD = 19;
+
+    /**
+     * M2 texture type 2, "Object Skin -- Item, Capes" (wowdev M2, texture types): the cape's own
+     * texture, which the bake does not carry. wowdev DB/ItemDisplayInfo gives its source: the
+     * display's model texture "Replaces texture type 2" (3.0.2), and from 7.0.1 it "References
+     * TextureFileData"; in this layout that is {@code ModelMaterialResourcesID[0]}, resolved like
+     * any material resource ({@link #texture}). WebWowViewerCpp binds a texture of a non-zero type
+     * the same way, from a per-type replacement ({@code M2Object::getBlpTextureData},
+     * wowViewerLib/src/engine/objects/m2/m2Object.cpp).
+     */
+    static final int CAPE_TEXTURE_TYPE = 2;
 
     /**
      * Largest side of an NPC's texture canvases and decoded images (#385 design budget: at most 256
@@ -195,14 +219,10 @@ final class RaceAppearancePlan {
      */
     static final int NPC_TEXTURE_SIDE = 256;
 
-    /** Item slots whose geometry is not drawn yet (cape 16, tabard 19): counted as omitted. */
-    static boolean undrawnNpcSlot(int inventory) {
-        return inventory == 16 || inventory == 19;
-    }
-
     /**
      * An NPC's items left undrawn: item models (helms, shoulders, held items), displays the build
-     * does not record, and slots not drawn yet ({@link #undrawnNpcSlot}).
+     * does not record, and capes and tabards that cannot be drawn exactly ({@link
+     * #undrawnNpcItem}).
      */
     record NpcOmissions(int attachments, int missing, int undrawn) {}
 
@@ -211,11 +231,14 @@ final class RaceAppearancePlan {
      * past {@link #NPC_SLOT_INVENTORY} (held items) and displays with item models are attachments
      * (those the appearance then attaches are taken off again: {@link
      * RaceNpcAttachments#undrawnAttachments}), displays recorded as absent are missing, and capes
-     * and tabards are undrawn. A display that cannot be read now is unreadable ({@link
-     * RacesService.Unreadable}), never an omission.
+     * and tabards that cannot be drawn exactly are undrawn. {@code raceId}, {@code classId} and
+     * {@code sex} choose a cape's texture as {@link #build} does. A display that cannot be read now
+     * is unreadable ({@link RacesService.Unreadable}), never an omission.
      */
-    NpcOmissions npcOmissions(Npc npc, Cancellation token, List<String> issues) {
+    NpcOmissions npcOmissions(
+            Npc npc, long raceId, long classId, int sex, Cancellation token, List<String> issues) {
         var display = schema("ItemDisplayInfo", token, issues, "GeosetGroupOverride");
+        display.field("GeosetGroup", true, 6);
         display.field("ModelResourcesID", true, 2);
         int attachments = 0, missing = 0, undrawn = 0;
         for (var item : npc.items()) {
@@ -230,11 +253,79 @@ final class RaceAppearancePlan {
             } else if (display.number(info, "ModelResourcesID[0]") != 0
                     || display.number(info, "ModelResourcesID[1]") != 0) {
                 attachments++;
-            } else if (undrawnNpcSlot(NPC_SLOT_INVENTORY[item.slot()])) {
+            } else if (undrawnNpcItem(
+                            NPC_SLOT_INVENTORY[item.slot()],
+                            display,
+                            info,
+                            raceId,
+                            classId,
+                            sex,
+                            token,
+                            issues)
+                    != null) {
                 undrawn++;
             }
         }
         return new NpcOmissions(attachments, missing, undrawn);
+    }
+
+    /** A cape or tabard whose display sets geosets through an override, which is not evaluated. */
+    static final String CAPE_TABARD_OVERRIDE =
+            "Some NPC capes or tabards set their geosets through an override, which is not"
+                    + " evaluated; they are left out.";
+
+    /** A cape that shows a geoset but has no single texture for this NPC. */
+    static final String NO_CAPE_TEXTURE =
+            "Some NPC capes have no single cape texture for the NPC's race, sex and class; they are"
+                    + " left out.";
+
+    /**
+     * Why an NPC's item of {@code inventory} without an item model is left undrawn, or null when it
+     * is drawn as the client draws it. Only capes and tabards can be left out: one whose display
+     * sets its geosets through {@code GeosetGroupOverride} (not evaluated), and a cape that shows a
+     * geoset (GeosetGroup[0] above 0) without a single texture ({@link #capeTexture}). A tabard's
+     * art is on the NPC's bake, so it needs no texture of its own; a cape or tabard whose
+     * GeosetGroup[0] is 0 shows no geoset, as in the client, and is not an omission either.
+     */
+    private String undrawnNpcItem(
+            int inventory,
+            RacesService.Data display,
+            Db2Types.Row info,
+            long raceId,
+            long classId,
+            int sex,
+            Cancellation token,
+            List<String> issues) {
+        if (inventory != CAPE && inventory != TABARD) {
+            return null;
+        }
+        if (display.number(info, "GeosetGroupOverride") != 0) {
+            return CAPE_TABARD_OVERRIDE;
+        }
+        if (inventory == CAPE
+                && display.number(info, "GeosetGroup[0]") > 0
+                && capeTexture(display, info, raceId, classId, sex, token, issues) == 0) {
+            return NO_CAPE_TEXTURE;
+        }
+        return null;
+    }
+
+    /**
+     * The file of a cape's own texture ({@link #CAPE_TEXTURE_TYPE}): the diffuse file of the
+     * display's {@code ModelMaterialResourcesID[0]} that best matches the NPC's race, sex and class
+     * ({@link #texture}), or 0 when there is none or no single best one.
+     */
+    private long capeTexture(
+            RacesService.Data display,
+            Db2Types.Row info,
+            long raceId,
+            long classId,
+            int sex,
+            Cancellation token,
+            List<String> issues) {
+        display.field("ModelMaterialResourcesID", true, 2);
+        long resource = display.number(info, "ModelMaterialResourcesID[0]");
+        return resource <= 0 ? 0 : texture(resource, raceId, classId, sex, token, issues);
     }
 
     Plan build(
@@ -504,7 +595,8 @@ final class RaceAppearancePlan {
         }
         var items = new ArrayList<Item>();
         if (npc != null) {
-            npcClothing(npc, items, token, issues);
+            npcClothing(
+                    npc, raceId, classId, variant.sex(), canvases, recipe, items, token, issues);
             // The client's pre-baked NPC texture already composites skin, face, underwear and
             // armour: it is the whole body canvas, and no other body layer is drawn.
             var body =
@@ -616,11 +708,25 @@ final class RaceAppearancePlan {
      * RaceNpcAttachments}), and the rest is counted as undrawn. Robes are never inferred from the
      * slot: a chest whose display sets the robe group (GeosetGroup[2] above 0, which
      * RaceClothingGeometry applies to group 13, the robe/kilt) is treated as a robe (InventoryType
-     * 20); any other chest as InventoryType 5. Capes and tabards are left out ({@link
-     * #undrawnNpcSlot}). A display that cannot be read now is unreadable, so the NPC is asked for
-     * again rather than drawn without it.
+     * 20); any other chest as InventoryType 5. A tabard's and a belt's display Flags go with the
+     * item for the tabard geoset rule ({@link RaceClothingGeometry}); the tabard's art is already
+     * on the bake. A cape that shows a geoset adds its own texture ({@link #capeTexture}) as the
+     * whole of a {@link #CAPE_TEXTURE_TYPE} canvas, {@link #NPC_TEXTURE_SIDE} square unless the
+     * layout declares that canvas (texture coordinates are relative, so the size only sets the
+     * detail). A cape or tabard that cannot be drawn exactly is left out ({@link #undrawnNpcItem}).
+     * A display that cannot be read now is unreadable, so the NPC is asked for again rather than
+     * drawn without it.
      */
-    private void npcClothing(Npc npc, List<Item> items, Cancellation token, List<String> issues) {
+    private void npcClothing(
+            Npc npc,
+            long raceId,
+            long classId,
+            int sex,
+            List<Canvas> canvases,
+            List<Layer> recipe,
+            List<Item> items,
+            Cancellation token,
+            List<String> issues) {
         var display = schema("ItemDisplayInfo", token, issues, "GeosetGroupOverride");
         display.field("GeosetGroup", true, 6);
         display.field("ModelResourcesID", true, 2);
@@ -628,10 +734,6 @@ final class RaceAppearancePlan {
             token.check();
             if (item.slot() >= NPC_SLOT_INVENTORY.length) {
                 continue; // a held item: only its model, counted by npcOmissions
-            }
-            if (undrawnNpcSlot(NPC_SLOT_INVENTORY[item.slot()])) {
-                note(issues, "NPC capes and tabards are not drawn yet.");
-                continue;
             }
             var info = owner.row(display, item.itemDisplayInfoId(), token, issues);
             if (info == null) {
@@ -650,12 +752,58 @@ final class RaceAppearancePlan {
             if (inventory == 5 && groups.get(2) > 0) {
                 inventory = 20; // the display itself sets the robe group
             }
+            if (inventory == CAPE || inventory == TABARD) {
+                if (display.number(info, "ModelResourcesID[0]") != 0
+                        || display.number(info, "ModelResourcesID[1]") != 0) {
+                    continue; // an item model, counted as an attachment by npcOmissions
+                }
+                String undrawn =
+                        undrawnNpcItem(
+                                inventory, display, info, raceId, classId, sex, token, issues);
+                if (undrawn != null) {
+                    note(issues, undrawn);
+                    continue;
+                }
+                if (inventory == CAPE && groups.get(0) > 0) {
+                    long cape = capeTexture(display, info, raceId, classId, sex, token, issues);
+                    var canvas =
+                            canvases.stream()
+                                    .filter(value -> value.type() == CAPE_TEXTURE_TYPE)
+                                    .findFirst()
+                                    .orElse(null);
+                    if (canvas == null) {
+                        canvas = new Canvas(CAPE_TEXTURE_TYPE, NPC_TEXTURE_SIDE, NPC_TEXTURE_SIDE);
+                        canvases.add(canvas);
+                    }
+                    recipe.add(
+                            new Layer(
+                                    CAPE_TEXTURE_TYPE,
+                                    cape,
+                                    0,
+                                    0,
+                                    canvas.width(),
+                                    canvas.height(),
+                                    1,
+                                    0,
+                                    "NPC cape display #" + item.itemDisplayInfoId()));
+                }
+            }
+            long flags = 0;
+            if (inventory == WAIST || inventory == TABARD) {
+                display.field("Flags", true);
+                flags = display.number(info, "Flags");
+            }
             boolean simple = display.number(info, "GeosetGroupOverride") == 0;
             if (!simple) {
                 note(issues, "Some NPC clothing geoset overrides are not evaluated.");
             }
             items.add(
-                    new Item(0, inventory, item.itemDisplayInfoId(), simple ? groups : List.of()));
+                    new Item(
+                            0,
+                            inventory,
+                            item.itemDisplayInfoId(),
+                            simple ? groups : List.of(),
+                            flags));
         }
     }
 

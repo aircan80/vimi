@@ -125,11 +125,25 @@ appearances, with no helper, GPU or JavaFX. It differs from the other modes in t
   generated store, as the application does, so a second run starts warm. Nothing is staged,
   published or downloaded.
 
+With `-Pprobe.npcItems=true` it lists each built humanoid NPC once (its extended display ID, slot
+items by InventoryType, item records not drawn and its tabard, cape and torso geosets), and
+`-Pprobe.npcImages=<extended display IDs>` writes front, back and rear CPU renders of those NPCs
+(`npc-<ID>-front.png`, `npc-<ID>-back.png`, `npc-<ID>-rear.png`) to the probe output for close-up
+review. The renders show game data: keep them local.
+
 It also reports, per distinct creature display it previewed (#377, #455), the Stand pose outcome
 (Stand pose, or rest pose with the reason), the geoset case (the model's
 `CreatureGeosetDataID` 0 or above 0, with or without the display's own geoset rows) with the
 production geoset rule's outcome, and for displays whose model records no geoset data, how many
 of the model's geoset groups have an x00 section, an x01 section, both or neither.
+
+**NPC slots mode** (`-Pprobe.mode=npcSlots`) counts `NPCModelItemSlotDisplayInfo` rows by item
+slot over the whole build, independent of spawns, then builds the production appearance of NPCs
+wearing a tabard (slot 9) or a cape (slot 10): every `-Pprobe.stride`-th (default 1), up to
+`-Pprobe.limit` (default 60) of each. It tallies them by outcome, by the tabard or cape geoset shown
+and by the stated reason when the item is left out. `-Pprobe.npcImages` renders listed NPCs as in
+creatures mode. Like creatures mode, it uses the copy's loaded community keys and may add derived
+entries to the copy's generated store.
 
 **Displays mode** (#377, #455, `-Pprobe.mode=displays`) is the same display census over the whole
 build, independent of spawns and of the Creature table:

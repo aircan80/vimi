@@ -469,6 +469,56 @@ final class RaceAppearanceProfilesTest {
         }
     }
 
+    @Test
+    void aCapeDrawsWithShaderZeroOrAnAlphaKeyedCombinersModDraw() throws Exception {
+        for (var profile :
+                List.of(
+                        RaceAppearanceProfiles.Profile.DWARF_MALE,
+                        RaceAppearanceProfiles.Profile.NIGHT_ELF_FEMALE)) {
+            for (int flags : new int[] {0, 4}) {
+                for (int blend : new int[] {0, 1}) {
+                    var f = fixture(false, false, 272, flags, blend, 0, 65535, false, false, 2);
+                    assertTrue(
+                            RaceAppearanceProfiles.reviewedDraw(
+                                    profile, f.model(), batch(0), f.facts(), 1),
+                            profile + " shader 0 flags " + flags + " blend " + blend);
+                    // Shader 16 (0x10), as the character models record capes: Combiners_Mod
+                    // over Diffuse_T1, drawn only with the alpha-key blend.
+                    assertEquals(
+                            blend == 1,
+                            RaceAppearanceProfiles.reviewedDraw(
+                                    profile, f.model(), batch(16), f.facts(), 1),
+                            profile + " shader 16 flags " + flags + " blend " + blend);
+                }
+            }
+            var blended = fixture(false, false, 272, 0, 2, 0, 65535, false, false, 2);
+            assertFalse(
+                    RaceAppearanceProfiles.reviewedDraw(
+                            profile, blended.model(), batch(16), blended.facts(), 1),
+                    "alpha blended");
+            var unlit = fixture(false, false, 272, 1, 1, 0, 65535, false, false, 2);
+            assertFalse(
+                    RaceAppearanceProfiles.reviewedDraw(
+                            profile, unlit.model(), batch(16), unlit.facts(), 1),
+                    "unlit");
+        }
+        // The shader decode: one texture, a bit of 0x70 set, 0x80, 0x4000 and 0x8000 clear.
+        assertTrue(RaceAppearanceProfiles.modDiffuse(batch(0x10)));
+        assertTrue(RaceAppearanceProfiles.modDiffuse(batch(0x40)));
+        assertFalse(RaceAppearanceProfiles.modDiffuse(batch(0)), "Combiners_Opaque");
+        assertFalse(RaceAppearanceProfiles.modDiffuse(batch(0x90)), "Diffuse_Env");
+        assertFalse(RaceAppearanceProfiles.modDiffuse(batch(0x4010)), "another vertex shader");
+        assertFalse(RaceAppearanceProfiles.modDiffuse(batch(0x8010)), "a table effect");
+        assertFalse(RaceAppearanceProfiles.modDiffuse(eyeBatch(0x10, 2)), "two textures");
+        // Only a cape texture (type 2) takes the Combiners_Mod draw.
+        var cape = new M2Types.Texture(0, 2, 0, null, null);
+        var hair = new M2Types.Texture(0, 6, 0, null, null);
+        var keyed = new M2Types.Material(0, 1);
+        assertTrue(RaceAppearanceProfiles.capeDraw(batch(16), cape, keyed));
+        assertFalse(RaceAppearanceProfiles.capeDraw(batch(16), hair, keyed));
+        assertFalse(RaceAppearanceProfiles.capeDraw(batch(16), cape, new M2Types.Material(0, 0)));
+    }
+
     private static M2Types.Batch eyeBatch(int shader, int count) {
         return new M2Types.Batch(16, 0, shader, 0, 0, -1, 0, 0, count, 0, 65535, 0, 0);
     }

@@ -914,6 +914,10 @@ check.dependsOn preparedBuildReaderTest
 // issues); -Pprobe.mode=raceSkin dumps the customization chain of -Pprobe.models (ChrModel IDs) or
 // the CreatureDisplayInfo rows of -Pprobe.displays (#104).
 // -Pvimi.world.viewDistance=far streams the 5x5 neighbourhood instead of the 3x3 (#173).
+// In creatures mode, -Pprobe.npcItems=true lists each humanoid NPC's slot items and
+// -Pprobe.npcImages=<extended display IDs> writes CPU renders of those NPCs.
+// -Pprobe.mode=npcSlots counts NPC slot items over the whole build and builds the appearances of
+// NPCs wearing a tabard or a cape (-Pprobe.limit of each, every -Pprobe.stride-th).
 tasks.register('worldMeasurementProbe', JavaExec) {
     group = 'verification'
     description = 'Measures the real World pipeline on the local build; see docs/world-measurement-baseline.md.'
@@ -938,7 +942,7 @@ tasks.register('worldMeasurementProbe', JavaExec) {
      'probe.deadlineSeconds', 'probe.size', 'probe.passes', 'probe.objects', 'probe.interiors', 'probe.root',
      'vimi.world.objectTextures', 'vimi.world.creatures', 'vimi.world.viewDistance', 'vimi.world.splat',
      'vimi.gpu.backend', 'probe.stride', 'probe.limit', 'probe.raceDetail', 'probe.models', 'probe.displays', 'probe.raceImages', 'probe.online', 'probe.files', 'probe.layouts', 'probe.raceZoom', 'probe.racePitch', 'probe.swimArea',
-     'probe.display', 'probe.allSequences', 'vimi.world.creatureAnimation', 'vimi.world.objectReferences', 'vimi.world.sky', 'vimi.world.sky.time', 'probe.stillSeconds', 'probe.camera', 'probe.idleEverywhere', 'probe.png'].each { name ->
+     'probe.display', 'probe.allSequences', 'vimi.world.creatureAnimation', 'vimi.world.objectReferences', 'vimi.world.sky', 'vimi.world.sky.time', 'probe.stillSeconds', 'probe.camera', 'probe.idleEverywhere', 'probe.png', 'probe.npcItems', 'probe.npcImages'].each { name ->
         def value = providers.gradleProperty(name)
         if (value.isPresent()) systemProperty name, value.get()
     }

@@ -200,7 +200,7 @@ public final class WorldMeasurementProbe {
                                         // has: the creature and race modes need them, and so does
                                         // stream mode with creatures on, whose humanoid NPCs read
                                         // the encrypted rows of CreatureDisplayInfoOption.
-                                        List.of("creatures", "displays", "body", "races", "raceSkin", "fetch", "m2")
+                                        List.of("creatures", "npcSlots", "displays", "body", "races", "raceSkin", "fetch", "m2")
                                                         .contains(
                                                                 System.getProperty(
                                                                         "probe.mode", "stream"))
@@ -244,6 +244,7 @@ public final class WorldMeasurementProbe {
                             case "fetch" -> fetch(opened);
                             case "m2" -> m2(opened);
                             case "creatures" -> creatures(opened, handle, catalog);
+                            case "npcSlots" -> npcSlots(opened);
                             case "displays" -> displays(opened);
                             case "census" -> census(opened, handle, catalog);
                             default -> stream(opened, handle, catalog);
@@ -961,6 +962,74 @@ public final class WorldMeasurementProbe {
     }
 
     /**
+     * Humanoid NPC slot items over the whole build, independent of spawns: NPCModelItemSlotDisplayInfo
+     * rows by ItemSlot, then the production NPC appearance of every -Pprobe.stride-th (default 1)
+     * NPC wearing a tabard (slot 9) or a cape (slot 10), up to -Pprobe.limit (default 60) of each,
+     * tallied by outcome, by whether the item's geoset is shown, and by its stated reason when it
+     * is left out. -Pprobe.npcImages renders listed NPCs as in creatures mode.
+     */
+    private static void npcSlots(WorldMeasurementOpen opened) throws Exception {
+        var tables = opened.tables();
+        var bySlot = new TreeMap<String, Integer>();
+        var wearers = new TreeMap<Integer, java.util.TreeSet<Long>>();
+        for (var row : rows(tables, "NPCModelItemSlotDisplayInfo", null, List.of())) {
+            int slot = Integer.parseInt(row.get("ItemSlot"));
+            bySlot.merge(Integer.toString(slot), 1, Integer::sum);
+            if (slot == 9 || slot == 10)
+                wearers.computeIfAbsent(slot, k -> new java.util.TreeSet<>()).add(Long.parseLong(row.get("NpcModelID")));
+        }
+        say("PROBE npcSlots: rows by ItemSlot " + bySlot);
+        int limit = Integer.getInteger("probe.limit", 60), stride = Integer.getInteger("probe.stride", 1);
+        try (var measured = busy(() -> opened.openCreatures(Cancellation.NONE))) {
+            var npcs = new NpcAnswers((id, token) -> measured.races().npcAppearance(id, token).get(3, TimeUnit.MINUTES));
+            // Listed NPCs are asked first, so they are rendered.
+            for (var text : System.getProperty("probe.npcImages", "").split(","))
+                if (!text.isBlank())
+                    say("PROBE npcSlots: NPC " + text.strip() + " "
+                            + NpcAnswers.outcome(npcs.appearance(Long.parseLong(text.strip()), Cancellation.NONE)));
+            for (var entry : wearers.entrySet()) {
+                int group = entry.getKey() == 9 ? 12 : 15;
+                String name = entry.getKey() == 9 ? "tabard" : "cape";
+                var tally = new TreeMap<String, Integer>();
+                int asked = 0, at = 0;
+                for (long id : entry.getValue()) {
+                    if (at++ % stride != 0) continue;
+                    if (asked >= limit || !beforeDeadline()) break;
+                    asked++;
+                    var answer = npcs.appearance(id, Cancellation.NONE);
+                    String outcome = NpcAnswers.outcome(answer);
+                    if (outcome.equals("appearance built")) {
+                        var result = answer.result();
+                        var parts = result.visibleParts().stream().filter(p -> p / 100 == group).sorted().toList();
+                        var reasons = result.issues().stream()
+                                .filter(i -> i.contains("NPC capes") || i.contains("NPC cape"))
+                                .toList();
+                        // Whether each shown part of the group has a drawn surface (a texture).
+                        var mesh = result.appearance().mesh();
+                        var bound = new java.util.HashSet<Integer>();
+                        for (var surface : result.appearance().surfaces()) bound.add(surface.sectionIndex());
+                        int untextured = 0;
+                        for (int ordinal = 0; ordinal < mesh.parts().size(); ordinal++) {
+                            int part = mesh.parts().get(ordinal).id();
+                            if (part / 100 == group && result.visibleParts().contains(part) && !bound.contains(ordinal))
+                                untextured++;
+                        }
+                        outcome = "built, " + name + " geoset " + (parts.isEmpty() ? "none" : parts.toString())
+                                + (untextured > 0 ? " (" + untextured + " sections without a surface)" : "")
+                                + (reasons.isEmpty() ? "" : " " + reasons);
+                        if (tally.getOrDefault(outcome, 0) < 3) say("PROBE   " + name + " example " + id + ": " + outcome);
+                    }
+                    if (outcome.startsWith("not readable yet")) say("PROBE   " + name + " unreadable " + id + ": " + outcome);
+                    // File IDs are folded, so files not stored yet count as one reason.
+                    tally.merge(outcome.replaceAll("#\\d+", "#N"), 1, Integer::sum);
+                }
+                say("PROBE npcSlots: " + entry.getValue().size() + " NPCs wear a " + name + "; " + asked + " asked");
+                tally.forEach((k, v) -> say(String.format(Locale.ROOT, "PROBE   %4d  %s", v, k)));
+            }
+        }
+    }
+
+    /**
      * The textured player preview of every race model variant (#104): each variant's outcome, with
      * the untextured ones grouped by their stated reason. The first class the race records is
      * chosen, as the Races page does by default.
@@ -1458,7 +1527,54 @@ public final class WorldMeasurementProbe {
                 long extendedDisplayInfoId, Cancellation token) throws Exception {
             var answer = inner.appearance(extendedDisplayInfoId, token);
             outcomes.put(extendedDisplayInfoId, outcome(answer));
+            look(extendedDisplayInfoId, answer);
             return answer;
+        }
+
+        // NPCs already listed or rendered (-Pprobe.npcItems, -Pprobe.npcImages).
+        private final java.util.Set<Long> looked = ConcurrentHashMap.newKeySet();
+
+        /**
+         * With -Pprobe.npcItems=true, lists each built NPC's slot items by InventoryType and its
+         * item notes once; -Pprobe.npcImages=<extended display IDs> writes front and back CPU
+         * renders of those NPCs to the probe output, for close-up review.
+         */
+        private void look(long id, com.vibeminer.concepts.races.RaceNpcs.Appearance answer) {
+            if (answer == null || answer.result() == null || answer.result().appearance() == null
+                    || !looked.add(id)) return;
+            var result = answer.result();
+            if (Boolean.getBoolean("probe.npcItems")) {
+                var types = result.items().stream().map(i -> i.inventoryType()).sorted().toList();
+                var notes = result.issues().stream()
+                        .filter(i -> i.contains("cape") || i.contains("tabard") || i.contains("Cape")
+                                || i.contains("Tabard"))
+                        .toList();
+                say("PROBE npc " + id + " items " + types + " omitted " + answer.omittedItems()
+                        + " capeOrTabardParts " + result.visibleParts().stream()
+                                .filter(p -> p / 100 == 12 || p / 100 == 15 || p / 100 == 22).sorted().toList()
+                        + (notes.isEmpty() ? "" : " notes " + notes));
+            }
+            boolean wanted = false;
+            for (var text : System.getProperty("probe.npcImages", "").split(","))
+                if (!text.isBlank() && Long.parseLong(text.strip()) == id) wanted = true;
+            if (!wanted) return;
+            try {
+                for (double yaw : new double[] {-1.2, 1.9, Math.PI}) {
+                    var frame = com.vibeminer.rendering.models.StaticMeshRenderer.render(result.appearance(), 480, 480,
+                            new com.vibeminer.rendering.models.StaticMeshRenderer.View(yaw, .1, 1, false,
+                                    result.visibleParts()),
+                            () -> false);
+                    var image = new java.awt.image.BufferedImage(frame.width(), frame.height(),
+                            java.awt.image.BufferedImage.TYPE_INT_ARGB);
+                    image.setRGB(0, 0, frame.width(), frame.height(), frame.argb(), 0, frame.width());
+                    var file = Path.of(System.getProperty("probe.out"))
+                            .resolve("npc-" + id + (yaw < 0 ? "-front" : yaw < 2 ? "-back" : "-rear") + ".png");
+                    javax.imageio.ImageIO.write(image, "png", file.toFile());
+                }
+                say("PROBE npc " + id + " rendered; issues " + result.issues());
+            } catch (java.io.IOException failed) {
+                say("PROBE npc " + id + " render failed: " + failed);
+            }
         }
 
         @Override
@@ -1475,6 +1591,7 @@ public final class WorldMeasurementProbe {
             var asked = inner.appearanceAsync(extendedDisplayInfoId, token);
             return asked == null ? null : asked.thenApply(answer -> {
                 outcomes.put(extendedDisplayInfoId, outcome(answer));
+                look(extendedDisplayInfoId, answer);
                 return answer;
             });
         }

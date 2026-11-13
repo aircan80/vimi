@@ -84,6 +84,9 @@ final class RaceAppearanceProfiles {
                     && material.flags() == 0
                     && material.blendMode() == 0;
         }
+        if (texture.type() == RaceAppearancePlan.CAPE_TEXTURE_TYPE) {
+            return capeDraw(batch, texture, material);
+        }
         if (texture.type() == 0 || texture.type() == ACCESSORY_TEXTURE_TYPE) {
             // Accessories (facial jewelry, piercings, necklaces: geoset groups 16, 35, 36) in a
             // file the model names, or the jewelry canvas (type 20): a plain single-texture
@@ -147,6 +150,39 @@ final class RaceAppearanceProfiles {
                 && (shader & 7) == 3
                 && (shader & 0x80) == 0
                 && (shader & 8) == 0;
+    }
+
+    /**
+     * A one-texture draw whose shader ID (bit 0x8000 clear) decodes to pixel shader {@code
+     * Combiners_Mod} over vertex shader {@code Diffuse_T1}, as WebWowViewerCpp's {@code
+     * getPixelShaderId}/{@code getVertexShaderId} decode it (wowViewerLib/src/engine/objects/m2/
+     * m2Object.cpp): with one texture, any of bits 0x70 set gives {@code Combiners_Mod}, and bits
+     * 0x80 and 0x4000 clear give {@code Diffuse_T1}. {@code Combiners_Mod} is the texture's colour
+     * times the mesh colour, discarded by the texture's alpha (wowViewerLib/shaders/slang/common/
+     * commonM2Material.slang), which is what an alpha-keyed surface draws.
+     */
+    static boolean modDiffuse(M2Types.Batch batch) {
+        int shader = batch.shaderId();
+        return batch.textureCount() == 1
+                && (shader & 0x8000) == 0
+                && (shader & 0x70) != 0
+                && (shader & 0x80) == 0
+                && (shader & 0x4000) == 0;
+    }
+
+    /**
+     * An NPC cape's draw (texture type 2, {@link RaceAppearancePlan#CAPE_TEXTURE_TYPE}; geoset
+     * group 15): one texture, one- or two-sided (material flag 0x4, wowdev M2), either shader 0,
+     * opaque or alpha-keyed, or {@link #modDiffuse} with the alpha-key blend (1), which is how the
+     * character models record their capes (70862: shader 16, blend 1).
+     */
+    static boolean capeDraw(
+            M2Types.Batch batch, M2Types.Texture texture, M2Types.Material material) {
+        return texture.type() == RaceAppearancePlan.CAPE_TEXTURE_TYPE
+                && batch.textureCount() == 1
+                && (material.flags() == 0 || material.flags() == 4)
+                && (batch.shaderId() == 0 && material.blendMode() <= 1
+                        || modDiffuse(batch) && material.blendMode() == 1);
     }
 
     static MeshAppearance.Surface surface(
