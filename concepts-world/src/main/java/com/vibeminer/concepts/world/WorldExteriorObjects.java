@@ -3531,7 +3531,10 @@ public final class WorldExteriorObjects {
          * #placeByGroupSetDoodads} a building's placement is current. Inside it the placement may
          * be a copy taken before models were removed and renumbered: its model is then that of the
          * set's placement with the same ordinal, unique ID and root, or -1 when that placement was
-         * removed.
+         * removed. That last case does not arise today (a root drawn by group holds no interiors
+         * for admitInteriors to remove it over, and fitMaterialDraws runs before such roots are
+         * placed); it is kept so that a later removal leaves the doodads untied instead of reading
+         * another model's portal set.
          */
         private int currentModel(Placement building) {
             if (building.model() < 0 || byGroupModels == null) {
@@ -3560,6 +3563,9 @@ public final class WorldExteriorObjects {
             var filters = new ArrayList<ByGroupFilter>(ordered.size());
             for (var building : ordered) {
                 token.check();
+                // A placement that draws no group here (model -1: another tile's, or EMPTY or
+                // capped here because none of its pieces is drawable or fits) still places its
+                // outdoor set doodads, untied: the client still has the building.
                 var root = byGroupRootFacts.get(building.rootId());
                 var filter =
                         new ByGroupFilter(
